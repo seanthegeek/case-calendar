@@ -335,12 +335,29 @@ Significance for deadlines:
 - "major" — deadlines on dispositive briefing (MTD/MSJ response/reply),
   trial-related filings (witness lists, exhibit lists, motions in limine,
   Daubert), sentencing memoranda, plea cutoffs, suppression briefing,
-  appellate briefing, amicus briefing, and any deadline whose miss would
-  meaningfully change the case posture.
+  appellate briefing by the parties, AMICUS-FILING WINDOWS (the master
+  deadline by which amici must file their substantive briefs, e.g.
+  "Amicus Briefs in Support of Petitioner due 4/22"), and any deadline
+  whose miss would meaningfully change the case posture.
 - "minor" — purely housekeeping: routine joint status reports / case
   management statements that are just procedural updates, proposed orders
   that follow a settled disposition, attorney-appearance papers, scheduling
-  proposals.
+  proposals, AND the leave-to-file-amicus shuffle.
+
+The amicus distinction is critical and is NOT a judgment call:
+- The MASTER amicus filing window (court-set deadline by which any amicus
+  curiae must submit its brief) → MAJOR. Watchers want to know when
+  substantive third-party content will land in the docket.
+- A deadline for the PARTIES to respond to a specific motion for leave to
+  file amicus, OR the would-be amicus's reply on its leave motion, is
+  MINOR. These are the procedural shuffle around granting leave for a
+  specific amicus; the leave motions get granted reflexively in most
+  cases, the brief itself is what matters. Title cues for the minor
+  flavor: "Response to Motion for Leave to File Amici Curiae Brief
+  (X)", "Reply ISO Motion for Leave to File Amicus Brief", "Opposition
+  to Motion for Leave (X)". Title cues for the major flavor: "Amicus
+  Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
+  deadline", "Deadline for amici curiae to file briefs".
 
 Default to "major" when uncertain. Same render-time gate as hearings —
 minor deadlines stay in the DB for the audit trail but don't appear on the
