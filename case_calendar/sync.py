@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from . import llm, pdf, url_validator
 from .courtlistener import CourtListener
 from .courts import tz_for
-from .extractor import is_hearing_relevant
+from .extractor import is_extractable
 from .store import Store
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,36 @@ class CaseConfig:
     name: str             # human title
     dockets: list[int]
     calendar: str         # which output calendar this case belongs to
+    extract_deadlines: bool = False
+    """Force-on override for filing-deadline extraction. False (the default)
+    means auto-detect from each docket's ``docket_number`` prefix: civil
+    dockets get deadline tracking, routine criminal dockets don't. Set
+    ``true`` to force deadline tracking on regardless — useful for serious
+    criminal trials with real pretrial motion practice where the briefing
+    cadence IS worth watching."""
+
+
+# Federal docket-number type codes that indicate a routine criminal matter
+# (criminal felony, criminal misdemeanor, criminal magistrate complaint,
+# petty offense). Federal docket numbers look like "D:YY-XX-NNNNN-..." where
+# XX is the type code; we match the type sandwiched between dashes and
+# followed by a digit (the case number).
+# Anything else — civil, appellate, MDL, specialty — defaults to deadlines-on.
+_CRIMINAL_DOCKET_TYPES = re.compile(
+    r"-(?:cr|cm|cmc|po|mj-cr)-\d", re.IGNORECASE,
+)
+
+
+def _docket_implies_deadlines(docket_number: str | None) -> Optional[bool]:
+    """Map a federal docket number to a deadline-tracking default.
+
+    Returns False for routine criminal dockets, True for everything else
+    (civil, appellate, specialty courts), or None if the number is absent
+    so the caller can fall back to a global default.
+    """
+    if not docket_number:
+        return None
+    return not bool(_CRIMINAL_DOCKET_TYPES.search(docket_number))
 
 
 def fingerprint_entry(entry: dict[str, Any]) -> str:
@@ -191,6 +221,21 @@ def _local_to_utc(date_str: str, time_str: Optional[str], tz: str) -> Optional[s
     return dt.astimezone(timezone.utc).isoformat()
 
 
+# Filing deadlines without an explicit clock time fire at end-of-business
+# court time, so calendar reminders give the watcher a useful "check PACER
+# tonight" anchor rather than a midnight alert nobody acts on.
+DEADLINE_DEFAULT_LOCAL_TIME = "17:00"
+
+
+def _deadline_local_to_utc(
+    date_str: str, time_str: Optional[str], tz: str
+) -> Optional[str]:
+    """Same as _local_to_utc but defaults missing times to 17:00 court-local
+    rather than midnight. Used by the deadline path so the stored UTC
+    timestamp already reflects end-of-business semantics."""
+    return _local_to_utc(date_str, time_str or DEADLINE_DEFAULT_LOCAL_TIME, tz)
+
+
 def _mark_held_date_matches(
     action: dict[str, Any], existing: dict[str, Any], tolerance_days: int = 2
 ) -> bool:
@@ -242,6 +287,34 @@ class CaseSyncer:
         self.store = store
 
     # --- shared helpers (used by polling sync_case AND the webhook server) ---
+
+    def resolve_extract_deadlines(
+        self, case: CaseConfig, docket_id: int | None = None,
+    ) -> bool:
+        """Decide whether to extract filing deadlines for this case/docket.
+
+        ``case.extract_deadlines=True`` is a force-on override that always
+        wins. Otherwise we look at the docket number(s): routine criminal
+        dockets default OFF, everything else defaults ON. With ``docket_id``
+        set, the decision is per-docket (used per-entry); without, we
+        aggregate across the case's dockets (used for the end-of-case
+        verify pass — any one civil docket flips the case to ON).
+
+        Falls back to True when no docket metadata is cached yet, since
+        civil-leaning is the safer default for the unknown case.
+        """
+        if case.extract_deadlines:
+            return True
+        docket_ids = [docket_id] if docket_id is not None else case.dockets
+        saw_classifiable_off = False
+        for did in docket_ids:
+            meta = self.store.get_docket_meta(did) or {}
+            decision = _docket_implies_deadlines(meta.get("docket_number"))
+            if decision is True:
+                return True
+            if decision is False:
+                saw_classifiable_off = True
+        return not saw_classifiable_off
 
     def ensure_docket_cached(self, docket_id: int) -> dict[str, Any]:
         """Return cached docket meta, fetching from CL exactly once if missing.
@@ -378,6 +451,9 @@ class CaseSyncer:
         # double-flipped to held by the second sweep.
         stats["verified"] = self._verify_scheduled_hearings(case)
         stats["auto_held"] = self._auto_mark_held_stale(case.case_id)
+        if self.resolve_extract_deadlines(case):
+            stats["deadlines_verified"] = self._verify_pending_deadlines(case)
+            stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
     def _verify_scheduled_hearings(self, case: CaseConfig) -> int:
@@ -507,6 +583,149 @@ class CaseSyncer:
         self.store.upsert_hearing(merged)
         return True
 
+    def _verify_pending_deadlines(self, case: CaseConfig) -> int:
+        """Audit every future pending deadline against recent docket entries.
+
+        Mirrors :meth:`_verify_scheduled_hearings` for filing deadlines:
+        catches missed extensions, vacaturs, and the hallucination class.
+        Returns the count of rows modified.
+        """
+        from . import llm as llm_mod
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = self.store.conn.execute(
+            "SELECT * FROM deadlines "
+            "WHERE case_id=? AND status='pending' "
+            "AND due_at_utc IS NOT NULL AND due_at_utc >= ?",
+            (case.case_id, now_iso),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        n_changed = 0
+        for r in rows:
+            d = dict(r)
+            try:
+                d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                d["source_entry_ids"] = []
+
+            docket_id = d.get("docket_id")
+            if not docket_id:
+                continue
+            meta = self.ensure_docket_cached(docket_id)
+            court_id = meta.get("court_id") or ""
+            tz = tz_for(court_id)
+
+            recent = self.store.get_recent_relevant_entries(
+                docket_id, "9999-12-31T00:00:00", limit=15,
+            )
+            action = llm_mod.verify_deadline(
+                case_name=case.name,
+                court_id=court_id,
+                court_tz=tz,
+                deadline=d,
+                recent_entries=recent,
+            )
+            if self._apply_verify_deadline_action(case, docket_id, tz, d, action):
+                n_changed += 1
+        if n_changed:
+            self.store.conn.commit()
+        return n_changed
+
+    def _apply_verify_deadline_action(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        tz: str,
+        deadline: dict[str, Any],
+        action: dict[str, Any],
+    ) -> bool:
+        atype = (action.get("type") or "UNCLEAR").upper()
+        if atype in ("CONFIRM", "UNCLEAR"):
+            return False
+
+        merged = dict(deadline)
+        sources = list(deadline.get("source_entry_ids") or [])
+
+        if atype == "CANCEL":
+            merged["status"] = "cancelled"
+            note = action.get("reason") or "Vacated per recent docket entries"
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        elif atype == "DELETE_HALLUCINATION":
+            merged["status"] = "cancelled"
+            note = action.get("reason") or "No docket entry supports this deadline"
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        elif atype == "MARK_FILED":
+            merged["status"] = "met"
+        elif atype == "RESCHEDULE":
+            local_date = action.get("local_date")
+            if not local_date:
+                log.warning(
+                    "verify_deadline RESCHEDULE without local_date: case=%s key=%r",
+                    case.case_id, deadline.get("deadline_key"),
+                )
+                return False
+            convert_tz = deadline.get("timezone") or tz
+            merged["due_at_utc"] = _deadline_local_to_utc(
+                local_date, action.get("local_time"), convert_tz
+            )
+            note = action.get("reason") or "Extended per recent docket entries"
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        else:
+            log.warning(
+                "verify_deadline unknown action type %s: case=%s key=%r",
+                atype, case.case_id, deadline.get("deadline_key"),
+            )
+            return False
+
+        log.info(
+            "verify_deadline applying %s case=%s key=%r reason=%s",
+            atype, case.case_id, deadline.get("deadline_key"),
+            (action.get("reason") or "")[:120],
+        )
+        merged["source_entry_ids"] = sources
+        self.store.upsert_deadline(merged)
+        return True
+
+    def _auto_mark_passed_stale(self, case_id: str) -> int:
+        """Flip past-dated 'pending' deadlines to 'passed'. Returns count flipped.
+
+        Mirrors :meth:`_auto_mark_held_stale` for hearings: ``due_at_utc`` is
+        UTC and the server clock is UTC, so the comparison is timezone-free.
+        If a later entry shows the filing was actually made, MARK_FILED on a
+        subsequent sync flips the row to 'met'; otherwise it stays 'passed'
+        and the operator knows to go check PACER.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = self.store.conn.execute(
+            "SELECT case_id, deadline_key, due_at_utc FROM deadlines "
+            "WHERE case_id=? AND status='pending' "
+            "AND due_at_utc IS NOT NULL AND due_at_utc < ?",
+            (case_id, now_iso),
+        ).fetchall()
+        n = 0
+        for r in rows:
+            log.info(
+                "auto-marking deadline passed: case=%s key=%r due=%s",
+                r["case_id"], r["deadline_key"], r["due_at_utc"],
+            )
+            self.store.conn.execute(
+                "UPDATE deadlines SET status='passed', last_updated=? "
+                "WHERE case_id=? AND deadline_key=?",
+                (now_iso, r["case_id"], r["deadline_key"]),
+            )
+            n += 1
+        if n:
+            self.store.conn.commit()
+        return n
+
     def _auto_mark_held_stale(self, case_id: str) -> int:
         """Flip past-dated 'scheduled' rows to 'held'. Returns count flipped.
 
@@ -615,7 +834,8 @@ class CaseSyncer:
         stats: dict[str, int],
     ) -> bool:
         """True iff the entry made it through the regex filter and reached the LLM."""
-        if not is_hearing_relevant(entry):
+        want_deadlines = self.resolve_extract_deadlines(case, docket_id)
+        if not is_extractable(entry, want_deadlines=want_deadlines):
             log.debug("entry %s skipped by regex pre-filter", entry.get("id"))
             return False
         stats["entries_processed"] += 1
@@ -623,6 +843,9 @@ class CaseSyncer:
         pdf_texts = self._maybe_fetch_pdfs(entry)
         known = self.store.get_hearings(case.case_id)
         referenced = self._resolve_docket_refs(docket_id, entry)
+        known_deadlines = (
+            self.store.get_deadlines(case.case_id) if want_deadlines else None
+        )
 
         actions = llm.extract_actions(
             case_name=case.name,
@@ -633,12 +856,18 @@ class CaseSyncer:
             known_hearings=known,
             docket_id=docket_id,
             referenced_entries=referenced,
+            known_deadlines=known_deadlines,
+            extract_deadlines=want_deadlines,
         )
 
         for action in actions:
-            _validate_action_dial_in(action)
+            atype = (action.get("type") or "").upper()
             stats["actions"] += 1
-            self._apply_action(case, docket_id, tz, entry, action)
+            if atype.endswith("_DEADLINE") or atype == "MARK_FILED":
+                self._apply_deadline_action(case, docket_id, tz, entry, action)
+            else:
+                _validate_action_dial_in(action)
+                self._apply_action(case, docket_id, tz, entry, action)
 
         return True
 
@@ -911,3 +1140,125 @@ class CaseSyncer:
             "source_entry_ids": prev_sources,
         }
         self.store.upsert_hearing(merged)
+
+    # --- deadlines ---
+
+    def _apply_deadline_action(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        tz: str,
+        entry: dict[str, Any],
+        action: dict[str, Any],
+    ) -> None:
+        atype = (action.get("type") or "").upper()
+        key = action.get("deadline_key")
+        if not key:
+            log.warning("deadline action without deadline_key: %s", action)
+            return
+
+        if atype == "ADD_DEADLINE" and not action.get("local_date"):
+            log.warning(
+                "skipping date-less ADD_DEADLINE: case=%s key=%r entry=%s",
+                case.case_id, key, entry["id"],
+            )
+            return
+
+        log.info(
+            "applying %s case=%s key=%r entry=%s date=%s",
+            atype, case.case_id, key, entry["id"], action.get("local_date"),
+        )
+
+        existing = self.store.get_deadline(case.case_id, key)
+        eid = entry["id"]
+        prev_sources = list(existing.get("source_entry_ids", [])) if existing else []
+        if eid not in prev_sources:
+            prev_sources.append(eid)
+        sticky_docket_id = existing.get("docket_id") if existing else docket_id
+        sticky_tz = existing.get("timezone") if existing else tz
+
+        if atype == "CANCEL_DEADLINE":
+            if existing:
+                merged = dict(existing)
+                merged.update(
+                    status="cancelled",
+                    notes=action.get("notes") or existing.get("notes"),
+                    source_entry_ids=prev_sources,
+                    docket_id=sticky_docket_id,
+                )
+                self.store.upsert_deadline(merged)
+            elif action.get("local_date"):
+                # Same fallback as hearings: insert a fresh row directly into
+                # 'cancelled' so the audit trail captures the vacatur.
+                due_at_utc = _deadline_local_to_utc(
+                    action["local_date"], action.get("local_time"), tz
+                )
+                self.store.upsert_deadline({
+                    "case_id": case.case_id,
+                    "deadline_key": key,
+                    "title": action.get("title")
+                        or key.replace("-", " ").title(),
+                    "due_at_utc": due_at_utc,
+                    "timezone": tz,
+                    "notes": action.get("notes"),
+                    "status": "cancelled",
+                    "significance": action.get("significance") or "major",
+                    "deadline_type": action.get("deadline_type"),
+                    "docket_id": docket_id,
+                    "source_entry_ids": prev_sources,
+                })
+            else:
+                log.warning(
+                    "CANCEL_DEADLINE on unknown key with no local_date: "
+                    "case=%s key=%r entry=%s — dropping",
+                    case.case_id, key, entry["id"],
+                )
+            return
+
+        if atype == "MARK_FILED":
+            if existing:
+                merged = dict(existing)
+                merged.update(
+                    status="met",
+                    source_entry_ids=prev_sources,
+                    docket_id=sticky_docket_id,
+                )
+                self.store.upsert_deadline(merged)
+            else:
+                log.info(
+                    "MARK_FILED on unknown key (no row to update): "
+                    "case=%s key=%r entry=%s",
+                    case.case_id, key, entry["id"],
+                )
+            return
+
+        # ADD_DEADLINE / RESCHEDULE_DEADLINE
+        due_at_utc = existing.get("due_at_utc") if existing else None
+        if action.get("local_date"):
+            # Convert via the existing row's tz (sticky) so a sibling-docket
+            # extension doesn't shift the deadline's wall-clock by retz.
+            convert_tz = (existing.get("timezone") if existing else None) or tz
+            due_at_utc = _deadline_local_to_utc(
+                action["local_date"], action.get("local_time"), convert_tz
+            )
+        significance = action.get("significance") or (
+            existing.get("significance") if existing else None
+        )
+        merged: dict[str, Any] = {
+            "case_id": case.case_id,
+            "deadline_key": key,
+            "title": action.get("title")
+                or (existing.get("title") if existing else key.replace("-", " ").title()),
+            "due_at_utc": due_at_utc,
+            "timezone": sticky_tz,
+            "notes": action.get("notes")
+                or (existing.get("notes") if existing else None),
+            "status": "pending",
+            "significance": significance,
+            "deadline_type": action.get("deadline_type")
+                or (existing.get("deadline_type") if existing else None),
+            "gcal_event_id": existing.get("gcal_event_id") if existing else None,
+            "docket_id": sticky_docket_id,
+            "source_entry_ids": prev_sources,
+        }
+        self.store.upsert_deadline(merged)

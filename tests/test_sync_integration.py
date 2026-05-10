@@ -742,3 +742,239 @@ class TestVerifyScheduledHearings:
         cl = FakeCL(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert called == []  # no future-scheduled rows present
+
+
+class TestDeadlineExtraction:
+    """End-to-end deadline flow: ADD_DEADLINE → RESCHEDULE_DEADLINE →
+    auto-passed sweep."""
+
+    @pytest.fixture
+    def case(self):
+        # The deadline path tests assume deadlines are on. Force the override
+        # so they don't depend on the docket-number auto-detect (which would
+        # otherwise turn off for the "us-v-x" criminal-style fixture below).
+        return CaseConfig(
+            case_id="us-v-x", name="United States v. X",
+            dockets=[100], calendar="cyber",
+            extract_deadlines=True,
+        )
+
+    def test_add_deadline_creates_row_at_5pm_court_time(
+        self, store: Store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "govt-response-mtd",
+                 "deadline_type": "response",
+                 "title": "Govt response to MTD",
+                 "local_date": "2026-05-24",
+                 "local_time": None,
+                 "significance": "major"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100,
+            _entry(1, "ORDER setting briefing schedule: response due by 5/24/2026"),
+        )
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        d = rows[0]
+        assert d["deadline_key"] == "govt-response-mtd"
+        assert d["status"] == "pending"
+        # 17:00 ET (no DST 5/24 — so 5pm EDT = 21:00 UTC) by default.
+        assert d["due_at_utc"] == "2026-05-24T21:00:00+00:00"
+        assert d["docket_id"] == 100
+
+    def test_add_deadline_with_explicit_time(self, store, case, monkeypatch):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "joint-status-report",
+                 "title": "Joint Status Report",
+                 "local_date": "2026-06-01",
+                 "local_time": "12:00",
+                 "significance": "minor"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "ORDER: status report due by noon June 1"),
+        )
+        d = store.get_deadlines("us-v-x")[0]
+        # 12:00 EDT = 16:00 UTC.
+        assert d["due_at_utc"] == "2026-06-01T16:00:00+00:00"
+
+    def test_reschedule_deadline_updates_in_place(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "reply-mtd",
+                 "title": "Reply ISO MTD",
+                 "local_date": "2026-05-31",
+                 "significance": "major"}],
+            2: [{"type": "RESCHEDULE_DEADLINE",
+                 "deadline_key": "reply-mtd",
+                 "title": "Reply ISO MTD",
+                 "local_date": "2026-06-14"}],  # extension granted
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "ORDER: reply due by 5/31/2026"),
+        )
+        syncer.process_entry(
+            case, 100,
+            _entry(2, "STIPULATION AND ORDER granting extension to 6/14/2026"),
+        )
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        assert rows[0]["due_at_utc"] == "2026-06-14T21:00:00+00:00"
+        assert set(rows[0]["source_entry_ids"]) == {1, 2}
+
+    def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "reply-mtd",
+                 "title": "Reply ISO MTD",
+                 "local_date": "2026-05-31"}],
+            2: [{"type": "MARK_FILED", "deadline_key": "reply-mtd"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "ORDER: reply due by 5/31/2026"),
+        )
+        # Entry text needs to pass the deadline regex; in practice the
+        # verify_deadline end-of-sync pass is the more reliable path for
+        # detecting filings since "X filed" notices don't always carry
+        # deadline-vocabulary tokens.
+        syncer.process_entry(
+            case, 100,
+            _entry(2, "REPLY brief filed by Plaintiff (briefing schedule complete)"),
+        )
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "met"
+
+    def test_cancel_deadline_with_unknown_key_inserts_cancelled_row(
+        self, store, case, monkeypatch,
+    ):
+        # The deadline's original setting entry was filtered out (or
+        # predates our store), but a vacatur entry arrives — keep an audit
+        # row so the timeline survives.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL_DEADLINE",
+                 "deadline_key": "joint-report-vacated",
+                 "title": "Joint Status Report",
+                 "local_date": "2026-04-15",
+                 "notes": "schedule replaced wholesale"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100,
+            _entry(1, "ORDER vacating prior briefing schedule"),
+        )
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "cancelled"
+
+    def test_auto_mark_passed_stale_flips_to_passed(
+        self, store, case, monkeypatch,
+    ):
+        # Past-dated pending deadline gets swept to 'passed' at end of sync.
+        store.upsert_deadline({
+            "case_id": "us-v-x",
+            "deadline_key": "stale-reply",
+            "title": "Stale reply",
+            "due_at_utc": "2024-01-01T22:00:00+00:00",
+            "timezone": "America/New_York",
+            "status": "pending",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [99],
+        })
+        stub_verify(monkeypatch)  # default CONFIRM for any future hearings
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["auto_passed"] == 1
+        assert store.get_deadlines("us-v-x")[0]["status"] == "passed"
+
+    def test_criminal_docket_auto_detects_deadlines_off(
+        self, store, monkeypatch,
+    ):
+        # Default behavior on a routine criminal docket: deadlines stay off
+        # without any explicit config. The LLM call goes through (the entry
+        # is hearing-relevant) but with extract_deadlines=False on the prompt
+        # and known_deadlines unset.
+        case_default = CaseConfig(
+            case_id="us-v-y", name="United States v. Y",
+            dockets=[100], calendar="cyber",
+        )
+        captured = {}
+        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
+            captured["known_deadlines"] = known_deadlines
+            captured["extract_deadlines"] = extract_deadlines
+            return [{"type": "IGNORE", "reason": "stub"}]
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        cl = FakeCL(dockets={100: _docket()})  # docket_number "1:25-cr-..."
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case_default, 100,
+            _entry(1, "Trial set for 6/1/2026"),  # hearing-relevant; reaches LLM
+        )
+        assert captured["extract_deadlines"] is False
+        assert captured["known_deadlines"] is None
+
+    def test_civil_docket_auto_detects_deadlines_on(self, store, monkeypatch):
+        # Default config on a civil docket: deadlines auto-on, no override
+        # needed. The LLM gets the deadline-aware prompt and known_deadlines
+        # block (empty list, since none are stored yet).
+        case_default = CaseConfig(
+            case_id="acme-v-widget", name="Acme v. Widget",
+            dockets=[100], calendar="tech",
+        )
+        captured = {}
+        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
+            captured["known_deadlines"] = known_deadlines
+            captured["extract_deadlines"] = extract_deadlines
+            return [{"type": "IGNORE", "reason": "stub"}]
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        civil_docket = dict(_docket(), docket_number="1:25-cv-04567-AB")
+        cl = FakeCL(dockets={100: civil_docket})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case_default, 100,
+            _entry(1, "ORDER setting briefing schedule: response due by 5/24/2026"),
+        )
+        assert captured["extract_deadlines"] is True
+        assert captured["known_deadlines"] == []
+
+    def test_explicit_override_forces_deadlines_on_for_criminal_docket(
+        self, store, monkeypatch,
+    ):
+        # The big-trial escape hatch: criminal docket number, but the case
+        # opts in explicitly because pretrial motion practice is what's
+        # being watched. The override beats the auto-detect.
+        case_override = CaseConfig(
+            case_id="us-v-z", name="United States v. Z",
+            dockets=[100], calendar="cyber",
+            extract_deadlines=True,
+        )
+        captured = {}
+        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
+            captured["known_deadlines"] = known_deadlines
+            captured["extract_deadlines"] = extract_deadlines
+            return [{"type": "IGNORE", "reason": "stub"}]
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        cl = FakeCL(dockets={100: _docket()})  # criminal docket_number
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case_override, 100,
+            _entry(1, "ORDER: response due by 5/24/2026"),
+        )
+        assert captured["extract_deadlines"] is True
+        assert captured["known_deadlines"] == []

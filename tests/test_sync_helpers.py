@@ -2,6 +2,7 @@
 
 from case_calendar.sync import (
     _default_duration,
+    _docket_implies_deadlines,
     _extract_docket_refs,
     _is_fetchable,
     _local_to_utc,
@@ -246,3 +247,27 @@ class TestFingerprint:
         after["recap_documents"] = [{"description": "doc", "is_available": True,
                                      "is_sealed": None, "plain_text": "now we have OCR"}]
         assert fingerprint_entry(before) != fingerprint_entry(after)
+
+
+class TestDocketImpliesDeadlines:
+    def test_civil_district_court(self):
+        assert _docket_implies_deadlines("1:23-cv-04567-AB") is True
+
+    def test_criminal_felony(self):
+        assert _docket_implies_deadlines("1:25-cr-00001-XY-1") is False
+
+    def test_criminal_misdemeanor(self):
+        assert _docket_implies_deadlines("2:24-cm-00099") is False
+
+    def test_appellate_no_type_code_defaults_on(self):
+        # Circuit court numbering omits the cv/cr split — appellate briefing
+        # schedules ARE worth tracking, so unknown defaults to True.
+        assert _docket_implies_deadlines("23-1234") is True
+
+    def test_specialty_court_defaults_on(self):
+        # Tax / Federal Claims / CIT — civil-flavored, deadlines on.
+        assert _docket_implies_deadlines("12345-22") is True
+
+    def test_missing_returns_none(self):
+        assert _docket_implies_deadlines(None) is None
+        assert _docket_implies_deadlines("") is None

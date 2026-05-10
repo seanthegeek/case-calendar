@@ -26,7 +26,6 @@ from googleapiclient.errors import HttpError
 
 from ..courts import DEFAULT_TZ
 from .description import build as build_description
-from .description import no_time_title_prefix
 
 log = logging.getLogger(__name__)
 
@@ -163,8 +162,6 @@ class GoogleCalendarSync:
         title = h["title"]
         status = "confirmed"
         no_time = not (h.get("duration_minutes") and h["duration_minutes"] > 0)
-        if no_time:
-            title = f"{no_time_title_prefix(h.get('starts_at_utc'))} {title}"
 
         description = build_description(
             notes=h.get("notes"),

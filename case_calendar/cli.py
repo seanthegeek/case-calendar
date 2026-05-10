@@ -20,10 +20,84 @@ import yaml
 from dotenv import load_dotenv
 
 from . import llm
+from .calendars.description import no_time_title_prefix
 from .calendars.ics import write_ics
 from .courtlistener import CourtListener
 from .store import Store
 from .sync import CaseConfig, CaseSyncer
+
+
+# Deadline status -> hearing-equivalent status used by the renderers.
+# pending: still upcoming -> scheduled
+# passed:  due-date past, no MARK_FILED arrived -> held (still visible, dim)
+# met:     party filed, no need to surface in calendar
+# cancelled: vacated/superseded
+_DEADLINE_STATUS_MAP = {
+    "pending": "scheduled",
+    "passed": "held",
+    "met": "cancelled",       # filtered out by renderers
+    "cancelled": "cancelled",
+    "unknown": "scheduled",
+}
+
+DEADLINE_DURATION_MINUTES = 15
+
+
+def _deadline_to_hearing(d: dict[str, Any]) -> dict[str, Any] | None:
+    """Convert a deadline row to a hearing-shaped dict the renderers accept.
+
+    Deadlines store their UTC due-instant directly (the syncer applied the
+    17:00-court-local default at write time when the LLM didn't supply a
+    specific time), so this is mostly key remapping. The category/case-name
+    prefixing happens later in :func:`_compose_title`. Returns None if the
+    deadline has no due timestamp.
+    """
+    if not d.get("due_at_utc"):
+        return None
+    return {
+        "case_id": d["case_id"],
+        # Prefix the key so it can't collide with a real hearing's key in the
+        # ICS UID or the gcal deterministic ID.
+        "hearing_key": f"deadline:{d['deadline_key']}",
+        "title": d["title"],
+        "starts_at_utc": d["due_at_utc"],
+        "duration_minutes": DEADLINE_DURATION_MINUTES,
+        "timezone": d["timezone"],
+        "location": None,
+        "judge": None,
+        "notes": d.get("notes"),
+        "dial_in": None,
+        "status": _DEADLINE_STATUS_MAP.get(d.get("status") or "", "scheduled"),
+        "significance": d.get("significance"),
+        "gcal_event_id": d.get("gcal_event_id"),
+        "docket_id": d.get("docket_id"),
+        "source_entry_ids": d.get("source_entry_ids"),
+    }
+
+
+def _compose_title(
+    *,
+    raw_title: str,
+    kind: str,
+    case_name: str,
+    starts_at_utc: str | None,
+    duration_minutes: int | None,
+) -> str:
+    """Build the calendar event title.
+
+    Order: ``[CATEGORY] [time-status?] {case_name}: {raw_title}``. Category
+    comes first so subscribers can scan a shared calendar by event class
+    ([HEARING] vs [DEADLINE]). The optional time-status flag (`[time TBD]`
+    on future date-only rows, `[time unknown]` on past) sits between
+    category and case name so its meaning ("we know the day, not the
+    hour") is unambiguous.
+    """
+    parts = [f"[{kind}]"]
+    no_time = not (duration_minutes and duration_minutes > 0)
+    if no_time:
+        parts.append(no_time_title_prefix(starts_at_utc))
+    parts.append(f"{case_name}: {raw_title}")
+    return " ".join(parts)
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +117,7 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
             name=c["name"],
             dockets=list(c["dockets"]),
             calendar=c["calendar"],
+            extract_deadlines=bool(c.get("extract_deadlines", False)),
         )
         for c in cfg["cases"]
     ]
@@ -88,16 +163,27 @@ def cmd_emit(args: argparse.Namespace) -> int:
         reminders = list(case_cfg.get("reminders")
                          or cal_cfg.get("reminders") or [])
 
+        # Hearings + deadlines flow through the same renderer. Title is
+        # composed up-front via _compose_title so the renderer doesn't need
+        # to know about category/time-status/case-name structure (it just
+        # writes the SUMMARY line as-given).
+        rows: list[tuple[str, dict]] = []
         for h in store.get_hearings(case.case_id):
-            h = dict(h)
+            rows.append(("HEARING", dict(h)))
+        for d in store.get_deadlines(case.case_id):
+            mapped = _deadline_to_hearing(d)
+            if mapped is not None:
+                rows.append(("DEADLINE", mapped))
+
+        for kind, h in rows:
             h["_case_name"] = case.name
-            # Prefix titles with the FULL case name (e.g.
-            # "United States v. Knoot: Sentencing") so events from
-            # different cases stay distinguishable on a shared calendar.
-            # We used to strip to the plaintiff side only ("United States:")
-            # but for criminal cases that's the same string for every case
-            # and disambiguates nothing.
-            h["title"] = f"{case.name}: {h['title']}"
+            h["title"] = _compose_title(
+                raw_title=h["title"],
+                kind=kind,
+                case_name=case.name,
+                starts_at_utc=h.get("starts_at_utc"),
+                duration_minutes=h.get("duration_minutes"),
+            )
             # Decorate with docket / court info for the description body.
             docket_id = h.get("docket_id")
             if docket_id:
@@ -181,7 +267,11 @@ def cmd_show(args: argparse.Namespace) -> int:
         if args.case and case.case_id != args.case:
             continue
         hearings = store.get_hearings(case.case_id)
-        print(f"=== {case.case_id} — {case.name} ({len(hearings)} hearings) ===")
+        deadlines = store.get_deadlines(case.case_id)
+        print(
+            f"=== {case.case_id} — {case.name} "
+            f"({len(hearings)} hearings, {len(deadlines)} deadlines) ==="
+        )
         for h in sorted(hearings, key=lambda x: x.get("starts_at_utc") or ""):
             print(
                 f"  [{h['status']:<10}] {h.get('starts_at_utc') or '????'}  "
@@ -191,6 +281,11 @@ def cmd_show(args: argparse.Namespace) -> int:
                 print(f"     loc={h.get('location')!r} judge={h.get('judge')!r}")
             if h.get("dial_in"):
                 print(f"     dial-in={h['dial_in']!r}")
+        for d in sorted(deadlines, key=lambda x: x.get("due_at_utc") or ""):
+            print(
+                f"  [{d['status']:<10}] {d.get('due_at_utc') or '????'}  "
+                f"DEADLINE: {d['title']}  ({d['deadline_key']})"
+            )
     store.close()
     return 0
 

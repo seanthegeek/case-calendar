@@ -102,7 +102,10 @@ class TestRenderIcs:
         assert "SUMMARY:Sentencing" in ics
         assert "[HELD]" not in ics
 
-    def test_all_day_future_date_uses_time_tbd(self):
+    def test_all_day_future_date_renders_transparent(self):
+        # Date-only hearings shouldn't block the user's day. Title prefixing
+        # ("[time TBD]" / "[time unknown]") is the cli emit layer's job; the
+        # renderer just passes the title through.
         ics = render_ics(
             calendar_name="X",
             hearings=[_h(duration_minutes=0,
@@ -110,37 +113,19 @@ class TestRenderIcs:
         )
         assert "DTSTART;VALUE=DATE:20990414" in ics
         assert "DTEND;VALUE=DATE:20990415" in ics
-        # Date-only hearings shouldn't block the user's day; render tentative
-        # with "[time TBD]" so the uncertainty is visible in the title.
         assert "TRANSP:TRANSPARENT" in ics
-        assert "SUMMARY:[time TBD] Sentencing" in ics
+        assert "SUMMARY:Sentencing" in ics
 
-    def test_all_day_past_date_uses_time_unknown(self):
-        # For past date-only hearings "TBD" reads wrong — the time is no
-        # longer "to be determined", we just never learned it.
-        ics = render_ics(
-            calendar_name="X",
-            hearings=[_h(duration_minutes=0,
-                         starts_at_utc="2020-04-14T04:00:00+00:00")],
-        )
-        assert "SUMMARY:[time unknown] Sentencing" in ics
-        assert "[time TBD]" not in ics
-
-    def test_held_date_only_uses_time_unknown(self):
-        # Past held hearings whose time we never learned still get a
-        # "[time unknown]" tag so the audit trail makes clear we didn't
-        # capture the actual hour. The date alone shows it's past; no
-        # [HELD] prefix is necessary on top.
+    def test_held_date_only_still_renders_transparent(self):
+        # Past held date-only hearing still shows up tentative — date alone
+        # doesn't represent a real all-day block.
         ics = render_ics(
             calendar_name="X",
             hearings=[_h(duration_minutes=0, status="held",
                          starts_at_utc="2026-04-14T04:00:00+00:00")],
         )
-        assert "SUMMARY:[time unknown] Sentencing" in ics
-        assert "[HELD]" not in ics
-        # Still rendered tentative — date-only still doesn't represent
-        # a real "all day" block.
         assert "TRANSP:TRANSPARENT" in ics
+        assert "[HELD]" not in ics
 
     def test_skips_hearing_without_starts_at_utc(self):
         ics = render_ics(calendar_name="X",

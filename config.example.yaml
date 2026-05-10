@@ -71,10 +71,16 @@ cases:
     #   - {method: popup, minutes: 60}
 
   # ---- DPRK IT-worker prosecutions ----
+  # Filing deadlines are auto-detected from each docket's number: civil
+  # dockets (':cv-') get deadline tracking automatically, routine criminal
+  # dockets (':cr-' / ':cm-') skip it. Set `extract_deadlines: true` on a
+  # serious criminal trial where pretrial motion practice (suppression /
+  # in-limine / Daubert / sentencing memos) is itself worth watching.
   - id: us-v-ashtor
     name: "United States v. Ashtor (DPRK IT worker)"
     calendar: cybercrime
     dockets: [69570297]
+    # extract_deadlines: true     # uncomment for big-trial deadline tracking
 
   - id: us-v-knoot
     name: "United States v. Knoot (DPRK IT worker)"

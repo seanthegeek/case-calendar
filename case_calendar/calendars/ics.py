@@ -22,7 +22,6 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..courts import DEFAULT_TZ
 from .description import build as build_description
-from .description import no_time_title_prefix
 
 
 def _tz_is_known(tz: str) -> bool:
@@ -100,8 +99,6 @@ def render_ics(*, calendar_name: str, hearings: Iterable[dict]) -> str:
         uid = f"{h['case_id']}--{h['hearing_key']}@case-calendar"
         title = h["title"]
         no_time = not (h.get("duration_minutes") and h["duration_minutes"] > 0)
-        if no_time:
-            title = f"{no_time_title_prefix(h.get('starts_at_utc'))} {title}"
 
         location = h.get("location") or ""
 

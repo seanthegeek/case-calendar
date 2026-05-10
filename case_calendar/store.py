@@ -11,6 +11,9 @@ Keeps:
 * ``hearings`` — the canonical "logical" hearings per case. Each hearing has a
   stable ``hearing_key`` (chosen by the LLM) so reschedules and dial-in info
   updates land on the same row.
+* ``deadlines`` — per-case filing deadlines (response/reply/brief due dates).
+  Same shape as hearings: stable ``deadline_key`` per logical deadline, so
+  granted extensions land on the same row rather than creating duplicates.
 * ``webhook_events`` — Idempotency-Key dedup for the webhook receiver.
 """
 
@@ -73,6 +76,23 @@ CREATE TABLE IF NOT EXISTS hearings (
     source_entry_ids TEXT NOT NULL, -- JSON list of entry IDs
     last_updated TEXT NOT NULL,
     PRIMARY KEY (case_id, hearing_key)
+);
+
+CREATE TABLE IF NOT EXISTS deadlines (
+    case_id TEXT NOT NULL,
+    deadline_key TEXT NOT NULL,
+    title TEXT NOT NULL,
+    due_at_utc TEXT,              -- UTC ISO; renderer converts to court-local
+    timezone TEXT NOT NULL,       -- IANA tz of the court the deadline was set in
+    notes TEXT,
+    status TEXT NOT NULL,         -- pending | passed | met | cancelled | unknown
+    significance TEXT,            -- "major" (default) | "minor" — calendar filter
+    deadline_type TEXT,           -- response | reply | brief | other (informational)
+    gcal_event_id TEXT,
+    docket_id INTEGER,            -- docket whose entry most recently updated this row
+    source_entry_ids TEXT NOT NULL, -- JSON list of entry IDs
+    last_updated TEXT NOT NULL,
+    PRIMARY KEY (case_id, deadline_key)
 );
 
 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -398,6 +418,65 @@ class Store:
 
     @staticmethod
     def _row_to_hearing(row: sqlite3.Row) -> dict[str, Any]:
+        d = dict(row)
+        d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+        return d
+
+    # --- deadlines ---
+
+    def get_deadlines(self, case_id: str) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            "SELECT * FROM deadlines WHERE case_id=?", (case_id,)
+        ).fetchall()
+        return [self._row_to_deadline(r) for r in rows]
+
+    def get_deadline(self, case_id: str, deadline_key: str) -> Optional[dict[str, Any]]:
+        row = self.conn.execute(
+            "SELECT * FROM deadlines WHERE case_id=? AND deadline_key=?",
+            (case_id, deadline_key),
+        ).fetchone()
+        return self._row_to_deadline(row) if row else None
+
+    def upsert_deadline(self, d: dict[str, Any]) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO deadlines
+            (case_id, deadline_key, title, due_at_utc, timezone, notes,
+             status, significance, deadline_type, gcal_event_id,
+             docket_id, source_entry_ids, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(case_id, deadline_key) DO UPDATE SET
+              title=excluded.title,
+              due_at_utc=excluded.due_at_utc,
+              timezone=excluded.timezone,
+              notes=excluded.notes,
+              status=excluded.status,
+              significance=COALESCE(excluded.significance, deadlines.significance),
+              deadline_type=COALESCE(excluded.deadline_type, deadlines.deadline_type),
+              gcal_event_id=COALESCE(excluded.gcal_event_id, deadlines.gcal_event_id),
+              docket_id=COALESCE(excluded.docket_id, deadlines.docket_id),
+              source_entry_ids=excluded.source_entry_ids,
+              last_updated=excluded.last_updated
+            """,
+            (
+                d["case_id"],
+                d["deadline_key"],
+                d["title"],
+                d.get("due_at_utc"),
+                d["timezone"],
+                d.get("notes"),
+                d["status"],
+                d.get("significance"),
+                d.get("deadline_type"),
+                d.get("gcal_event_id"),
+                d.get("docket_id"),
+                json.dumps(d.get("source_entry_ids", [])),
+                _now(),
+            ),
+        )
+
+    @staticmethod
+    def _row_to_deadline(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
         d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
         return d

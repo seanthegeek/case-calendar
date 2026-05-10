@@ -170,6 +170,45 @@ class TestHearings:
         assert keys == {"a"}
 
 
+def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
+    base = {
+        "case_id": case_id, "deadline_key": key,
+        "title": "Govt response to MTD",
+        "due_at_utc": "2026-05-24T21:00:00+00:00",  # 5pm ET → 21:00 UTC
+        "timezone": "America/New_York",
+        "notes": None, "status": "pending", "significance": "major",
+        "deadline_type": "response", "gcal_event_id": None,
+        "docket_id": 72380208, "source_entry_ids": [1],
+    }
+    base.update(over)
+    return base
+
+
+class TestDeadlines:
+    def test_insert_then_get(self, store: Store):
+        store.upsert_deadline(_deadline())
+        rows = store.get_deadlines("anthropic-v-dow")
+        assert len(rows) == 1
+        assert rows[0]["title"] == "Govt response to MTD"
+        assert rows[0]["source_entry_ids"] == [1]
+        assert rows[0]["status"] == "pending"
+
+    def test_upsert_overwrites_due_at_utc(self, store: Store):
+        store.upsert_deadline(_deadline())
+        store.upsert_deadline(
+            _deadline(due_at_utc="2026-06-07T21:00:00+00:00")  # extension granted
+        )
+        rows = store.get_deadlines("anthropic-v-dow")
+        assert len(rows) == 1
+        assert rows[0]["due_at_utc"] == "2026-06-07T21:00:00+00:00"
+
+    def test_get_by_key(self, store: Store):
+        store.upsert_deadline(_deadline())
+        d = store.get_deadline("anthropic-v-dow", "govt-response-mtd")
+        assert d and d["title"] == "Govt response to MTD"
+        assert store.get_deadline("anthropic-v-dow", "missing") is None
+
+
 class TestWebhookIdempotency:
     def test_unseen_returns_false(self, store: Store):
         assert not store.webhook_seen("uuid-1")

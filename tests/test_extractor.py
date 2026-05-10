@@ -1,4 +1,8 @@
-from case_calendar.extractor import is_hearing_relevant
+from case_calendar.extractor import (
+    is_deadline_relevant,
+    is_extractable,
+    is_hearing_relevant,
+)
 
 
 def make(desc="", short="", recap_descs=()):
@@ -7,6 +11,62 @@ def make(desc="", short="", recap_descs=()):
         "short_description": short,
         "recap_documents": [{"description": d} for d in recap_descs],
     }
+
+
+class TestIsDeadlineRelevant:
+    def test_empty_entry_is_not_relevant(self):
+        assert not is_deadline_relevant(make())
+
+    def test_response_due_is_relevant(self):
+        assert is_deadline_relevant(
+            make(desc="Response due by 5/24/2026; reply due by 5/31/2026")
+        )
+
+    def test_briefing_schedule_order_is_relevant(self):
+        assert is_deadline_relevant(
+            make(desc="ORDER setting briefing schedule on Motion to Dismiss")
+        )
+
+    def test_motion_for_extension_is_relevant(self):
+        assert is_deadline_relevant(
+            make(desc="MOTION for Extension of Time to File Reply")
+        )
+
+    def test_stipulation_is_relevant(self):
+        assert is_deadline_relevant(
+            make(desc="STIPULATION AND ORDER extending time to respond")
+        )
+
+    def test_so_ordered_is_relevant(self):
+        assert is_deadline_relevant(
+            make(desc="Joint stipulation re briefing schedule. SO ORDERED.")
+        )
+
+    def test_brief_filing_is_not_relevant(self):
+        assert not is_deadline_relevant(
+            make(desc="NOTICE OF ATTORNEY APPEARANCE for USA")
+        )
+
+
+class TestIsExtractable:
+    def test_hearing_only_when_deadlines_off(self):
+        # A hearing entry passes regardless of the flag.
+        assert is_extractable(make(desc="Sentencing set for 4/14/2026"),
+                              want_deadlines=False)
+        assert is_extractable(make(desc="Sentencing set for 4/14/2026"),
+                              want_deadlines=True)
+
+    def test_deadline_blocked_when_deadlines_off(self):
+        e = make(desc="Response due by 5/24/2026")
+        # Pure deadline language doesn't pass the hearing-only filter.
+        assert not is_extractable(e, want_deadlines=False)
+        # But does when the case opts in.
+        assert is_extractable(e, want_deadlines=True)
+
+    def test_irrelevant_entry_blocked_either_way(self):
+        e = make(desc="NOTICE OF ATTORNEY APPEARANCE")
+        assert not is_extractable(e, want_deadlines=False)
+        assert not is_extractable(e, want_deadlines=True)
 
 
 class TestIsHearingRelevant:

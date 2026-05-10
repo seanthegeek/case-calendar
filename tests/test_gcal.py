@@ -75,32 +75,21 @@ class TestEventBody:
         assert body["summary"] == "Sentencing"
         assert body["status"] == "confirmed"
 
-    def test_all_day_future_date_uses_time_tbd(self):
+    def test_all_day_future_date_renders_transparent(self):
+        # Title prefixing ("[time TBD]" / "[time unknown]") is the cli emit
+        # layer's job now; the renderer just passes the title through.
         body = gcal.GoogleCalendarSync._event_body(
             "eid", _h(duration_minutes=0,
                       starts_at_utc="2099-04-14T04:00:00+00:00"),
         )
         assert "date" in body["start"]
         assert "dateTime" not in body["start"]
-        # Tentative + "[time TBD]" so the calendar shows the event without
-        # marking the user busy for the entire day.
         assert body["transparency"] == "transparent"
-        assert body["summary"].startswith("[time TBD]")
+        assert body["summary"] == "Sentencing"
 
-    def test_all_day_past_date_uses_time_unknown(self):
-        # "TBD" implies "still to be set"; for a past date that's wrong —
-        # the time is just unknown to us, not pending.
-        body = gcal.GoogleCalendarSync._event_body(
-            "eid", _h(duration_minutes=0,
-                      starts_at_utc="2020-04-14T04:00:00+00:00"),
-        )
-        assert body["summary"].startswith("[time unknown]")
-        assert "[time TBD]" not in body["summary"]
-
-    def test_timed_event_does_not_get_time_tbd_or_transparency(self):
+    def test_timed_event_does_not_get_transparency(self):
         body = gcal.GoogleCalendarSync._event_body("eid", _h())  # 90-min event
         assert "transparency" not in body
-        assert "[time TBD]" not in body["summary"]
 
     def test_description_includes_notes(self):
         body = gcal.GoogleCalendarSync._event_body("eid", _h(notes="Important note."))
