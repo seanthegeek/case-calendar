@@ -70,6 +70,7 @@ def _deadline_to_hearing(d: dict[str, Any]) -> dict[str, Any] | None:
         "status": _DEADLINE_STATUS_MAP.get(d.get("status") or "", "scheduled"),
         "significance": d.get("significance"),
         "gcal_event_id": d.get("gcal_event_id"),
+        "m365_event_id": d.get("m365_event_id"),
         "docket_id": d.get("docket_id"),
         "source_entry_ids": d.get("source_entry_ids"),
     }
@@ -153,6 +154,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             cfg, store,
             only_calendars=affected_calendars,
             push_gcal=args.push_gcal,
+            push_m365=getattr(args, "push_m365", False),
         )
         for cal_id, r in results.items():
             if r["ics_path"]:
@@ -160,6 +162,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
             if r["gcal_pushed"]:
                 gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
                 print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
+            if r["m365_pushed"]:
+                m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
+                print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
     store.close()
     return 0
 
@@ -170,15 +175,17 @@ def emit_calendars(
     *,
     only_calendars: set[str] | None = None,
     push_gcal: bool = False,
+    push_m365: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Render hearings + deadlines to ICS files (and optionally gcal).
+    """Render hearings + deadlines to ICS files (and optionally gcal / M365).
 
     Used by both the ``emit`` CLI command and the polling/webhook paths so
     a single sync update flows all the way to subscribers without a manual
     re-emit. Pass ``only_calendars`` to scope the work to the calendars
     affected by a particular event (e.g. one webhook).
 
-    Returns ``{cal_id: {"events": int, "ics_path": str|None, "gcal_pushed": bool}}``.
+    Returns ``{cal_id: {"events": int, "ics_path": str|None,
+    "gcal_pushed": bool, "m365_pushed": bool}}``.
     """
     cases = _cases_from_config(cfg)
     case_overrides = {c["id"]: c for c in cfg["cases"]}  # raw dicts with extras
@@ -234,6 +241,7 @@ def emit_calendars(
 
     out: dict[str, dict[str, Any]] = {}
     gcs = None
+    m365 = None
     for cal_id, cal_cfg in cfg["calendars"].items():
         if only_calendars is not None and cal_id not in only_calendars:
             continue
@@ -242,6 +250,7 @@ def emit_calendars(
             "events": len(hearings),
             "ics_path": None,
             "gcal_pushed": False,
+            "m365_pushed": False,
         }
         ics_path = cal_cfg.get("ics_path")
         if ics_path:
@@ -266,6 +275,47 @@ def emit_calendars(
                 )
             gcs.sync(calendar_id=gcal_id, hearings=hearings)
             result["gcal_pushed"] = True
+
+        # M365: push iff this calendar opts in. Per-calendar
+        # `m365_calendar_id` selects a specific Outlook calendar; omit it
+        # to use the user's default. The auth client is shared across
+        # calendars in one emit pass.
+        m365_enabled = (
+            cal_cfg.get("m365_calendar_id") is not None
+            or cal_cfg.get("m365_use_default_calendar")
+        )
+        if m365_enabled and push_m365:
+            if m365 is None:
+                from .calendars.m365 import M365CalendarSync
+
+                # client_id is a public identifier (not a secret), so we
+                # accept it from either config or the ``M365_CLIENT_ID``
+                # env var — whichever the operator finds easier. Config
+                # wins when both are set.
+                client_id = (
+                    cfg.get("m365_client_id")
+                    or os.environ.get("M365_CLIENT_ID", "").strip()
+                )
+                if not client_id:
+                    raise SystemExit(
+                        "M365 push requires m365_client_id in config.yaml "
+                        "or the M365_CLIENT_ID env var. Register a public "
+                        "client app in Entra and put its Application "
+                        "(client) ID there."
+                    )
+                m365 = M365CalendarSync(
+                    client_id=client_id,
+                    token_path=cfg.get(
+                        "m365_token_path",
+                        "~/.case-calendar/m365-token.json",
+                    ),
+                )
+            m365.sync(
+                hearings=hearings,
+                store=store,
+                calendar_id=cal_cfg.get("m365_calendar_id"),
+            )
+            result["m365_pushed"] = True
         out[cal_id] = result
     return out
 
@@ -273,13 +323,20 @@ def emit_calendars(
 def cmd_emit(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    results = emit_calendars(cfg, store, push_gcal=args.push_gcal)
+    results = emit_calendars(
+        cfg, store,
+        push_gcal=args.push_gcal,
+        push_m365=getattr(args, "push_m365", False),
+    )
     for cal_id, r in results.items():
         if r["ics_path"]:
             print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
         if r["gcal_pushed"]:
             gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
             print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
+        if r["m365_pushed"]:
+            m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
+            print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
     store.close()
     return 0
 
@@ -303,10 +360,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
     log.info("LLM: %s", llm.provider_info())
 
     push_gcal = bool(getattr(args, "push_gcal", False))
+    push_m365 = bool(getattr(args, "push_m365", False))
 
     def emit_fn(only_calendars: set[str]) -> None:
         results = emit_calendars(
-            cfg, store, only_calendars=only_calendars, push_gcal=push_gcal,
+            cfg, store,
+            only_calendars=only_calendars,
+            push_gcal=push_gcal,
+            push_m365=push_m365,
         )
         for cal_id, r in results.items():
             if r["ics_path"]:
@@ -319,6 +380,14 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 log.info(
                     "[%s] pushed %d events to gcal %s",
                     cal_id, r["events"], gcal_id,
+                )
+            if r["m365_pushed"]:
+                m365_id = cfg["calendars"][cal_id].get(
+                    "m365_calendar_id",
+                ) or "(default)"
+                log.info(
+                    "[%s] pushed %d events to M365 %s",
+                    cal_id, r["events"], m365_id,
                 )
 
     with CourtListener() as cl:
@@ -390,6 +459,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also push affected calendars to Google Calendar after sync",
     )
+    p_sync.add_argument(
+        "--push-m365",
+        action="store_true",
+        help="also push affected calendars to Microsoft 365 / Outlook after sync",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
     p_emit = sub.add_parser("emit", help="emit calendars from current store")
@@ -397,6 +471,13 @@ def main(argv: list[str] | None = None) -> int:
         "--push-gcal",
         action="store_true",
         help="also push to Google Calendar (requires creds in config)",
+    )
+    p_emit.add_argument(
+        "--push-m365",
+        action="store_true",
+        help="also push to Microsoft 365 / Outlook calendar (requires "
+             "m365_client_id in config; first run opens a browser to "
+             "stage the auth record at ~/.case-calendar/m365-token.json)",
     )
     p_emit.set_defaults(func=cmd_emit)
 
@@ -411,6 +492,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="also push to Google Calendar after each webhook delivery "
              "(requires a pre-staged token; OAuth first-run can't happen headless)",
+    )
+    p_serve.add_argument(
+        "--push-m365",
+        action="store_true",
+        help="also push to Microsoft 365 / Outlook after each webhook delivery "
+             "(requires a pre-staged auth record; run `emit --push-m365` once "
+             "interactively to stage the token cache)",
     )
     p_serve.set_defaults(func=cmd_serve)
 

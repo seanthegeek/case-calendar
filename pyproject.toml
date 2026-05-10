@@ -9,6 +9,8 @@ dependencies = [
     "google-api-python-client>=2.196.0",
     "google-auth-httplib2>=0.4.0",
     "google-auth-oauthlib>=1.4.0",
+    "msgraph-sdk>=1.57.0",
+    "azure-identity>=1.19.0",
     "httpx>=0.28.1",
     "pypdf>=4.0",
     "python-dotenv>=1.0",
@@ -24,6 +26,8 @@ testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = [
     "ignore::DeprecationWarning:google.*",
+    "ignore::DeprecationWarning:msgraph.*",
+    "ignore::DeprecationWarning:kiota_abstractions.*",
 ]
 
 [project.scripts]

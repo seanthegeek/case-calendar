@@ -18,6 +18,15 @@ model: claude-opus-4-7
 # google_credentials_path: ~/.case-calendar/google-credentials.json
 # google_token_path:       ~/.case-calendar/google-token.json
 
+# Optional — only needed if any calendar has m365_calendar_id set (or
+# m365_use_default_calendar: true) and you pass --push-m365. Register a
+# multi-tenant "public client" application in Azure AD / Entra and put its
+# Application (client) ID here. The first run of `emit --push-m365` opens
+# a browser to grant Calendars.ReadWrite; the daemon (`serve --push-m365`)
+# then reuses the cached AuthenticationRecord.
+# m365_client_id:    "00000000-0000-0000-0000-000000000000"
+# m365_token_path:   ~/.case-calendar/m365-token.json
+
 calendars:
   cybercrime:
     name: "Cybercrime cases"
@@ -57,6 +66,14 @@ calendars:
     name: "Tech court cases"
     ics_path: out/tech.ics
     # google_calendar_id: def456@group.calendar.google.com
+    #
+    # Optional: Microsoft 365 / Outlook push. Set m365_calendar_id to the
+    # target Outlook calendar's id (find via Graph Explorer:
+    # GET /me/calendars), or set m365_use_default_calendar: true to push
+    # to the user's primary calendar. Requires the top-level
+    # m365_client_id above and one interactive run to stage auth.
+    # m365_calendar_id: AAMkADExAAA...   # Outlook calendar id
+    # m365_use_default_calendar: true
 
 cases:
   # ---- Anthropic v. DOW family ----

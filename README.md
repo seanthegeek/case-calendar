@@ -1,9 +1,9 @@
 # case-calendar
 
 Automatically sync court hearing dates and filing deadlines from
-CourtListener / RECAP into your calendar (ICS file or Google Calendar).
-Built for cases where docket-watching by hand is too much: cybercrime
-prosecutions, multi-docket tech litigation, etc.
+CourtListener / RECAP into your calendar (ICS file, Google Calendar, or
+Microsoft 365 / Outlook). Built for cases where docket-watching by hand is
+too much: cybercrime prosecutions, multi-docket tech litigation, etc.
 
 ## What it does
 
@@ -23,8 +23,9 @@ For each case in `config.yaml`:
    `cancelled` / `met` rows are skipped at render time so the calendar
    tracks major case moments only.
 5. Writes an ICS file (subscribe from Proton, Apple, etc.) and optionally
-   pushes to Google Calendar — automatically, after every sync or webhook
-   delivery, so subscribers see updates without a manual re-emit.
+   pushes to Google Calendar and/or Microsoft 365 / Outlook —
+   automatically, after every sync or webhook delivery, so subscribers
+   see updates without a manual re-emit.
 
 Filing-deadline tracking is auto-detected from each docket's number:
 civil dockets get response/reply/brief deadlines, routine criminal dockets
@@ -75,17 +76,117 @@ processed and re-tries on each sync (no cache poisoning).
 
 ### Optional: Google Calendar push
 
-```bash
-# 1. Create an OAuth client of type "Desktop app" in Google Cloud Console
-# 2. Download the credentials JSON
-# 3. Add this to config.yaml:
-google_credentials_path: ~/.case-calendar/google-credentials.json
-calendars:
-  cybercrime:
-    google_calendar_id: xxx@group.calendar.google.com
-```
+One-time setup (manual steps in the Google Cloud Console):
 
-First push opens a browser for OAuth; the token is cached for next time.
+1. **Create or pick a Google Cloud project**:
+   <https://console.cloud.google.com/projectcreate>.
+2. **Enable the Google Calendar API** for that project:
+   <https://console.cloud.google.com/apis/library/calendar-json.googleapis.com>.
+3. **Configure the OAuth consent screen**: APIs & Services → OAuth consent
+   screen. Pick "External" user type unless you're on Workspace, fill in
+   the app name and your email, and add yourself as a test user. No
+   scopes need to be pre-declared — the desktop flow requests them
+   dynamically.
+4. **Create an OAuth client of type "Desktop app"**: APIs & Services →
+   Credentials → Create credentials → OAuth client ID → Desktop app.
+   Download the JSON to a path you'll reference from `config.yaml` — by
+   convention `~/.case-calendar/google-credentials.json`.
+5. **Find the calendar id you want events on**: open Google Calendar in a
+   browser → click the calendar name in the left sidebar → Settings and
+   sharing → "Integrate calendar" → Calendar ID. It looks like
+   `xxx@group.calendar.google.com` (or just your address for your
+   primary calendar).
+6. **Wire it into `config.yaml`**:
+
+   ```yaml
+   google_credentials_path: ~/.case-calendar/google-credentials.json
+   # google_token_path:       ~/.case-calendar/google-token.json  # default
+
+   calendars:
+     cybercrime:
+       google_calendar_id: xxx@group.calendar.google.com
+   ```
+
+7. **Authorize once interactively**: `case-calendar emit --push-gcal`.
+   The first run opens a browser, you grant Calendar access, and the
+   refresh token is cached at `google_token_path`. Subsequent runs —
+   including the headless daemon — refresh silently against that cache.
+
+Now `case-calendar sync --push-gcal` and `case-calendar serve --push-gcal`
+will push every change to the calendar without a manual emit step.
+
+### Optional: Microsoft 365 / Outlook push
+
+Uses the **official** [`msgraph-sdk`][msgraph] + [`azure-identity`][azid]
+libraries — no third-party O365 wrappers.
+
+One-time setup (manual steps in the Microsoft Entra admin center):
+
+1. **Register an application** in Entra: <https://entra.microsoft.com> →
+   Identity → Applications → App registrations → New registration. Pick
+   a name (e.g. "case-calendar"). For "Supported account types":
+   - **"Personal Microsoft accounts only"** if pushing to a personal
+     `outlook.com` / `hotmail.com` calendar.
+   - **"Accounts in this organizational directory only"** if pushing to
+     a work / school mailbox in your own tenant.
+   - **"Accounts in any organizational directory and personal Microsoft
+     accounts"** (multi-tenant) if you want both to work.
+
+   Leave the Redirect URI blank for now — we add it in step 3.
+2. **Add the delegated `Calendars.ReadWrite` permission**: API
+   permissions → Add a permission → Microsoft Graph → Delegated
+   permissions → `Calendars.ReadWrite`. If your account is a work /
+   school account in a tenant that requires admin consent, click "Grant
+   admin consent" too.
+3. **Mark it as a public client**: Authentication → Advanced settings →
+   "Allow public client flows" = Yes. Then under "Platform
+   configurations" → Add a platform → Mobile and desktop applications →
+   tick `http://localhost`. Public clients use no client secret — the
+   interactive browser flow proves identity instead.
+4. **Copy the Application (client) ID** from the app's Overview page
+   (UUID-shaped). This is a public identifier, not a secret.
+5. **Find the calendar id you want events on** (optional — omit to push
+   to the user's primary calendar). The easiest way is [Graph
+   Explorer][gex] signed in as the target user → run `GET
+   https://graph.microsoft.com/v1.0/me/calendars` and copy the `id` of
+   the calendar you want. It looks like `AAMkADEx...`.
+6. **Wire it in**. Either env or config works for the client id; the rest
+   stays in `config.yaml`:
+
+   ```bash
+   # .env
+   M365_CLIENT_ID=00000000-0000-0000-0000-000000000000
+   ```
+
+   ```yaml
+   # config.yaml — or put the client id here instead and skip the env var
+   # m365_client_id: "00000000-0000-0000-0000-000000000000"
+   # m365_token_path: ~/.case-calendar/m365-token.json  # default
+
+   calendars:
+     cybercrime:
+       m365_calendar_id: "AAMkADExAAA..."   # specific Outlook calendar
+       # m365_use_default_calendar: true    # or push to the user's primary
+   ```
+
+7. **Authorize once interactively**: `case-calendar emit --push-m365`.
+   The first run opens a browser, you grant `Calendars.ReadWrite`, and
+   the resulting `AuthenticationRecord` is cached at
+   `~/.case-calendar/m365-token.json` plus the OS keyring
+   (DPAPI / Keychain / libsecret). The daemon
+   (`serve --push-m365`) reads the record back and refreshes silently
+   thereafter — it cannot prompt a browser on its own.
+
+Now `case-calendar sync --push-m365` and `case-calendar serve --push-m365`
+will push every change to Outlook without a manual emit step. Idempotency
+is automatic: the Graph event id is cached on the local row after the
+first create, and a stable `CaseCalendarKey` extended property lets the
+push recover the right event by `$filter` lookup if the local cache is
+ever wiped.
+
+[msgraph]: https://github.com/microsoftgraph/msgraph-sdk-python
+[azid]: https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme
+[gex]: https://developer.microsoft.com/en-us/graph/graph-explorer
 
 ### Optional: notifications
 
@@ -117,21 +218,24 @@ the calendar owner in Google.
 ```bash
 case-calendar sync                       # pull updates + auto-emit ICS
 case-calendar sync --push-gcal           # also push affected calendars to Google
+case-calendar sync --push-m365           # also push to Microsoft 365 / Outlook
 case-calendar sync --no-emit             # skip the auto-emit (rare; mostly for tests)
 case-calendar sync --case us-v-wang      # sync just one case
 case-calendar emit                       # render ICS from current store (manual run)
 case-calendar emit --push-gcal           # also push to Google Calendar
+case-calendar emit --push-m365           # also push to Microsoft 365 / Outlook
 case-calendar show                       # dump current hearings + deadlines
 case-calendar show --case us-v-wang      # one case
 case-calendar serve --port 8000          # real-time webhook receiver (auto-emits)
-case-calendar serve --port 8000 --push-gcal  # also push gcal after each webhook
+case-calendar serve --port 8000 --push-gcal --push-m365  # push everywhere on each webhook
 ```
 
 `sync` and `serve` both auto-emit ICS files after any change so subscribers
 stay current without a separate `emit` step. The standalone `emit` command
 is still useful for forcing a re-render (e.g. after editing config) or for
-the first-run Google OAuth flow (which can't run headless inside the
-daemon).
+the first-run OAuth flow on Google or M365 (neither can prompt a browser
+from inside the headless daemon, so the operator runs `emit --push-gcal`
+or `emit --push-m365` once interactively to stage the token cache).
 
 Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
@@ -204,7 +308,7 @@ and rotate the secret if it ever leaks.
 
 ```bash
 uv sync --extra test
-uv run pytest                                  # full suite (~12s, ~300 tests)
+uv run pytest                                  # full suite (~12s, ~315 tests)
 uv run pytest --cov=case_calendar              # with coverage
 ```
 
@@ -231,6 +335,7 @@ case_calendar/
     description.py    # shared event-body builder + time-prefix helper
     ics.py            # RFC 5545 output (TZID-tagged local times)
     gcal.py           # Google Calendar API sync (per-court timeZone)
+    m365.py           # Microsoft Graph (msgraph-sdk + azure-identity)
 scripts/
   reprocess_entries.py    # re-run LLM against stored entries (after prompt changes)
   classify_significance.py # bulk-classify NULL-significance hearings (read-only)

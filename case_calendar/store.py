@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS hearings (
     status TEXT NOT NULL,        -- scheduled | held | cancelled | unknown
     significance TEXT,           -- "major" (default) | "minor" — calendar filter
     gcal_event_id TEXT,
+    m365_event_id TEXT,
     docket_id INTEGER,           -- docket whose entry most recently updated this hearing
     source_entry_ids TEXT NOT NULL, -- JSON list of entry IDs
     last_updated TEXT NOT NULL,
@@ -89,6 +90,7 @@ CREATE TABLE IF NOT EXISTS deadlines (
     significance TEXT,            -- "major" (default) | "minor" — calendar filter
     deadline_type TEXT,           -- response | reply | brief | other (informational)
     gcal_event_id TEXT,
+    m365_event_id TEXT,
     docket_id INTEGER,            -- docket whose entry most recently updated this row
     source_entry_ids TEXT NOT NULL, -- JSON list of entry IDs
     last_updated TEXT NOT NULL,
@@ -135,6 +137,8 @@ class Store:
             ("entries", "entry_number", "INTEGER"),
             ("entries", "description", "TEXT"),
             ("entries", "short_description", "TEXT"),
+            ("hearings", "m365_event_id", "TEXT"),
+            ("deadlines", "m365_event_id", "TEXT"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {type_}")
@@ -410,6 +414,23 @@ class Store:
             (gcal_event_id, case_id, hearing_key),
         )
 
+    def set_m365_id_for_hearing(
+        self, case_id: str, hearing_key: str, m365_event_id: Optional[str],
+    ) -> None:
+        """Cache (or clear) the Graph-assigned event id for a hearing.
+
+        Graph generates ids server-side, so we persist them after first
+        create to avoid a $filter lookup on every push. ``None`` clears
+        the cache — used after a delete so a future revival creates a
+        fresh event rather than 404'ing.
+        """
+        with self.tx():
+            self.conn.execute(
+                "UPDATE hearings SET m365_event_id=? "
+                "WHERE case_id=? AND hearing_key=?",
+                (m365_event_id, case_id, hearing_key),
+            )
+
     def all_active_hearings(self) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM hearings WHERE status != 'cancelled'"
@@ -474,6 +495,18 @@ class Store:
                 _now(),
             ),
         )
+
+    def set_m365_id_for_deadline(
+        self, case_id: str, deadline_key: str, m365_event_id: Optional[str],
+    ) -> None:
+        """Cache (or clear) the Graph-assigned event id for a deadline.
+        Mirror of :meth:`set_m365_id_for_hearing`."""
+        with self.tx():
+            self.conn.execute(
+                "UPDATE deadlines SET m365_event_id=? "
+                "WHERE case_id=? AND deadline_key=?",
+                (m365_event_id, case_id, deadline_key),
+            )
 
     @staticmethod
     def _row_to_deadline(row: sqlite3.Row) -> dict[str, Any]:
