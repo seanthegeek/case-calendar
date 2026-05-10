@@ -223,10 +223,14 @@ Duration rules:
   duration; null is the right answer in that case.
 
 Location rules:
-- For physical court locations, write `location` from MOST GENERAL to MOST
-  SPECIFIC: courthouse/city, then floor, then courtroom. Example: source text
-  "San Francisco, Courtroom 15, 18th Floor" → location
-  "San Francisco, 18th Floor, Courtroom 15".
+- For physical court locations, order tokens like a postal address followed
+  by the interior location: courthouse name, then street address, then city
+  (and state), then floor, then courtroom. Example: source text
+  "Miami, 11th Floor, Courtroom 11-1, 400 North Miami Avenue, Wilkie D.
+  Ferguson Jr. U.S. Courthouse" → location "Wilkie D. Ferguson Jr. U.S.
+  Courthouse, 400 North Miami Avenue, Miami, 11th Floor, Courtroom 11-1".
+  Omit any segment the source text doesn't supply — if there's no courthouse
+  name, start with the street; if there's no address, start with the city.
 - Reorder what's given; do NOT invent courthouse names, addresses, or floor
   numbers that aren't in the source text.
 - For non-physical hearings, use a single descriptor: "Zoom", "Telephonic",
