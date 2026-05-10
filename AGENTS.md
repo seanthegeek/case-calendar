@@ -1,0 +1,108 @@
+# Agents
+
+## Project Overview
+
+case-calendar — a CLI that pulls federal court hearing dates from CourtListener / RECAP and emits them to ICS feeds (subscribable from Proton, Apple, etc.) and optionally pushes them to Google Calendar. Built for tracking cases where docket-watching by hand is too much: cybercrime prosecutions (e.g. DPRK IT-worker fraud), multi-docket tech litigation (e.g. Anthropic v. DOW), and similar.
+
+## Architecture
+
+- **case_calendar/cli.py** — CLI entry point. Subcommands: `sync` (pull updates from CL into the store), `emit` (write ICS files and optionally push to Google Calendar), `show` (dump current hearings). Loads `.env` via `python-dotenv` before any module reads env vars.
+- **case_calendar/courtlistener.py** — REST v4 client. Wraps `dockets/`, `docket-entries/`, `recap-documents/` endpoints with backoff for 429 (`Retry-After`) and 5xx responses. Honors any `Retry-After` value (the daily 300/day bucket can return a wait near 24h; we sleep through rather than abort) and logs URL + body + rate-limit headers on every 429 so it's obvious which bucket fired. Iterator-style pagination via `iter_entries`, with a `modified_after` cutoff for cheap incremental syncs; pages newest-first (preserves the cheap stop-condition) but buffers and yields oldest-first so cross-entry references resolve cleanly within a single sync.
+- **case_calendar/courts.py** — Court-id → IANA timezone mapping. CourtListener doesn't expose timezones in its API, so we maintain the table here. Coverage is comprehensive: all 13 federal circuits, all 94 district courts, the Supreme Court, specialty courts (Federal Claims, CIT, FISA, Tax, Armed Forces), and territories (PR, VI, Guam, NMI, American Samoa). Multi-tz states (Tennessee, Florida, Indiana, etc.) map to the principal-office tz of each district. Unknown court IDs log a warning and fall back to ET so the gap is visible rather than silent.
+- **case_calendar/extractor.py** — Cheap regex pre-filter (`is_hearing_relevant`). Briefs, attorney appearances, and similar paperwork entries are skipped before any LLM tokens are spent. Intentionally over-inclusive — false positives just cost an extra LLM call; false negatives lose hearings.
+- **case_calendar/llm.py** — Provider-agnostic hearing extractor. Selects between anthropic / openai / gemini via `LLM_PROVIDER` env (or auto-detects from whichever `*_API_KEY` is set). `LLM_MODEL` overrides the per-provider default. Defaults are the small/fast tier (Haiku, gpt-5.4-nano, Flash Lite) — this is structured extraction, not deep reasoning. SDKs are imported lazily inside the per-provider call functions. The system prompt instructs the model to emit a list of structured actions (ADD / RESCHEDULE / UPDATE_DETAILS / CANCEL / MARK_HELD / IGNORE) against the case's known hearings; the model assigns a stable `hearing_key` for new hearings and reuses it on follow-ups. Each action carries a `significance` field (`major` / `minor`) that controls calendar visibility — substantive proceedings (trial, sentencing, oral arg, any pretrial conference, evidentiary hearing, plea, etc.) are major; procedural-only events (a phone call set just to rule on a Motion to Continue or Extend Deadlines, scheduling-only conferences) are minor and filtered out at render time. The user message includes a "RELATED DOCKET ENTRIES" block (explicit cross-refs from the new entry's text + the last few hearing-relevant entries on the same docket) so the LLM can name a hearing correctly even when the entry that schedules it doesn't itself name the subject.
+- **case_calendar/pdf.py** — PDF text extraction with fallbacks. Order: CL `plain_text` → `pypdf` on the Internet Archive mirror → `pdftoppm` + `tesseract` OCR (optional system dependency). Sealed PDFs and not-yet-uploaded PDFs return `None` and are NOT cached — the next sync re-fingerprints the entry and retries once the PDF arrives or gets OCR'd.
+- **case_calendar/store.py** — SQLite state. Tables: `dockets` (id + last `date_modified` + cached metadata for description rendering), `entries` (dedup of already-processed entries, keyed by `(docket_id, entry_id)` with content fingerprint, `entry_number` for cross-ref lookup, and `description` / `short_description` stored ONLY for entries that passed the regex pre-filter — filter-failed entries get a fingerprint-only stub so dedup still works without storing dead-weight notice text), `hearings` (per-case logical hearings keyed by `(case_id, hearing_key)` with `significance` / `gcal_event_id` / `docket_id` / source-entry list), `courts` (CL court metadata, citation_string), `webhook_events` (idempotency-key dedup). Connection is `check_same_thread=False` so the webhook server's worker threads can use the same Store instance under a server-wide lock.
+- **case_calendar/sync.py** — Per-case orchestration. For each docket: fetch entries newer than the store's high-water mark, run the regex filter, optionally pull PDFs, resolve cross-references (`granting 65 Motion ...` → look up entry 65 from the local store) plus the last 5 hearing-relevant entries on the docket as temporal context, hand entry + known-hearings list + related entries to the LLM, apply returned actions to the hearing store. `_needs_pdf` forces a PDF fetch on orders that grant scheduling-affecting motions (`Motion for Hearing`, `to Continue`, `for Continuance`, etc.) even when the order text inlines a date+time, since the brief description references the underlying motion only by docket position and the PDF often holds dates the description doesn't echo. Local time → UTC conversion happens here using the court's IANA timezone. Exposes `CaseSyncer.process_entry` so the webhook server can reuse the exact same per-entry pipeline.
+- **case_calendar/serve.py** — Webhook receiver for CourtListener `DOCKET_ALERT` events (real-time alternative to polling). Stdlib `ThreadingHTTPServer`; serializes processing with a server-wide lock so SQLite writes don't race. Auth model is the URL secret (CL has no signing mechanism), and `Idempotency-Key` headers are stored to make CL retries no-ops. The same store + entry-fingerprint dedup makes double-delivery safe even without the idempotency check.
+- **case_calendar/calendars/description.py** — Shared event-body builder used by both ICS and gcal renderers. Composes notes → dial-in → case citation → docket URL → "Source text:" excerpt block (newest source entry's description first, plus one PDF excerpt) → CourtListener entry IDs. Total raw-text section capped at 4 KB so calendar clients don't truncate. Also exports `no_time_title_prefix(starts_at_utc)` which returns `[time TBD]` for future date-only events (we expect the time to be set later) and `[time unknown]` for past ones (we never learned it).
+- **case_calendar/calendars/ics.py** — Hand-rolled RFC 5545 output. UIDs are derived from `case_id + hearing_key` so regenerations are stable across runs. Rows with `significance='minor'` and rows with `status='cancelled'` are filtered out entirely — the calendar tracks major case moments only, not procedural noise or events that are no longer happening. Each timed event is tagged with `DTSTART;TZID=<IANA tz>:<local time>`; receiving calendar apps resolve DST via their own bundled IANA databases (no VTIMEZONE shipped — bare TZIDs work in Google, Apple, Proton, Outlook 2019+, Thunderbird). The title carries `[time TBD]` / `[time unknown]` only when the event is date-only; we don't add `[HELD]` (the date itself shows what's past).
+- **case_calendar/calendars/gcal.py** — Google Calendar push. Event IDs are deterministic (`sha1(case_id::hearing_key)`), so `patch` is idempotent and reschedules / detail updates land on the same event. Times are sent as `dateTime: "<local>", timeZone: "<IANA>"` so Google preserves the courthouse tz across DST and viewer-tz displays. First-run uses InstalledAppFlow OAuth; tokens cache to `~/.case-calendar/google-token.json`. Optional `notify_emails` and `reminders` decorate events with attendees + reminder overrides; emails are added as Google Calendar attendees (Google's email reminders only fire for the calendar owner — attendees rely on their own client's reminder settings). `sendUpdates=externalOnly` so attendee invitations actually fire. Hearings flipped to `cancelled` get a `patch` with `{"status": "cancelled"}` against the existing remote event so subscribers stop seeing it — but if the event was never created (404) we noop rather than insert+cancel. `significance='minor'` rows are skipped entirely.
+
+## Key Design Decisions
+
+- **LLM-driven extraction over per-court regexes.** Courts describe hearings inconsistently (`Set/Reset Hearings` minute entries, `ELECTRONIC NOTICE OF RESCHEDULING`, embedded in PDF text, plain prose in clerk's notes). Maintaining regexes per court is a treadmill; the LLM sees the entry plus the case's known-hearing list and decides ADD vs RESCHEDULE vs UPDATE vs CANCEL in one call.
+- **Stable hearing keys, not stable timestamps.** A "logical" hearing (e.g. "sentencing for Wang") may be rescheduled multiple times. We let the LLM assign a kebab-case `hearing_key` on first observation and re-use it on follow-ups, so the same calendar event is updated rather than duplicated. Google event IDs are derived from this key.
+- **Regex pre-filter before LLM.** Only entries whose text matches hearing-related vocabulary are sent to the LLM. Briefs, attorney withdrawals, sealed-document placeholders, etc. are dropped for free.
+- **Three-tier short-circuit** to keep API + LLM costs near zero on quiet days: (1) per-docket — skip the entire docket if its `date_modified` hasn't advanced since the last sync (no entries API call, no LLM); (2) per-entry — `iter_entries(modified_after=cutoff)` filters server-side to entries newer than our store's high-water mark; (3) per-fingerprint — even if an entry comes back, dedup against `(docket_id, entry_id, content_fingerprint)` skips re-LLM-ing on entries whose substantive content didn't change. The docket high-water mark is only advanced on a clean run, so a mid-sync error retries the whole docket on the next run.
+- **No separate PDF text cache.** Once a hearing is extracted from a PDF, the structured fields are in the `hearings` table and we never re-consult that PDF — follow-up reschedules / dial-in updates arrive on new docket entries with their own PDFs. The 2 KB excerpt for description rendering lives on the `entries` row itself. The rare case of "same entry re-processed because its fingerprint changed" pays for one IA round-trip, which is cheap compared to the operational complexity of an immutable-blob cache.
+- **PDF retries on availability flips.** RECAP coverage is incomplete — many entries' PDFs get uploaded later, and CL's OCR runs asynchronously. The entry fingerprint includes each recap_doc's `is_available` / `is_sealed` / `plain_text`-presence flags, so a previously-missing PDF re-triggers processing automatically once it appears.
+- **No-document detection.** Paperless orders and minute entries show up as `recap_documents` rows with `is_available: false`, no `filepath_local`, no `filepath_ia` — there is literally no document to fetch. `_is_fetchable` rejects these up-front so we never attempt the IA download. Entries that exist purely as docket-text (no document at all) are processed by the LLM from their description without any PDF stage at all.
+- **No redundant `recap-documents` calls.** The `/docket-entries/` endpoint already returns each recap_document inline with `is_available`, `is_sealed`, `plain_text`, `filepath_local`, `filepath_ia`. We use that inline copy directly rather than refetching `/recap-documents/{id}/`, which would be one wasted call per document on first sync.
+- **Court-local timezones, computed once.** Hearings are stored in UTC but ICS / Google events emit the courthouse's local time tagged with the court's IANA `TZID`. Calendar viewers display in their own tz while the event preserves "this is a 3 PM Pacific hearing" semantics across DST transitions and travel. We rely on the receiver's bundled IANA tz database for DST resolution and ship the Python `tzdata` package to keep our own `zoneinfo` lookups consistent across hosts. The court → tz table in `courts.py` is hand-maintained; CourtListener doesn't surface this.
+- **Sticky timezone on hearing updates.** `timezone` is set on first insert and preserved across reschedules / detail updates. A hearing happens in one courthouse, even when sibling dockets in different timezones reference it — without this, a cand entry referencing a cadc oral argument would clobber the tz to PT and shift the displayed wall-clock time.
+- **Multi-docket cases collapsed into one logical case.** Some cases have multiple docket numbers (e.g. district + appellate, or related defendants). The `dockets:` list in `config.yaml` aggregates them under one `case_id`, so hearings from any docket land in the same calendar.
+- **ICS first, Google Calendar opt-in.** ICS works with anything that subscribes to a URL (Proton, Apple, etc.), needs no OAuth, and is always written. Google Calendar push requires `--push-gcal` and credentials in the config.
+- **All input data is treated as untrusted.** Docket entries and PDF text can include arbitrary user-submitted content; the system prompt explicitly tells the model not to follow any instructions found inside.
+- **Notifications use attendees, not email reminders.** Google Calendar's email reminder field only fires for the calendar owner; we add `notify_emails` as event attendees instead, so arbitrary addresses get the invitation + their own reminders. The `reminders` config emits per-event overrides (popup for the owner, plus an email VALARM rendered into the ICS for clients that support it).
+- **Privacy-aware notification config.** `notify_emails` is exposed in the public ICS/gcal feed via `ATTENDEE` lines, so we document this trap in `config.example.yaml`: don't list addresses you don't want public. For public calendars, `reminders: [{method: popup, ...}]` works without leaking — popup fires in the subscriber's own calendar app from a `VALARM:DISPLAY` block.
+- **Polling and webhook share one path.** Both `case-calendar sync` (polling) and `case-calendar serve` (webhook) call `CaseSyncer.process_entry`, so a hearing extracted via webhook is byte-identical to one extracted via polling. Webhook payloads include the docket entry with `recap_documents` inline (per the CL docs), so the only CL API call a webhook triggers is one `/dockets/{id}/` lookup the first time we see a new docket — to learn its `court_id` (timezone) and citation. After that, zero CL calls per webhook delivery; the LLM is the only outbound dependency.
+- **Significance gate at render, not at extraction.** Every hearing is stored in the DB regardless of importance — that preserves the audit trail and lets the LLM use procedural events as context (`known_hearings` plus the new RELATED DOCKET ENTRIES block). Calendar visibility is filtered at render: the LLM tags each action with `significance='major' | 'minor'`, and the ICS/gcal renderers skip minor rows. Pretrial conferences (any flavor) are always major; phone calls whose only purpose is to rule on a Motion to Continue / Extend are minor — classified by the proceeding's PURPOSE, not its EFFECT, because any rescheduling that comes out of the call shows up on the trial / hearing row itself.
+- **Cross-entry context for the LLM.** Each LLM call gets two bonus context streams alongside the entry being processed: explicit cross-references parsed from the entry text (`granting 65 Motion ...` → entry 65) and the last 5 hearing-relevant entries on the same docket (temporal proximity). This is how `[Telephonic Pretrial Conference]` orders that don't say "CIPA" get correctly titled `Telephonic Pretrial Conference (CIPA)` — the originating CIPA motion lives a few entries earlier and the LLM picks up the framing. To make this work without burning storage on irrelevant entries, the `entries.description` column is populated only for hearing-relevant entries; filter-failed entries (notices, attorney appearances, etc.) keep a fingerprint stub but no text body.
+- **Iterate oldest-first within a sync.** The CL API returns entries newest-first (which gives us a cheap `modified_after` early-stop), but cross-references resolve cleanly only when an entry's referenced motion is already in the local store. So `iter_entries` buffers a docket's worth of new entries and yields them sorted ascending by `date_modified`. Memory cost is bounded by `max_pages * page_size`; even a first-time sync of a busy docket is well under 10 MB.
+- **No artificial cap on Retry-After.** CourtListener's free-tier daily bucket (300/day for authenticated, less for anonymous) can return Retry-After near 24h once exhausted. We honor it rather than abort, so a long-running sync resumes itself across the daily reset without manual restarts. We still log the URL, body, and rate-limit headers on every 429 so it's obvious which bucket fired (per-minute, per-hour, per-day) and whether requests are landing as anonymous (a CL-flagged misconfiguration symptom).
+
+## Tech Stack
+
+- Python 3.13, uv for dependency management
+- httpx (CourtListener), pypdf (embedded text), poppler + tesseract (optional system deps for OCR fallback)
+- tzdata (Python package — keeps `zoneinfo` lookups consistent across hosts where the system tz database is incomplete)
+- anthropic / openai / google-genai SDKs (LLM providers, lazy-imported)
+- google-api-python-client + google-auth-oauthlib (Google Calendar)
+- python-dotenv, pyyaml
+
+## Development
+
+```bash
+uv sync
+cp .env.example .env                  # COURTLISTENER_TOKEN + one *_API_KEY
+cp config.example.yaml config.yaml    # list your cases / dockets / calendars
+uv run case-calendar sync             # pull updates (polling)
+uv run case-calendar emit             # write ICS (--push-gcal to also push)
+uv run case-calendar show             # dump current state
+
+# Or, real-time push from CourtListener (no daily-quota burn):
+# 1. Set CASE_CALENDAR_WEBHOOK_SECRET in .env to a long random string
+# 2. uv run case-calendar serve --port 8000
+# 3. Expose 127.0.0.1:8000 over public HTTPS (Caddy / Cloudflare Tunnel /
+#    fly.io / etc.) and register the resulting URL in the CL dashboard:
+#    https://<your-host>/webhooks/case-calendar/<CASE_CALENDAR_WEBHOOK_SECRET>
+#    Event type: DOCKET_ALERT.
+# 4. Subscribe to docket alerts in CL for each docket in your config.yaml.
+```
+
+Optional system dependencies for OCR fallback (only needed when CL hasn't OCR'd a PDF yet):
+
+```bash
+sudo apt install poppler-utils tesseract-ocr   # or: brew install poppler tesseract
+```
+
+Without these, the tool still works — it skips PDFs CL hasn't processed and retries on each subsequent sync.
+
+## One-shot maintenance scripts (`scripts/`)
+
+- **`scripts/reprocess_entries.py <entry_id>...`** — re-run the LLM pipeline against specific stored entries (by CL `entry_id`, not docket position). Builds a synthetic entry from the local store, clears the entry's fingerprint to bypass dedup, and calls `CaseSyncer.process_entry`. Useful after prompt changes when you want to see the new behavior on existing rows. CAUTION: the LLM can allocate fresh `hearing_key`s if it interprets a previously-vague row as multiple specific events — duplicates may need manual cleanup.
+- **`scripts/classify_significance.py`** — bulk-classifies every hearing whose `significance` column is NULL using a focused single-question LLM prompt (no full action extraction, so no risk of the duplicate-key issue above). Prints results to stdout; does NOT write to the DB. Pipe to a file for review and apply selectively.
+
+## Testing
+
+```bash
+uv sync --extra test
+uv run pytest                                    # full suite
+uv run pytest tests/test_sync_integration.py    # one file
+uv run pytest --cov=case_calendar --cov-report=term-missing
+```
+
+The suite is hermetic — no real network calls, no real LLM, no real Google API. `tests/conftest.py` provides:
+
+- `store` fixture — fresh tmp-path SQLite store per test
+- `make_entry`, `make_recap_doc` factories — synthesize CL-shaped dicts
+- `FakeCL` — drop-in for `CourtListener` that records calls and returns canned data
+- `_no_real_token` autouse — strips real `*_API_KEY` env vars from inherited environments
+
+Test files mirror the modules they cover (`tests/test_store.py` ↔ `case_calendar/store.py`, etc.). Integration coverage lives in:
+
+- `tests/test_sync_integration.py` — drives `CaseSyncer` end-to-end with `FakeCL` and a stubbed LLM extractor; covers schedule → reschedule → cancel → mark-held flows, the docket-level short-circuit, the entry-fingerprint dedup, and docket/court metadata caching.
+- `tests/test_serve.py` — boots a real `WebhookServer` on an ephemeral port and posts JSON; covers route + secret check, `Idempotency-Key` dedup, fingerprint dedup on a fresh idempotency key, and unknown-docket handling.
+
+Pure helpers (timezone conversion, fingerprinting, `_is_fetchable`, `_pdf_excerpt`, `_default_duration`, ICS rendering, description rendering, LLM response parsing, CL retry-on-429 / pagination) all have direct unit coverage so regressions trip fast.

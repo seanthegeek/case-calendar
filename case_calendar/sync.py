@@ -1,0 +1,623 @@
+"""Per-case sync logic.
+
+For each case we:
+  1. Pull docket entries newer than the last seen ``date_modified``.
+  2. Run the keyword pre-filter; skip irrelevant entries cheaply.
+  3. For relevant entries, optionally pull the linked PDF plain-text from the
+     RECAP API.
+  4. Hand entry + known hearings to the LLM extractor.
+  5. Apply the returned actions to the SQLite hearing store.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import logging
+import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+from . import llm, pdf, url_validator
+from .courtlistener import CourtListener
+from .courts import tz_for
+from .extractor import is_hearing_relevant
+from .store import Store
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class CaseConfig:
+    case_id: str          # stable ID used as primary key in the store
+    name: str             # human title
+    dockets: list[int]
+    calendar: str         # which output calendar this case belongs to
+
+
+def fingerprint_entry(entry: dict[str, Any]) -> str:
+    """Hash that changes when meaningful entry state changes.
+
+    We include PDF availability and presence of extracted text so that an
+    entry whose PDF was missing on a prior sync is re-processed once the
+    PDF (or its OCR text) shows up.
+    """
+    parts = [
+        entry.get("description") or "",
+        entry.get("short_description") or "",
+        entry.get("date_filed") or "",
+    ]
+    for rd in entry.get("recap_documents", []) or []:
+        parts.append(rd.get("description") or "")
+        parts.append(str(bool(rd.get("is_available"))))
+        parts.append(str(bool(rd.get("is_sealed"))))
+        parts.append("1" if (rd.get("plain_text") or "").strip() else "0")
+    return hashlib.sha1("|".join(parts).encode()).hexdigest()
+
+
+# A pulled PDF is worth the cost when the on-docket text doesn't include the
+# specifics. We only fetch when the entry looks like a hearing notice but its
+# description is essentially empty.
+_DETAIL_HINTS = re.compile(
+    r"\b(\d{1,2}:\d{2}\s*(AM|PM)?|courtroom|judge|via\s+(zoom|teleconf|video))",
+    re.IGNORECASE,
+)
+
+# CL appends a clerk-side timestamp like "[Entered: 05/06/2026 01:51 PM]" or
+# "(Entered: 05/06/2026)" to most docket-entry descriptions. The HH:MM there
+# is when the clerk filed it, NEVER the hearing time. Without stripping it,
+# _DETAIL_HINTS matches on every such entry and we skip the PDF that does
+# carry the actual hearing time.
+_ENTERED_FOOTER = re.compile(r"[\(\[]Entered:[^\)\]]*[\)\]]", re.IGNORECASE)
+
+# Orders granting a *scheduling/hearing* motion are a trap: the brief
+# description references the underlying motion only by docket position, so
+# the substance — what kind of hearing was being requested — lives in the
+# motion entry and the order's PDF, not in the order's text. Even when the
+# order inlines a date+time (which would otherwise let _DETAIL_HINTS
+# short-circuit the PDF fetch), we still need the PDF body because it
+# typically lists ALL the dates the order set, including ones not echoed
+# in the brief description (e.g. the CIPA conference itself).
+#
+# Limited to scheduling/hearing motions on purpose. Orders granting
+# substantive motions ("granting 50 Motion to Suppress / Dismiss / Compel")
+# don't move the docket and don't justify the extra LLM tokens.
+_ORDER_GRANTS_SCHEDULING_MOTION = re.compile(
+    r"\bgranting\b[^.]{0,80}?\bMotion\s+"
+    r"(?:for\s+Hearing|for\s+Continuance|for\s+Status\s+Conference|"
+    r"to\s+(?:Continue|Reschedule|Vacate|Set|Schedule|Adjourn))",
+    re.IGNORECASE,
+)
+
+# Cross-reference pattern: PACER-style "ORDER granting 65 Motion ..." or
+# "DENYING 42 Motion" or just "see [12]". The verb tells us this is a
+# reference to another docket entry we may have already seen; the bare
+# number is the docket-position number (entries.entry_number). We only
+# resolve refs we've already stored, so this is purely a context boost
+# at the LLM call — no extra CL traffic.
+_DOCKET_REF = re.compile(
+    r"\b(?:granting|denying|grants|denies|granted|denied|ruling\s+on|"
+    r"see|re|response\s+to)\s+(?:in\s+part\s+)?(?:\[)?(\d{1,4})(?:\])?\b",
+    re.IGNORECASE,
+)
+
+
+def _extract_docket_refs(entry: dict[str, Any]) -> list[int]:
+    """Pull docket-position numbers referenced by this entry's description.
+
+    Returns a deduplicated list of integers. We strip the "(Entered: ...)"
+    footer first so a clerk timestamp's day-of-month doesn't get parsed as
+    a referenced motion.
+    """
+    desc = (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    desc = _ENTERED_FOOTER.sub("", desc)
+    seen: list[int] = []
+    for m in _DOCKET_REF.finditer(desc):
+        n = int(m.group(1))
+        if n not in seen:
+            seen.append(n)
+    return seen
+
+
+def _needs_pdf(entry: dict[str, Any]) -> bool:
+    desc = (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    desc = _ENTERED_FOOTER.sub("", desc)
+    if _ORDER_GRANTS_SCHEDULING_MOTION.search(desc):
+        return True
+    if _DETAIL_HINTS.search(desc):
+        return False
+    # No specific details inline — go fetch the PDFs.
+    return True
+
+
+def _is_fetchable(rd: dict[str, Any]) -> bool:
+    """True if this recap_document points at a real PDF we could pull text from.
+
+    Paperless orders, minute entries, and entries whose document hasn't been
+    contributed to RECAP yet all show up as recap_documents with
+    ``is_available: false`` and no ``filepath_local`` / ``filepath_ia``.
+    They have no body to fetch — only a description in the docket text — so
+    we should never try to download them.
+    """
+    if rd.get("is_sealed"):
+        return False
+    # CL-extracted plain_text is itself a fetchable source.
+    if (rd.get("plain_text") or "").strip():
+        return True
+    if not rd.get("is_available"):
+        return False
+    return bool(rd.get("filepath_local") or rd.get("filepath_ia"))
+
+
+def _validate_action_dial_in(action: dict[str, Any]) -> None:
+    """Verify action.dial_in resolves; on failure move it to notes.
+
+    LLM URL extraction occasionally swallows trailing prose into the URL when
+    the source text has no separator. We do a one-step parent-path repair;
+    if that fails too, we keep the broken text accessible to the human reader
+    by appending it to ``notes`` and clearing ``dial_in``.
+    """
+    original = (action.get("dial_in") or "").strip()
+    if not original:
+        return
+    repaired = url_validator.validate_url(original)
+    if repaired == original:
+        return
+    if repaired:
+        action["dial_in"] = repaired
+        return
+    # Validation failed entirely — preserve the URL text in notes so a human
+    # can salvage it.
+    addendum = f"Dial-in (unverified): {original}"
+    existing_notes = action.get("notes")
+    action["notes"] = (
+        f"{existing_notes}\n\n{addendum}" if existing_notes else addendum
+    )
+    action["dial_in"] = None
+
+
+def _local_to_utc(date_str: str, time_str: Optional[str], tz: str) -> Optional[str]:
+    if not date_str:
+        return None
+    if time_str:
+        dt = datetime.fromisoformat(f"{date_str}T{time_str}")
+    else:
+        # date-only — treat as midnight local; the calendar layer turns this
+        # into an all-day event.
+        dt = datetime.fromisoformat(f"{date_str}T00:00")
+    dt = dt.replace(tzinfo=ZoneInfo(tz))
+    return dt.astimezone(timezone.utc).isoformat()
+
+
+def _default_duration(hearing_type: str | None, time_set: bool) -> int:
+    if not time_set:
+        return 0  # all-day
+    return {
+        "sentencing": 90,
+        "trial": 240,
+        "oral_argument": 60,
+        "evidentiary_hearing": 120,
+        "motion_hearing": 60,
+        "plea_hearing": 45,
+        "change_of_plea": 45,
+        "arraignment": 30,
+        "initial_appearance": 30,
+        "status_conference": 30,
+        "telephonic_conference": 30,
+    }.get(hearing_type or "", 60)
+
+
+class CaseSyncer:
+    def __init__(self, cl: CourtListener, store: Store):
+        self.cl = cl
+        self.store = store
+
+    # --- shared helpers (used by polling sync_case AND the webhook server) ---
+
+    def ensure_docket_cached(self, docket_id: int) -> dict[str, Any]:
+        """Return cached docket meta, fetching from CL exactly once if missing.
+
+        Webhook payloads don't include parent-docket metadata, so the first
+        time we see a docket via webhook we have to do one /dockets/ GET to
+        learn its court_id (and therefore its timezone). After that everything
+        is cached and incoming webhooks make zero CL calls.
+        """
+        meta = self.store.get_docket_meta(docket_id)
+        if meta and meta.get("court_id"):
+            return meta
+        docket = self.cl.get_docket(docket_id)
+        self.store.upsert_docket_meta(
+            docket_id,
+            {
+                "court_id": docket.get("court_id"),
+                "docket_number": docket.get("docket_number"),
+                "case_name": docket.get("case_name"),
+                "absolute_url": docket.get("absolute_url"),
+            },
+        )
+        self._ensure_court(docket.get("court_id") or "")
+        return self.store.get_docket_meta(docket_id) or {}
+
+    def process_entry(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        entry: dict[str, Any],
+        *,
+        stats: Optional[dict[str, int]] = None,
+    ) -> bool:
+        """End-to-end processing for one entry: filter, LLM extract, store.
+
+        Used by both polling ``sync_case`` and the webhook receiver, so the
+        two paths produce identical hearing rows.
+        """
+        if stats is None:
+            stats = {"entries_seen": 0, "entries_processed": 0, "actions": 0}
+
+        eid = entry["id"]
+        fp = fingerprint_entry(entry)
+        if self.store.entry_seen(docket_id, eid, fp):
+            return False
+
+        meta = self.ensure_docket_cached(docket_id)
+        court_id = meta.get("court_id") or ""
+        tz = tz_for(court_id)
+
+        processed = self._handle_entry(case, docket_id, court_id, tz, entry, stats)
+        # Only keep the description body for entries that passed the regex
+        # pre-filter. The 70-ish percent of docket entries that are notices,
+        # briefs, attorney appearances, etc. don't get LLM'd and are never
+        # cross-referenced by hearing orders — storing their text is dead
+        # weight. We still write a stub row (fingerprint + entry_number +
+        # date_modified) so dedup and the entry-level high-water mark keep
+        # working without re-iterating these every sync.
+        self.store.mark_entry(
+            docket_id,
+            eid,
+            entry.get("date_modified") or "",
+            fp,
+            date_filed=entry.get("date_filed"),
+            entry_number=entry.get("entry_number"),
+            description=entry.get("description") if processed else None,
+            short_description=entry.get("short_description") if processed else None,
+        )
+        return processed
+
+    # --- polling entry point ---
+
+    def sync_case(self, case: CaseConfig) -> dict[str, int]:
+        stats = {
+            "dockets_skipped": 0,
+            "entries_seen": 0,
+            "entries_processed": 0,
+            "actions": 0,
+        }
+        for docket_id in case.dockets:
+            log.info("Syncing docket %s for case %s", docket_id, case.case_id)
+            docket = self.cl.get_docket(docket_id)
+            docket_mod = docket.get("date_modified") or ""
+            last_mod = self.store.docket_last_modified(docket_id)
+            if last_mod and docket_mod and docket_mod <= last_mod:
+                log.info(
+                    "docket %s unchanged since %s; skipping (no API/LLM calls)",
+                    docket_id, last_mod,
+                )
+                stats["dockets_skipped"] += 1
+                continue
+
+            # Persist meta + court so process_entry has what it needs.
+            self.store.upsert_docket_meta(
+                docket_id,
+                {
+                    "court_id": docket.get("court_id"),
+                    "docket_number": docket.get("docket_number"),
+                    "case_name": docket.get("case_name"),
+                    "absolute_url": docket.get("absolute_url"),
+                },
+            )
+            self._ensure_court(docket.get("court_id") or "")
+            cutoff = self.store.latest_entry_modified(docket_id)
+
+            iterated_ok = True
+            try:
+                for entry in self.cl.iter_entries(docket_id, modified_after=cutoff):
+                    stats["entries_seen"] += 1
+                    self.process_entry(case, docket_id, entry, stats=stats)
+                    with self.store.tx() as _:
+                        pass  # commit per entry so partial progress sticks
+            except Exception:
+                iterated_ok = False
+                raise
+            finally:
+                if iterated_ok and docket_mod:
+                    self.store.set_docket_last_modified(docket_id, docket_mod)
+                    with self.store.tx() as _:
+                        pass
+        return stats
+
+    # --- per-entry logic ---
+
+    def _ensure_court(self, court_id: str) -> None:
+        """Cache court metadata (citation_string) on first sight."""
+        if not court_id:
+            return
+        if self.store.get_court_citation(court_id) is not None:
+            return
+        try:
+            c = self.cl.get_court(court_id)
+        except Exception as e:
+            log.warning("court fetch failed id=%s: %s", court_id, e)
+            return
+        self.store.upsert_court(
+            court_id,
+            c.get("citation_string"),
+            c.get("short_name"),
+            c.get("full_name"),
+        )
+
+    def _handle_entry(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        court_id: str,
+        tz: str,
+        entry: dict[str, Any],
+        stats: dict[str, int],
+    ) -> bool:
+        """True iff the entry made it through the regex filter and reached the LLM."""
+        if not is_hearing_relevant(entry):
+            log.debug("entry %s skipped by regex pre-filter", entry.get("id"))
+            return False
+        stats["entries_processed"] += 1
+
+        pdf_texts = self._maybe_fetch_pdfs(entry)
+        known = self.store.get_hearings(case.case_id)
+        referenced = self._resolve_docket_refs(docket_id, entry)
+
+        actions = llm.extract_actions(
+            case_name=case.name,
+            court_id=court_id,
+            court_tz=tz,
+            entry=entry,
+            pdf_texts=pdf_texts,
+            known_hearings=known,
+            docket_id=docket_id,
+            referenced_entries=referenced,
+        )
+
+        for action in actions:
+            _validate_action_dial_in(action)
+            stats["actions"] += 1
+            self._apply_action(case, docket_id, tz, entry, action)
+
+        return True
+
+    def _resolve_docket_refs(
+        self, docket_id: int, entry: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """Look up entries that give the LLM context for the current entry.
+
+        Combines two channels:
+
+        1. *Explicit references* — when the entry text says "granting 65
+           Motion" or "see [42]", we pull entry 65 / 42 by docket position.
+        2. *Temporal proximity* — the most recent few hearing-relevant
+           entries on the same docket. Many orders that schedule a hearing
+           don't cite the underlying motion by docket number ("PAPERLESS
+           Order Setting Telephonic Pretrial Conference..." with no "65"
+           anywhere), so without this the LLM would title the hearing only
+           from what the order says — losing details like "CIPA" that live
+           in the originating motion just a few entries earlier.
+
+        Misses (entries with no stored description, e.g. filter-failed
+        notices) are silently skipped. Entries that appear in both channels
+        are included once.
+        """
+        out: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+
+        for n in _extract_docket_refs(entry):
+            row = self.store.get_entry_by_number(docket_id, n)
+            if row and (row.get("description") or row.get("short_description")):
+                eid = row.get("entry_id")
+                if eid not in seen_ids:
+                    seen_ids.add(eid)
+                    out.append({"entry_number": n, **row})
+
+        recent = self.store.get_recent_relevant_entries(
+            docket_id, entry.get("date_modified") or "", limit=5
+        )
+        for row in recent:
+            eid = row.get("entry_id")
+            if eid not in seen_ids:
+                seen_ids.add(eid)
+                out.append({"entry_number": row.get("entry_number"), **row})
+
+        return out
+
+    def _maybe_fetch_pdfs(self, entry: dict[str, Any]) -> list[str]:
+        """Pull PDF text for the LLM. Called only when an entry's fingerprint
+        flips, i.e. on first sight or when CL has changed something. PDFs are
+        immutable once attached and we don't cache the extracted text — the
+        rare fingerprint flip pays one extra round-trip."""
+        if not _needs_pdf(entry):
+            return []
+
+        rds = entry.get("recap_documents") or []
+        # Paperless / minute-entry placeholders: the entry has recap_document
+        # rows but none of them point to anything fetchable.
+        if rds and not any(_is_fetchable(rd) for rd in rds):
+            log.debug(
+                "entry %s has %d recap_document(s) but none are fetchable "
+                "(paperless / not-yet-uploaded); skipping PDF stage",
+                entry.get("id"), len(rds),
+            )
+            return []
+
+        out: list[str] = []
+        for rd in rds:
+            doc_id = rd.get("id")
+            if not doc_id:
+                continue
+            if not _is_fetchable(rd):
+                # Single paperless doc inside an otherwise-fetchable entry —
+                # skip it but don't bail on the entry as a whole.
+                continue
+
+            text = pdf.extract_text(rd)
+            if text:
+                out.append(text)
+            else:
+                if rd.get("is_sealed"):
+                    log.info("recap_doc %s sealed; skipping", doc_id)
+                elif not rd.get("is_available"):
+                    log.info(
+                        "recap_doc %s not yet on PACER (entry %s); "
+                        "will retry next sync",
+                        doc_id, entry.get("id"),
+                    )
+                else:
+                    log.info(
+                        "recap_doc %s available but text extraction yielded "
+                        "nothing; install pdftoppm + tesseract for OCR fallback",
+                        doc_id,
+                    )
+        return out
+
+    def _apply_action(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        tz: str,
+        entry: dict[str, Any],
+        action: dict[str, Any],
+    ) -> None:
+        atype = (action.get("type") or "IGNORE").upper()
+        if atype == "IGNORE":
+            return
+
+        key = action.get("hearing_key")
+        if not key:
+            log.warning("action without hearing_key: %s", action)
+            return
+
+        # ADD requires a date. Date-less ADDs come from entries that anticipate
+        # a hearing without scheduling it (motion-for-hearing, plea agreement,
+        # etc.) — they create ghost rows that never get a starts_at_utc and
+        # never appear on the calendar. Drop them; the actual scheduling order
+        # will come through later as its own entry.
+        if atype == "ADD" and not action.get("local_date"):
+            log.warning(
+                "skipping date-less ADD: case=%s key=%r entry=%s "
+                "(LLM should have IGNOREd; treating as such)",
+                case.case_id, key, entry["id"],
+            )
+            return
+
+        log.info(
+            "applying %s case=%s key=%r entry=%s date=%s time=%s",
+            atype, case.case_id, key, entry["id"],
+            action.get("local_date"), action.get("local_time"),
+        )
+
+        existing = self.store.get_hearing(case.case_id, key)
+        eid = entry["id"]
+        prev_sources = list(existing.get("source_entry_ids", [])) if existing else []
+        if eid not in prev_sources:
+            prev_sources.append(eid)
+
+        # docket_id is sticky after first ADD — sibling-docket entries can
+        # touch a hearing (CANCEL, MARK_HELD, etc.) but the hearing's
+        # canonical home docket (which feeds the description's case citation
+        # and CL link) shouldn't drift to whichever docket touched it last.
+        sticky_docket_id = existing.get("docket_id") if existing else docket_id
+
+        if atype == "CANCEL":
+            if existing:
+                merged = dict(existing)
+                merged.update(
+                    status="cancelled",
+                    notes=action.get("notes") or existing.get("notes"),
+                    source_entry_ids=prev_sources,
+                    docket_id=sticky_docket_id,
+                )
+                self.store.upsert_hearing(merged)
+            return
+
+        if atype == "MARK_HELD":
+            if existing:
+                merged = dict(existing)
+                merged.update(
+                    status="held",
+                    source_entry_ids=prev_sources,
+                    docket_id=sticky_docket_id,
+                )
+                self.store.upsert_hearing(merged)
+            return
+
+        # ADD / RESCHEDULE / UPDATE_DETAILS — figure out the new field set.
+        local_date = action.get("local_date")
+        local_time = action.get("local_time")
+
+        starts_utc = existing.get("starts_at_utc") if existing else None
+        if local_date:
+            # Convert using the existing tz when one is set — a reschedule
+            # via a sibling docket shouldn't move the wall-clock time.
+            convert_tz = (existing.get("timezone") if existing else None) or tz
+            starts_utc = _local_to_utc(local_date, local_time, convert_tz)
+
+        # 0 from the LLM means "not specified" — same as null. Falling through
+        # to the default keeps zero-length blips out of subscribers' calendars.
+        # We also treat an EXISTING duration of 0 as "unknown" so a follow-up
+        # UPDATE_DETAILS can repair a hearing that was first inserted by an
+        # entry that didn't know the duration (e.g. an ADD whose entry didn't
+        # specify length, then a later UPDATE_DETAILS that also doesn't —
+        # without this, the row stays pinned at 0 forever). For date-only
+        # all-day events, _default_duration with time_set=False returns 0,
+        # so we still land on 0 in that case — no regression.
+        duration = action.get("duration_minutes") or None
+        if duration is None and existing and atype != "RESCHEDULE":
+            duration = existing.get("duration_minutes") or None
+        if duration is None:
+            duration = _default_duration(
+                action.get("hearing_type"), bool(local_time)
+            )
+
+        # Timezone is sticky after first insertion. A hearing happens in one
+        # courthouse; later entries from sibling dockets in different
+        # timezones (e.g. an N.D. Cal entry referencing a D.C. Cir oral
+        # argument) shouldn't shift the displayed tz, especially since the
+        # stored UTC was computed from the original docket's tz.
+        sticky_tz = existing.get("timezone") if existing else tz
+
+        # Significance: stickier than other fields because the LLM rarely sets
+        # it on UPDATE_DETAILS / RESCHEDULE. If the new action has it, prefer
+        # that; otherwise keep what we already had.
+        significance = action.get("significance") or (
+            existing.get("significance") if existing else None
+        )
+
+        merged: dict[str, Any] = {
+            "case_id": case.case_id,
+            "hearing_key": key,
+            "title": action.get("title")
+                or (existing.get("title") if existing else key.replace("-", " ").title()),
+            "starts_at_utc": starts_utc,
+            "duration_minutes": duration,
+            "timezone": sticky_tz,
+            "location": action.get("location")
+                or (existing.get("location") if existing else None),
+            "judge": action.get("judge")
+                or (existing.get("judge") if existing else None),
+            "notes": action.get("notes")
+                or (existing.get("notes") if existing else None),
+            "dial_in": action.get("dial_in")
+                or (existing.get("dial_in") if existing else None),
+            "status": "scheduled",
+            "significance": significance,
+            "gcal_event_id": existing.get("gcal_event_id") if existing else None,
+            "docket_id": sticky_docket_id,
+            "source_entry_ids": prev_sources,
+        }
+        self.store.upsert_hearing(merged)

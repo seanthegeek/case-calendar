@@ -1,0 +1,108 @@
+# case-calendar config
+#
+# Required env vars when running:
+#   COURTLISTENER_TOKEN  — your CL API key
+#   ANTHROPIC_API_KEY    — for the LLM extractor
+#
+# Run order:
+#   case-calendar -c config.yaml sync     # pull updates, fill the store
+#   case-calendar -c config.yaml emit     # write ICS files (and push gcal)
+#   case-calendar -c config.yaml show     # sanity check
+
+store_path: data/case-calendar.sqlite
+model: claude-opus-4-7
+
+# Optional — only needed if any calendar has google_calendar_id set and you
+# pass --push-gcal to `emit`. Get this from Google Cloud Console (OAuth client
+# of type "Desktop app").
+# google_credentials_path: ~/.case-calendar/google-credentials.json
+# google_token_path:       ~/.case-calendar/google-token.json
+
+calendars:
+  cybercrime:
+    name: "Cybercrime cases"
+    ics_path: out/cybercrime.ics
+    # google_calendar_id: abc123@group.calendar.google.com
+    #
+    # Optional: add arbitrary email addresses as event attendees. They get
+    # the Google invite + the event lands on their own calendar. Their own
+    # default reminder settings determine pre-event notifications.
+    #
+    # PRIVACY WARNING: attendee emails are visible to anyone with view
+    # access to the event. If you intend to make this calendar public, do
+    # NOT set notify_emails — anyone reading the public feed (or the
+    # ATTENDEE lines in a public ICS) will see the addresses you list.
+    # Use `reminders` (popup) instead and let attendees subscribe to the
+    # public feed in their own calendar apps.
+    # notify_emails:
+    #   - alerts@example.com
+    #
+    # Optional: per-event reminders.
+    #
+    #   method=popup  → fires in the calendar app of whoever is viewing
+    #                   the event. In Google, this is the calendar owner;
+    #                   in a subscribed ICS it's the subscriber. Safe to
+    #                   ship on a public calendar — VALARM:DISPLAY blocks
+    #                   don't leak email.
+    #   method=email  → in Google, only delivered to the calendar owner.
+    #                   In ICS, rendered as VALARM;ACTION:EMAIL with
+    #                   ATTENDEE lines, so emails ARE visible to anyone
+    #                   reading the public feed. Avoid on public calendars.
+    #
+    # reminders:
+    #   - {method: popup, minutes: 30}
+    #   - {method: popup, minutes: 1440}    # 1 day before
+    #   - {method: email, minutes: 1440}    # owner-only in Google; visible in public ICS
+  tech:
+    name: "Tech court cases"
+    ics_path: out/tech.ics
+    # google_calendar_id: def456@group.calendar.google.com
+
+cases:
+  # ---- Anthropic v. DOW family ----
+  - id: anthropic-v-dow
+    name: "Anthropic PBC v. United States Department of War"
+    calendar: tech
+    dockets: [72380208, 72379655, 73136734]
+    # Per-case override of the calendar's notify_emails / reminders. Useful
+    # when one case warrants different alerts than the rest of the calendar.
+    # notify_emails: [counsel@example.com]
+    # reminders:
+    #   - {method: popup, minutes: 60}
+
+  # ---- DPRK IT-worker prosecutions ----
+  - id: us-v-ashtor
+    name: "United States v. Ashtor (DPRK IT worker)"
+    calendar: cybercrime
+    dockets: [69570297]
+
+  - id: us-v-knoot
+    name: "United States v. Knoot (DPRK IT worker)"
+    calendar: cybercrime
+    dockets: [69026861]
+
+  - id: us-v-wang
+    name: "United States v. Wang (DPRK IT worker)"
+    calendar: cybercrime
+    dockets: [70678228, 70691920]
+
+  - id: us-v-didenko
+    name: "United States v. Didenko"
+    calendar: cybercrime
+    dockets: [68810724, 68810897]
+
+  - id: us-v-jin
+    name: "United States v. Kim Kwang Jin et al."
+    calendar: cybercrime
+    dockets: [70673091]
+
+  - id: us-v-hwa
+    name: "United States v. Jong Song Hwa et al."
+    calendar: cybercrime
+    dockets: [69459808]
+
+  # ---- Other tech / cyber ----
+  - id: us-v-mcgonigal
+    name: "United States v. McGonigal"
+    calendar: cybercrime
+    dockets: [66749883]

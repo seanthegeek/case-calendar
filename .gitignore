@@ -1,0 +1,18 @@
+.env
+.venv/
+config.yaml
+.coverage
+*.jaon
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# generated state and outputs
+data/
+out/
+
+# Local user config
+.local/
+.config/
