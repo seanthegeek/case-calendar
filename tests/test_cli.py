@@ -6,7 +6,9 @@ ICS and gcal outputs receive a fully-built title and write it through.
 
 from __future__ import annotations
 
-from case_calendar.cli import _compose_title, _deadline_to_hearing
+import pytest
+
+from case_calendar.cli import _compose_title, _deadline_to_hearing, emit_calendars
 
 
 class TestComposeTitle:
@@ -111,3 +113,77 @@ class TestDeadlineToHearing:
         # deadlines, which no longer need a reminder.
         out = _deadline_to_hearing(self._row(status="met"))
         assert out["status"] == "cancelled"
+
+
+class TestEmitCalendars:
+    """``emit_calendars`` is shared by cmd_emit, cmd_sync's auto-emit, and
+    the webhook auto-emit. The scoping (only_calendars) is what lets the
+    webhook path skip calendars unaffected by a given delivery."""
+
+    @pytest.fixture
+    def cfg(self, tmp_path):
+        return {
+            "store_path": str(tmp_path / "x.sqlite"),
+            "calendars": {
+                "cyber": {
+                    "name": "Cybercrime",
+                    "ics_path": str(tmp_path / "cyber.ics"),
+                },
+                "tech": {
+                    "name": "Tech",
+                    "ics_path": str(tmp_path / "tech.ics"),
+                },
+            },
+            "cases": [
+                {"id": "us-v-x", "name": "US v. X",
+                 "calendar": "cyber", "dockets": [100]},
+                {"id": "acme-v-widget", "name": "Acme v. Widget",
+                 "calendar": "tech", "dockets": [200]},
+            ],
+        }
+
+    def _seed_hearing(self, store, *, case_id, key, calendar_unused="cyber"):
+        store.upsert_hearing({
+            "case_id": case_id,
+            "hearing_key": key,
+            "title": "Sentencing",
+            "hearing_type": "sentencing",
+            "starts_at_utc": "2099-04-14T15:00:00+00:00",
+            "duration_minutes": 90,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [1],
+        })
+
+    def test_writes_ics_for_each_calendar(self, store, cfg):
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        self._seed_hearing(store, case_id="acme-v-widget", key="hearing-acme")
+        results = emit_calendars(cfg, store)
+        assert set(results) == {"cyber", "tech"}
+        assert results["cyber"]["events"] == 1
+        assert results["tech"]["events"] == 1
+        # ICS files are real on disk.
+        for cal in ("cyber", "tech"):
+            text = open(results[cal]["ics_path"]).read()
+            assert "BEGIN:VCALENDAR" in text and "END:VCALENDAR" in text
+
+    def test_only_calendars_scopes_writes(self, store, cfg, tmp_path):
+        # Pre-write the tech ICS with a sentinel string. Scoped emit on
+        # {"cyber"} must not touch tech.ics.
+        sentinel = tmp_path / "tech.ics"
+        sentinel.write_text("SHOULD-NOT-BE-OVERWRITTEN")
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store, only_calendars={"cyber"})
+        assert set(results) == {"cyber"}
+        assert sentinel.read_text() == "SHOULD-NOT-BE-OVERWRITTEN"
+
+    def test_gcal_skipped_when_push_gcal_false(self, store, cfg):
+        # Adding a gcal id must NOT trigger a push when push_gcal is off
+        # (the daemon path defaults to off until the operator opts in).
+        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["google_credentials_path"] = "/nonexistent.json"  # would crash if used
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store, push_gcal=False)
+        assert results["cyber"]["gcal_pushed"] is False

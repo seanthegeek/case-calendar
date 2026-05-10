@@ -31,17 +31,8 @@ def case():
     )
 
 
-@pytest.fixture
-def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCL]]:
-    """Spin up a webhook server with a controllable FakeCL backing it."""
-    monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
-        "type": "ADD", "hearing_key": "sentencing-x",
-        "hearing_type": "sentencing", "title": "Sentencing",
-        "local_date": "2026-04-14", "local_time": "15:00",
-        "duration_minutes": 90, "location": "Courtroom 4",
-    }])
-
-    cl = FakeCL(
+def _make_cl() -> FakeCL:
+    return FakeCL(
         dockets={100: {
             "id": 100, "court_id": "mad",
             "docket_number": "1:25-cr-00001-X",
@@ -54,15 +45,34 @@ def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCL
                         "full_name": "District of Massachusetts"}},
     )
 
+
+def _start_server(*, store, case, cl, emit_fn=None):
     secret = "test-secret-please-make-it-long-enough"
-    server = WebhookServer(("127.0.0.1", 0), secret=secret,
-                           cases=[case], store=store, cl=cl)
+    server = WebhookServer(
+        ("127.0.0.1", 0), secret=secret,
+        cases=[case], store=store, cl=cl, emit_fn=emit_fn,
+    )
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, daemon=True)
     t.start()
     time.sleep(0.05)
+    return server, f"http://127.0.0.1:{port}", secret
+
+
+@pytest.fixture
+def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCL]]:
+    """Spin up a webhook server with a controllable FakeCL backing it."""
+    monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
+        "type": "ADD", "hearing_key": "sentencing-x",
+        "hearing_type": "sentencing", "title": "Sentencing",
+        "local_date": "2026-04-14", "local_time": "15:00",
+        "duration_minutes": 90, "location": "Courtroom 4",
+    }])
+
+    cl = _make_cl()
+    server, url, secret = _start_server(store=store, case=case, cl=cl)
     try:
-        yield f"http://127.0.0.1:{port}", secret, cl
+        yield url, secret, cl
     finally:
         server.shutdown()
         server.server_close()
@@ -201,3 +211,98 @@ class TestNonDocketEvents:
         assert resp["handled"]["ignored"] is True
         # No hearing rows from a search-alert payload.
         assert store.get_hearings("us-v-x") == []
+
+
+class TestAutoEmit:
+    """The webhook handler runs ``emit_fn`` after each successful docket
+    alert so subscribers see the update without a manual ``case-calendar
+    emit`` run."""
+
+    def test_emit_fn_called_with_affected_calendar(
+        self, store: Store, case, monkeypatch,
+    ):
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
+            "type": "ADD", "hearing_key": "sentencing-x",
+            "hearing_type": "sentencing", "title": "Sentencing",
+            "local_date": "2026-04-14", "local_time": "15:00",
+            "duration_minutes": 90, "location": "Courtroom 4",
+        }])
+        emitted: list[set[str]] = []
+        cl = _make_cl()
+        server, url, secret = _start_server(
+            store=store, case=case, cl=cl,
+            emit_fn=lambda cals: emitted.append(set(cals)),
+        )
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([_sample_entry()]),
+                headers={"Idempotency-Key": "k-emit-1"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert status == 200
+        assert resp["handled"]["emitted_calendars"] == ["cyber"]
+        assert emitted == [{"cyber"}]
+
+    def test_emit_fn_skipped_when_nothing_relevant(
+        self, store: Store, case, monkeypatch,
+    ):
+        # An entry that the regex pre-filter rejects shouldn't trigger an
+        # emit — the calendar didn't change.
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
+            {"type": "IGNORE", "reason": "stub"},
+        ])
+        emitted: list[set[str]] = []
+        cl = _make_cl()
+        server, url, secret = _start_server(
+            store=store, case=case, cl=cl,
+            emit_fn=lambda cals: emitted.append(set(cals)),
+        )
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                # short_description with no hearing/deadline vocabulary so
+                # the pre-filter skips it before the LLM stub even runs.
+                _docket_alert([_sample_entry(desc="Notice of Attorney Appearance")]),
+                headers={"Idempotency-Key": "k-emit-skip"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert status == 200
+        assert resp["handled"]["hearing_relevant"] == 0
+        assert resp["handled"]["emitted_calendars"] == []
+        assert emitted == []
+
+    def test_emit_failure_does_not_fail_webhook(
+        self, store: Store, case, monkeypatch,
+    ):
+        # The store is already updated by the time emit runs — a render
+        # error mustn't make CL retry the delivery (which would dup-process).
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
+            "type": "ADD", "hearing_key": "sentencing-x",
+            "hearing_type": "sentencing", "title": "Sentencing",
+            "local_date": "2026-04-14", "local_time": "15:00",
+        }])
+        def boom(_cals):
+            raise RuntimeError("disk full")
+        cl = _make_cl()
+        server, url, secret = _start_server(
+            store=store, case=case, cl=cl, emit_fn=boom,
+        )
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([_sample_entry()]),
+                headers={"Idempotency-Key": "k-emit-boom"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert status == 200
+        assert resp["handled"]["hearing_relevant"] == 1
+        assert resp["handled"]["emitted_calendars"] == []
+        # Hearing row still landed — we don't lose data when the renderer fails.
+        assert len(store.get_hearings("us-v-x")) == 1

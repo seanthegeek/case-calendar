@@ -1,28 +1,35 @@
 # case-calendar
 
-Automatically sync court hearing dates from CourtListener / RECAP into your
-calendar (ICS file or Google Calendar). Built for cases where docket-watching
-by hand is too much: cybercrime prosecutions, multi-docket tech litigation,
-etc.
+Automatically sync court hearing dates and filing deadlines from
+CourtListener / RECAP into your calendar (ICS file or Google Calendar).
+Built for cases where docket-watching by hand is too much: cybercrime
+prosecutions, multi-docket tech litigation, etc.
 
 ## What it does
 
 For each case in `config.yaml`:
 
 1. Pulls new docket entries from CourtListener (one or more dockets per case).
-2. Filters for entries that look hearing-related.
-3. Extracts hearing details with an LLM (Anthropic, OpenAI, or Gemini),
-   reading both the docket text and the linked PDFs. Cross-references
-   (`granting 65 Motion ...`) and recent docket activity are resolved from
-   the local store so the LLM has the context to name a hearing correctly
-   when the entry that schedules it doesn't itself name the subject.
-4. Stores hearings in SQLite with stable keys, so reschedules and dial-in
-   updates land on the same row. Each hearing is tagged `major` or `minor`;
-   minor (procedural-only phone calls about scheduling motions) and
-   `cancelled` rows are skipped at render time so the calendar tracks
-   major case moments only.
+2. Filters for entries that look hearing- or deadline-related.
+3. Extracts hearing and filing-deadline details with an LLM (Anthropic,
+   OpenAI, or Gemini), reading both the docket text and the linked PDFs.
+   Cross-references (`granting 65 Motion ...`) and recent docket activity
+   are resolved from the local store so the LLM has the context to name a
+   hearing correctly when the entry that schedules it doesn't itself name
+   the subject.
+4. Stores hearings and deadlines in SQLite with stable keys, so reschedules
+   and dial-in updates land on the same row. Each row is tagged `major` or
+   `minor`; minor (procedural-only phone calls, routine status reports) and
+   `cancelled` / `met` rows are skipped at render time so the calendar
+   tracks major case moments only.
 5. Writes an ICS file (subscribe from Proton, Apple, etc.) and optionally
-   pushes to Google Calendar.
+   pushes to Google Calendar — automatically, after every sync or webhook
+   delivery, so subscribers see updates without a manual re-emit.
+
+Filing-deadline tracking is auto-detected from each docket's number:
+civil dockets get response/reply/brief deadlines, routine criminal dockets
+don't (set `extract_deadlines: true` per case to opt a serious criminal
+trial in).
 
 Court-local timezones are preserved on each event (`DTSTART;TZID=...` /
 Google Calendar `timeZone` field), so a 3 PM Pacific hearing stays
@@ -32,14 +39,16 @@ Reschedules update existing events in place; cancellations remove the
 event from subscribers' calendars (the new event of record — a plea
 hearing, a rescheduled trial — lives on its own row).
 
-Two delivery modes:
+Two delivery modes (both auto-emit affected calendars when work happens):
 
 - **Polling** (`case-calendar sync`) — run on a cron. A three-tier
   short-circuit (docket / entry / fingerprint dedup) means quiet hours
   cost roughly one cheap CL request per docket and zero LLM calls.
+  Affected calendars are re-rendered at the end of the sync.
 - **Webhook** (`case-calendar serve`) — register a public HTTPS URL with
   CourtListener and receive `DOCKET_ALERT` events in real time. Bypasses
-  the daily polling quota entirely.
+  the daily polling quota entirely. Each delivery that changes a row
+  triggers an immediate re-render of just that calendar.
 
 ## Setup
 
@@ -106,14 +115,23 @@ the calendar owner in Google.
 ## Usage
 
 ```bash
-case-calendar sync                    # pull updates (polling)
-case-calendar emit                    # write ICS files
-case-calendar emit --push-gcal        # also push to Google Calendar
-case-calendar show                    # dump current hearings
-case-calendar show --case us-v-wang   # one case
-case-calendar sync --case us-v-wang   # sync just one case
-case-calendar serve --port 8000       # real-time webhook receiver
+case-calendar sync                       # pull updates + auto-emit ICS
+case-calendar sync --push-gcal           # also push affected calendars to Google
+case-calendar sync --no-emit             # skip the auto-emit (rare; mostly for tests)
+case-calendar sync --case us-v-wang      # sync just one case
+case-calendar emit                       # render ICS from current store (manual run)
+case-calendar emit --push-gcal           # also push to Google Calendar
+case-calendar show                       # dump current hearings + deadlines
+case-calendar show --case us-v-wang      # one case
+case-calendar serve --port 8000          # real-time webhook receiver (auto-emits)
+case-calendar serve --port 8000 --push-gcal  # also push gcal after each webhook
 ```
+
+`sync` and `serve` both auto-emit ICS files after any change so subscribers
+stay current without a separate `emit` step. The standalone `emit` command
+is still useful for forcing a re-render (e.g. after editing config) or for
+the first-run Google OAuth flow (which can't run headless inside the
+daemon).
 
 Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
@@ -186,7 +204,7 @@ and rotate the secret if it ever leaks.
 
 ```bash
 uv sync --extra test
-uv run pytest                                  # full suite (~8s, 190+ tests)
+uv run pytest                                  # full suite (~12s, ~300 tests)
 uv run pytest --cov=case_calendar              # with coverage
 ```
 

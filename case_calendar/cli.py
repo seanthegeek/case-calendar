@@ -134,6 +134,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     log.info("LLM: %s", llm.provider_info())
+    affected_calendars: set[str] = set()
     with CourtListener() as cl:
         syncer = CaseSyncer(cl, store)
         for case in cases:
@@ -143,19 +144,49 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 f"entries_seen={stats['entries_seen']} "
                 f"processed={stats['entries_processed']} actions={stats['actions']}"
             )
+            if stats.get("actions") or stats.get("verified") \
+                    or stats.get("auto_held") or stats.get("auto_passed"):
+                affected_calendars.add(case.calendar)
+
+    if not args.no_emit and affected_calendars:
+        results = emit_calendars(
+            cfg, store,
+            only_calendars=affected_calendars,
+            push_gcal=args.push_gcal,
+        )
+        for cal_id, r in results.items():
+            if r["ics_path"]:
+                print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
+            if r["gcal_pushed"]:
+                gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
+                print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
     store.close()
     return 0
 
 
-def cmd_emit(args: argparse.Namespace) -> int:
-    cfg = _load_config(args.config)
-    cases = _cases_from_config(cfg)
-    store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+def emit_calendars(
+    cfg: dict[str, Any],
+    store: Store,
+    *,
+    only_calendars: set[str] | None = None,
+    push_gcal: bool = False,
+) -> dict[str, dict[str, Any]]:
+    """Render hearings + deadlines to ICS files (and optionally gcal).
 
+    Used by both the ``emit`` CLI command and the polling/webhook paths so
+    a single sync update flows all the way to subscribers without a manual
+    re-emit. Pass ``only_calendars`` to scope the work to the calendars
+    affected by a particular event (e.g. one webhook).
+
+    Returns ``{cal_id: {"events": int, "ics_path": str|None, "gcal_pushed": bool}}``.
+    """
+    cases = _cases_from_config(cfg)
     case_overrides = {c["id"]: c for c in cfg["cases"]}  # raw dicts with extras
 
     by_calendar: dict[str, list[dict]] = defaultdict(list)
     for case in cases:
+        if only_calendars is not None and case.calendar not in only_calendars:
+            continue
         cal_cfg = cfg["calendars"].get(case.calendar) or {}
         case_cfg = case_overrides.get(case.case_id) or {}
         notify_emails = list(case_cfg.get("notify_emails")
@@ -201,8 +232,17 @@ def cmd_emit(args: argparse.Namespace) -> int:
                 h["reminders"] = reminders
             by_calendar[case.calendar].append(h)
 
+    out: dict[str, dict[str, Any]] = {}
+    gcs = None
     for cal_id, cal_cfg in cfg["calendars"].items():
+        if only_calendars is not None and cal_id not in only_calendars:
+            continue
         hearings = by_calendar.get(cal_id, [])
+        result: dict[str, Any] = {
+            "events": len(hearings),
+            "ics_path": None,
+            "gcal_pushed": False,
+        }
         ics_path = cal_cfg.get("ics_path")
         if ics_path:
             write_ics(
@@ -210,21 +250,36 @@ def cmd_emit(args: argparse.Namespace) -> int:
                 calendar_name=cal_cfg.get("name", cal_id),
                 hearings=hearings,
             )
-            print(f"[{cal_id}] wrote {len(hearings)} events -> {ics_path}")
+            result["ics_path"] = ics_path
 
         gcal_id = cal_cfg.get("google_calendar_id")
-        if gcal_id and args.push_gcal:
-            from .calendars.gcal import GoogleCalendarSync
+        if gcal_id and push_gcal:
+            if gcs is None:
+                from .calendars.gcal import GoogleCalendarSync
 
-            gcs = GoogleCalendarSync(
-                credentials_path=cfg["google_credentials_path"],
-                token_path=cfg.get(
-                    "google_token_path", "~/.case-calendar/google-token.json"
-                ),
-            )
+                gcs = GoogleCalendarSync(
+                    credentials_path=cfg["google_credentials_path"],
+                    token_path=cfg.get(
+                        "google_token_path",
+                        "~/.case-calendar/google-token.json",
+                    ),
+                )
             gcs.sync(calendar_id=gcal_id, hearings=hearings)
-            print(f"[{cal_id}] pushed {len(hearings)} events to gcal {gcal_id}")
+            result["gcal_pushed"] = True
+        out[cal_id] = result
+    return out
 
+
+def cmd_emit(args: argparse.Namespace) -> int:
+    cfg = _load_config(args.config)
+    store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+    results = emit_calendars(cfg, store, push_gcal=args.push_gcal)
+    for cal_id, r in results.items():
+        if r["ics_path"]:
+            print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
+        if r["gcal_pushed"]:
+            gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
+            print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
     store.close()
     return 0
 
@@ -246,6 +301,26 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     log.info("LLM: %s", llm.provider_info())
+
+    push_gcal = bool(getattr(args, "push_gcal", False))
+
+    def emit_fn(only_calendars: set[str]) -> None:
+        results = emit_calendars(
+            cfg, store, only_calendars=only_calendars, push_gcal=push_gcal,
+        )
+        for cal_id, r in results.items():
+            if r["ics_path"]:
+                log.info(
+                    "[%s] wrote %d events -> %s",
+                    cal_id, r["events"], r["ics_path"],
+                )
+            if r["gcal_pushed"]:
+                gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
+                log.info(
+                    "[%s] pushed %d events to gcal %s",
+                    cal_id, r["events"], gcal_id,
+                )
+
     with CourtListener() as cl:
         serve(
             host=args.host,
@@ -254,6 +329,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             cases=cases,
             store=store,
             cl=cl,
+            emit_fn=emit_fn,
         )
     store.close()
     return 0
@@ -304,6 +380,16 @@ def main(argv: list[str] | None = None) -> int:
 
     p_sync = sub.add_parser("sync", help="pull updates from CourtListener")
     p_sync.add_argument("--case", help="only sync this case_id")
+    p_sync.add_argument(
+        "--no-emit",
+        action="store_true",
+        help="skip auto-emitting ICS for affected calendars at end of sync",
+    )
+    p_sync.add_argument(
+        "--push-gcal",
+        action="store_true",
+        help="also push affected calendars to Google Calendar after sync",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
     p_emit = sub.add_parser("emit", help="emit calendars from current store")
@@ -320,6 +406,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_serve.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
+    p_serve.add_argument(
+        "--push-gcal",
+        action="store_true",
+        help="also push to Google Calendar after each webhook delivery "
+             "(requires a pre-staged token; OAuth first-run can't happen headless)",
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_show = sub.add_parser("show", help="dump current hearings")

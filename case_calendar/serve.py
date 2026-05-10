@@ -31,13 +31,18 @@ import logging
 import threading
 from collections import defaultdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from .courtlistener import CourtListener
 from .store import Store
 from .sync import CaseConfig, CaseSyncer
 
 log = logging.getLogger(__name__)
+
+# Callback signature: emit_fn(only_calendars: set[str]) -> None.
+# WebhookServer invokes this after each successful docket-alert delivery so
+# ICS / gcal subscribers see the update without a manual ``emit`` run.
+EmitFn = Callable[[set[str]], None]
 
 # CL uses small integer event-type codes (per their docs).
 EVENT_DOCKET_ALERT = 1
@@ -60,11 +65,13 @@ class WebhookServer(ThreadingHTTPServer):
         cases: list[CaseConfig],
         store: Store,
         cl: CourtListener,
+        emit_fn: Optional[EmitFn] = None,
     ):
         super().__init__(addr, WebhookHandler)
         self.secret = secret
         self.store = store
         self.syncer = CaseSyncer(cl, store)
+        self.emit_fn = emit_fn
         # docket_id -> case (a docket only ever belongs to one logical case)
         self.docket_to_case: dict[int, CaseConfig] = {}
         for c in cases:
@@ -165,6 +172,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         """
         results = payload.get("results") or []
         per_case: dict[str, int] = defaultdict(int)
+        affected_calendars: set[str] = set()
         skipped_unknown_dockets = 0
         processed = 0
         relevant = 0
@@ -199,8 +207,23 @@ class WebhookHandler(BaseHTTPRequestHandler):
             if was_processed:
                 relevant += 1
                 per_case[case.case_id] += 1
+                affected_calendars.add(case.calendar)
             with self.server.store.tx() as _:
                 pass
+
+        # Re-render affected calendars so subscribers see the update without
+        # a manual emit. Failures here log but don't fail the webhook ack —
+        # CL would just retry, and the store is already up to date.
+        emitted: list[str] = []
+        if affected_calendars and self.server.emit_fn is not None:
+            try:
+                self.server.emit_fn(affected_calendars)
+                emitted = sorted(affected_calendars)
+            except Exception:
+                log.exception(
+                    "auto-emit after webhook failed for calendars=%s",
+                    sorted(affected_calendars),
+                )
 
         return {
             "results_received": len(results),
@@ -208,6 +231,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "hearing_relevant": relevant,
             "skipped_unknown_dockets": skipped_unknown_dockets,
             "per_case": dict(per_case),
+            "emitted_calendars": emitted,
         }
 
     # --- io helpers ---
@@ -245,9 +269,11 @@ def serve(
     cases: list[CaseConfig],
     store: Store,
     cl: CourtListener,
+    emit_fn: Optional[EmitFn] = None,
 ) -> None:
     server = WebhookServer(
-        (host, port), secret=secret, cases=cases, store=store, cl=cl
+        (host, port), secret=secret, cases=cases, store=store, cl=cl,
+        emit_fn=emit_fn,
     )
     log.info(
         "case-calendar webhook server listening on %s:%d "
