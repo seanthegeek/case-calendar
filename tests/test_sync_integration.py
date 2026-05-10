@@ -52,6 +52,21 @@ def make_llm_stub(monkeypatch, *, by_entry: dict[int, list[dict]]):
     monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
 
+def stub_verify(monkeypatch, *, by_key: dict[str, dict] | None = None):
+    """Stub llm.verify_hearing to return canned per-key actions.
+
+    Defaults to CONFIRM (no-op) for any hearing not explicitly listed,
+    so tests that don't care about verification just bypass it.
+    """
+    by_key = by_key or {}
+    def fake(*, hearing, **_):
+        return by_key.get(
+            hearing.get("hearing_key"),
+            {"type": "CONFIRM", "reason": "stub"},
+        )
+    monkeypatch.setattr(llm_mod, "verify_hearing", fake)
+
+
 # --- happy path: schedule, then reschedule, then mark held ---
 
 
@@ -373,3 +388,357 @@ class TestProcessEntryDirect:
         assert syncer.process_entry(case, 100, e) is True
         # Second call with identical entry should be a no-op.
         assert syncer.process_entry(case, 100, e) is False
+
+
+class TestCancelOnUnknownKey:
+    """Adjournment memo for a hearing whose original scheduling entry was
+    filtered out before reaching the LLM should still leave a cancelled
+    audit-trail row, not silently drop."""
+
+    def test_cancel_with_local_date_inserts_cancelled_row(
+        self, store: Store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL", "hearing_key": "status-conf-x-7",
+                 "title": "Status Conference",
+                 "local_date": "2023-07-18",
+                 "notes": "adjourned by court"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100,
+                             _entry(1, "ENDORSEMENT: status conference "
+                                       "previously scheduled for July 18, "
+                                       "2023 is hereby adjourned"))
+        rows = store.get_hearings("us-v-x")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "cancelled"
+        assert rows[0]["hearing_key"] == "status-conf-x-7"
+        assert rows[0]["starts_at_utc"].startswith("2023-07-18")
+
+    def test_cancel_without_local_date_drops(
+        self, store: Store, case, monkeypatch, caplog,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL", "hearing_key": "status-conf-x-7"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100,
+                             _entry(1, "ENDORSEMENT: hearing adjourned"))
+        assert store.get_hearings("us-v-x") == []
+        assert any("CANCEL on unknown key with no local_date" in r.message
+                   for r in caplog.records)
+
+
+class TestMarkHeldOnUnknownKey:
+    """Held minute entry for a hearing whose scheduling never reached the
+    store should ADD a new row in 'held' status."""
+
+    def test_mark_held_with_local_date_inserts_held_row(
+        self, store: Store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "MARK_HELD", "hearing_key": "cipa-hearing-x",
+                 "title": "CIPA Hearing",
+                 "local_date": "2023-03-06",
+                 "significance": "major"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100,
+                             _entry(1, "Minute Entry: CIPA Hearing "
+                                       "held on 3/6/2023"))
+        rows = store.get_hearings("us-v-x")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "held"
+        assert rows[0]["hearing_key"] == "cipa-hearing-x"
+        assert rows[0]["starts_at_utc"].startswith("2023-03-06")
+
+
+class TestMarkHeldDateValidation:
+    """When the LLM picks the wrong existing key for a MARK_HELD action,
+    the date-proximity check rejects it instead of poisoning the matched
+    row's source list."""
+
+    def test_mark_held_with_far_off_date_is_rejected(
+        self, store: Store, case, monkeypatch, caplog,
+    ):
+        # Set up: existing scheduled hearing on 2023-03-08.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD", "hearing_key": "status-conf-x",
+                 "hearing_type": "status_conference", "title": "Status Conf",
+                 "local_date": "2023-03-08", "local_time": "12:30"}],
+            # LLM tries to MARK_HELD this key using a 3/6 minute entry —
+            # 2 days off is borderline-fine, but 3+ days off is rejected.
+            2: [{"type": "MARK_HELD", "hearing_key": "status-conf-x",
+                 "local_date": "2023-03-04"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100,
+                             _entry(1, "Status Conference set for 3/8/2023 12:30 PM"))
+        syncer.process_entry(case, 100,
+                             _entry(2, "Minute Entry: Hearing held on 3/4/2023"))
+        rows = store.get_hearings("us-v-x")
+        assert len(rows) == 1
+        # Status should NOT have flipped to held — date mismatch rejected.
+        assert rows[0]["status"] == "scheduled"
+        assert any("MARK_HELD date mismatch" in r.message
+                   for r in caplog.records)
+
+    def test_mark_held_within_tolerance_still_applies(
+        self, store: Store, case, monkeypatch,
+    ):
+        # 1-day diff (e.g. minute entry filed day after hearing) is fine.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD", "hearing_key": "sentencing-x",
+                 "hearing_type": "sentencing", "title": "Sentencing",
+                 "local_date": "2026-04-14", "local_time": "15:00"}],
+            2: [{"type": "MARK_HELD", "hearing_key": "sentencing-x",
+                 "local_date": "2026-04-15"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100,
+                             _entry(1, "Sentencing set for 4/14/2026 3 PM"))
+        syncer.process_entry(case, 100,
+                             _entry(2, "Sentencing held on 4/14/2026"))
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+
+
+class TestAutoMarkHeldStaleSweep:
+    """End-of-sync sweep that flips any past 'scheduled' row to 'held'.
+    No buffer — starts_at_utc is already UTC and we have a UTC clock."""
+
+    def test_stale_scheduled_flipped_to_held(
+        self, store: Store, case, monkeypatch,
+    ):
+        stub_verify(monkeypatch)
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "stale-conf-x",
+            "title": "Status Conference",
+            "starts_at_utc": "2024-01-01T12:00:00+00:00",
+            "duration_minutes": 30,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [],
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        syncer = CaseSyncer(cl, store)
+        stats = syncer.sync_case(case)
+        assert stats["auto_held"] == 1
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+
+    def test_future_scheduled_not_flipped(
+        self, store: Store, case, monkeypatch,
+    ):
+        stub_verify(monkeypatch)
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=30)
+        ).isoformat()
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "future-trial",
+            "title": "Trial",
+            "starts_at_utc": future_iso,
+            "duration_minutes": 240,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [],
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        syncer = CaseSyncer(cl, store)
+        stats = syncer.sync_case(case)
+        assert stats["auto_held"] == 0
+        assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
+
+    def test_cancelled_not_flipped(self, store: Store, case, monkeypatch):
+        stub_verify(monkeypatch)
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "cancelled-conf",
+            "title": "Status Conference",
+            "starts_at_utc": "2024-01-01T12:00:00+00:00",
+            "duration_minutes": 30,
+            "timezone": "America/New_York",
+            "status": "cancelled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [],
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        syncer = CaseSyncer(cl, store)
+        stats = syncer.sync_case(case)
+        assert stats["auto_held"] == 0
+        assert store.get_hearings("us-v-x")[0]["status"] == "cancelled"
+
+    def test_just_past_scheduled_flipped(self, store: Store, case, monkeypatch):
+        # Hearing whose start was even 1 hour ago is flipped — no buffer.
+        stub_verify(monkeypatch)
+        from datetime import datetime, timedelta, timezone
+        past_iso = (
+            datetime.now(timezone.utc) - timedelta(hours=1)
+        ).isoformat()
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "just-past",
+            "title": "Status Conference",
+            "starts_at_utc": past_iso,
+            "duration_minutes": 30,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [],
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        syncer = CaseSyncer(cl, store)
+        stats = syncer.sync_case(case)
+        assert stats["auto_held"] == 1
+        assert store.get_hearings("us-v-x")[0]["status"] == "held"
+
+
+class TestVerifyScheduledHearings:
+    """Per-hearing confidence pass: for every future scheduled hearing,
+    ask the LLM whether recent docket entries support it."""
+
+    def _seed_future_hearing(self, store, key="future-trial"):
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=14)
+        ).isoformat()
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": key,
+            "title": "Trial",
+            "starts_at_utc": future_iso,
+            "duration_minutes": 240,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [42],
+        })
+        return future_iso
+
+    def test_confirm_is_no_op(self, store, case, monkeypatch):
+        before = self._seed_future_hearing(store)
+        stub_verify(monkeypatch)  # default CONFIRM
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "scheduled"
+        assert h["starts_at_utc"] == before
+
+    def test_unclear_is_no_op(self, store, case, monkeypatch):
+        self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {"type": "UNCLEAR", "reason": "ambiguous"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
+
+    def test_cancel_flips_to_cancelled(self, store, case, monkeypatch):
+        self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {"type": "CANCEL", "reason": "trial vacated by plea"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "cancelled"
+        assert "vacated" in (h["notes"] or "")
+
+    def test_delete_hallucination_flips_to_cancelled(
+        self, store, case, monkeypatch,
+    ):
+        # Hallucinated row — LLM says no docket entry supports it. Marked
+        # cancelled (preserves audit trail; renderers skip cancelled rows).
+        self._seed_future_hearing(store, key="hallucinated-conf")
+        stub_verify(monkeypatch, by_key={
+            "hallucinated-conf": {
+                "type": "DELETE_HALLUCINATION",
+                "reason": "no docket entry mentions this date",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "cancelled"
+        assert "no docket entry" in (h["notes"] or "")
+
+    def test_reschedule_moves_starts_at_utc(self, store, case, monkeypatch):
+        self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {
+                "type": "RESCHEDULE",
+                "local_date": "2099-01-15",
+                "local_time": "09:00",
+                "reason": "rescheduled per latest order",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "scheduled"
+        # ET 09:00 on 2099-01-15 → 14:00 UTC.
+        assert h["starts_at_utc"] == "2099-01-15T14:00:00+00:00"
+
+    def test_mark_held_via_verify(self, store, case, monkeypatch):
+        # Edge case: the LLM's verify pass might catch a held event the
+        # extractor missed. The pass runs only on FUTURE hearings, but
+        # the LLM might still emit MARK_HELD if the recent entries show
+        # the hearing happened earlier than its scheduled date.
+        self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {"type": "MARK_HELD",
+                             "reason": "minute entry shows held"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        assert store.get_hearings("us-v-x")[0]["status"] == "held"
+
+    def test_only_runs_on_future_scheduled(self, store, case, monkeypatch):
+        # Past + cancelled + held rows must NOT call verify.
+        from datetime import datetime, timedelta, timezone
+        store.upsert_hearing({
+            "case_id": "us-v-x", "hearing_key": "past-held",
+            "title": "Sentencing", "status": "held",
+            "starts_at_utc": "2024-01-01T00:00:00+00:00",
+            "duration_minutes": 90, "timezone": "America/New_York",
+            "significance": "major", "docket_id": 100,
+            "source_entry_ids": [1],
+        })
+        store.upsert_hearing({
+            "case_id": "us-v-x", "hearing_key": "future-cancelled",
+            "title": "Conf", "status": "cancelled",
+            "starts_at_utc": (datetime.now(timezone.utc)
+                              + timedelta(days=30)).isoformat(),
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "significance": "major", "docket_id": 100,
+            "source_entry_ids": [2],
+        })
+        called = []
+        def fake(*, hearing, **_):
+            called.append(hearing.get("hearing_key"))
+            return {"type": "CONFIRM"}
+        monkeypatch.setattr(llm_mod, "verify_hearing", fake)
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        assert called == []  # no future-scheduled rows present

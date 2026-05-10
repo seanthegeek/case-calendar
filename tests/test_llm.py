@@ -230,3 +230,136 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     assert out == [{"type": "ADD", "hearing_key": "x", "title": "T"}]
     assert "US v. Z" in captured["user"]
     assert "Hearing types you care about" in captured["system"]
+
+
+# --- verify_hearing ---
+
+
+def _hearing(**overrides):
+    base = {
+        "case_id": "us-v-x",
+        "hearing_key": "trial-x",
+        "title": "Trial",
+        "starts_at_utc": "2099-01-15T14:00:00+00:00",
+        "duration_minutes": 240,
+        "status": "scheduled",
+        "significance": "major",
+        "docket_id": 100,
+        "source_entry_ids": [1, 2],
+        "notes": None,
+    }
+    base.update(overrides)
+    return base
+
+
+class TestVerifyHearing:
+    def test_returns_confirm_action(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"type": "CONFIRM", "reason": "still scheduled"}',
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "CONFIRM"
+
+    def test_returns_reschedule_with_date(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
+                '"local_time": "10:00", "reason": "moved"}',
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "RESCHEDULE"
+        assert out["local_date"] == "2099-02-01"
+
+    def test_strips_markdown_fences(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '```json\n{"type": "CANCEL", "reason": "vacated"}\n```',
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "CANCEL"
+
+    def test_unwraps_actions_array(self, monkeypatch):
+        # Defensive: model might emit {"actions": [...]} despite the prompt.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}',
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "MARK_HELD"
+
+    def test_non_json_response_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens: "I cannot determine.",
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_missing_type_field_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens: '{"reason": "no type field"}',
+        )
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_llm_call_failure_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        def boom(system, user, max_tokens):
+            raise RuntimeError("api down")
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        out = llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_user_message_includes_hearing_and_entries(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured = {}
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            captured["system"] = system
+            return '{"type": "CONFIRM"}'
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[
+                {"entry_number": 50, "entry_id": 9999,
+                 "date_filed": "2026-04-01",
+                 "description": "Order vacating trial date"},
+            ],
+        )
+        assert "trial-x" in captured["user"]
+        assert "Order vacating trial date" in captured["user"]
+        assert "audit a single scheduled court hearing" in captured["system"]

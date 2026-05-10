@@ -12,6 +12,7 @@ For each case we:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -190,6 +191,33 @@ def _local_to_utc(date_str: str, time_str: Optional[str], tz: str) -> Optional[s
     return dt.astimezone(timezone.utc).isoformat()
 
 
+def _mark_held_date_matches(
+    action: dict[str, Any], existing: dict[str, Any], tolerance_days: int = 2
+) -> bool:
+    """True if a MARK_HELD action's date is close enough to the existing hearing.
+
+    Returns True when:
+    - the action carries no local_date (older LLM responses; trust the match)
+    - the existing hearing has no starts_at_utc (we have no date to compare)
+    - the dates are within ``tolerance_days`` of each other
+
+    A 2-day window covers same-week reschedules where the minute entry might
+    be filed a day or two after the hearing; anything wider is almost certainly
+    the LLM stapling a held proceeding onto the wrong logical hearing.
+    """
+    action_date_str = action.get("local_date")
+    existing_starts = existing.get("starts_at_utc")
+    if not action_date_str or not existing_starts:
+        return True
+    try:
+        from datetime import date
+        existing_date = datetime.fromisoformat(existing_starts).date()
+        action_date = date.fromisoformat(action_date_str)
+    except (ValueError, TypeError):
+        return True
+    return abs((existing_date - action_date).days) <= tolerance_days
+
+
 def _default_duration(hearing_type: str | None, time_set: bool) -> int:
     if not time_set:
         return 0  # all-day
@@ -292,6 +320,8 @@ class CaseSyncer:
             "entries_seen": 0,
             "entries_processed": 0,
             "actions": 0,
+            "verified": 0,
+            "auto_held": 0,
         }
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
@@ -334,7 +364,226 @@ class CaseSyncer:
                     self.store.set_docket_last_modified(docket_id, docket_mod)
                     with self.store.tx() as _:
                         pass
+
+        # End-of-case sweeps:
+        #   1. Confidence pass — for each future scheduled hearing, ask the
+        #      LLM whether recent docket entries support it staying on the
+        #      calendar. Catches missed reschedules/cancellations and the
+        #      hallucination class (rows extracted from tangentially-related
+        #      entries with no actual scheduling order behind them).
+        #   2. Auto-held — any 'scheduled' row whose start time is in the
+        #      past flips to 'held'. starts_at_utc is already UTC, so the
+        #      comparison is timezone-free.
+        # Verify first so a "rescheduled to past date" outcome can't get
+        # double-flipped to held by the second sweep.
+        stats["verified"] = self._verify_scheduled_hearings(case)
+        stats["auto_held"] = self._auto_mark_held_stale(case.case_id)
         return stats
+
+    def _verify_scheduled_hearings(self, case: CaseConfig) -> int:
+        """Audit every future scheduled hearing for the case against recent
+        docket entries. Returns the number of hearings whose row was
+        modified by the audit.
+
+        For each hearing the LLM returns one of: CONFIRM (no-op),
+        RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, UNCLEAR.
+        Anything other than CONFIRM/UNCLEAR mutates the row.
+        """
+        from . import llm as llm_mod
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        # Future scheduled hearings only — past ones are handled by the
+        # auto-held sweep instead.
+        rows = self.store.conn.execute(
+            "SELECT * FROM hearings "
+            "WHERE case_id=? AND status='scheduled' "
+            "AND starts_at_utc IS NOT NULL AND starts_at_utc >= ?",
+            (case.case_id, now_iso),
+        ).fetchall()
+        if not rows:
+            return 0
+
+        n_changed = 0
+        for r in rows:
+            hearing = dict(r)
+            try:
+                hearing["source_entry_ids"] = json.loads(
+                    hearing.get("source_entry_ids") or "[]"
+                )
+            except (json.JSONDecodeError, TypeError):
+                hearing["source_entry_ids"] = []
+
+            docket_id = hearing.get("docket_id")
+            if not docket_id:
+                continue
+            meta = self.ensure_docket_cached(docket_id)
+            court_id = meta.get("court_id") or ""
+            tz = tz_for(court_id)
+
+            recent = self.store.get_recent_relevant_entries(
+                docket_id, "9999-12-31T00:00:00", limit=15,
+            )
+            action = llm_mod.verify_hearing(
+                case_name=case.name,
+                court_id=court_id,
+                court_tz=tz,
+                hearing=hearing,
+                recent_entries=recent,
+            )
+            if self._apply_verify_action(case, docket_id, tz, hearing, action):
+                n_changed += 1
+        if n_changed:
+            self.store.conn.commit()
+        return n_changed
+
+    def _apply_verify_action(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        tz: str,
+        hearing: dict[str, Any],
+        action: dict[str, Any],
+    ) -> bool:
+        """Apply a single verify-pass action to the hearing row.
+
+        Returns True if the row changed. Uses the same upsert path as the
+        regular extraction pipeline so source_entry_ids and audit fields
+        stay consistent.
+        """
+        atype = (action.get("type") or "UNCLEAR").upper()
+        if atype in ("CONFIRM", "UNCLEAR"):
+            return False
+
+        merged = dict(hearing)
+        sources = list(hearing.get("source_entry_ids") or [])
+
+        if atype == "CANCEL":
+            merged.update(status="cancelled")
+            note = action.get("reason") or "Cancelled per recent docket entries"
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        elif atype == "DELETE_HALLUCINATION":
+            # Don't actually delete — preserve the audit trail by marking
+            # cancelled with an explanatory note. Renderers skip cancelled
+            # rows so the calendar shows the right thing.
+            merged.update(status="cancelled")
+            note = action.get("reason") or "No docket entry supports this hearing"
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        elif atype == "MARK_HELD":
+            merged.update(status="held")
+        elif atype == "RESCHEDULE":
+            local_date = action.get("local_date")
+            local_time = action.get("local_time")
+            if not local_date:
+                log.warning(
+                    "verify RESCHEDULE without local_date: case=%s key=%r",
+                    case.case_id, hearing.get("hearing_key"),
+                )
+                return False
+            convert_tz = hearing.get("timezone") or tz
+            merged["starts_at_utc"] = _local_to_utc(
+                local_date, local_time, convert_tz
+            )
+            note = action.get("reason") or "Rescheduled per recent docket entries"
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
+        else:
+            log.warning(
+                "verify-pass unknown action type %s for case=%s key=%r",
+                atype, case.case_id, hearing.get("hearing_key"),
+            )
+            return False
+
+        log.info(
+            "verify-pass applying %s case=%s key=%r reason=%s",
+            atype, case.case_id, hearing.get("hearing_key"),
+            (action.get("reason") or "")[:120],
+        )
+        merged["source_entry_ids"] = sources
+        self.store.upsert_hearing(merged)
+        return True
+
+    def _auto_mark_held_stale(self, case_id: str) -> int:
+        """Flip past-dated 'scheduled' rows to 'held'. Returns count flipped.
+
+        ``starts_at_utc`` is already in UTC and the server clock is in UTC,
+        so the comparison is timezone-free. No buffer: once the start is in
+        the past, status='scheduled' is wrong by definition. If a
+        late-arriving reschedule entry says otherwise, it'll flip the row
+        back to 'scheduled' on the next sync.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = self.store.conn.execute(
+            "SELECT case_id, hearing_key, starts_at_utc FROM hearings "
+            "WHERE case_id=? AND status='scheduled' "
+            "AND starts_at_utc IS NOT NULL AND starts_at_utc < ?",
+            (case_id, now_iso),
+        ).fetchall()
+        n = 0
+        now = datetime.now(timezone.utc).isoformat()
+        for r in rows:
+            log.info(
+                "auto-marking held: case=%s key=%r starts=%s",
+                r["case_id"], r["hearing_key"], r["starts_at_utc"],
+            )
+            self.store.conn.execute(
+                "UPDATE hearings SET status='held', last_updated=? "
+                "WHERE case_id=? AND hearing_key=?",
+                (now, r["case_id"], r["hearing_key"]),
+            )
+            n += 1
+        if n:
+            self.store.conn.commit()
+        return n
+
+    def _insert_terminal_hearing(
+        self,
+        case: CaseConfig,
+        docket_id: int,
+        tz: str,
+        entry: dict[str, Any],
+        action: dict[str, Any],
+        *,
+        status: str,
+        prev_sources: list[int],
+    ) -> None:
+        """Insert a brand-new hearing directly into a terminal status.
+
+        Used when CANCEL or MARK_HELD targets a hearing_key that isn't in
+        the store — typically because its original scheduling entry was
+        filtered out by the prefilter, but a later memo/minute entry
+        explicitly tells us a hearing existed and is now adjourned/held.
+        Preserves the audit trail without depending on the LLM emitting
+        an ADD-then-CANCEL pair.
+        """
+        local_date = action.get("local_date")
+        local_time = action.get("local_time")
+        starts_utc = _local_to_utc(local_date, local_time, tz)
+        duration = action.get("duration_minutes") or _default_duration(
+            action.get("hearing_type"), bool(local_time)
+        )
+        self.store.upsert_hearing({
+            "case_id": case.case_id,
+            "hearing_key": action["hearing_key"],
+            "title": action.get("title")
+                or action["hearing_key"].replace("-", " ").title(),
+            "starts_at_utc": starts_utc,
+            "duration_minutes": duration,
+            "timezone": tz,
+            "location": action.get("location"),
+            "judge": action.get("judge"),
+            "notes": action.get("notes"),
+            "dial_in": action.get("dial_in"),
+            "status": status,
+            "significance": action.get("significance") or "major",
+            "gcal_event_id": None,
+            "docket_id": docket_id,
+            "source_entry_ids": prev_sources,
+        })
 
     # --- per-entry logic ---
 
@@ -543,10 +792,38 @@ class CaseSyncer:
                     docket_id=sticky_docket_id,
                 )
                 self.store.upsert_hearing(merged)
+            elif action.get("local_date"):
+                # Hearing was never in our store (its scheduling entry was
+                # filtered out by the prefilter) but a memo endorsement is
+                # adjourning it. Insert a fresh row directly into
+                # 'cancelled' so the audit trail captures the event.
+                self._insert_terminal_hearing(
+                    case, docket_id, tz, entry, action,
+                    status="cancelled", prev_sources=prev_sources,
+                )
+            else:
+                log.warning(
+                    "CANCEL on unknown key with no local_date: "
+                    "case=%s key=%r entry=%s — dropping",
+                    case.case_id, key, entry["id"],
+                )
             return
 
         if atype == "MARK_HELD":
             if existing:
+                # Date-proximity validation: if the action specifies a date
+                # and it's > 2 days off from the existing hearing's date,
+                # the LLM probably matched the wrong key. Reject so the
+                # auto-held sweep can mark the real hearing later, and so
+                # we don't poison the wrong row's source list.
+                if not _mark_held_date_matches(action, existing):
+                    log.warning(
+                        "MARK_HELD date mismatch: case=%s key=%r "
+                        "existing_starts=%s action_local_date=%s — rejecting",
+                        case.case_id, key, existing.get("starts_at_utc"),
+                        action.get("local_date"),
+                    )
+                    return
                 merged = dict(existing)
                 merged.update(
                     status="held",
@@ -554,6 +831,19 @@ class CaseSyncer:
                     docket_id=sticky_docket_id,
                 )
                 self.store.upsert_hearing(merged)
+            elif action.get("local_date"):
+                # Same as CANCEL-on-unknown: a minute entry for a hearing
+                # we never saw scheduled. Insert directly into 'held'.
+                self._insert_terminal_hearing(
+                    case, docket_id, tz, entry, action,
+                    status="held", prev_sources=prev_sources,
+                )
+            else:
+                log.warning(
+                    "MARK_HELD on unknown key with no local_date: "
+                    "case=%s key=%r entry=%s — dropping",
+                    case.case_id, key, entry["id"],
+                )
             return
 
         # ADD / RESCHEDULE / UPDATE_DETAILS — figure out the new field set.
