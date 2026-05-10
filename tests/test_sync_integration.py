@@ -390,6 +390,75 @@ class TestProcessEntryDirect:
         assert syncer.process_entry(case, 100, e) is False
 
 
+class TestRecapDocumentsPersisted:
+    """The compact recap_documents JSON we render at emit time is owned by
+    process_entry. New docs landing on an existing entry must overwrite
+    the cached JSON so the calendar reflects them on next emit."""
+
+    def test_docs_persisted_for_relevant_entry(
+        self, store: Store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD", "hearing_key": "sentencing-x",
+                 "hearing_type": "sentencing", "title": "Sentencing",
+                 "local_date": "2026-04-14", "local_time": "15:00",
+                 "duration_minutes": 90}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        e = _entry(1, "Sentencing set for 4/14/2026 03:00 PM")
+        e["recap_documents"] = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf",
+             "filepath_local": None, "description": ""},
+        ]
+        assert syncer.process_entry(case, 100, e) is True
+        got = store.get_entry_documents([1])
+        assert got[1][0]["filepath_ia"] == "https://archive.org/65.pdf"
+
+    def test_docs_refresh_when_attachment_added(
+        self, store: Store, case, monkeypatch,
+    ):
+        # First sync sees the main doc; later sync sees main + attachment.
+        # Fingerprint changes (is_available + new doc row), entry
+        # re-processes, persisted JSON updates so emit picks up both URLs.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "UPDATE_DETAILS", "hearing_key": "sentencing-x",
+                 "reason": "no change"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+
+        first = _entry(1, "ORDER Setting Sentencing for 4/14/2026 03:00 PM")
+        first["recap_documents"] = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf"},
+        ]
+        syncer.process_entry(case, 100, first)
+
+        second = _entry(
+            1, "ORDER Setting Sentencing for 4/14/2026 03:00 PM",
+            date_filed="2026-01-02",
+        )
+        second["recap_documents"] = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf"},
+            {"id": 6, "document_number": 65, "attachment_number": 1,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65a.pdf"},
+        ]
+        assert syncer.process_entry(case, 100, second) is True
+        got = store.get_entry_documents([1])
+        urls = [d["filepath_ia"] for d in got[1]]
+        assert urls == [
+            "https://archive.org/65.pdf",
+            "https://archive.org/65a.pdf",
+        ]
+
+
 class TestCancelOnUnknownKey:
     """Adjournment memo for a hearing whose original scheduling entry was
     filtered out before reaching the LLM should still leave a cancelled

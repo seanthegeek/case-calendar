@@ -89,6 +89,52 @@ class TestEntries:
     def test_get_entry_numbers_empty_input(self, store: Store):
         assert store.get_entry_numbers([]) == {}
 
+    def test_get_entry_documents_roundtrip(self, store: Store):
+        docs = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf",
+             "filepath_local": "recap/x/65.pdf", "description": None},
+            {"id": 6, "document_number": 65, "attachment_number": 1,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65a.pdf",
+             "filepath_local": "recap/x/65a.pdf", "description": "Exhibit A"},
+        ]
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, recap_documents=docs)
+        # Unknown ids are silently dropped. Filter-failed stubs have no docs.
+        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp",
+                         entry_number=66)
+        got = store.get_entry_documents([100, 101, 999])
+        assert set(got) == {100}
+        assert got[100] == docs
+
+    def test_get_entry_documents_overwrite_on_reprocess(self, store: Store):
+        # Adding a doc to an existing entry is the "watch for new
+        # documents" case: re-marking with a longer list replaces the
+        # cached JSON so emit-time descriptions show the new doc.
+        first = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf",
+             "filepath_local": None, "description": None},
+        ]
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, recap_documents=first)
+        second = first + [
+            {"id": 6, "document_number": 65, "attachment_number": 1,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65a.pdf",
+             "filepath_local": None, "description": None},
+        ]
+        store.mark_entry(1, 100, "2026-01-02T00:00:00Z", "fp2",
+                         entry_number=65, recap_documents=second)
+        got = store.get_entry_documents([100])
+        assert got[100] == second
+
+    def test_get_entry_documents_empty_input(self, store: Store):
+        assert store.get_entry_documents([]) == {}
+
     def test_get_recent_relevant_entries_limit(self, store: Store):
         for i in range(10):
             ts = f"2026-01-{i+1:02d}T00:00:00Z"

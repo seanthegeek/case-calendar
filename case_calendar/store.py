@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS entries (
     fingerprint TEXT NOT NULL,
     description TEXT,            -- raw entry text; used to resolve cross-refs
     short_description TEXT,
+    recap_documents TEXT,        -- JSON list of attached docs; surfaced as URLs in event description
     processed_at TEXT NOT NULL,
     PRIMARY KEY (docket_id, entry_id)
 );
@@ -137,6 +138,7 @@ class Store:
             ("entries", "entry_number", "INTEGER"),
             ("entries", "description", "TEXT"),
             ("entries", "short_description", "TEXT"),
+            ("entries", "recap_documents", "TEXT"),
             ("hearings", "m365_event_id", "TEXT"),
             ("deadlines", "m365_event_id", "TEXT"),
         ]:
@@ -267,13 +269,19 @@ class Store:
         entry_number: Optional[int] = None,
         description: Optional[str] = None,
         short_description: Optional[str] = None,
+        recap_documents: Optional[list[dict[str, Any]]] = None,
     ) -> None:
+        # Always overwrite recap_documents — adding/removing docs is exactly
+        # the change we want to surface in the calendar. Pass None to leave
+        # the existing JSON untouched (filter-failed entries don't supply it).
+        docs_json = json.dumps(recap_documents) if recap_documents is not None else None
         self.conn.execute(
             """
             INSERT INTO entries
               (docket_id, entry_id, entry_number, date_filed, date_modified,
-               fingerprint, description, short_description, processed_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               fingerprint, description, short_description, recap_documents,
+               processed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(docket_id, entry_id) DO UPDATE SET
               entry_number=COALESCE(excluded.entry_number, entries.entry_number),
               date_filed=COALESCE(excluded.date_filed, entries.date_filed),
@@ -282,6 +290,9 @@ class Store:
               description=COALESCE(excluded.description, entries.description),
               short_description=COALESCE(
                   excluded.short_description, entries.short_description
+              ),
+              recap_documents=COALESCE(
+                  excluded.recap_documents, entries.recap_documents
               ),
               processed_at=excluded.processed_at
             """,
@@ -294,6 +305,7 @@ class Store:
                 fingerprint,
                 description,
                 short_description,
+                docs_json,
                 _now(),
             ),
         )
@@ -363,6 +375,36 @@ class Store:
             ids,
         ).fetchall()
         return {r["entry_id"]: r["entry_number"] for r in rows}
+
+    def get_entry_documents(
+        self, entry_ids: Iterable[int]
+    ) -> dict[int, list[dict[str, Any]]]:
+        """Return ``entry_id -> [recap_document, ...]`` for known entries.
+
+        Each list element is the compact JSON we persist on the entry row
+        (id, document_number, attachment_number, description, status flags,
+        filepath_ia, filepath_local). Used by emit-time description rendering
+        to surface clickable document URLs next to each source entry. Entries
+        with NULL recap_documents (pre-migration rows, or filter-failed
+        stubs) and unknown ids are omitted.
+        """
+        ids = [int(i) for i in entry_ids]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT entry_id, recap_documents FROM entries "
+            f"WHERE entry_id IN ({placeholders}) "
+            f"AND recap_documents IS NOT NULL",
+            ids,
+        ).fetchall()
+        out: dict[int, list[dict[str, Any]]] = {}
+        for r in rows:
+            try:
+                out[r["entry_id"]] = json.loads(r["recap_documents"]) or []
+            except (TypeError, ValueError):
+                continue
+        return out
 
     def latest_entry_modified(self, docket_id: int) -> Optional[str]:
         row = self.conn.execute(

@@ -172,6 +172,7 @@ class GoogleCalendarSync:
             source_entry_ids=h.get("source_entry_ids"),
             docket_entry_numbers=h.get("docket_entry_numbers"),
             judge=h.get("judge"),
+            documents=h.get("documents"),
         )
 
         body: dict = {

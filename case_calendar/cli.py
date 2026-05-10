@@ -242,6 +242,16 @@ def emit_calendars(
                 h["docket_entry_numbers"] = [
                     num_map[i] for i in source_ids if i in num_map
                 ]
+                # Per-entry document URLs (IA mirror or CL storage). Order
+                # by source-entry chronology, with each entry's main doc
+                # ahead of its attachments. The compact JSON we persist is
+                # already sorted within each entry, so just flatten.
+                doc_map = store.get_entry_documents(source_ids)
+                docs: list[dict] = []
+                for eid in source_ids:
+                    docs.extend(doc_map.get(eid, []))
+                if docs:
+                    h["documents"] = docs
             # Notification config travels on the hearing dict so both ICS
             # and gcal renderers see it.
             if notify_emails:

@@ -200,6 +200,40 @@ class TestEmitCalendars:
         unfolded = text.replace("\r\n ", "")
         assert "Docket entries: 65\\, 82" in unfolded
 
+    def test_document_urls_rendered_into_ics(self, store, cfg):
+        # Each source entry's recap_documents JSON is pulled at emit time
+        # and flattened into the hearing's `documents` list, then rendered
+        # one-line-per-doc by the description builder.
+        docs_1001 = [
+            {"id": 5, "document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65.pdf"},
+            {"id": 6, "document_number": 65, "attachment_number": 1,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/65a.pdf"},
+        ]
+        store.mark_entry(100, 1001, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, description="ORDER",
+                         recap_documents=docs_1001)
+        store.upsert_hearing({
+            "case_id": "us-v-x", "hearing_key": "sentencing-x",
+            "title": "Sentencing", "starts_at_utc": "2099-04-14T15:00:00+00:00",
+            "duration_minutes": 90, "timezone": "America/New_York",
+            "status": "scheduled", "significance": "major",
+            "docket_id": 100, "source_entry_ids": [1001],
+        })
+        emit_calendars(cfg, store, only_calendars={"cyber"})
+        # Read bytes so the on-disk CRLF survives Python's text-mode
+        # newline translation; otherwise the long second URL gets folded
+        # ("\r\n ") and the fold normalizes to "\n " under text mode, so
+        # the literal "\r\n " unfold misses it.
+        from pathlib import Path
+        text = Path(cfg["calendars"]["cyber"]["ics_path"]).read_bytes().decode()
+        unfolded = text.replace("\r\n ", "")
+        assert "Documents:" in unfolded
+        assert "65: https://archive.org/65.pdf" in unfolded
+        assert "65-1: https://archive.org/65a.pdf" in unfolded
+
     def test_gcal_skipped_when_push_gcal_false(self, store, cfg):
         # Adding a gcal id must NOT trigger a push when push_gcal is off
         # (the daemon path defaults to off until the operator opts in).

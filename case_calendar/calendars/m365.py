@@ -316,6 +316,7 @@ class M365CalendarSync:
             source_entry_ids=h.get("source_entry_ids"),
             docket_entry_numbers=h.get("docket_entry_numbers"),
             judge=h.get("judge"),
+            documents=h.get("documents"),
         )
 
         start_dt = datetime.fromisoformat(h["starts_at_utc"])

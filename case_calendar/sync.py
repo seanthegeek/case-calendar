@@ -67,6 +67,45 @@ def _docket_implies_deadlines(docket_number: str | None) -> Optional[bool]:
     return not bool(_CRIMINAL_DOCKET_TYPES.search(docket_number))
 
 
+def _compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact projection of an entry's recap_documents for storage.
+
+    Keeps the fields we need at emit time (status flags + URLs + position
+    info), drops PDF blob fields and CL bookkeeping we don't render. Ordered
+    main-doc-first, then attachments by number, so calendar descriptions
+    list documents in PACER's natural order.
+    """
+    out: list[dict[str, Any]] = []
+    for rd in entry.get("recap_documents") or []:
+        out.append({
+            "id": rd.get("id"),
+            "document_number": rd.get("document_number"),
+            "attachment_number": rd.get("attachment_number"),
+            "description": (rd.get("description") or "").strip() or None,
+            "is_available": bool(rd.get("is_available")),
+            "is_sealed": bool(rd.get("is_sealed")),
+            "filepath_ia": rd.get("filepath_ia") or None,
+            "filepath_local": rd.get("filepath_local") or None,
+        })
+
+    def _key(d: dict[str, Any]) -> tuple[int, int]:
+        # Sort attachment_number=None / 0 (the main doc) before numbered
+        # attachments. document_number normally matches across rows on the
+        # same entry, but treat it as the primary sort just in case.
+        try:
+            dn = int(d.get("document_number") or 0)
+        except (TypeError, ValueError):
+            dn = 0
+        try:
+            an = int(d.get("attachment_number") or 0)
+        except (TypeError, ValueError):
+            an = 0
+        return (dn, an)
+
+    out.sort(key=_key)
+    return out
+
+
 def fingerprint_entry(entry: dict[str, Any]) -> str:
     """Hash that changes when meaningful entry state changes.
 
@@ -372,7 +411,10 @@ class CaseSyncer:
         # cross-referenced by hearing orders — storing their text is dead
         # weight. We still write a stub row (fingerprint + entry_number +
         # date_modified) so dedup and the entry-level high-water mark keep
-        # working without re-iterating these every sync.
+        # working without re-iterating these every sync. recap_documents is
+        # only persisted for hearing-relevant entries — those are the ones
+        # whose ids land on hearing.source_entry_ids and get looked up at
+        # emit time.
         self.store.mark_entry(
             docket_id,
             eid,
@@ -382,6 +424,7 @@ class CaseSyncer:
             entry_number=entry.get("entry_number"),
             description=entry.get("description") if processed else None,
             short_description=entry.get("short_description") if processed else None,
+            recap_documents=_compact_recap_documents(entry) if processed else None,
         )
         return processed
 

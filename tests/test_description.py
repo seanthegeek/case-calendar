@@ -89,6 +89,84 @@ def test_docket_entry_numbers_omitted_when_none_known():
     assert "CourtListener entry IDs: 1001" in out
 
 
+def test_documents_block_renders_with_ia_url():
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        documents=[
+            {"document_number": 65, "attachment_number": None,
+             "is_available": True, "is_sealed": False,
+             "filepath_ia": "https://archive.org/foo.pdf"},
+        ],
+    )
+    assert "Documents:\n65: https://archive.org/foo.pdf" in out
+
+
+def test_documents_block_falls_back_to_cl_storage_when_no_ia():
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        documents=[
+            {"document_number": 65, "is_available": True, "is_sealed": False,
+             "filepath_local": "recap/gov.uscourts.cand.1/65.0.pdf"},
+        ],
+    )
+    assert "65: https://storage.courtlistener.com/recap/gov.uscourts.cand.1/65.0.pdf" in out
+
+
+def test_documents_block_renders_attachments_with_suffix():
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        documents=[
+            {"document_number": 65, "attachment_number": 0,
+             "is_available": True, "filepath_ia": "https://archive.org/65.pdf"},
+            {"document_number": 65, "attachment_number": 1,
+             "is_available": True, "filepath_ia": "https://archive.org/65a.pdf"},
+        ],
+    )
+    assert "65: https://archive.org/65.pdf" in out
+    assert "65-1: https://archive.org/65a.pdf" in out
+
+
+def test_documents_block_marks_sealed_and_unavailable():
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        documents=[
+            {"document_number": 65, "is_sealed": True, "is_available": False},
+            {"document_number": 66, "is_sealed": False, "is_available": False},
+        ],
+    )
+    assert "65: (sealed)" in out
+    assert "66: (not yet uploaded to RECAP)" in out
+
+
+def test_documents_block_omitted_when_no_docs():
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        documents=[],
+    )
+    assert "Documents:" not in out
+
+
+def test_documents_block_above_entry_numbers():
+    # Order in the body: Documents → Docket entries → CourtListener IDs.
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None, source_entry_ids=[1001],
+        docket_entry_numbers=[65],
+        documents=[{"document_number": 65, "is_available": True,
+                    "filepath_ia": "https://archive.org/65.pdf"}],
+    )
+    sections = out.split("\n\n")
+    docs_idx = next(i for i, s in enumerate(sections) if s.startswith("Documents:"))
+    nums_idx = next(i for i, s in enumerate(sections) if s.startswith("Docket entries:"))
+    ids_idx = next(i for i, s in enumerate(sections) if s.startswith("CourtListener entry IDs:"))
+    assert docs_idx < nums_idx < ids_idx
+
+
 def test_no_source_text_block_emitted():
     # Description shows only the structured fields plus the entry-id audit
     # line. The raw docket prose lives one click away at the Docket: URL.
