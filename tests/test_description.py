@@ -57,6 +57,38 @@ def test_absolute_url_kept_intact_when_already_full():
     assert "https://www.courtlistener.comhttps" not in out
 
 
+def test_docket_entry_numbers_render_above_cl_ids():
+    # Subscribers see PACER positions ("[65]") in the CL UI; surfacing them
+    # in the description spares a lookup. The line lives directly above the
+    # CL entry IDs so the audit trail reads docket-first, ID-second.
+    out = build(
+        notes=None, dial_in=None, docket_number="1:25-cr-1",
+        court_citation="D. Mass.", docket_absolute_url="/d/1/",
+        source_entry_ids=[1001, 1002],
+        docket_entry_numbers=[65, 66],
+    )
+    sections = out.split("\n\n")
+    docket_idx = next(i for i, s in enumerate(sections)
+                      if s.startswith("Docket entries:"))
+    cl_idx = next(i for i, s in enumerate(sections)
+                  if s.startswith("CourtListener entry IDs:"))
+    assert docket_idx < cl_idx
+    assert "Docket entries: 65, 66" in out
+
+
+def test_docket_entry_numbers_omitted_when_none_known():
+    # All source entries lacked a docket position (paperless minute orders);
+    # the line is skipped entirely rather than rendering an empty list.
+    out = build(
+        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
+        docket_entry_numbers=[],
+    )
+    assert "Docket entries:" not in out
+    assert "CourtListener entry IDs: 1001" in out
+
+
 def test_no_source_text_block_emitted():
     # Description shows only the structured fields plus the entry-id audit
     # line. The raw docket prose lives one click away at the Docket: URL.

@@ -179,6 +179,27 @@ class TestEmitCalendars:
         assert set(results) == {"cyber"}
         assert sentinel.read_text() == "SHOULD-NOT-BE-OVERWRITTEN"
 
+    def test_docket_entry_numbers_rendered_into_ics(self, store, cfg):
+        # The hearing's source_entry_ids should be resolved against the
+        # entries table to surface PACER docket positions in the description.
+        store.mark_entry(100, 1001, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, description="ORDER")
+        store.mark_entry(100, 1002, "2026-01-02T00:00:00Z", "fp",
+                         entry_number=82, description="ORDER")
+        store.upsert_hearing({
+            "case_id": "us-v-x", "hearing_key": "sentencing-x",
+            "title": "Sentencing", "starts_at_utc": "2099-04-14T15:00:00+00:00",
+            "duration_minutes": 90, "timezone": "America/New_York",
+            "status": "scheduled", "significance": "major",
+            "docket_id": 100, "source_entry_ids": [1001, 1002],
+        })
+        emit_calendars(cfg, store, only_calendars={"cyber"})
+        text = open(cfg["calendars"]["cyber"]["ics_path"]).read()
+        # ICS folds long lines at 75 octets, so the literal text may be
+        # broken across "\r\n " continuations; un-fold before asserting.
+        unfolded = text.replace("\r\n ", "")
+        assert "Docket entries: 65\\, 82" in unfolded
+
     def test_gcal_skipped_when_push_gcal_false(self, store, cfg):
         # Adding a gcal id must NOT trigger a push when push_gcal is off
         # (the daemon path defaults to off until the operator opts in).

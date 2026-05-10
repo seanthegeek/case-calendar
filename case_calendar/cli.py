@@ -231,6 +231,17 @@ def emit_calendars(
                 court_id = meta.get("court_id")
                 if court_id:
                     h["court_citation"] = store.get_court_citation(court_id)
+            # PACER docket-position numbers ("[65]") for the source entries —
+            # surfaced in the description so subscribers can find the cited
+            # entry in the CL UI without copy-pasting the opaque CL entry id.
+            # Some entries (paperless minute orders) lack a position number;
+            # those are silently dropped.
+            source_ids = h.get("source_entry_ids") or []
+            if source_ids:
+                num_map = store.get_entry_numbers(source_ids)
+                h["docket_entry_numbers"] = [
+                    num_map[i] for i in source_ids if i in num_map
+                ]
             # Notification config travels on the hearing dict so both ICS
             # and gcal renderers see it.
             if notify_emails:

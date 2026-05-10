@@ -109,6 +109,7 @@ def render_ics(*, calendar_name: str, hearings: Iterable[dict]) -> str:
             court_citation=h.get("court_citation"),
             docket_absolute_url=h.get("docket_absolute_url"),
             source_entry_ids=h.get("source_entry_ids"),
+            docket_entry_numbers=h.get("docket_entry_numbers"),
             judge=h.get("judge"),
         )
 

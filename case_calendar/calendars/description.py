@@ -8,6 +8,8 @@ same fields, so the formatting lives here. Each event gets:
   * dial-in / video link
   * case citation: "<docket_number> (<court citation>)"
   * link to the CourtListener docket page
+  * the list of source PACER docket entry numbers (what subscribers see in
+    the CL UI — "[65]")
   * the list of source CourtListener entry IDs (audit trail; the docket URL
     is one click away for anyone who wants the raw prose)
 """
@@ -50,6 +52,7 @@ def build(
     court_citation: Optional[str],
     docket_absolute_url: Optional[str],
     source_entry_ids: Iterable[int] | None,
+    docket_entry_numbers: Iterable[int] | None = None,
     judge: Optional[str] = None,
 ) -> str:
     parts: list[str] = []
@@ -81,6 +84,10 @@ def build(
             else f"{CL_BASE}{docket_absolute_url}"
         )
         parts.append(f"Docket: {url}")
+
+    nums = list(docket_entry_numbers or [])
+    if nums:
+        parts.append("Docket entries: " + ", ".join(str(n) for n in nums))
 
     ids = list(source_entry_ids or [])
     if ids:

@@ -24,7 +24,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Optional
+from typing import Any, Iterable, Iterator, Optional
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dockets (
@@ -341,6 +341,28 @@ class Store:
             (docket_id, before_date_modified, limit),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_entry_numbers(
+        self, entry_ids: Iterable[int]
+    ) -> dict[int, int]:
+        """Return ``entry_id -> entry_number`` for known entries.
+
+        Used by emit-time description rendering to surface PACER docket
+        positions (the "[65]" subscribers see in the CL UI) alongside the
+        opaque CourtListener entry IDs. Entries with NULL entry_number
+        (rare — pre-migration rows) and unknown ids are omitted.
+        """
+        ids = [int(i) for i in entry_ids]
+        if not ids:
+            return {}
+        placeholders = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT entry_id, entry_number FROM entries "
+            f"WHERE entry_id IN ({placeholders}) "
+            f"AND entry_number IS NOT NULL",
+            ids,
+        ).fetchall()
+        return {r["entry_id"]: r["entry_number"] for r in rows}
 
     def latest_entry_modified(self, docket_id: int) -> Optional[str]:
         row = self.conn.execute(

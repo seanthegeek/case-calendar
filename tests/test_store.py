@@ -75,6 +75,20 @@ class TestEntries:
         )
         assert [r["entry_id"] for r in recent] == [100]
 
+    def test_get_entry_numbers(self, store: Store):
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65)
+        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp",
+                         entry_number=66)
+        # Entry without an entry_number — paperless minute order.
+        store.mark_entry(1, 102, "2026-01-03T00:00:00Z", "fp")
+        got = store.get_entry_numbers([100, 101, 102, 999])
+        # 102 omitted (no number), 999 omitted (unknown).
+        assert got == {100: 65, 101: 66}
+
+    def test_get_entry_numbers_empty_input(self, store: Store):
+        assert store.get_entry_numbers([]) == {}
+
     def test_get_recent_relevant_entries_limit(self, store: Store):
         for i in range(10):
             ts = f"2026-01-{i+1:02d}T00:00:00Z"
