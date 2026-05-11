@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs on the same branch when a new commit lands —
+# we only need the latest result, not every intermediate one.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          # Cache the uv-managed virtualenv + Python install across runs so
+          # the test job starts in seconds once warm.
+          enable-cache: true
+
+      - name: Install Python and dependencies
+        # requires-python = ">=3.13" in pyproject.toml; uv resolves and
+        # installs the matching interpreter. --extra test pulls in pytest
+        # and pytest-cov.
+        run: uv sync --extra test
+
+      - name: Run tests with branch coverage
+        # --cov-fail-under is the regression floor, not the bar to clear.
+        # The local invariant in AGENTS.md is "touched modules held or
+        # gained coverage"; 90% here just catches major drops (deleted
+        # test files, wholesale rewrites) without flagging the ±1pp noise
+        # that legitimate refactors cause.
+        run: |
+          uv run pytest \
+            --cov=case_calendar \
+            --cov-branch \
+            --cov-report=term-missing \
+            --cov-fail-under=90
