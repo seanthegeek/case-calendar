@@ -278,6 +278,56 @@ def _deadlines_for_docket(store: Store, case_id: str, docket_id: int) -> list[di
     ]
 
 
+def _borrow_operative_from_siblings(
+    *,
+    cl: CourtListener,
+    store: Store,
+    case: CaseConfig,
+    primary_docket_id: int,
+    allow_ocr: bool = True,
+) -> list[dict[str, Any]]:
+    """Pull operative-pleading text from any sibling docket on the same case.
+
+    Stops at the first sibling that yields extractable operative text.
+    Tags the returned entry descriptions with the sibling's docket number
+    and court so the LLM prompt makes the cross-docket borrowing explicit
+    — without that label, the model writes the summary as if the
+    complaint had been filed in the primary docket (e.g. attributing a
+    district-court complaint to the appellate court).
+    """
+    for sibling_id in case.dockets:
+        if sibling_id == primary_docket_id:
+            continue
+        meta = store.get_docket_meta(sibling_id) or {}
+        sibling_docket_number = meta.get("docket_number")
+        sibling_court_citation = (
+            store.get_court_citation(meta["court_id"])
+            if meta.get("court_id") else None
+        )
+        log.info(
+            "summary: docket %s has no operative pleading — borrowing from sibling %s (%s)",
+            primary_docket_id, sibling_id, sibling_docket_number,
+        )
+        try:
+            sibling_operative, _ = find_operative_documents(cl, sibling_id)
+        except Exception:
+            log.exception(
+                "summary: failed to scan sibling docket %s for operative documents",
+                sibling_id,
+            )
+            continue
+        borrowed = _attach_text(sibling_operative, allow_ocr=allow_ocr)
+        if not borrowed:
+            continue
+        label_bits = [b for b in (sibling_docket_number, sibling_court_citation) if b]
+        label = " ".join(label_bits) or f"docket {sibling_id}"
+        for doc in borrowed:
+            existing = doc.get("description") or "operative pleading"
+            doc["description"] = f"{existing} [from sibling {label}]"
+        return borrowed
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Per-docket entry point
 # ---------------------------------------------------------------------------
@@ -324,6 +374,21 @@ def summarize_docket(
 
     operative_docs = _attach_text(operative, allow_ocr=allow_ocr)
     disposition_docs = _attach_text(dispositions, allow_ocr=allow_ocr)
+
+    if not operative_docs and len(case.dockets) > 1:
+        # Appellate dockets (and parallel filings that pivot off a sibling)
+        # don't re-file their own complaint — the opener is a clerical
+        # "case opened, notice of appeal from <lower court>" entry, which
+        # the operative-pleading regex correctly refuses to match. Borrow
+        # the operative text from a sibling docket on the same case_id so
+        # we still get a summary; this docket's own entries continue to
+        # supply dispositions and the structured-events scaffold so the
+        # framing stays appellate-perspective rather than collapsing into
+        # the trial-court narrative.
+        operative_docs = _borrow_operative_from_siblings(
+            cl=cl, store=store, case=case,
+            primary_docket_id=docket_id, allow_ocr=allow_ocr,
+        )
 
     if not operative_docs:
         log.warning(
