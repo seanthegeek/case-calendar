@@ -126,6 +126,9 @@ calendars:
     # m365_client_id above and one interactive run to stage auth.
     # m365_calendar_id: AAMkADExAAA...   # Outlook calendar id
     # m365_use_default_calendar: true
+  natsec:
+    name: "National security cases"
+    ics_path: out/natsec.ics
 
 cases:
   # ---- Anthropic v. DOW family ----
@@ -197,8 +200,8 @@ cases:
     calendar: cybercrime
     dockets: [69459808]
 
-  # ---- Other tech / cyber ----
+  # ---- National security ----
   - id: us-v-mcgonigal
     name: "United States v. McGonigal"
-    calendar: cybercrime
+    calendar: natsec
     dockets: [66749883]
