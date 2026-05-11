@@ -177,6 +177,19 @@ ol.cases > li {
   border-bottom: 1px solid var(--border);
 }
 ol.cases > li:last-child { border-bottom: 0; }
+ol.cases > li.truncated { display: none; }
+button.show-more {
+  font: inherit;
+  background: var(--bg);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  margin-top: 0.8rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+button.show-more:hover { background: var(--hover-bg); }
 ol.cases h3 { font-size: 1.15rem; margin: 0 0 0.3rem 0; font-weight: 600; }
 .summary {
   margin: 0.6rem 0;
@@ -261,9 +274,12 @@ _RUNTIME_JS = """
   applyToggle();
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyToggle);
 
-  // Per-section sort. Each <li.case> carries data-name / data-filed /
-  // data-activity; we re-append in the chosen order. Direction toggles
-  // ascending/descending without re-reading the DOM.
+  // Per-section sort + truncation. Each <li.case> carries
+  // data-name / data-filed / data-activity; we re-append in the chosen
+  // order, then hide everything past VISIBLE_DEFAULT unless the section
+  // has been expanded. The hidden count + label update live in
+  // applyTruncation so they stay in sync after every sort change.
+  var VISIBLE_DEFAULT = 3;
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
@@ -282,6 +298,27 @@ _RUNTIME_JS = """
       return 0;
     });
     items.forEach(function(li) { list.appendChild(li); });
+    applyTruncation(section);
+  }
+  function applyTruncation(section) {
+    var expanded = section.getAttribute('data-expanded') === 'true';
+    var items = section.querySelectorAll('ol.cases > li');
+    var hidden = 0;
+    for (var i = 0; i < items.length; i++) {
+      if (!expanded && i >= VISIBLE_DEFAULT) {
+        items[i].classList.add('truncated');
+        hidden++;
+      } else {
+        items[i].classList.remove('truncated');
+      }
+    }
+    var btn = section.querySelector('button.show-more');
+    if (btn) {
+      btn.textContent = expanded
+        ? 'Show fewer'
+        : 'Show all (' + hidden + ' more)';
+      btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    }
   }
   document.querySelectorAll('section.calendar').forEach(function(section) {
     section.querySelector('select.sort').addEventListener('change', function() {
@@ -290,7 +327,15 @@ _RUNTIME_JS = """
     section.querySelector('select.dir').addEventListener('change', function() {
       sortCases(section);
     });
-    sortCases(section);  // apply initial order
+    var sm = section.querySelector('button.show-more');
+    if (sm) {
+      sm.addEventListener('click', function() {
+        var cur = section.getAttribute('data-expanded') === 'true';
+        section.setAttribute('data-expanded', cur ? 'false' : 'true');
+        applyTruncation(section);
+      });
+    }
+    sortCases(section);  // apply initial order + truncation
   });
 })();
 """
@@ -451,11 +496,22 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
       }
     """
     subscribe = _render_subscribe(calendar["links"])
-    case_rows = "".join(_render_case(c) for c in calendar.get("cases") or [])
+    cases = calendar.get("cases") or []
+    case_rows = "".join(_render_case(c) for c in cases)
     if not case_rows:
         case_rows = '<li class="empty"><em>No cases configured.</em></li>'
+    # JS hides any cases past index 2 and updates the button label after
+    # sorting. We render the button with the correct initial count so users
+    # who block JS still see the full list and the button is just inert.
+    visible_default = 3
+    hidden = max(0, len(cases) - visible_default)
+    show_more = (
+        f'<button class="show-more" type="button" aria-expanded="false">'
+        f'Show all ({hidden} more)</button>'
+    ) if hidden else ""
     return (
-        f'<section class="calendar" data-cal="{_esc(calendar["id"])}">'
+        f'<section class="calendar" data-cal="{_esc(calendar["id"])}" '
+        f'data-expanded="false">'
         f'<header>'
         f'<h2>{_esc(calendar.get("name") or calendar["id"])}</h2>'
         f'{subscribe}'
@@ -476,6 +532,7 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'</label>'
         f'</div>'
         f'<ol class="cases">{case_rows}</ol>'
+        f'{show_more}'
         f'</section>'
     )
 
