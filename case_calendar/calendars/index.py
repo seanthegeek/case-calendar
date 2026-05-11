@@ -266,7 +266,7 @@ _RUNTIME_JS = """
   // ascending/descending without re-reading the DOM.
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
-    var asc = section.querySelector('input.dir').checked;
+    var asc = section.querySelector('select.dir').value === 'asc';
     var key = sel.value;
     var list = section.querySelector('ol.cases');
     var items = Array.prototype.slice.call(list.children);
@@ -287,7 +287,7 @@ _RUNTIME_JS = """
     section.querySelector('select.sort').addEventListener('change', function() {
       sortCases(section);
     });
-    section.querySelector('input.dir').addEventListener('change', function() {
+    section.querySelector('select.dir').addEventListener('change', function() {
       sortCases(section);
     });
     sortCases(section);  // apply initial order
@@ -468,7 +468,12 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'<option value="name">Case name</option>'
         f'</select>'
         f'</label>'
-        f'<label><input type="checkbox" class="dir"> Ascending</label>'
+        f'<label>Direction '
+        f'<select class="dir">'
+        f'<option value="desc" selected>Descending</option>'
+        f'<option value="asc">Ascending</option>'
+        f'</select>'
+        f'</label>'
         f'</div>'
         f'<ol class="cases">{case_rows}</ol>'
         f'</section>'

@@ -495,5 +495,5 @@ case_calendar/
     m365.py           # Microsoft Graph (msgraph-sdk + azure-identity)
 scripts/
   reprocess_entries.py    # re-run LLM against stored entries (after prompt changes)
-  classify_significance.py # bulk-classify NULL-significance hearings (read-only)
+  classify_significance.py # classify hearing significance (--all reclassifies, --apply writes)
 ```

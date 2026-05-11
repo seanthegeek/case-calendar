@@ -116,7 +116,7 @@ Without these, the tool still works — it skips PDFs CL hasn't processed and re
 ## One-shot maintenance scripts (`scripts/`)
 
 - **`scripts/reprocess_entries.py <entry_id>...`** — re-run the LLM pipeline against specific stored entries (by CL `entry_id`, not docket position). Builds a synthetic entry from the local store, clears the entry's fingerprint to bypass dedup, and calls `CaseSyncer.process_entry`. Useful after prompt changes when you want to see the new behavior on existing rows. CAUTION: the LLM can allocate fresh `hearing_key`s if it interprets a previously-vague row as multiple specific events — duplicates may need manual cleanup.
-- **`scripts/classify_significance.py`** — bulk-classifies every hearing whose `significance` column is NULL using a focused single-question LLM prompt (no full action extraction, so no risk of the duplicate-key issue above). Prints results to stdout; does NOT write to the DB. Pipe to a file for review and apply selectively.
+- **`scripts/classify_significance.py`** — classifies hearing significance using a focused single-question LLM prompt (no full action extraction, so no risk of the duplicate-key issue above). Default is dry-run on NULL-significance rows; `--all` widens to every row, `--apply` writes verdicts back to the DB.
 
 ## Testing
 
