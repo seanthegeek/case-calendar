@@ -63,8 +63,8 @@ model: claude-opus-4-7
 # overwrite after a prompt or model change).
 #
 # Provider defaults: anthropic/claude-sonnet-4-6, openai/gpt-5.4,
-# gemini/gemini-2.5-pro. Override via `provider` / `model` here or via
-# LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL env vars.
+# gemini/gemini-2.5-pro. Override via `provider` / `model` here, or set
+# LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL in .env (config wins if both).
 # case_summaries:
 #   enabled: true
 #   # provider: anthropic
@@ -199,6 +199,11 @@ cases:
     name: "United States v. Jong Song Hwa et al."
     calendar: cybercrime
     dockets: [69459808]
+
+  - id: us-v-chapman
+    name: "United States v. Chapman"
+    calendar: cybercrime
+    dockets: [68534169]
 
   # ---- National security ----
   - id: us-v-mcgonigal
