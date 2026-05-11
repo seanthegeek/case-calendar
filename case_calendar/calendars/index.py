@@ -537,10 +537,17 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
     )
 
 
+DEFAULT_SITE_DESCRIPTION = (
+    "Subscribable calendar feeds for federal court hearings and filing "
+    "deadlines, sourced from CourtListener and RECAP."
+)
+
+
 def render_index(
     *,
     calendars: Iterable[dict[str, Any]],
     site_title: str = "case-calendar",
+    site_description: str = DEFAULT_SITE_DESCRIPTION,
     generated_at: Optional[datetime] = None,
 ) -> str:
     """Render the full index.html as a string.
@@ -563,6 +570,10 @@ def render_index(
         # own dark theme — Darkreader's "detect dark theme" feature respects
         # this and won't double-darken our palette.
         '<meta name="color-scheme" content="light dark">\n'
+        # Function-based description, not case-list-based: the tracked cases
+        # change but the site's purpose doesn't, so this stays stable across
+        # rebuilds and deployments.
+        f'<meta name="description" content="{_esc(site_description)}">\n'
         f'<title>{_esc(site_title)}</title>\n'
         f'<style>{_STYLES}</style>\n'
         f'<script>{_PREPAINT_JS}</script>\n'
@@ -594,12 +605,17 @@ def write_index(
     *,
     calendars: Iterable[dict[str, Any]],
     site_title: str = "case-calendar",
+    site_description: str = DEFAULT_SITE_DESCRIPTION,
 ) -> None:
     """Render and write the index page to ``index_path``."""
     path = Path(index_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        render_index(calendars=calendars, site_title=site_title),
+        render_index(
+            calendars=calendars,
+            site_title=site_title,
+            site_description=site_description,
+        ),
         encoding="utf-8",
     )
 

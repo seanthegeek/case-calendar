@@ -427,7 +427,11 @@ def emit_calendars(
             public_base_url=cfg.get("public_base_url"),
         )
         site_title = cfg.get("site_title", "case-calendar")
-        write_index(index_path, calendars=models, site_title=site_title)
+        site_description = cfg.get("site_description")
+        kwargs: dict[str, Any] = {"site_title": site_title}
+        if site_description:
+            kwargs["site_description"] = site_description
+        write_index(index_path, calendars=models, **kwargs)
     return out
 
 

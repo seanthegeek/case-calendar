@@ -92,6 +92,25 @@ class TestRenderIndex:
         assert html.rstrip().endswith("</html>")
         assert '<meta charset="utf-8">' in html
 
+    def test_meta_description_default_and_override(self, calendars):
+        # Default is the function-based description that survives the
+        # case list changing; override flows through unescaped-for-content
+        # but HTML-escaped for attribute safety.
+        html = render_index(calendars=calendars)
+        assert (
+            '<meta name="description" content="Subscribable calendar feeds '
+            'for federal court hearings and filing deadlines, sourced from '
+            'CourtListener and RECAP.">'
+        ) in html
+        html = render_index(
+            calendars=calendars,
+            site_description='Custom "feed" description',
+        )
+        assert (
+            '<meta name="description" '
+            'content="Custom &quot;feed&quot; description">'
+        ) in html
+
     def test_declares_color_scheme_for_darkreader(self, calendars):
         # Darkreader treats a page as dark-aware (and skips its own filter)
         # when it sees the color-scheme meta + matching CSS declaration.
