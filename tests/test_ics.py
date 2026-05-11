@@ -219,3 +219,25 @@ class TestRenderIcs:
         ics = render_ics(calendar_name="X", hearings=[_h()])
         assert "ATTENDEE" not in ics
         assert "VALARM" not in ics
+
+    def test_naive_iso_treated_as_utc(self):
+        # The _fmt_local helper promotes naive timestamps to UTC; result
+        # in court tz is the same wall-clock as a tz-aware "+00:00" input.
+        ics = render_ics(
+            calendar_name="X",
+            hearings=[_h(starts_at_utc="2026-04-14T15:00:00",
+                          timezone="America/New_York")],
+        )
+        # 15:00Z → 11:00 EDT.
+        assert "DTSTART;TZID=America/New_York:20260414T110000" in ics
+
+
+class TestWriteIcs:
+    def test_creates_parent_dir(self, tmp_path):
+        from case_calendar.calendars.ics import write_ics
+
+        target = tmp_path / "site" / "cyber.ics"
+        write_ics(target, calendar_name="Cybercrime", hearings=[_h()])
+        assert target.exists()
+        content = target.read_text()
+        assert "BEGIN:VCALENDAR" in content

@@ -234,3 +234,106 @@ class TestSync:
         gcs.service = service
         with pytest.raises(HttpError):
             gcs.sync(calendar_id="cal-x", hearings=[_h()])
+
+    def test_cancelled_non_404_error_propagates(self):
+        # _cancel_if_present should re-raise any non-404 HttpError.
+        events_obj = MagicMock()
+        err = HttpError(resp=MagicMock(status=500), content=b'{"error":"x"}')
+        patch_obj = MagicMock()
+        patch_obj.execute.side_effect = err
+        events_obj.patch.return_value = patch_obj
+        service = MagicMock()
+        service.events.return_value = events_obj
+        gcs = gcal.GoogleCalendarSync.__new__(gcal.GoogleCalendarSync)
+        gcs.service = service
+        with pytest.raises(HttpError):
+            gcs.sync(calendar_id="cal-x", hearings=[_h(status="cancelled")])
+
+
+class TestTimeHelpers:
+    def test_to_rfc3339_normalizes_naive_to_utc(self):
+        # A naive ISO string is interpreted as UTC and re-emitted with Z.
+        assert gcal._to_rfc3339("2026-04-14T15:00:00") == "2026-04-14T15:00:00Z"
+
+    def test_to_rfc3339_normalizes_offset_to_utc(self):
+        # -04:00 -> +00:00, ie 19:00Z for 15:00 EDT.
+        assert gcal._to_rfc3339("2026-04-14T15:00:00-04:00") == "2026-04-14T19:00:00Z"
+
+    def test_to_local_rfc3339_naive_input_treated_as_utc(self):
+        # Naive timestamps fall through the tzinfo-is-None branch (line 55).
+        out = gcal._to_local_rfc3339("2026-04-14T15:00:00", "America/New_York")
+        assert out == "2026-04-14T11:00:00"  # 15Z = 11 EDT
+
+
+class TestBuildService:
+    """The OAuth-aware constructor path. We don't actually hit Google — we
+    monkey-patch Credentials / InstalledAppFlow / build to record what
+    branch fired."""
+
+    def test_existing_valid_token_skips_flow(self, monkeypatch, tmp_path):
+        from case_calendar.calendars import gcal as gcal_mod
+
+        token = tmp_path / "tok.json"
+        token.write_text("{}")
+        # build_service uses Credentials.from_authorized_user_file -> returns
+        # a creds object with .valid=True so the flow is skipped entirely.
+        fake_creds = MagicMock()
+        fake_creds.valid = True
+        monkeypatch.setattr(
+            gcal_mod.Credentials, "from_authorized_user_file",
+            lambda path, scopes: fake_creds,
+        )
+        built = MagicMock(name="service")
+        monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: built)
+
+        gcs = gcal_mod.GoogleCalendarSync(
+            credentials_path="/c.json", token_path=token,
+        )
+        assert gcs.service is built
+
+    def test_expired_token_refreshes(self, monkeypatch, tmp_path):
+        from case_calendar.calendars import gcal as gcal_mod
+
+        token = tmp_path / "tok.json"
+        token.write_text("{}")
+        fake_creds = MagicMock()
+        fake_creds.valid = False
+        fake_creds.expired = True
+        fake_creds.refresh_token = "refresh"
+        fake_creds.to_json.return_value = "{}"  # must be str for Path.write_text
+
+        monkeypatch.setattr(
+            gcal_mod.Credentials, "from_authorized_user_file",
+            lambda path, scopes: fake_creds,
+        )
+        monkeypatch.setattr(gcal_mod, "Request", MagicMock())
+        monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
+
+        gcs = gcal_mod.GoogleCalendarSync(
+            credentials_path="/c.json", token_path=token,
+        )
+        fake_creds.refresh.assert_called_once()
+        # Token cache rewritten with refreshed creds.
+        assert token.exists()
+
+    def test_no_token_runs_installed_app_flow(self, monkeypatch, tmp_path):
+        from case_calendar.calendars import gcal as gcal_mod
+
+        # No token file exists. _build_service must run InstalledAppFlow.
+        token = tmp_path / "missing.json"
+        flow_obj = MagicMock()
+        new_creds = MagicMock()
+        new_creds.to_json.return_value = "{}"
+        flow_obj.run_local_server.return_value = new_creds
+        monkeypatch.setattr(
+            gcal_mod.InstalledAppFlow, "from_client_secrets_file",
+            lambda path, scopes: flow_obj,
+        )
+        monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
+
+        gcs = gcal_mod.GoogleCalendarSync(
+            credentials_path="/c.json", token_path=token,
+        )
+        flow_obj.run_local_server.assert_called_once()
+        # Token cache written after flow completes.
+        assert token.exists()

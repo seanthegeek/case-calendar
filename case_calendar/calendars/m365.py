@@ -54,13 +54,6 @@ def _correlation_key(case_id: str, hearing_key: str) -> str:
     return hashlib.sha1(f"{case_id}::{hearing_key}".encode()).hexdigest()
 
 
-def _to_local_dt(iso_utc: str, tz: str) -> str:
-    dt = datetime.fromisoformat(iso_utc)
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%dT%H:%M:%S")
-
-
 class M365CalendarSync:
     """Pushes hearings + deadlines to a Microsoft 365 / Outlook calendar.
 

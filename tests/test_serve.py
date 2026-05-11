@@ -306,3 +306,207 @@ class TestAutoEmit:
         assert resp["handled"]["emitted_calendars"] == []
         # Hearing row still landed — we don't lose data when the renderer fails.
         assert len(store.get_hearings("us-v-x")) == 1
+
+
+class TestRequestErrors:
+    """Coverage for the edge-case responses in WebhookHandler._read_body /
+    do_GET / do_POST."""
+
+    def test_get_unknown_path_404(self, base_url):
+        url, _, _ = base_url
+        try:
+            urllib.request.urlopen(f"{url}/no-such-path")
+            assert False, "expected 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+
+    def test_missing_content_length_411(self, base_url):
+        url, secret, _ = base_url
+        # Forge a request that omits Content-Length. Hard with urllib
+        # (it auto-adds it), so drop to a raw socket.
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        with socket.create_connection((parsed.hostname, parsed.port)) as s:
+            s.sendall(
+                f"POST /webhooks/case-calendar/{secret} HTTP/1.1\r\n"
+                f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                f"Connection: close\r\n"
+                f"\r\n".encode()
+            )
+            status_line = s.makefile("rb").readline().decode()
+        assert "411" in status_line
+
+    def test_bad_content_length_400(self, base_url):
+        url, secret, _ = base_url
+        req = urllib.request.Request(
+            f"{url}/webhooks/case-calendar/{secret}",
+            data=b"{}",
+            headers={"Content-Type": "application/json",
+                     "Content-Length": "not-a-number"},
+        )
+        try:
+            urllib.request.urlopen(req)
+            assert False, "expected 400"
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+
+    def test_oversized_payload_413(self, base_url):
+        url, secret, _ = base_url
+        # Claim a 10MB length without actually sending the bytes — the
+        # server should refuse before reading anything.
+        import socket
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        with socket.create_connection((parsed.hostname, parsed.port)) as s:
+            s.sendall(
+                f"POST /webhooks/case-calendar/{secret} HTTP/1.1\r\n"
+                f"Host: {parsed.hostname}:{parsed.port}\r\n"
+                f"Content-Length: 10000000\r\n"
+                f"Connection: close\r\n"
+                f"\r\n".encode()
+            )
+            status_line = s.makefile("rb").readline().decode()
+        assert "413" in status_line
+
+    def test_entry_with_non_integer_docket_id_skipped(
+        self, store: Store, case, monkeypatch,
+    ):
+        # A payload whose entry's docket field isn't coercible to int is
+        # logged and skipped rather than crashing the handler.
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [])
+        cl = _make_cl()
+        server, url, secret = _start_server(store=store, case=case, cl=cl)
+        try:
+            entry = _sample_entry()
+            entry["docket"] = "not-a-docket"
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([entry]),
+                headers={"Idempotency-Key": "k-bad-docket"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert status == 200
+        assert resp["handled"]["entries_processed"] == 0
+
+    def test_docket_id_as_digit_string_is_coerced(
+        self, store: Store, case, monkeypatch,
+    ):
+        # CL sometimes ships the docket field as a string; the handler
+        # coerces it to int so the lookup still hits docket_to_case.
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
+            {"type": "IGNORE", "reason": "stub"},
+        ])
+        cl = _make_cl()
+        server, url, secret = _start_server(store=store, case=case, cl=cl)
+        try:
+            entry = _sample_entry()
+            entry["docket"] = "100"  # digit string
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([entry]),
+                headers={"Idempotency-Key": "k-string-docket"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        assert status == 200
+        assert resp["handled"]["entries_processed"] == 1
+
+    def test_process_entry_exception_continues(
+        self, store: Store, case, monkeypatch,
+    ):
+        # If processing one entry crashes, the handler logs and moves to the
+        # next entry — never bubbles a 500 to CL (which would retry).
+        from case_calendar import sync as sync_mod
+
+        original = sync_mod.CaseSyncer.process_entry
+
+        def _flaky(self, case_, docket_id, entry, **kw):
+            if entry["id"] == 1:
+                raise RuntimeError("transient processing error")
+            return original(self, case_, docket_id, entry, **kw)
+
+        monkeypatch.setattr(sync_mod.CaseSyncer, "process_entry", _flaky)
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
+            {"type": "IGNORE", "reason": "stub"},
+        ])
+
+        cl = _make_cl()
+        server, url, secret = _start_server(store=store, case=case, cl=cl)
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([_sample_entry(eid=1), _sample_entry(eid=2)]),
+                headers={"Idempotency-Key": "k-flaky"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+        # First entry raised; second went through. The 200 ack is the
+        # contract — we don't want CL re-delivering the whole batch.
+        assert status == 200
+        assert resp["handled"]["entries_processed"] == 1
+
+
+class TestServerWide500Handler:
+    def test_process_locked_exception_returns_500(
+        self, store: Store, case, monkeypatch,
+    ):
+        # An unexpected error inside process_locked (e.g. lock acquisition
+        # or store write) becomes a 500 — CL retries, and the next attempt
+        # benefits from idempotency-key dedup if applicable.
+        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [])
+
+        from case_calendar import serve as serve_mod
+
+        original = serve_mod.WebhookServer.process_locked
+
+        def _boom(self, *a, **kw):
+            raise RuntimeError("lock subsystem down")
+
+        monkeypatch.setattr(serve_mod.WebhookServer, "process_locked", _boom)
+
+        cl = _make_cl()
+        server, url, secret = _start_server(store=store, case=case, cl=cl)
+        try:
+            try:
+                urllib.request.urlopen(urllib.request.Request(
+                    f"{url}/webhooks/case-calendar/{secret}",
+                    data=json.dumps(_docket_alert([_sample_entry()])).encode(),
+                    headers={"Content-Type": "application/json"},
+                ))
+                assert False, "expected 500"
+            except urllib.error.HTTPError as e:
+                assert e.code == 500
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+class TestServeFunction:
+    def test_keyboard_interrupt_shuts_down_cleanly(
+        self, store: Store, case, tmp_path,
+    ):
+        # The serve() top-level function traps KeyboardInterrupt so an
+        # operator's Ctrl-C is treated as a normal shutdown. Exercise that
+        # by patching serve_forever to raise immediately.
+        from unittest.mock import patch
+
+        from case_calendar.serve import serve
+
+        cl = _make_cl()
+        with patch(
+            "case_calendar.serve.WebhookServer.serve_forever",
+            side_effect=KeyboardInterrupt,
+        ):
+            # No exception escapes; server_close is called in the finally.
+            serve(
+                host="127.0.0.1", port=0,
+                secret="test-secret-please-make-it-long-enough",
+                cases=[case], store=store, cl=cl,
+            )

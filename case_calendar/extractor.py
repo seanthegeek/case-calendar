@@ -44,12 +44,14 @@ _DEADLINE_HINTS = re.compile(
 
 
 def _entry_text(entry: dict[str, Any]) -> str:
-    blobs = [
-        entry.get("description") or "",
-        entry.get("short_description") or "",
-    ]
+    blobs: list[str] = []
+    for raw in (entry.get("description"), entry.get("short_description")):
+        if raw:
+            blobs.append(raw)
     for rd in entry.get("recap_documents", []) or []:
-        blobs.append(rd.get("description") or "")
+        d = rd.get("description")
+        if d:
+            blobs.append(d)
     return " | ".join(blobs)
 
 

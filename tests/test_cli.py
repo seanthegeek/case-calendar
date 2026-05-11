@@ -6,9 +6,31 @@ ICS and gcal outputs receive a fully-built title and write it through.
 
 from __future__ import annotations
 
-import pytest
+import argparse
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
-from case_calendar.cli import _compose_title, _deadline_to_hearing, emit_calendars
+import pytest
+import yaml
+
+from case_calendar import cli
+from case_calendar.cli import (
+    _cases_from_config,
+    _compose_title,
+    _deadline_to_hearing,
+    _load_config,
+    _resolve_gcal,
+    _resolve_m365,
+    cmd_emit,
+    cmd_serve,
+    cmd_setup,
+    cmd_show,
+    cmd_summarize,
+    cmd_sync,
+    emit_calendars,
+    main,
+)
 
 
 class TestComposeTitle:
@@ -282,3 +304,713 @@ class TestEmitCalendars:
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
         emit_calendars(cfg, store)
         assert sentinel.read_text() == "untouched"
+
+    def test_gcal_push_invokes_sync_when_token_cache_present(
+        self, store, cfg, tmp_path, monkeypatch,
+    ):
+        # Stage a fake token cache so the resolver enables gcal push, then
+        # patch the constructor and sync method so we observe the call.
+        token_path = tmp_path / "google-token.json"
+        token_path.write_text("{}")
+        cfg["google_credentials_path"] = "/nonexistent.json"
+        cfg["google_token_path"] = str(token_path)
+        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+
+        instances: list[MagicMock] = []
+
+        def _factory(credentials_path, token_path):
+            inst = MagicMock(name="GoogleCalendarSync")
+            instances.append(inst)
+            return inst
+
+        monkeypatch.setattr(
+            "case_calendar.calendars.gcal.GoogleCalendarSync", _factory,
+        )
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store)
+        assert results["cyber"]["gcal_pushed"] is True
+        assert len(instances) == 1
+        instances[0].sync.assert_called_once()
+
+    def test_m365_push_invokes_sync_when_token_cache_present(
+        self, store, cfg, tmp_path, monkeypatch,
+    ):
+        token_path = tmp_path / "m365-token.json"
+        token_path.write_text("{}")
+        cfg["m365_client_id"] = "00000000-0000-0000-0000-000000000000"
+        cfg["m365_token_path"] = str(token_path)
+        cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
+
+        instances: list[MagicMock] = []
+
+        def _factory(client_id, token_path):
+            inst = MagicMock(name="M365CalendarSync")
+            instances.append(inst)
+            return inst
+
+        monkeypatch.setattr(
+            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+        )
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store)
+        assert results["cyber"]["m365_pushed"] is True
+        assert len(instances) == 1
+        instances[0].sync.assert_called_once()
+
+    def test_m365_use_default_calendar_opts_in(
+        self, store, cfg, tmp_path, monkeypatch,
+    ):
+        # When m365_calendar_id is absent, m365_use_default_calendar: true
+        # still routes to Microsoft's default calendar.
+        token_path = tmp_path / "m365-token.json"
+        token_path.write_text("{}")
+        cfg["m365_client_id"] = "11111111-1111-1111-1111-111111111111"
+        cfg["m365_token_path"] = str(token_path)
+        cfg["calendars"]["cyber"]["m365_use_default_calendar"] = True
+
+        instances: list[MagicMock] = []
+
+        def _factory(client_id, token_path):
+            inst = MagicMock(name="M365CalendarSync")
+            instances.append(inst)
+            return inst
+
+        monkeypatch.setattr(
+            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+        )
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store)
+        assert results["cyber"]["m365_pushed"] is True
+
+
+# ---------------------------------------------------------------------------
+# Config loading
+# ---------------------------------------------------------------------------
+
+
+class TestLoadConfig:
+    def test_loads_valid_config(self, tmp_path):
+        p = tmp_path / "c.yaml"
+        p.write_text(yaml.safe_dump({
+            "calendars": {"a": {"name": "A"}},
+            "cases": [{"id": "x", "name": "X", "calendar": "a", "dockets": [1]}],
+        }))
+        cfg = _load_config(str(p))
+        assert cfg["cases"][0]["id"] == "x"
+
+    def test_rejects_missing_keys(self, tmp_path):
+        p = tmp_path / "c.yaml"
+        p.write_text(yaml.safe_dump({"cases": []}))
+        with pytest.raises(SystemExit):
+            _load_config(str(p))
+
+    def test_rejects_empty_config(self, tmp_path):
+        p = tmp_path / "c.yaml"
+        p.write_text("")
+        with pytest.raises(SystemExit):
+            _load_config(str(p))
+
+
+class TestCasesFromConfig:
+    def test_parses_extract_deadlines_default(self):
+        cfg = {"cases": [
+            {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
+            {"id": "y", "name": "Y", "calendar": "a", "dockets": [2],
+             "extract_deadlines": True},
+        ]}
+        cases = _cases_from_config(cfg)
+        assert cases[0].extract_deadlines is False
+        assert cases[1].extract_deadlines is True
+
+
+# ---------------------------------------------------------------------------
+# _resolve_gcal / _resolve_m365
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGcal:
+    def test_returns_none_when_credentials_unset(self):
+        assert _resolve_gcal({}, setup=False) is None
+
+    def test_returns_none_when_no_token_and_no_setup(self, tmp_path):
+        cfg = {
+            "google_credentials_path": "/nonexistent.json",
+            "google_token_path": str(tmp_path / "missing.json"),
+        }
+        assert _resolve_gcal(cfg, setup=False) is None
+
+    def test_returns_paths_when_token_present(self, tmp_path):
+        token = tmp_path / "t.json"
+        token.write_text("{}")
+        cfg = {
+            "google_credentials_path": "/c.json",
+            "google_token_path": str(token),
+        }
+        assert _resolve_gcal(cfg, setup=False) == ("/c.json", token)
+
+    def test_returns_paths_when_setup_flag_set_even_without_token(self, tmp_path):
+        cfg = {
+            "google_credentials_path": "/c.json",
+            "google_token_path": str(tmp_path / "missing.json"),
+        }
+        result = _resolve_gcal(cfg, setup=True)
+        assert result is not None and result[0] == "/c.json"
+
+
+class TestResolveM365:
+    def test_returns_none_when_no_client_id(self, monkeypatch):
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        assert _resolve_m365({}, setup=False) is None
+
+    def test_falls_back_to_env_var(self, monkeypatch, tmp_path):
+        token = tmp_path / "m.json"
+        token.write_text("{}")
+        monkeypatch.setenv("M365_CLIENT_ID", "env-client-id")
+        cfg = {"m365_token_path": str(token)}
+        result = _resolve_m365(cfg, setup=False)
+        assert result == ("env-client-id", token)
+
+    def test_returns_none_when_no_token_and_no_setup(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        cfg = {
+            "m365_client_id": "cfg-id",
+            "m365_token_path": str(tmp_path / "missing.json"),
+        }
+        assert _resolve_m365(cfg, setup=False) is None
+
+
+# ---------------------------------------------------------------------------
+# Command handlers (cmd_sync / cmd_emit / cmd_serve / cmd_setup / cmd_summarize
+# / cmd_show / main). The handlers wire together CL, syncer, summary, etc; we
+# monkeypatch the dependencies so no network or LLM is hit.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def cfg_file(tmp_path):
+    """Write a minimal config to disk and return the path."""
+    cfg = {
+        "store_path": str(tmp_path / "x.sqlite"),
+        "calendars": {
+            "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
+        },
+        "cases": [
+            {"id": "us-v-x", "name": "US v. X",
+             "calendar": "cyber", "dockets": [100]},
+        ],
+    }
+    p = tmp_path / "config.yaml"
+    p.write_text(yaml.safe_dump(cfg))
+    return p
+
+
+@pytest.fixture
+def fake_cl_ctx(monkeypatch):
+    """Replace ``cli.CourtListener`` with a context manager returning a stub."""
+    instance = MagicMock(name="CourtListener")
+
+    class _Ctx:
+        def __enter__(self_inner):
+            return instance
+
+        def __exit__(self_inner, *_):
+            return False
+
+    monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: _Ctx())
+    return instance
+
+
+class TestCmdSync:
+    def test_unknown_case_id_returns_2(self, cfg_file):
+        args = SimpleNamespace(config=str(cfg_file), case="nope", no_emit=False)
+        assert cmd_sync(args) == 2
+
+    def test_runs_syncer_and_emits_on_actions(
+        self, cfg_file, fake_cl_ctx, monkeypatch, capsys,
+    ):
+        # Force CaseSyncer.sync_case to report actions, which should trigger
+        # the auto-emit. Patch llm.provider_info to avoid the env detection.
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+
+        def _fake_sync_case(self, case):
+            return {
+                "dockets_skipped": 0, "entries_seen": 1,
+                "entries_processed": 1, "actions": 1,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            }
+
+        monkeypatch.setattr(cli.CaseSyncer, "sync_case", _fake_sync_case)
+        # Capture which calendars emit was called for, without actually
+        # writing to disk again (emit_calendars itself is exercised in
+        # TestEmitCalendars; here we just want to know it was reached).
+        emit_calls: list[set[str] | None] = []
+        real_emit = cli.emit_calendars
+
+        def _spy_emit(cfg, store, *, only_calendars=None, **kw):
+            emit_calls.append(only_calendars)
+            return real_emit(cfg, store, only_calendars=only_calendars, **kw)
+
+        monkeypatch.setattr(cli, "emit_calendars", _spy_emit)
+
+        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        assert cmd_sync(args) == 0
+        # Auto-emit fired, scoped to the case's calendar.
+        assert emit_calls == [{"cyber"}]
+        out = capsys.readouterr().out
+        assert "us-v-x" in out
+
+    def test_skips_emit_with_no_actions(
+        self, cfg_file, fake_cl_ctx, monkeypatch,
+    ):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: {
+                "dockets_skipped": 1, "entries_seen": 0,
+                "entries_processed": 0, "actions": 0,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            },
+        )
+        emit_calls: list[Any] = []
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
+        )
+        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        assert cmd_sync(args) == 0
+        assert emit_calls == []  # nothing to re-emit
+
+    def test_no_emit_flag_skips_emit(
+        self, cfg_file, fake_cl_ctx, monkeypatch,
+    ):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: {
+                "dockets_skipped": 0, "entries_seen": 1,
+                "entries_processed": 1, "actions": 1,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            },
+        )
+        emit_calls: list[Any] = []
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: emit_calls.append(1) or {},
+        )
+        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=True)
+        assert cmd_sync(args) == 0
+        assert emit_calls == []
+
+    def test_runs_summary_refresh_when_enabled(
+        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+    ):
+        # Enable case_summaries in config and stub refresh_stale.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True, "allow_ocr": False}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: {
+                "dockets_skipped": 0, "entries_seen": 0,
+                "entries_processed": 0, "actions": 0,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            },
+        )
+        from case_calendar import summary as summary_mod
+        refresh_calls: list[dict[str, Any]] = []
+
+        def _fake_refresh(**kw):
+            refresh_calls.append(kw)
+            return {"us-v-x": {100}}
+
+        monkeypatch.setattr(summary_mod, "refresh_stale", _fake_refresh)
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: {"cyber": {
+                "events": 0, "ics_path": None,
+                "gcal_pushed": False, "m365_pushed": False,
+            }},
+        )
+
+        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        assert cmd_sync(args) == 0
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0]["only_case_ids"] == {"us-v-x"}
+        assert refresh_calls[0]["allow_ocr"] is False
+
+
+class TestCmdEmit:
+    def test_runs_and_prints_each_backend(
+        self, cfg_file, monkeypatch, capsys,
+    ):
+        # emit_calendars is itself well-tested; here we just confirm cmd_emit
+        # wires it and prints the expected lines for ICS + gcal + M365.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
+        cfg_file.write_text(yaml.safe_dump(cfg))
+
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda cfg, store: {"cyber": {
+                "events": 3,
+                "ics_path": "/tmp/cyber.ics",
+                "gcal_pushed": True,
+                "m365_pushed": True,
+            }},
+        )
+        args = SimpleNamespace(config=str(cfg_file))
+        assert cmd_emit(args) == 0
+        out = capsys.readouterr().out
+        assert "wrote 3 events" in out
+        assert "pushed 3 events to gcal" in out
+        assert "pushed 3 events to M365" in out
+
+
+class TestCmdServe:
+    def test_rejects_short_secret(self, cfg_file, monkeypatch, capsys):
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "too-short")
+        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=8000)
+        assert cmd_serve(args) == 2
+        assert "WEBHOOK_SECRET" in capsys.readouterr().err
+
+    def test_calls_serve_with_emit_fn(
+        self, cfg_file, fake_cl_ctx, monkeypatch,
+    ):
+        # Patch serve() so we don't actually bind a socket; instead capture
+        # the emit_fn callback and exercise it through one call to confirm
+        # it wires emit_calendars + _arm_debounce.
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET",
+            "this-is-a-sufficiently-long-secret",
+        )
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        captured: dict[str, Any] = {}
+
+        def _fake_serve(**kw):
+            captured.update(kw)
+
+        monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
+        # Cover the gcal_pushed / m365_pushed log branches by returning both
+        # flags set; that exercises lines 588-589 and 594-597.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: {"cyber": {
+                "events": 1, "ics_path": "/tmp/cyber.ics",
+                "gcal_pushed": True, "m365_pushed": True,
+            }},
+        )
+
+        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        assert cmd_serve(args) == 0
+        assert captured["port"] == 9000
+        # Invoke the wired emit_fn — must accept a calendar set.
+        captured["emit_fn"]({"cyber"})
+
+    def test_debounced_summary_refresh_fires(
+        self, cfg_file, fake_cl_ctx, monkeypatch, tmp_path,
+    ):
+        # Wire case_summaries on, mark one docket's summary stale, then
+        # invoke the captured emit_fn — that arms the debounce timer.
+        # Replace threading.Timer with a fake so the callback runs inline
+        # and we cover _arm_debounce + _fire_debounced_summary.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True, "debounce_seconds": 0.01}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+
+        # Seed an existing stale summary row in the store. This requires the
+        # store file already exist with the case_summaries table; opening a
+        # Store at the configured path is the cheapest way.
+        s = cli.Store(cfg["store_path"])
+        s.upsert_case_summary("us-v-x", 100, summary="old", model="m", source_entry_ids=[])
+        s.mark_summary_stale("us-v-x", 100)
+        s.conn.commit()
+        s.close()
+
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET",
+            "this-is-a-sufficiently-long-secret",
+        )
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+
+        from case_calendar import summary as summary_mod
+
+        refresh_calls: list[Any] = []
+
+        def _fake_refresh(**kw):
+            refresh_calls.append(kw)
+            return {"us-v-x": {100}}
+
+        monkeypatch.setattr(summary_mod, "refresh_stale", _fake_refresh)
+
+        # Fake Timer that runs the callback in a thread (not inline) so it
+        # doesn't deadlock on the debounce_lock that _arm_debounce holds while
+        # starting the timer. After cmd_serve returns we'll join() to make
+        # _fire_debounced_summary observably complete.
+        import threading
+
+        threads: list[threading.Thread] = []
+
+        class _FakeTimer:
+            def __init__(self, interval, callback):
+                self.callback = callback
+                self.daemon = False
+                self._thread = threading.Thread(target=callback)
+                threads.append(self._thread)
+
+            def start(self):
+                self._thread.start()
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr("threading.Timer", _FakeTimer)
+
+        # Invoke emit_fn from INSIDE the fake serve so the store is still
+        # open when _fire_debounced_summary runs (cmd_serve closes the store
+        # after serve() returns).
+        def _fake_serve(**kw):
+            kw["emit_fn"]({"cyber"})
+
+        monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: {"cyber": {
+                "events": 0, "ics_path": None,
+                "gcal_pushed": False, "m365_pushed": False,
+            }},
+        )
+
+        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+
+        # Override _fake_serve to wait for the debounce thread to finish
+        # before serve() returns, so the store is still open when
+        # _fire_debounced_summary runs.
+        def _serve_and_wait(**kw):
+            kw["emit_fn"]({"cyber"})
+            for t in threads:
+                t.join(timeout=5)
+
+        monkeypatch.setattr("case_calendar.serve.serve", _serve_and_wait)
+
+        assert cmd_serve(args) == 0
+        # The fake timer fired _fire_debounced_summary; refresh_stale was
+        # invoked with the calendar's scoped case set.
+        assert len(refresh_calls) == 1
+        assert refresh_calls[0]["only_case_ids"] == {"us-v-x"}
+
+    def test_debounce_skips_when_no_stale_rows(
+        self, cfg_file, fake_cl_ctx, monkeypatch,
+    ):
+        # case_summaries enabled but no docket is stale -> _arm_debounce
+        # short-circuits and never starts the timer.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET",
+            "this-is-a-sufficiently-long-secret",
+        )
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+
+        # Pre-seed a NON-stale summary, so is_summary_stale returns False.
+        s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
+        s.upsert_case_summary("us-v-x", 100, summary="x", model="m", source_entry_ids=[])
+        s.conn.commit()
+        s.close()
+
+        timers: list[Any] = []
+
+        class _FakeTimer:
+            def __init__(self, *a, **k):
+                timers.append(self)
+
+            def start(self):
+                timers.append("started")
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr("threading.Timer", _FakeTimer)
+
+        def _fake_serve(**kw):
+            kw["emit_fn"]({"cyber"})
+
+        monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: {"cyber": {
+                "events": 0, "ics_path": None,
+                "gcal_pushed": False, "m365_pushed": False,
+            }},
+        )
+
+        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        assert cmd_serve(args) == 0
+        # No Timer was created because no stale row existed.
+        assert timers == []
+
+
+class TestCmdSetup:
+    def test_gcal_without_credentials_path_errors(
+        self, cfg_file, monkeypatch, capsys,
+    ):
+        args = SimpleNamespace(config=str(cfg_file), backend="gcal")
+        assert cmd_setup(args) == 2
+        assert "google_credentials_path" in capsys.readouterr().err
+
+    def test_gcal_runs_constructor(self, cfg_file, tmp_path, monkeypatch, capsys):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["google_credentials_path"] = "/c.json"
+        cfg["google_token_path"] = str(tmp_path / "tok.json")
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        invoked: list[dict[str, Any]] = []
+
+        def _factory(*, credentials_path, token_path):
+            invoked.append({"creds": credentials_path, "tok": token_path})
+
+        monkeypatch.setattr(
+            "case_calendar.calendars.gcal.GoogleCalendarSync", _factory,
+        )
+        args = SimpleNamespace(config=str(cfg_file), backend="gcal")
+        assert cmd_setup(args) == 0
+        assert invoked[0]["creds"] == "/c.json"
+        assert "gcal token staged" in capsys.readouterr().out
+
+    def test_m365_without_client_id_errors(self, cfg_file, monkeypatch, capsys):
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        args = SimpleNamespace(config=str(cfg_file), backend="m365")
+        assert cmd_setup(args) == 2
+        assert "m365_client_id" in capsys.readouterr().err
+
+    def test_m365_runs_constructor(self, cfg_file, tmp_path, monkeypatch, capsys):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["m365_client_id"] = "00000000-0000-0000-0000-000000000000"
+        cfg["m365_token_path"] = str(tmp_path / "m.json")
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        invoked: list[dict[str, Any]] = []
+
+        def _factory(*, client_id, token_path):
+            invoked.append({"id": client_id, "tok": token_path})
+
+        monkeypatch.setattr(
+            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+        )
+        args = SimpleNamespace(config=str(cfg_file), backend="m365")
+        assert cmd_setup(args) == 0
+        assert "m365 auth record staged" in capsys.readouterr().out
+
+
+class TestCmdSummarize:
+    def test_requires_case_summaries_enabled(
+        self, cfg_file, monkeypatch, capsys,
+    ):
+        args = SimpleNamespace(
+            config=str(cfg_file), case=None, force=False, no_emit=False,
+        )
+        assert cmd_summarize(args) == 2
+        assert "case_summaries.enabled" in capsys.readouterr().err
+
+    def test_unknown_case_id_returns_2(self, cfg_file, monkeypatch, capsys):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: MagicMock())
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        args = SimpleNamespace(
+            config=str(cfg_file), case="nope", force=False, no_emit=False,
+        )
+        assert cmd_summarize(args) == 2
+
+    def test_runs_summarize_case_and_emits(
+        self, cfg_file, fake_cl_ctx, monkeypatch, capsys,
+    ):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True, "provider": "anthropic"}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+
+        from case_calendar import summary as summary_mod
+        summarize_calls: list[dict[str, Any]] = []
+
+        def _fake(**kw):
+            summarize_calls.append(kw)
+            return [{"docket_id": 100, "summary": "x" * 42, "model": "m"}]
+
+        monkeypatch.setattr(summary_mod, "summarize_case", _fake)
+        emit_calls: list[Any] = []
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
+        )
+        args = SimpleNamespace(
+            config=str(cfg_file), case=None, force=True, no_emit=False,
+        )
+        assert cmd_summarize(args) == 0
+        assert summarize_calls[0]["force"] is True
+        assert emit_calls == [{"cyber"}]
+
+
+class TestCmdShow:
+    def test_dumps_hearings_and_deadlines(self, cfg_file, capsys, store, monkeypatch):
+        # Open a fresh store at the configured path and seed it before
+        # cmd_show creates its own Store handle (which uses the same file).
+        cfg = yaml.safe_load(cfg_file.read_text())
+        s = cli.Store(cfg["store_path"])
+        s.upsert_hearing({
+            "case_id": "us-v-x", "hearing_key": "k1", "title": "Sentencing",
+            "starts_at_utc": "2099-01-01T00:00:00+00:00", "duration_minutes": 60,
+            "timezone": "America/New_York", "status": "scheduled",
+            "significance": "major", "docket_id": 100, "source_entry_ids": [1],
+            "location": "Courtroom 1", "judge": "Hon. Smith",
+            "dial_in": "tel:555-1234",
+        })
+        s.upsert_deadline({
+            "case_id": "us-v-x", "deadline_key": "d1",
+            "title": "Reply ISO MTD", "due_at_utc": "2099-01-15T22:00:00+00:00",
+            "timezone": "America/New_York", "status": "pending",
+            "significance": "major", "deadline_type": "reply",
+            "docket_id": 100, "source_entry_ids": [1],
+        })
+        # upsert_hearing / upsert_deadline don't wrap in self.tx(); the
+        # caller in sync.py shares one Store handle for the lifetime of the
+        # process so commit-on-close isn't needed there. cmd_show opens a
+        # second handle, so commit before close to make the rows visible.
+        s.conn.commit()
+        s.close()
+
+        args = SimpleNamespace(config=str(cfg_file), case=None)
+        assert cmd_show(args) == 0
+        out = capsys.readouterr().out
+        assert "Sentencing" in out and "Reply ISO MTD" in out
+        assert "Courtroom 1" in out
+        assert "tel:555-1234" in out
+
+    def test_case_filter_limits_to_one_case(self, cfg_file, capsys):
+        args = SimpleNamespace(config=str(cfg_file), case="other-case")
+        assert cmd_show(args) == 0
+        assert capsys.readouterr().out == ""
+
+
+class TestMain:
+    def test_dispatches_to_subcommand(self, cfg_file, monkeypatch):
+        calls: list[argparse.Namespace] = []
+
+        def _spy(ns):
+            calls.append(ns)
+            return 0
+
+        monkeypatch.setattr(cli, "cmd_show", _spy)
+        assert main(["-c", str(cfg_file), "show"]) == 0
+        assert calls and calls[0].cmd == "show"
+
+    def test_requires_subcommand(self, cfg_file):
+        with pytest.raises(SystemExit):
+            main(["-c", str(cfg_file)])

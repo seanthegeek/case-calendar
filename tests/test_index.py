@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 import pytest
 
 from case_calendar.calendars.index import (
+    _esc,
+    _format_date,
     _ics_links,
+    _render_case,
+    _render_summaries,
     build_calendar_models,
     render_index,
     write_index,
@@ -46,6 +50,111 @@ class TestIcsLinks:
         # surface a broken "subscribe" link in the index.
         links = _ics_links(None, public_base_url="https://x.example.com")
         assert links == {"webcal": None, "https": None, "relative": None}
+
+    def test_http_scheme_stripped(self):
+        # Same webcal:// derivation works for http://-prefixed base URLs.
+        links = _ics_links("cyber.ics", public_base_url="http://x.example.com")
+        assert links["webcal"] == "webcal://x.example.com/cyber.ics"
+        assert links["https"] == "http://x.example.com/cyber.ics"
+
+    def test_unscheme_base_url_kept_as_is(self):
+        # If the operator forgets the scheme, we treat the value as the
+        # host:path and derive webcal:// from it directly.
+        links = _ics_links("cyber.ics", public_base_url="x.example.com")
+        assert links["webcal"] == "webcal://x.example.com/cyber.ics"
+
+
+class TestEsc:
+    def test_none_returns_empty(self):
+        assert _esc(None) == ""
+
+    def test_escapes_html_special_chars(self):
+        assert _esc('<script>"a"') == "&lt;script&gt;&quot;a&quot;"
+
+
+class TestFormatDate:
+    def test_truncates_iso_to_date(self):
+        assert _format_date("2026-05-10T12:00:00Z") == "2026-05-10"
+
+    def test_empty_returns_empty(self):
+        assert _format_date(None) == ""
+        assert _format_date("") == ""
+
+
+class TestRenderSummaries:
+    def test_empty_returns_empty(self):
+        assert _render_summaries({"summaries": []}, dockets=[]) == ""
+        assert _render_summaries({}, dockets=[]) == ""
+
+    def test_single_summary_no_docket_label(self):
+        html = _render_summaries(
+            {"summaries": [{"docket_id": 1, "summary": "It is a case."}]},
+            dockets=[{"docket_id": 1, "docket_number": "1:24-cv-1",
+                       "court_citation": "S.D.N.Y."}],
+        )
+        # Single summary -> no docket-label span (multi==False).
+        assert '<div class="summary">' in html
+        assert "It is a case." in html
+        assert "docket-label" not in html
+
+    def test_multiple_summaries_get_docket_labels(self):
+        html = _render_summaries(
+            {"summaries": [
+                {"docket_id": 1, "summary": "Trial court matter."},
+                {"docket_id": 2, "summary": "On appeal."},
+            ]},
+            dockets=[
+                {"docket_id": 1, "docket_number": "1:24-cv-1",
+                 "court_citation": "S.D.N.Y."},
+                {"docket_id": 2, "docket_number": "24-1234",
+                 "court_citation": "2d Cir."},
+            ],
+        )
+        assert 'class="docket-label"' in html
+        assert "1:24-cv-1" in html and "24-1234" in html
+        assert "Trial court matter." in html and "On appeal." in html
+
+    def test_empty_summary_strings_are_skipped(self):
+        html = _render_summaries(
+            {"summaries": [
+                {"docket_id": 1, "summary": ""},
+                {"docket_id": 2, "summary": "   "},
+            ]},
+            dockets=[],
+        )
+        # Both empty/whitespace summaries skipped -> nothing rendered.
+        assert html == ""
+
+    def test_summary_text_is_escaped(self):
+        html = _render_summaries(
+            {"summaries": [{"docket_id": 1, "summary": "<script>"}]},
+            dockets=[],
+        )
+        assert "<script>" not in html
+        assert "&lt;script&gt;" in html
+
+
+class TestRenderCaseEdges:
+    def test_docket_without_absolute_url_renders_plain_label(self):
+        # No absolute_url -> the docket label is plain text, not a link.
+        html = _render_case({
+            "name": "US v. X",
+            "dockets": [{"docket_id": 42, "docket_number": "1:24-cr-42",
+                          "court_citation": "S.D.N.Y."}],
+            "date_filed": None, "activity_date": None,
+        })
+        # Label appears as a bare <li>, not wrapped in <a>.
+        assert "1:24-cr-42" in html
+        assert "<a href" not in html
+
+    def test_docket_with_only_id_renders_id_as_label(self):
+        # No docket_number, no court_citation -> the label falls back to the
+        # docket_id as a stringified value (no link either).
+        html = _render_case({
+            "name": "X", "dockets": [{"docket_id": 999}],
+            "date_filed": None, "activity_date": None,
+        })
+        assert "999" in html
 
 
 class TestRenderIndex:

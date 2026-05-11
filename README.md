@@ -524,8 +524,8 @@ The unit binds `serve` to `127.0.0.1:8000` only — your fronting choice
 
 ```bash
 uv sync --extra test
-uv run pytest                                  # full suite (~12s, ~315 tests)
-uv run pytest --cov=case_calendar              # with coverage
+uv run pytest                                  # full suite (~25s, ~600 tests)
+uv run pytest --cov=case_calendar              # with coverage (~96% branch)
 ```
 
 Tests are hermetic — no network, no real LLM, no real Google API. `FakeCL`

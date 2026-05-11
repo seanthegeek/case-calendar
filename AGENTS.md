@@ -122,10 +122,23 @@ Without these, the tool still works — it skips PDFs CL hasn't processed and re
 
 ```bash
 uv sync --extra test
-uv run pytest                                    # full suite
+uv run pytest                                    # full suite (~25s, ~600 tests)
 uv run pytest tests/test_sync_integration.py    # one file
-uv run pytest --cov=case_calendar --cov-report=term-missing
+uv run pytest --cov=case_calendar --cov-branch --cov-report=term-missing
 ```
+
+### Testing philosophy
+
+- **Every change ships with the test that proves it.** Adding code → add the test that exercises the new branch. Fixing a bug → add the test that fails on the old code and passes on the new (so the regression can't sneak back). Changing behavior → update the tests that asserted the old behavior. Deleting code → delete the tests that covered it. The diff that lands a behavior change without a test change is the diff that breaks silently three months from now. CI enforces ≥96% branch coverage, but the local invariant is stronger: no PR should reduce coverage at the module level. Run `uv run pytest --cov=case_calendar --cov-branch --cov-report=term-missing` before declaring a change done and confirm the touched modules either held or gained coverage.
+- **Hermetic by construction.** No real HTTP, no real LLM, no real Google / Microsoft Graph, no real keyring. Every external dependency has a stub in `tests/conftest.py` or is monkey-patched per test. The `_no_real_token` autouse fixture strips any inherited `*_API_KEY` env vars so a developer with credentials in their shell can't accidentally hit a real provider.
+- **Per-provider SDK calls are mocked at the SDK boundary, not the network boundary.** `tests/test_llm.py` injects fake `anthropic` / `openai` / `google.genai` modules into `sys.modules`; `tests/test_m365.py` bypasses `M365CalendarSync.__init__` via `__new__` and feeds a `MagicMock` Graph client with `AsyncMock`-backed `post` / `get` / `patch` / `delete`. This keeps tests fast and lets us assert on the call shape (model kwargs, JSON-mode toggles, extended-property writes) without needing real SDK fixtures.
+- **Branch coverage, not just line coverage.** Run with `--cov-branch`. The suite holds at ≥96% branch coverage and every module is at ≥90%. New code should land with the test that drove it; CI catches regressions, but the local invariant is "if a branch can fire, exercise it."
+- **Cover error paths, not just happy paths.** For each external integration (HTTP 4xx/5xx, 404 on patch, malformed JSON, missing required fields, OAuth token absent), test that the code falls open or fails fast as documented in [Key Design Decisions](#key-design-decisions) rather than crashing. The 5xx-fail-open semantics, the `transaction_id` retry-dedup, and the silent webhook ack on emit failure are all enforced by tests.
+- **Webhook integration tests boot a real server.** `tests/test_serve.py` starts an actual `ThreadingHTTPServer` on an ephemeral port and POSTs JSON to it. This catches routing / header / body-parse regressions that an HTTP-stubbed test would miss (411 on missing Content-Length, 413 on oversized payloads, 500 from inside the process-locked critical section).
+- **Test files mirror the modules they cover** (`tests/test_store.py` ↔ `case_calendar/store.py`, etc.) so a coverage gap is one file away from its fix. Cross-module integration lives in `tests/test_sync_integration.py` and `tests/test_serve.py`.
+- **Test the behavior, not the implementation.** Tests assert on what the renderer writes / what the store persists / what the LLM-shaped call kwargs are, not on which private helper was called. Refactors that preserve behavior shouldn't need test edits; refactors that change behavior should.
+- **Unreachable defensive code is a test smell.** If a branch can't be exercised, either delete it or fix the upstream to make it reachable — don't paper over with `# pragma: no cover`. The `extractor._entry_text` filter-empty-blobs change and the `m365._to_local_dt` deletion both came from the coverage report surfacing dead code.
+- **No real `sleep` in tests.** Where the production path uses `time.sleep` (CourtListener retry/backoff) or `threading.Timer` (webhook debounce), the tests monkey-patch the sleep / Timer so the test runs at memory speed. Burning wall-clock seconds during pytest is a defect.
 
 The suite is hermetic — no real network calls, no real LLM, no real Google API. `tests/conftest.py` provides:
 

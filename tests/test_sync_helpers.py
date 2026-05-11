@@ -1,12 +1,16 @@
 """Pure-function unit tests for sync.py."""
 
 from case_calendar.sync import (
+    _compact_recap_documents,
+    _deadline_local_to_utc,
     _default_duration,
     _docket_implies_deadlines,
     _extract_docket_refs,
     _is_fetchable,
     _local_to_utc,
+    _mark_held_date_matches,
     _needs_pdf,
+    _validate_action_dial_in,
     fingerprint_entry,
 )
 
@@ -271,3 +275,156 @@ class TestDocketImpliesDeadlines:
     def test_missing_returns_none(self):
         assert _docket_implies_deadlines(None) is None
         assert _docket_implies_deadlines("") is None
+
+
+# --- _validate_action_dial_in ---
+
+
+class TestValidateActionDialIn:
+    def test_no_dial_in_is_noop(self, monkeypatch):
+        from case_calendar import url_validator
+
+        called: list[str] = []
+
+        def _fake(url, **kw):
+            called.append(url)
+
+        monkeypatch.setattr(url_validator, "validate_url", _fake)
+        action = {"type": "ADD"}
+        _validate_action_dial_in(action)
+        assert called == []
+        assert "dial_in" not in action
+
+    def test_valid_url_unchanged(self, monkeypatch):
+        from case_calendar import url_validator
+
+        monkeypatch.setattr(
+            url_validator, "validate_url",
+            lambda u, **kw: u,  # passes through unchanged
+        )
+        action = {"dial_in": "https://zoom.us/j/123"}
+        _validate_action_dial_in(action)
+        assert action["dial_in"] == "https://zoom.us/j/123"
+        assert "notes" not in action
+
+    def test_repaired_url_replaces_original(self, monkeypatch):
+        from case_calendar import url_validator
+
+        monkeypatch.setattr(
+            url_validator, "validate_url",
+            lambda u, **kw: "https://zoom.us/j/123/",  # parent-path repair
+        )
+        action = {"dial_in": "https://zoom.us/j/123/junk"}
+        _validate_action_dial_in(action)
+        assert action["dial_in"] == "https://zoom.us/j/123/"
+
+    def test_invalid_url_moved_to_notes(self, monkeypatch):
+        from case_calendar import url_validator
+
+        monkeypatch.setattr(
+            url_validator, "validate_url", lambda u, **kw: None,
+        )
+        action = {"dial_in": "https://broken.example.com/x"}
+        _validate_action_dial_in(action)
+        assert action["dial_in"] is None
+        assert "Dial-in (unverified)" in action["notes"]
+        assert "broken.example.com" in action["notes"]
+
+    def test_invalid_url_appends_to_existing_notes(self, monkeypatch):
+        from case_calendar import url_validator
+
+        monkeypatch.setattr(
+            url_validator, "validate_url", lambda u, **kw: None,
+        )
+        action = {
+            "dial_in": "https://broken.example.com/x",
+            "notes": "Existing notes line.",
+        }
+        _validate_action_dial_in(action)
+        assert action["notes"].startswith("Existing notes line.")
+        assert "Dial-in (unverified)" in action["notes"]
+
+
+# --- _mark_held_date_matches ---
+
+
+class TestMarkHeldDateMatches:
+    def test_no_action_date_returns_true(self):
+        assert _mark_held_date_matches(
+            {}, {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
+        )
+
+    def test_no_existing_starts_returns_true(self):
+        assert _mark_held_date_matches({"local_date": "2026-04-14"}, {})
+
+    def test_same_date_returns_true(self):
+        assert _mark_held_date_matches(
+            {"local_date": "2026-04-14"},
+            {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
+        )
+
+    def test_within_two_days_returns_true(self):
+        assert _mark_held_date_matches(
+            {"local_date": "2026-04-15"},  # +1 day
+            {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
+        )
+
+    def test_outside_window_returns_false(self):
+        assert not _mark_held_date_matches(
+            {"local_date": "2026-04-20"},
+            {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
+        )
+
+    def test_malformed_dates_fall_open_to_true(self):
+        # Garbage in either date -> can't compare; treat as matching so
+        # the action proceeds (consistent with the function's docstring).
+        assert _mark_held_date_matches(
+            {"local_date": "not-a-date"},
+            {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
+        )
+
+
+# --- _deadline_local_to_utc ---
+
+
+class TestDeadlineLocalToUtc:
+    def test_explicit_time_used_as_is(self):
+        # Real time supplied → no 17:00 default.
+        out = _deadline_local_to_utc("2026-05-24", "09:00", "America/New_York")
+        assert out == "2026-05-24T13:00:00+00:00"  # 9am EDT == 13:00 UTC
+
+    def test_missing_time_defaults_to_5pm(self):
+        out = _deadline_local_to_utc("2026-05-24", None, "America/New_York")
+        # 5pm EDT (DST in May) = 21:00 UTC.
+        assert out == "2026-05-24T21:00:00+00:00"
+
+    def test_empty_date_returns_none(self):
+        assert _deadline_local_to_utc("", None, "America/New_York") is None
+
+
+# --- _compact_recap_documents ---
+
+
+class TestCompactRecapDocuments:
+    def test_orders_main_doc_before_attachments(self):
+        entry = {"recap_documents": [
+            {"id": 102, "document_number": 65, "attachment_number": 2},
+            {"id": 100, "document_number": 65, "attachment_number": None},
+            {"id": 101, "document_number": 65, "attachment_number": 1},
+        ]}
+        out = _compact_recap_documents(entry)
+        assert [d["id"] for d in out] == [100, 101, 102]
+
+    def test_handles_non_integer_position_fields(self):
+        # Non-integer document_number / attachment_number coerce to 0 so the
+        # sort doesn't crash; the rows still appear, just at the head.
+        entry = {"recap_documents": [
+            {"id": 1, "document_number": "x", "attachment_number": None},
+            {"id": 2, "document_number": "y", "attachment_number": "z"},
+        ]}
+        out = _compact_recap_documents(entry)
+        assert len(out) == 2
+
+    def test_empty_input_empty_output(self):
+        assert _compact_recap_documents({"recap_documents": []}) == []
+        assert _compact_recap_documents({}) == []

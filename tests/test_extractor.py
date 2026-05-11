@@ -68,6 +68,20 @@ class TestIsExtractable:
         assert not is_extractable(e, want_deadlines=False)
         assert not is_extractable(e, want_deadlines=True)
 
+    def test_empty_entry_short_circuits(self):
+        # Empty entry hits the no-text early return; never touches the regex.
+        assert not is_extractable(make(), want_deadlines=False)
+        assert not is_extractable(make(), want_deadlines=True)
+
+    def test_recap_doc_with_empty_description_ignored(self):
+        # The blob filter in _entry_text drops empty recap-document
+        # descriptions rather than dragging them through as " | | ".
+        # If they were the ONLY signal carrier and they're empty, the
+        # entry is treated as having no text at all.
+        assert not is_extractable(
+            make(recap_descs=("",)), want_deadlines=True,
+        )
+
 
 class TestIsHearingRelevant:
     def test_empty_entry_is_not_relevant(self):

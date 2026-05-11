@@ -1047,3 +1047,329 @@ class TestDeadlineExtraction:
         )
         assert captured["extract_deadlines"] is True
         assert captured["known_deadlines"] == []
+
+
+# --- verify_deadline end-of-case pass (parallel to TestVerifyScheduledHearings) ---
+
+
+def stub_verify_deadline(monkeypatch, *, by_key: dict[str, dict] | None = None):
+    by_key = by_key or {}
+
+    def fake(*, deadline, **_):
+        return by_key.get(
+            deadline.get("deadline_key"),
+            {"type": "CONFIRM", "reason": "stub"},
+        )
+
+    monkeypatch.setattr(llm_mod, "verify_deadline", fake)
+
+
+class TestVerifyPendingDeadlines:
+    @pytest.fixture
+    def case(self):
+        return CaseConfig(
+            case_id="us-v-x", name="United States v. X",
+            dockets=[100], calendar="cyber",
+            extract_deadlines=True,
+        )
+
+    def _seed_future_deadline(self, store, key="reply-mtd"):
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=14)
+        ).isoformat()
+        store.upsert_deadline({
+            "case_id": "us-v-x",
+            "deadline_key": key,
+            "title": "Reply ISO MTD",
+            "due_at_utc": future_iso,
+            "timezone": "America/New_York",
+            "notes": None,
+            "status": "pending",
+            "significance": "major",
+            "deadline_type": "reply",
+            "docket_id": 100,
+            "source_entry_ids": [99],
+        })
+        return future_iso
+
+    def test_confirm_is_no_op(self, store, case, monkeypatch):
+        before = self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch)  # default CONFIRM
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats.get("deadlines_verified", 0) == 0
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "pending"
+        assert d["due_at_utc"] == before
+
+    def test_cancel_flips_to_cancelled(self, store, case, monkeypatch):
+        self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {"type": "CANCEL", "reason": "case dismissed"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 1
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "cancelled"
+        assert "dismissed" in (d["notes"] or "")
+
+    def test_delete_hallucination_flips_to_cancelled(
+        self, store, case, monkeypatch,
+    ):
+        self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {"type": "DELETE_HALLUCINATION",
+                          "reason": "no scheduling order found"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 1
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "cancelled"
+        assert "no scheduling order" in (d["notes"] or "")
+
+    def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
+        self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {"type": "MARK_FILED", "reason": "reply on docket"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 1
+        assert store.get_deadlines("us-v-x")[0]["status"] == "met"
+
+    def test_reschedule_moves_due_at_utc(self, store, case, monkeypatch):
+        self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {
+                "type": "RESCHEDULE",
+                "local_date": "2099-01-15",
+                "reason": "extension granted",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 1
+        d = store.get_deadlines("us-v-x")[0]
+        # 5pm ET default for the deadline = 22:00 UTC (Jan 15 is EST, not EDT).
+        assert d["due_at_utc"] == "2099-01-15T22:00:00+00:00"
+
+    def test_reschedule_without_local_date_is_dropped(
+        self, store, case, monkeypatch,
+    ):
+        before = self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {"type": "RESCHEDULE", "reason": "no date provided"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        # No change, no count.
+        assert stats["deadlines_verified"] == 0
+        assert store.get_deadlines("us-v-x")[0]["due_at_utc"] == before
+
+    def test_unknown_action_type_is_dropped(self, store, case, monkeypatch):
+        before = self._seed_future_deadline(store)
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch, by_key={
+            "reply-mtd": {"type": "BOGUS", "reason": "model made it up"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 0
+        assert store.get_deadlines("us-v-x")[0]["due_at_utc"] == before
+
+
+class TestVerifyEdgeCases:
+    """Hearing-verify branches that aren't covered by the happy-path tests
+    in TestVerifyScheduledHearings."""
+
+    def _seed_future_hearing(self, store, key="future-trial"):
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=14)
+        ).isoformat()
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": key,
+            "title": "Trial",
+            "starts_at_utc": future_iso,
+            "duration_minutes": 240,
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [42],
+        })
+        return future_iso
+
+    def test_reschedule_without_local_date_is_dropped(
+        self, store, case, monkeypatch,
+    ):
+        before = self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {"type": "RESCHEDULE", "reason": "no date"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        # The action is dropped — counter stays 0 and starts_at_utc unchanged.
+        assert stats["verified"] == 0
+        assert store.get_hearings("us-v-x")[0]["starts_at_utc"] == before
+
+    def test_unknown_action_type_is_dropped(self, store, case, monkeypatch):
+        before = self._seed_future_hearing(store)
+        stub_verify(monkeypatch, by_key={
+            "future-trial": {"type": "MYSTERY", "reason": "?"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        assert store.get_hearings("us-v-x")[0]["starts_at_utc"] == before
+
+
+class TestEnsureCourtErrorPath:
+    def test_court_fetch_failure_logged_and_swallowed(
+        self, store, case, monkeypatch,
+    ):
+        # The court fetch can fail (CL outage, unknown court id). When it
+        # does we log a warning but continue — the citation stays missing
+        # rather than crashing the whole sync.
+        class _RaisingCL(FakeCL):
+            def get_court(self, court_id):
+                raise RuntimeError("CL down")
+
+        cl = _RaisingCL(dockets={100: _docket()})
+        make_llm_stub(monkeypatch, by_entry={})  # no actions emitted
+        stub_verify(monkeypatch)
+
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER on irrelevant motion"))
+        # No exception escaped; the citation is unset.
+        assert store.get_court_citation("mad") is None
+
+
+class TestApplyHearingActionEdgeCases:
+    """Coverage for the CANCEL / MARK_HELD with-no-local_date drop paths
+    and the deadline-action error paths."""
+
+    def test_cancel_on_unknown_key_without_local_date_drops(
+        self, store, case, monkeypatch,
+    ):
+        # CANCEL targeting a hearing_key the store doesn't have AND no
+        # local_date to seed a new row → action is dropped with a warning.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL", "hearing_key": "never-seen"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER vacating prior"))
+        assert store.get_hearings("us-v-x") == []
+
+    def test_mark_held_on_unknown_key_without_local_date_drops(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "MARK_HELD", "hearing_key": "never-seen"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "MINUTE ORDER held"))
+        assert store.get_hearings("us-v-x") == []
+
+
+class TestApplyDeadlineActionEdgeCases:
+    @pytest.fixture
+    def case(self):
+        return CaseConfig(
+            case_id="us-v-x", name="United States v. X",
+            dockets=[100], calendar="cyber",
+            extract_deadlines=True,
+        )
+
+    def test_action_without_deadline_key_is_dropped(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE", "local_date": "2026-05-24"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER: response due"))
+        assert store.get_deadlines("us-v-x") == []
+
+    def test_add_deadline_without_local_date_is_dropped(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "reply", "title": "Reply"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER: reply due TBD"))
+        assert store.get_deadlines("us-v-x") == []
+
+    def test_cancel_deadline_on_unknown_key_without_local_date_drops(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL_DEADLINE", "deadline_key": "never-seen"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER vacating schedule"))
+        assert store.get_deadlines("us-v-x") == []
+
+    def test_mark_filed_on_unknown_key_is_logged_and_dropped(
+        self, store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "MARK_FILED", "deadline_key": "never-seen"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "REPLY brief filed"))
+        assert store.get_deadlines("us-v-x") == []
+
+
+class TestSummaryStaleMarkOnOperativeOrDisposition:
+    """An operative-pleading or disposition entry must flip the docket's
+    case_summaries.stale flag — that's how the agentic summary refresh knows
+    a regeneration is needed before the next emit."""
+
+    def test_operative_pleading_marks_stale(self, store, case, monkeypatch):
+        # Seed a non-stale summary row, then process an entry whose
+        # description matches summary.is_operative_pleading. After
+        # process_entry, the row should be flagged stale.
+        store.upsert_case_summary(
+            "us-v-x", 100, summary="old", model="m", source_entry_ids=[],
+        )
+        assert store.is_summary_stale("us-v-x", 100) is False
+
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "IGNORE", "reason": "stub"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        # "INDICTMENT" head matches summary.is_operative_pleading.
+        syncer.process_entry(case, 100, _entry(1, "INDICTMENT as to defendant"))
+        assert store.is_summary_stale("us-v-x", 100) is True
+
+    def test_disposition_marks_stale(self, store, case, monkeypatch):
+        store.upsert_case_summary(
+            "us-v-x", 100, summary="old", model="m", source_entry_ids=[],
+        )
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "IGNORE", "reason": "stub"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
+        assert store.is_summary_stale("us-v-x", 100) is True

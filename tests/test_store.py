@@ -307,6 +307,153 @@ class TestWebhookIdempotency:
         assert store.webhook_seen("uuid-1")
 
 
+class TestTxRollback:
+    def test_exception_inside_tx_triggers_rollback(self, store: Store):
+        # Write something that would commit on success, then raise inside
+        # the with-block — the row must NOT be visible afterward.
+        with pytest.raises(RuntimeError):
+            with store.tx():
+                store.conn.execute(
+                    "INSERT INTO webhook_events (idempotency_key, event_type, received_at) "
+                    "VALUES (?, ?, datetime('now'))",
+                    ("rollback-key", 1),
+                )
+                raise RuntimeError("boom")
+        # Rollback restored the table.
+        assert not store.webhook_seen("rollback-key")
+
+
+class TestEntryByNumber:
+    def test_returns_row(self, store: Store):
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, description="Order")
+        row = store.get_entry_by_number(1, 65)
+        assert row and row["entry_id"] == 100
+
+    def test_missing_returns_none(self, store: Store):
+        assert store.get_entry_by_number(1, 999) is None
+
+
+class TestEntryDocumentsMalformedJson:
+    def test_skips_rows_with_invalid_json(self, store: Store):
+        # Insert an entry with malformed recap_documents JSON via raw SQL.
+        # get_entry_documents must catch the JSONDecodeError and skip the row
+        # rather than crashing the whole emit.
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
+                         entry_number=65, description="Order")
+        store.conn.execute(
+            "UPDATE entries SET recap_documents=? WHERE entry_id=?",
+            ("not json", 100),
+        )
+        out = store.get_entry_documents([100])
+        assert out == {}  # bad row skipped
+
+
+class TestGcalAndM365Setters:
+    def test_set_gcal_id(self, store: Store):
+        store.upsert_hearing(_hearing())
+        store.set_gcal_id("us-v-x", "sentencing", "evt-123")
+        row = store.get_hearing("us-v-x", "sentencing")
+        assert row["gcal_event_id"] == "evt-123"
+
+    def test_set_m365_id_for_hearing_writes_and_clears(self, store: Store):
+        store.upsert_hearing(_hearing())
+        store.set_m365_id_for_hearing("us-v-x", "sentencing", "AAMk-EVT")
+        # Read raw because get_hearing doesn't surface m365_event_id by default.
+        row = store.conn.execute(
+            "SELECT m365_event_id FROM hearings WHERE hearing_key=?",
+            ("sentencing",),
+        ).fetchone()
+        assert row["m365_event_id"] == "AAMk-EVT"
+        store.set_m365_id_for_hearing("us-v-x", "sentencing", None)
+        row = store.conn.execute(
+            "SELECT m365_event_id FROM hearings WHERE hearing_key=?",
+            ("sentencing",),
+        ).fetchone()
+        assert row["m365_event_id"] is None
+
+    def test_set_m365_id_for_deadline_writes_and_clears(self, store: Store):
+        store.upsert_deadline(_deadline())
+        store.set_m365_id_for_deadline(
+            "anthropic-v-dow", "govt-response-mtd", "AAMk-DL",
+        )
+        row = store.conn.execute(
+            "SELECT m365_event_id FROM deadlines WHERE deadline_key=?",
+            ("govt-response-mtd",),
+        ).fetchone()
+        assert row["m365_event_id"] == "AAMk-DL"
+        store.set_m365_id_for_deadline(
+            "anthropic-v-dow", "govt-response-mtd", None,
+        )
+        row = store.conn.execute(
+            "SELECT m365_event_id FROM deadlines WHERE deadline_key=?",
+            ("govt-response-mtd",),
+        ).fetchone()
+        assert row["m365_event_id"] is None
+
+
+class TestCaseSummaries:
+    def test_upsert_and_retrieve(self, store: Store):
+        store.upsert_case_summary(
+            "us-v-x", 1,
+            summary="The defendants are charged with...",
+            model="anthropic/claude-sonnet-4-6",
+            source_entry_ids=[10, 20],
+        )
+        row = store.get_docket_summary("us-v-x", 1)
+        assert row["summary"].startswith("The defendants")
+        assert row["model"] == "anthropic/claude-sonnet-4-6"
+        assert row["source_entry_ids"] == [10, 20]
+
+    def test_upsert_overwrites_existing(self, store: Store):
+        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m1")
+        store.upsert_case_summary("us-v-x", 1, summary="v2", model="m2")
+        assert store.get_docket_summary("us-v-x", 1)["summary"] == "v2"
+
+    def test_get_docket_summary_missing_returns_none(self, store: Store):
+        assert store.get_docket_summary("nope", 1) is None
+
+    def test_get_case_summaries_returns_all_dockets(self, store: Store):
+        store.upsert_case_summary("us-v-x", 1, summary="a", model="m")
+        store.upsert_case_summary("us-v-x", 2, summary="b", model="m")
+        rows = store.get_case_summaries("us-v-x")
+        assert {r["docket_id"] for r in rows} == {1, 2}
+
+    def test_stale_lifecycle(self, store: Store):
+        # New row is not stale; mark_summary_stale flips it; upsert resets.
+        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m")
+        assert store.is_summary_stale("us-v-x", 1) is False
+        store.mark_summary_stale("us-v-x", 1)
+        assert store.is_summary_stale("us-v-x", 1) is True
+        assert store.get_summary_stale_since("us-v-x", 1) is not None
+        # Upserting after a refresh resets stale flag + clears stale_since.
+        store.upsert_case_summary("us-v-x", 1, summary="v2", model="m")
+        assert store.is_summary_stale("us-v-x", 1) is False
+        assert store.get_summary_stale_since("us-v-x", 1) is None
+
+    def test_missing_row_is_stale_by_definition(self, store: Store):
+        # New cases never written get treated as stale so refresh_stale
+        # creates a row on the next sync.
+        assert store.is_summary_stale("never-summarized", 1) is True
+
+    def test_mark_summary_stale_on_missing_row_is_noop(self, store: Store):
+        # No row exists -> UPDATE matches nothing; subsequent get returns None.
+        store.mark_summary_stale("nope", 1)
+        assert store.get_summary_stale_since("nope", 1) is None
+
+    def test_get_case_summaries_handles_malformed_source_entry_ids(self, store: Store):
+        # source_entry_ids stored as malformed JSON falls back to [].
+        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m")
+        store.conn.execute(
+            "UPDATE case_summaries SET source_entry_ids=? WHERE case_id=?",
+            ("not-json", "us-v-x"),
+        )
+        rows = store.get_case_summaries("us-v-x")
+        assert rows[0]["source_entry_ids"] == []
+        # Same fallback in get_docket_summary.
+        assert store.get_docket_summary("us-v-x", 1)["source_entry_ids"] == []
+
+
 class TestSchemaMigration:
     def test_old_db_gets_new_columns_added(self, tmp_path):
         # Simulate a pre-migration DB by creating a minimal schema by hand.

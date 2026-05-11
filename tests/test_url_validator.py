@@ -184,3 +184,69 @@ class TestSyncIntegration:
         action = {"notes": "n"}
         sync._validate_action_dial_in(action)
         assert action == {"notes": "n"}
+
+
+class TestImplicitClient:
+    """Covers the own_client branch in validate_url where the caller
+    doesn't pass an httpx.Client and we build/close one ourselves."""
+
+    def test_owns_client_when_not_passed(self, monkeypatch):
+        # Use httpx's MockTransport-aware Client by patching httpx.Client
+        # to return a transport-mock-backed instance.
+        from unittest.mock import MagicMock
+        closed = MagicMock()
+
+        class _MockClient:
+            def __init__(self, *a, **k): pass
+
+            def head(self, url):
+                r = MagicMock()
+                r.status_code = 200
+                return r
+
+            def close(self):
+                closed()
+
+        monkeypatch.setattr(httpx, "Client", _MockClient)
+        out = url_validator.validate_url("https://example.com/foo/")
+        assert out == "https://example.com/foo/"
+        closed.assert_called_once()
+
+    def test_unexpected_exception_returns_input(self, monkeypatch):
+        # If something inside _walk_candidates raises a non-RequestError
+        # exception (e.g. a programming error), validate_url logs and
+        # returns the input unchanged (fail-open).
+        def _boom(*a, **kw):
+            raise ValueError("unexpected boom")
+
+        monkeypatch.setattr(url_validator, "_walk_candidates", _boom)
+        out = url_validator.validate_url("https://example.com/foo/")
+        assert out == "https://example.com/foo/"
+
+
+class TestCheckHttpCodes:
+    def test_5xx_is_flake_not_404(self):
+        # A 5xx response is "couldn't tell", not "URL gone". The result
+        # bubbles up as fail-open (return the URL unchanged) when every
+        # candidate flakes.
+        def handler(req):
+            return httpx.Response(503)
+
+        out = url_validator.validate_url(
+            "https://example.com/a/b/c", client=_client(handler),
+        )
+        # No 4xx ever observed → fail-open: keep the input URL.
+        assert out == "https://example.com/a/b/c"
+
+    def test_get_fallback_network_error_returns_flake(self):
+        # HEAD returns 405; the GET fallback then errors out — overall
+        # outcome is "flake", and fail-open returns the input URL.
+        def handler(req):
+            if req.method == "HEAD":
+                return httpx.Response(405)
+            raise httpx.ConnectError("GET fallback down")
+
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/", client=_client(handler),
+        )
+        assert out == "https://example.com/foo/bar/"

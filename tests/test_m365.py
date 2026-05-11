@@ -330,6 +330,195 @@ class TestUpsertFlow:
         fake_client.me.events.post.assert_not_awaited()
 
 
+class TestUpsertErrorPaths:
+    def test_cached_id_non_404_error_propagates(self, fake_client):
+        store = MagicMock()
+        err = Exception("server boom")
+        err.response_status_code = 500
+        item = MagicMock()
+        item.patch = AsyncMock(side_effect=err)
+        fake_client.me.events.by_event_id.side_effect = lambda eid: item
+
+        s = _make_syncer(fake_client)
+        with pytest.raises(Exception, match="server boom"):
+            s.sync(hearings=[_hearing(m365_event_id="CACHED")], store=store)
+
+    def test_post_returns_no_id_raises(self, fake_client):
+        store = MagicMock()
+        # No cached id, no recovery hit, post returns an object with id=None.
+        fake_client.me.events.get.return_value = MagicMock(value=[])
+        created = MagicMock()
+        created.id = None
+        fake_client.me.events.post.return_value = created
+
+        s = _make_syncer(fake_client)
+        with pytest.raises(RuntimeError, match="no event id"):
+            s.sync(hearings=[_hearing()], store=store)
+
+    def test_delete_non_404_error_propagates(self, fake_client):
+        store = MagicMock()
+        err = Exception("server boom")
+        err.response_status_code = 500
+        item = MagicMock()
+        item.delete = AsyncMock(side_effect=err)
+        item.patch = AsyncMock()
+        fake_client.me.events.by_event_id.side_effect = lambda eid: item
+
+        s = _make_syncer(fake_client)
+        with pytest.raises(Exception, match="server boom"):
+            s.sync(
+                hearings=[_hearing(status="cancelled", m365_event_id="X")],
+                store=store,
+            )
+
+    def test_delete_404_swallowed(self, fake_client):
+        # The remote event is already gone (404). Delete is a noop and
+        # _delete_if_present returns early — the cache stays as-is rather
+        # than getting cleared, since there was nothing on Graph to detach.
+        store = MagicMock()
+        item = MagicMock()
+        item.delete = AsyncMock(side_effect=_fake_404())
+        fake_client.me.events.by_event_id.side_effect = lambda eid: item
+
+        s = _make_syncer(fake_client)
+        s.sync(
+            hearings=[_hearing(status="cancelled", m365_event_id="GONE")],
+            store=store,
+        )
+        # No exception raised; no store mutation since we early-returned.
+        store.set_m365_id_for_hearing.assert_not_called()
+
+    def test_find_by_correlation_404_returns_none(self, fake_client):
+        # $filter 404 → no recovered id; we POST a new event instead.
+        store = MagicMock()
+        fake_client.me.events.get.side_effect = _fake_404()
+        created = MagicMock()
+        created.id = "AAMk-FRESH"
+        fake_client.me.events.post.return_value = created
+
+        s = _make_syncer(fake_client)
+        s.sync(hearings=[_hearing()], store=store)
+        fake_client.me.events.post.assert_awaited_once()
+
+    def test_find_by_correlation_non_404_propagates(self, fake_client):
+        store = MagicMock()
+        err = Exception("server boom")
+        err.response_status_code = 500
+        fake_client.me.events.get.side_effect = err
+
+        s = _make_syncer(fake_client)
+        with pytest.raises(Exception, match="server boom"):
+            s.sync(hearings=[_hearing()], store=store)
+
+    def test_skips_hearings_without_start(self, fake_client):
+        store = MagicMock()
+        s = _make_syncer(fake_client)
+        s.sync(hearings=[_hearing(starts_at_utc=None)], store=store)
+        fake_client.me.events.post.assert_not_awaited()
+        fake_client.me.events.by_event_id.assert_not_called()
+
+    def test_cache_id_with_no_store_is_noop(self, fake_client):
+        # store=None is a legal path (callers may opt out of caching);
+        # _cache_id must short-circuit before touching the (None) store.
+        fake_client.me.events.get.return_value = MagicMock(value=[])
+        created = MagicMock()
+        created.id = "AAMk-NEW"
+        fake_client.me.events.post.return_value = created
+
+        s = _make_syncer(fake_client)
+        # No exception raised even though store is None.
+        s.sync(hearings=[_hearing()], store=None)
+
+
+class TestEventBodyEdgeCases:
+    def test_location_None_when_unset(self):
+        s = _make_syncer(client=None)
+        body = s._event_body(_hearing(location=None))
+        assert body.location is None
+
+    def test_naive_iso_treated_as_utc(self):
+        # A naive ISO timestamp (no tzinfo) takes the explicit-UTC branch
+        # in _event_body's datetime handling.
+        s = _make_syncer(client=None)
+        body = s._event_body(_hearing(starts_at_utc="2026-04-14T19:00:00"))
+        # Same wall-clock outcome as the tz-aware fixture: 15:00 EDT.
+        assert body.start.date_time == "2026-04-14T15:00:00"
+
+
+class TestBuildCredential:
+    """Cover the auth-setup paths in M365CalendarSync.__init__ /
+    ``_build_credential``. We stub the azure-identity classes the SDK
+    imports lazily so no keyring or browser is needed."""
+
+    def _stub_azure_identity(self, monkeypatch):
+        """Replace the azure-identity / msgraph names the constructor imports."""
+        import sys
+        from unittest.mock import MagicMock
+
+        # Build a fake azure.identity module with the three names the
+        # constructor imports.
+        record_obj = MagicMock(name="AuthenticationRecord")
+        record_obj.serialize.return_value = '{"record": "data"}'
+
+        class _FakeAuthenticationRecord:
+            @staticmethod
+            def deserialize(text):
+                return record_obj
+
+        # The InteractiveBrowserCredential instances get .authenticate()
+        # called only on first-run; daemon-path silent refresh constructs
+        # but doesn't call .authenticate().
+        cred_instances: list[MagicMock] = []
+
+        class _FakeCred:
+            def __init__(self, **kw):
+                self.kw = kw
+                cred_instances.append(self)
+
+            def authenticate(self, *, scopes):
+                return record_obj
+
+        fake_az_id = MagicMock(name="azure.identity")
+        fake_az_id.AuthenticationRecord = _FakeAuthenticationRecord
+        fake_az_id.InteractiveBrowserCredential = _FakeCred
+        fake_az_id.TokenCachePersistenceOptions = MagicMock()
+        monkeypatch.setitem(sys.modules, "azure", MagicMock(identity=fake_az_id))
+        monkeypatch.setitem(sys.modules, "azure.identity", fake_az_id)
+
+        # GraphServiceClient — we only need the constructor to swallow kwargs.
+        fake_msgraph = MagicMock(name="msgraph")
+        fake_msgraph.GraphServiceClient = MagicMock(name="GraphServiceClient")
+        monkeypatch.setitem(sys.modules, "msgraph", fake_msgraph)
+
+        return cred_instances, record_obj, _FakeCred
+
+    def test_first_run_writes_auth_record(self, monkeypatch, tmp_path):
+        cred_instances, record_obj, _ = self._stub_azure_identity(monkeypatch)
+        token = tmp_path / "m365.json"
+
+        # No token file -> interactive flow path. authenticate() is called
+        # and the returned record is serialized to disk.
+        M365CalendarSync(client_id="cid", token_path=token)
+        assert token.exists()
+        assert len(cred_instances) == 1
+        # First-run path doesn't pass disable_automatic_authentication.
+        assert "disable_automatic_authentication" not in cred_instances[0].kw
+
+    def test_subsequent_run_uses_silent_refresh(self, monkeypatch, tmp_path):
+        cred_instances, _, _ = self._stub_azure_identity(monkeypatch)
+        token = tmp_path / "m365.json"
+        token.write_text('{"record":"existing"}')
+
+        M365CalendarSync(client_id="cid", token_path=token)
+        assert len(cred_instances) == 1
+        # Daemon path passes disable_automatic_authentication so a stale
+        # cache fails fast rather than trying to open a browser headless.
+        assert cred_instances[0].kw.get("disable_automatic_authentication") is True
+        # The serialized record is loaded back and passed as the
+        # authentication_record kwarg.
+        assert cred_instances[0].kw.get("authentication_record") is not None
+
+
 class TestKindRouting:
     def test_deadline_prefix_routes_to_deadlines_table(self, fake_client):
         # Deadlines get mapped via cli._deadline_to_hearing into a

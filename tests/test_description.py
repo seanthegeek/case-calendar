@@ -1,4 +1,9 @@
-from case_calendar.calendars.description import build
+from case_calendar.calendars.description import (
+    _document_label,
+    _document_url,
+    build,
+    no_time_title_prefix,
+)
 
 
 def test_minimal_description_is_empty():
@@ -179,3 +184,70 @@ def test_no_source_text_block_emitted():
     assert "Docket entry " not in out
     assert "PDF excerpt" not in out
     assert "CourtListener entry IDs: 35, 31" in out
+
+
+# --- no_time_title_prefix ---
+
+
+class TestNoTimeTitlePrefix:
+    def test_returns_unknown_when_starts_at_unset(self):
+        assert no_time_title_prefix(None) == "[time unknown]"
+        assert no_time_title_prefix("") == "[time unknown]"
+
+    def test_returns_unknown_on_unparseable(self):
+        assert no_time_title_prefix("not-a-timestamp") == "[time unknown]"
+
+    def test_past_date_unknown(self):
+        # 1970 is comfortably past; the renderer says "we never learned the time".
+        assert no_time_title_prefix("1970-01-01T00:00:00+00:00") == "[time unknown]"
+
+    def test_future_date_tbd(self):
+        # 2099 is comfortably future; the renderer says "still to be set".
+        assert no_time_title_prefix("2099-01-01T00:00:00+00:00") == "[time TBD]"
+
+    def test_naive_timestamp_treated_as_utc(self):
+        # Branch coverage for the tzinfo-is-None promotion.
+        assert no_time_title_prefix("2099-01-01T00:00:00") == "[time TBD]"
+
+
+# --- _document_label / _document_url ---
+
+
+class TestDocumentLabel:
+    def test_main_doc_label(self):
+        assert _document_label({"document_number": 65}) == "65"
+
+    def test_attachment_label(self):
+        assert (
+            _document_label({"document_number": 65, "attachment_number": 1})
+            == "65-1"
+        )
+
+    def test_returns_none_for_missing_doc_number(self):
+        assert _document_label({"attachment_number": 1}) is None
+        assert _document_label({"document_number": "", "attachment_number": 1}) is None
+
+    def test_non_int_attachment_treated_as_main(self):
+        # Defensive: non-integer attachment_number coerces to 0 (= main doc).
+        assert (
+            _document_label({"document_number": 65, "attachment_number": "x"})
+            == "65"
+        )
+
+
+class TestDocumentUrl:
+    def test_prefers_ia(self):
+        url = _document_url({
+            "filepath_ia": "https://archive.org/65.pdf",
+            "filepath_local": "recap/x/65.pdf",
+        })
+        assert url == "https://archive.org/65.pdf"
+
+    def test_falls_back_to_cl_storage(self):
+        url = _document_url({
+            "filepath_ia": None, "filepath_local": "recap/x/65.pdf",
+        })
+        assert url == "https://storage.courtlistener.com/recap/x/65.pdf"
+
+    def test_returns_none_when_no_paths(self):
+        assert _document_url({}) is None
