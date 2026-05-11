@@ -272,13 +272,20 @@ case-calendar show --case us-v-wang      # one case
 case-calendar serve --port 8000          # real-time webhook receiver (auto-emits)
 case-calendar setup gcal                 # one-time Google Calendar OAuth
 case-calendar setup m365                 # one-time Microsoft 365 / Outlook OAuth
+case-calendar summarize                  # generate per-docket AI case summaries (opt-in)
+case-calendar summarize --force          # regenerate even when a summary already exists
 ```
 
 `sync`, `serve`, and `emit` all auto-emit ICS for every configured
 calendar and auto-push to gcal / M365 for any backend with a staged OAuth
 token — no per-command flag required. The standalone `emit` command is
 useful for forcing a re-render (e.g. after editing config) without
-pulling new data; the `setup` commands handle the one-time OAuth flows.
+pulling new data; the `setup` commands handle the one-time OAuth flows;
+the `summarize` command is opt-in (gated on `case_summaries.enabled` in
+the config) and regenerates the per-docket AI case summaries shown on
+the index page. Summaries also auto-refresh under `sync` / `serve` when a
+new operative pleading or disposition lands — `summarize --force` is the
+explicit path for prompt or model upgrades.
 
 Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
@@ -538,19 +545,24 @@ direct unit tests. Webhook integration tests boot a real
 
 ```text
 case_calendar/
-  cli.py              # entry point: sync / emit / show / serve
+  cli.py              # entry point: sync / emit / serve / setup / summarize / show
   courtlistener.py    # REST v4 client (backoff, honors any Retry-After)
   courts.py           # court_id -> IANA timezone (full federal coverage)
   extractor.py        # cheap keyword filter
   llm.py              # provider-agnostic extraction (anthropic/openai/gemini)
   pdf.py              # plain_text -> pypdf -> tesseract fallback chain
   serve.py            # CourtListener webhook receiver (DOCKET_ALERT)
-  store.py            # SQLite: dockets, courts, entries, hearings, webhook events
+  store.py            # SQLite: dockets, courts, entries, hearings, deadlines,
+                      #         case_summaries, webhook events
+  summary.py          # per-docket AI case summaries (opt-in, gated on
+                      #         case_summaries.enabled; auto-refreshes on stale)
   sync.py             # per-case sync orchestration; shared with serve.py
+  url_validator.py    # HEAD + parent-path repair for LLM-extracted dial-in URLs
   calendars/
     description.py    # shared event-body builder + time-prefix helper
     ics.py            # RFC 5545 output (TZID-tagged local times)
     gcal.py           # Google Calendar API sync (per-court timeZone)
+    index.py          # static index.html renderer (calendars + cases + summaries)
     m365.py           # Microsoft Graph (msgraph-sdk + azure-identity)
 scripts/
   reprocess_entries.py    # re-run LLM against stored entries (after prompt changes)
