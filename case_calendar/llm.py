@@ -20,6 +20,60 @@ logger = logging.getLogger(__name__)
 # Prompts
 # ---------------------------------------------------------------------------
 
+SIGNIFICANCE_RULES = """\
+Apply the rules in order; stop at the first one that matches.
+
+RULE 1 — Classify the proceeding's NATURE, not its outcome or context.
+The hearing's status (scheduled / held / cancelled), the action that
+produced this row (ADD / RESCHEDULE / etc.), and the specific docket
+entry that triggered the row are all CONTEXT. They do not affect
+significance. A cancelled trial is still major. A rescheduled MSJ
+hearing is still major. A status conference scheduled by a joint
+stipulation entry is classified on the agenda of the conference itself,
+not on the nature of the stipulation.
+
+RULE 2 — Type wins. If the hearing's title clearly matches one of these
+types, emit "major" without further reasoning:
+  - trial / jury trial / bench trial
+  - sentencing / sentencing hearing
+  - arraignment
+  - initial appearance / initial conference (where charges are read)
+  - change of plea / plea hearing / Rule 11 hearing / waiver of indictment
+  - oral argument
+  - evidentiary hearing / suppression hearing / Franks hearing
+  - motion-in-limine hearing / Daubert hearing
+  - hearing on motion for summary judgment (MSJ) / hearing on motion to
+    dismiss (MTD) / hearing on any dispositive motion / preliminary
+    injunction hearing / TRO hearing
+  - calendar call
+  - final pretrial conference
+  - CIPA hearing / CIPA pretrial conference
+
+RULE 3 — Continuance / extension rulings are MINOR. A hearing whose sole
+purpose is to rule on a Motion to Continue Trial / Motion to Extend
+Deadlines / scheduling-only motion is minor — even if it has its own
+date, time, and dial-in. The trial reschedule that results from the
+ruling lands on the trial row itself (which is major), so the watcher
+sees the new trial date without also seeing the continuance call.
+Classify by the proceeding's PURPOSE, not its EFFECT — don't promote
+the call to major just because the trial got moved inside it.
+
+RULE 4 — Ambiguous types: classify by agenda. For titles like "Status
+Conference", "Pretrial Conference" (not final / not CIPA), "Telephonic
+Conference Call", "Chambers Conference", or untyped "Hearing":
+  - major if the agenda is a substantive motion the court will rule on
+    (suppression, dismissal, plea negotiations, classified-information
+    procedures, discovery disputes, motion in limine).
+  - major if the proceeding turns into a substantive event (e.g. a
+    status conference that became a plea hearing).
+  - minor if the agenda is only setting next dates, attorney
+    substitutions, case-management housekeeping, joint status reports,
+    initial-pretrial / Rule 16 scheduling, or clerk's housekeeping.
+
+RULE 5 — Default to "major" when uncertain. Only emit "minor" when one
+of rules 1–4 clearly applies."""
+
+
 SYSTEM_PROMPT = """\
 You extract structured court-hearing information from PACER docket entries
 for a calendar-sync tool. You receive ONE new docket entry plus the list of
@@ -94,6 +148,25 @@ CRITICAL — distinguish a Motion for Hearing from an Order granting one:
   for the same defendant, RESCHEDULE it; otherwise ADD. Do NOT IGNORE just
   because the order's first words contain "Motion for Hearing" — read the
   whole entry, including any attached PDF text, before deciding.
+
+CRITICAL — continuances. Motions to Continue (and Motions to Extend
+Deadlines) are about MOVING an existing hearing or deadline. The only
+interesting effect on the calendar is the new trial / hearing date. So:
+- An "ORDER granting Motion to Continue ... Trial reset to <date>" → emit
+  RESCHEDULE on the trial hearing_key with the new date. Do NOT also ADD
+  a separate "Motion to Continue" hearing for the conference where the
+  ruling happened, even if that conference had its own date/time.
+- A "MOTION to Continue" / "MOTION to Extend" filing by itself (no order
+  yet) → IGNORE. The reschedule will land when the court rules.
+- A "Telephonic Conference Call – Motion to Continue" / "Status call to
+  rule on Motion to Continue" entry with a date but no ruling yet → if
+  you must emit anything for the call itself, ADD with significance="minor"
+  so it stays off the calendar. Prefer IGNORE when the call's only purpose
+  is scheduling housekeeping and no substantive issue will be argued.
+The user wants ONE trial row that moves as the continuances stack up, not
+a parade of continuance events. When in doubt, push the date change onto
+the trial / hearing row and skip creating a new row for the procedural
+machinery around it.
 
 If the user message includes a "RELATED DOCKET ENTRIES" block, those are
 recent entries on the same docket — either explicitly cited by the new
@@ -180,37 +253,9 @@ Date/time rules:
   correctly. Example: "March 10, 2026 at 3:00PM (PST)" → local_time "15:00".
 
 Significance — set on every ADD / RESCHEDULE / UPDATE_DETAILS action so the
-calendar layer knows whether to surface this to subscribers. Two values:
+calendar layer knows whether to surface this to subscribers.
 
-- "major" — proceedings the case-watcher cares about: anything substantive
-  the parties argue or the court rules on. ALWAYS major: trial, sentencing,
-  arraignment, initial appearance, change of plea, oral argument,
-  evidentiary hearing, suppression hearing, motion-in-limine hearing,
-  Daubert hearing, calendar call, AND ANY pretrial conference — final,
-  initial, CIPA, telephonic, or otherwise. All pretrial conferences are
-  major regardless of how routine the underlying agenda looks; the case
-  watcher needs to know about pretrial conferences as a class.
-  Conferences/calls about substantive issues (motion to suppress, motion
-  to dismiss, classified-information procedures, plea discussions) are
-  major regardless of whether they're in-person or phone.
-- "minor" — purely administrative housekeeping with no substantive content
-  the watcher would dial in for or check PACER over. Examples: a phone call
-  set only to rule on a Motion to Continue Trial / Motion to Extend
-  Deadlines / scheduling-only motions; status conferences that the docket
-  text shows are just for setting next dates; clerk's-housekeeping
-  telephone calls. If the only purpose of the proceeding is to move dates
-  or sort scheduling, mark it minor — the resulting reschedules show up on
-  the trial / hearing rows themselves.
-
-Critical: classify by the proceeding's PURPOSE, not its EFFECT. A phone
-call set to rule on a Motion to Continue is minor even if the motion is
-granted and the trial gets rescheduled inside that call. The trial
-reschedule lands on the trial row (which IS major); the procedural call
-itself stays minor. Don't promote the call to major just because
-something downstream moved.
-
-Default to "major" when uncertain. Only mark minor when the source text
-makes clear the proceeding has no substantive content.
+__SIGNIFICANCE_RULES__
 
 Duration rules:
 - If the entry states an explicit hearing length, put it in `duration_minutes`.
@@ -262,6 +307,8 @@ Return ONLY a JSON object, no markdown fences, no explanation:
 
 Always emit at least one action. If nothing applies, emit a single IGNORE.
 """
+
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__SIGNIFICANCE_RULES__", SIGNIFICANCE_RULES)
 
 
 # Appended to SYSTEM_PROMPT for cases that opt into filing-deadline extraction.
