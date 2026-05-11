@@ -1,7 +1,12 @@
-# Caddyfile template for case-calendar.
+# Caddyfile for case-calendar.
 #
-# Copy this file to `Caddyfile` (which is gitignored), then edit the
-# domain + paths below to match your deployment.
+# This file is checked in as a working template — edit the domain + paths
+# below to match your deployment. The distro Caddy package reads
+# /etc/caddy/Caddyfile, so the typical install is to symlink (or copy)
+# this file there:
+#
+#   ln -s /opt/case-calendar/Caddyfile /etc/caddy/Caddyfile
+#   systemctl reload caddy
 #
 # Caddy serves the contents of ./out at the site root over HTTPS, with
 # automatic Let's Encrypt certs. Subscribers point their calendar app at:
@@ -20,7 +25,7 @@
 # Run with:
 #   caddy run --config /path/to/case-calendar/Caddyfile
 #
-# Or, as a systemd unit, place this file at /etc/caddy/Caddyfile and
+# Or, under the distro systemd unit, install at /etc/caddy/Caddyfile and
 # `systemctl enable --now caddy`.
 
 calendars.example.com {

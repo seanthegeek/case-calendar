@@ -1,0 +1,61 @@
+# systemd unit template for `case-calendar serve` (webhook receiver).
+# See "Running `serve` as a systemd unit" in README.md for install steps,
+# the assumed /opt/case-calendar layout, and the OAuth setup caveat.
+
+[Unit]
+Description=case-calendar webhook receiver
+Documentation=https://github.com/seanpwhalen/case-calendar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=case-calendar
+Group=case-calendar
+WorkingDirectory=/opt/case-calendar
+
+# Loads COURTLISTENER_TOKEN, *_API_KEY, CASE_CALENDAR_WEBHOOK_SECRET, etc.
+# Mode 0600, owned by the case-calendar user.
+EnvironmentFile=/opt/case-calendar/.env
+
+# OAuth token caches default to ~/.case-calendar/. Setting HOME here lets
+# the defaults resolve to a path inside the install dir without needing
+# config.yaml overrides. ProtectHome=true (below) blocks /home, /root, and
+# /run/user — none of which we need with HOME pointed inside /opt.
+Environment=HOME=/opt/case-calendar
+
+# uv has no Debian/Ubuntu package; the install script
+# (https://astral.sh/uv/install.sh) drops the binary in $HOME/.local/bin
+# of the user that ran it. With HOME=/opt/case-calendar (above) and the
+# README's setup command, that resolves to the path below — adjust if
+# you installed uv elsewhere (e.g. /usr/local/bin/uv for a system-wide
+# install).
+ExecStart=/opt/case-calendar/.local/bin/uv run case-calendar serve --host 127.0.0.1 --port 8000
+
+Restart=on-failure
+RestartSec=5s
+
+# --- Hardening ---
+# Bare minimum — extend as paranoia permits. None of these break the
+# expected runtime; they just shrink the unit's blast radius if something
+# in the dependency tree gets compromised.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+
+# The serve process writes to data/, out/, and .case-calendar/ — every
+# other path stays read-only thanks to ProtectSystem=full.
+ReadWritePaths=/opt/case-calendar/data
+ReadWritePaths=/opt/case-calendar/out
+ReadWritePaths=/opt/case-calendar/.case-calendar
+
+[Install]
+WantedBy=multi-user.target

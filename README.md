@@ -300,7 +300,7 @@ calendars.example.com {
 }
 ```
 
-A ready-to-edit template lives at `Caddyfile.example` in the repo root — copy it to `Caddyfile` (gitignored) and fill in your domain. With this in place,
+A ready-to-edit template lives at `Caddyfile` in the repo root — fill in your domain and either symlink it to `/etc/caddy/Caddyfile` for the distro systemd unit or run `caddy run --config /path/to/case-calendar/Caddyfile` directly. With this in place,
 subscribers point their calendar app at `https://calendars.example.com/<calendar>.ics`.
 The same file also has a commented-out `webhook.example.com` block that
 reverse-proxies the `case-calendar serve` receiver (see the webhook
@@ -371,7 +371,7 @@ Setup:
      }
      ```
 
-     `Caddyfile.example` in the repo root ships this block ready to
+     The `Caddyfile` in the repo root ships this block ready to
      uncomment, alongside the static-site config for the ICS feeds — one
      Caddy process can serve both. Run `case-calendar serve` under
      systemd / docker / tmux on the same box; Caddy fronts it with TLS.
@@ -435,6 +435,65 @@ or as a safety net.
 **Security note:** CourtListener doesn't sign webhook payloads, so the secret in the
 URL path is your only defense against forged events. Keep `.env` private,
 and rotate the secret if it ever leaks.
+
+### Running `serve` as a systemd unit
+
+The repo ships [`case-calendar.service`](case-calendar.service) —
+a hardened unit template for a long-lived `serve` process. Suitable for any
+self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
+
+1. Create a dedicated unprivileged user that owns the install dir:
+
+   ```bash
+   useradd --system --home /opt/case-calendar --shell /usr/sbin/nologin case-calendar
+   chown -R case-calendar:case-calendar /opt/case-calendar
+   ```
+
+   Assumed layout under `/opt/case-calendar/`:
+
+   ```text
+   /opt/case-calendar/.env              # COURTLISTENER_TOKEN, *_API_KEY,
+                                        # CASE_CALENDAR_WEBHOOK_SECRET, ...
+   /opt/case-calendar/config.yaml       # cases / calendars / dockets
+   /opt/case-calendar/data/             # SQLite store (writable)
+   /opt/case-calendar/out/              # ICS + index.html (writable)
+   /opt/case-calendar/.case-calendar/   # OAuth token caches (writable)
+   ```
+
+2. Clone the repo into the install dir and install uv as the
+   `case-calendar` user (uv isn't packaged in Debian/Ubuntu, so use the
+   official install script — it drops the binary at
+   `/opt/case-calendar/.local/bin/uv` given the HOME we set in the unit):
+
+   ```bash
+   sudo -u case-calendar git clone https://github.com/seanpwhalen/case-calendar.git /opt/case-calendar
+   sudo -u case-calendar HOME=/opt/case-calendar sh -c \
+     'curl -LsSf https://astral.sh/uv/install.sh | sh'
+   sudo -u case-calendar HOME=/opt/case-calendar /opt/case-calendar/.local/bin/uv sync
+   ```
+
+   Then drop your real `.env` and `config.yaml` into `/opt/case-calendar/`
+   (copy from `.env.example` / `config.example.yaml` and edit). Confirm
+   the binary is in place: `ls -l /opt/case-calendar/.local/bin/uv`.
+
+3. Copy the unit into place, reload, and enable:
+
+   ```bash
+   cp case-calendar.service /etc/systemd/system/case-calendar.service
+   # edit User=, paths, and the uv binary path inside ExecStart= if needed
+   systemctl daemon-reload
+   systemctl enable --now case-calendar.service
+   journalctl -u case-calendar.service -f
+   ```
+
+4. **OAuth setup can't run under this unit.** `case-calendar setup gcal`
+   and `setup m365` need an interactive browser. Either run them as the
+   `case-calendar` user on a workstation and copy the resulting JSON into
+   `/opt/case-calendar/.case-calendar/`, or SSH in with X11 forwarding
+   (`ssh -X`) and run `setup` once on the VPS.
+
+The unit binds `serve` to `127.0.0.1:8000` only — your fronting choice
+(Caddy / Cloudflare Tunnel / etc.) is what makes it publicly reachable.
 
 ## Cost notes
 

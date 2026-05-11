@@ -1,7 +1,6 @@
 .env
 .venv/
 config.yaml
-Caddyfile
 .coverage
 *.jaon
 __pycache__/
@@ -17,3 +16,7 @@ out/
 # Local user config
 .local/
 .config/
+.profile
+.bash_history
+.bashrc
+.zshrc
