@@ -255,3 +255,30 @@ class TestEmitCalendars:
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
         results = emit_calendars(cfg, store)
         assert results["cyber"]["m365_pushed"] is False
+
+    def test_index_html_written_when_configured(self, store, cfg, tmp_path):
+        # index_path opts in to the static HTML index. It's a global file
+        # listing every calendar + case, so it has to be written on every
+        # emit regardless of only_calendars scoping.
+        index_path = tmp_path / "site" / "index.html"
+        cfg["index_path"] = str(index_path)
+        cfg["public_base_url"] = "https://calendars.example.com"
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        emit_calendars(cfg, store, only_calendars={"cyber"})
+        text = index_path.read_text(encoding="utf-8")
+        assert text.startswith("<!doctype html>")
+        # Both calendars appear even though only "cyber" was in scope —
+        # the index is the global view, not per-emit.
+        assert "Cybercrime" in text
+        assert "Tech" in text
+        assert "US v. X" in text and "Acme v. Widget" in text
+        # Subscribe URLs use the configured public_base_url.
+        assert "https://calendars.example.com/cyber.ics" in text
+
+    def test_index_html_not_written_when_unconfigured(self, store, cfg, tmp_path):
+        # No index_path => no index.html. Existing files in tmp_path stay.
+        sentinel = tmp_path / "index.html"
+        sentinel.write_text("untouched")
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        emit_calendars(cfg, store)
+        assert sentinel.read_text() == "untouched"

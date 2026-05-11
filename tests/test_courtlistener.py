@@ -26,6 +26,10 @@ def make_client():
             transport=transport,
             headers={"Authorization": "Token test"},
         )
+        # Mirror the attribute __init__ sets — _wait_for_window reads it on
+        # every request, so without an explicit reset the bypass fails on
+        # the first call.
+        cl._no_request_before = 0.0
         return cl
 
     return _make
@@ -78,8 +82,15 @@ class TestRetryLogic:
 
         cl = make_client(handler)
         assert cl._get("https://x/y").json() == {"ok": True}
-        assert slept == [3.0]
+        # Retry-After=3 + _RETRY_AFTER_BUFFER_SECONDS=5 → first nap is 8s.
+        # The barrier is then re-checked at the top of the next iteration
+        # and waits again (a fraction less than the first wait, since the
+        # monkeypatched sleep doesn't advance the monotonic clock). Both
+        # naps are recorded; we just care that the first one cleared the
+        # buffered Retry-After.
         assert calls[0] == 2
+        assert len(slept) >= 1
+        assert slept[0] == 3.0 + clmod._RETRY_AFTER_BUFFER_SECONDS
 
     def test_500_retries(self, make_client, monkeypatch):
         slept = []
@@ -121,8 +132,11 @@ class TestRetryLogic:
 
         cl = make_client(handler)
         assert cl._get("https://x/y").json() == {"ok": True}
-        assert slept == [85774.0]
         assert calls[0] == 2
+        # No cap on Retry-After — the full ~24h value plus the buffer must
+        # be slept through, not clamped, or a daily-bucket hit would abort
+        # the sync instead of resuming after the reset.
+        assert slept[0] == 85774.0 + clmod._RETRY_AFTER_BUFFER_SECONDS
 
     def test_giveup_after_max_attempts(self, make_client, monkeypatch):
         monkeypatch.setattr(clmod.time, "sleep", lambda s: None)

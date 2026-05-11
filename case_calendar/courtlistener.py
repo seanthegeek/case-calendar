@@ -16,6 +16,20 @@ API_BASE = "https://www.courtlistener.com/api/rest/v4"
 
 log = logging.getLogger(__name__)
 
+# Buffer added to every Retry-After value, AND enforced as a no-go-before
+# barrier across *all* requests on the client (not just the one that 429'd).
+# Without this, two things go wrong:
+#   1. The server's rate-limit window and our local clock drift just enough
+#      that sleeping exactly Retry-After lands us back in the SAME window —
+#      so we get another 429, sleep again, get another, and never make
+#      progress. Backoffs pile up indefinitely.
+#   2. After a single call honors Retry-After and succeeds, the very next
+#      call (different URL) immediately re-tripleups the window because we
+#      haven't tracked that quota is exhausted globally on the client.
+# The buffer (a few seconds past Retry-After) plus the shared barrier
+# `_no_request_before` solve both. Tune up if 429 cascades come back.
+_RETRY_AFTER_BUFFER_SECONDS = 5.0
+
 
 class CourtListener:
     def __init__(self, token: Optional[str] = None, timeout: float = 30.0):
@@ -26,6 +40,17 @@ class CourtListener:
             timeout=timeout,
             headers={"Authorization": f"Token {token}"},
         )
+        # Earliest monotonic time at which the next request may be issued —
+        # set when any call hits a 429, so subsequent calls on the same
+        # client share the cooldown rather than each one independently
+        # tripping the same window.
+        self._no_request_before: float = 0.0
+
+    def _wait_for_window(self) -> None:
+        """Block until the shared no-go-before timestamp has passed."""
+        now = time.monotonic()
+        if self._no_request_before > now:
+            time.sleep(self._no_request_before - now)
 
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
         """GET with retry on 429 (Retry-After) and 5xx (exponential backoff).
@@ -36,25 +61,39 @@ class CourtListener:
         resume on its own rather than requiring a manual restart per cycle.
         We still log the URL / body / rate-limit headers on every 429 so
         you can see in the log which bucket tripped.
+
+        Every Retry-After sleep adds ``_RETRY_AFTER_BUFFER_SECONDS`` so our
+        next request lands safely past the server's window-reset clock
+        (otherwise sub-second drift causes the same window to re-trip), and
+        the resulting cooldown is recorded on the client so subsequent
+        calls also wait — without that, one call honors the backoff, the
+        next call immediately re-trips it.
         """
         delay = 2.0
         last_response: Optional[httpx.Response] = None
         for attempt in range(6):
+            self._wait_for_window()
             r = self.client.get(url, params=params)
             last_response = r
             if r.status_code == 429:
-                wait = float(r.headers.get("Retry-After", delay))
+                base_wait = float(r.headers.get("Retry-After", delay))
+                wait = base_wait + _RETRY_AFTER_BUFFER_SECONDS
                 rate_headers = {
                     k: v for k, v in r.headers.items() if k.lower().startswith(("x-ratelimit", "retry-after"))
                 }
                 body_excerpt = r.text[:500]
                 log.warning(
-                    "courtlistener 429; sleeping %.0fs (attempt %d). url=%s headers=%s body=%s",
+                    "courtlistener 429; sleeping %.0fs (Retry-After=%.0f + %.0fs buffer, attempt %d). url=%s headers=%s body=%s",
                     wait,
+                    base_wait,
+                    _RETRY_AFTER_BUFFER_SECONDS,
                     attempt + 1,
                     r.request.url,
                     rate_headers,
                     body_excerpt,
+                )
+                self._no_request_before = max(
+                    self._no_request_before, time.monotonic() + wait,
                 )
                 time.sleep(wait)
                 delay = min(delay * 2, 60)

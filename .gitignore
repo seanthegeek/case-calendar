@@ -1,6 +1,7 @@
 .env
 .venv/
 config.yaml
+Caddyfile
 .coverage
 *.jaon
 __pycache__/

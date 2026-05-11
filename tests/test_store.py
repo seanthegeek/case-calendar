@@ -176,6 +176,30 @@ class TestDockets:
         assert store.get_docket_meta(7)["docket_number"] == "new"
 
 
+class TestCaseAggregates:
+    def test_min_filed_max_activity_across_dockets(self, store: Store):
+        # Earliest date_filed across the case's dockets wins as the case's
+        # "filed" date; latest docket-level date_modified wins as activity.
+        store.set_docket_last_modified(10, "2026-05-10T12:00:00Z")
+        store.set_docket_last_modified(11, "2026-04-01T12:00:00Z")
+        store.mark_entry(10, 1, "2025-01-15T08:00:00Z", "fp",
+                         date_filed="2025-01-15")
+        store.mark_entry(11, 2, "2024-09-01T08:00:00Z", "fp",
+                         date_filed="2024-09-01")
+        agg = store.get_case_aggregates([10, 11])
+        assert agg["date_filed"] == "2024-09-01"
+        assert agg["activity_date"] == "2026-05-10T12:00:00Z"
+
+    def test_returns_none_when_no_rows(self, store: Store):
+        agg = store.get_case_aggregates([42, 43])
+        assert agg == {"date_filed": None, "activity_date": None}
+
+    def test_empty_docket_list(self, store: Store):
+        # A case with no dockets configured shouldn't blow up; just return None.
+        agg = store.get_case_aggregates([])
+        assert agg == {"date_filed": None, "activity_date": None}
+
+
 class TestCourts:
     def test_get_returns_none_when_missing(self, store: Store):
         assert store.get_court_citation("zzz") is None

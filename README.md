@@ -284,6 +284,47 @@ Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
 PDFs hadn't been OCR'd, get re-checked on each sync until available.
 
+### Hosting the ICS feeds publicly (Caddy + index page)
+
+ICS files are useful only if subscribers can reach them. The simplest
+pattern is to point [Caddy](https://caddyserver.com/) at the `out/`
+directory and let it serve everything under that path over HTTPS, with
+automatic Let's Encrypt certs:
+
+```caddyfile
+calendars.example.com {
+    root * /home/<you>/case-calendar/out
+    file_server { index index.html }
+    @ics path *.ics
+    header @ics Content-Type "text/calendar; charset=utf-8"
+}
+```
+
+A ready-to-edit template lives at `Caddyfile.example` in the repo root — copy it to `Caddyfile` (gitignored) and fill in your domain. With this in place,
+subscribers point their calendar app at `https://calendars.example.com/<calendar>.ics`.
+The same file also has a commented-out `webhook.example.com` block that
+reverse-proxies the `case-calendar serve` receiver (see the webhook
+section below), so one Caddy install can front both the public feed
+site and the private webhook endpoint.
+
+To go one step further and surface a public landing page that lists every
+calendar (with one-click subscribe links) and every tracked case (with
+docket links, date filed, and last activity, sortable client-side), add
+three lines to `config.yaml`:
+
+```yaml
+index_path:      out/index.html
+public_base_url: https://calendars.example.com   # where Caddy serves out/
+site_title:      "My court calendar"
+```
+
+The page is regenerated on every `sync` / `serve` / `emit`. It is
+self-contained HTML (no CDN, no third-party JS) with a manual dark-mode
+toggle that respects `prefers-color-scheme`; the
+[Darkreader](https://darkreader.org/) extension recognizes the page's
+built-in dark theme via `<meta name="color-scheme">` and skips applying
+its own filter on top.
+
 ### Real-time via webhooks (no polling burn)
 
 CourtListener can push events to a URL you control instead of you polling.
@@ -330,8 +371,10 @@ Setup:
      }
      ```
 
-     Then run `case-calendar serve` under systemd / docker / tmux on the
-     same box; Caddy fronts it with TLS.
+     `Caddyfile.example` in the repo root ships this block ready to
+     uncomment, alongside the static-site config for the ICS feeds — one
+     Caddy process can serve both. Run `case-calendar serve` under
+     systemd / docker / tmux on the same box; Caddy fronts it with TLS.
 
    - **[fly.io](https://fly.io/)** — container PaaS with a generous free tier and a
      persistent-volume option for the SQLite store. Suits the receiver

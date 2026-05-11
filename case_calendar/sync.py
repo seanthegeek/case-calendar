@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
-from . import llm, pdf, url_validator
+from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
 from .courts import tz_for
 from .extractor import is_extractable
@@ -426,6 +426,18 @@ class CaseSyncer:
             short_description=entry.get("short_description") if processed else None,
             recap_documents=_compact_recap_documents(entry) if processed else None,
         )
+        # Flag the case_summaries row stale when this entry looks like an
+        # operative pleading (superseding indictment, amended complaint,
+        # etc.) or a disposition (judgment, plea agreement, verdict,
+        # dismissal, dispositive memo). These are exactly the entries that
+        # change the substantive answer to "what is this case about, and
+        # where does it stand?" — so the next sync/webhook auto-emit will
+        # regenerate the summary before re-rendering the index. We check
+        # this independently of `processed` because operative pleadings
+        # and judgments rarely match the hearing-relevance regex but are
+        # the most important signals for the summary.
+        if summary_mod.is_operative_pleading(entry) or summary_mod.is_disposition(entry):
+            self.store.mark_summary_stale(case.case_id, docket_id)
         return processed
 
     # --- polling entry point ---

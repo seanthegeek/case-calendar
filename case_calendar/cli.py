@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 from . import llm
 from .calendars.description import no_time_title_prefix
 from .calendars.ics import write_ics
+from .calendars.index import build_calendar_models, write_index
 from .courtlistener import CourtListener
 from .store import Store
 from .sync import CaseConfig, CaseSyncer
@@ -146,9 +147,42 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 f"entries_seen={stats['entries_seen']} "
                 f"processed={stats['entries_processed']} actions={stats['actions']}"
             )
+            # `entries_processed` is included so we also re-emit when a
+            # known entry was reprocessed for a non-scheduling reason —
+            # the common case being a previously-unavailable PDF landing on
+            # RECAP. process_entry rewrites that entry's recap_documents
+            # JSON, and any hearing referencing it as a source_entry will
+            # render new document URLs on the next emit; without this
+            # condition those links never appear because the LLM returns
+            # zero actions for a doc-availability flip.
             if stats.get("actions") or stats.get("verified") \
-                    or stats.get("auto_held") or stats.get("auto_passed"):
+                    or stats.get("auto_held") or stats.get("auto_passed") \
+                    or stats.get("entries_processed"):
                 affected_calendars.add(case.calendar)
+
+        # Agentic summary refresh: process_entry flipped stale=1 on the
+        # rows whose dockets received an operative pleading or disposition
+        # this sync; refresh_stale also picks up dockets that have no
+        # summary row yet (new cases / new dockets in config). Calendars
+        # whose summary text changed get added to affected_calendars so
+        # the emit below re-renders them.
+        if (cfg.get("case_summaries") or {}).get("enabled"):
+            summary_cfg = cfg["case_summaries"]
+            from . import summary as summary_mod
+            raw_cases = {c["id"]: c for c in cfg["cases"]}
+            written = summary_mod.refresh_stale(
+                cl=cl, store=store, cases=cases,
+                case_overrides=raw_cases,
+                only_case_ids={c.case_id for c in cases},
+                provider=summary_cfg.get("provider"),
+                model=summary_cfg.get("model"),
+                allow_ocr=bool(summary_cfg.get("allow_ocr", True)),
+            )
+            for case_id, docket_ids in written.items():
+                case = next(c for c in cases if c.case_id == case_id)
+                affected_calendars.add(case.calendar)
+                for did in docket_ids:
+                    print(f"[{case_id}] regenerated summary for docket {did}")
 
     if not args.no_emit and affected_calendars:
         results = emit_calendars(
@@ -380,6 +414,20 @@ def emit_calendars(
             )
             result["m365_pushed"] = True
         out[cal_id] = result
+
+    # index.html is global (lists every calendar + case), so we render it
+    # on every emit regardless of `only_calendars` — a webhook touching one
+    # calendar still bumps another calendar's activity_date display because
+    # docket high-water marks may have advanced elsewhere in the same sync.
+    # The write is microseconds and idempotent.
+    index_path = cfg.get("index_path")
+    if index_path:
+        models = build_calendar_models(
+            cfg, store,
+            public_base_url=cfg.get("public_base_url"),
+        )
+        site_title = cfg.get("site_title", "case-calendar")
+        write_index(index_path, calendars=models, site_title=site_title)
     return out
 
 
@@ -401,6 +449,8 @@ def cmd_emit(args: argparse.Namespace) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    import threading
+
     from .serve import serve
 
     cfg = _load_config(args.config)
@@ -418,11 +468,112 @@ def cmd_serve(args: argparse.Namespace) -> int:
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     log.info("LLM: %s", llm.provider_info())
 
+    # Debounced summary refresh state. PACER batch uploads can fire many
+    # webhook deliveries inside a few minutes; we don't want a Sonnet call
+    # per delivery. Each delivery that landed a stale-flagging entry resets
+    # this Timer, so the regen fires only after `debounce_seconds` of
+    # quiet. The timer thread itself is a daemon so it exits with the
+    # process; if the burst doesn't settle before shutdown, the next sync
+    # (or the next webhook after restart) will catch the stale rows.
+    summary_cfg = cfg.get("case_summaries") or {}
+    summary_enabled = bool(summary_cfg.get("enabled"))
+    debounce_seconds = float(summary_cfg.get("debounce_seconds", 300))
+    debounce_lock = threading.Lock()
+    debounce_state: dict[str, Any] = {
+        "timer": None,
+        "pending_cals": set(),
+    }
+    raw_cases = {c["id"]: c for c in cfg["cases"]}
+
+    def _fire_debounced_summary() -> None:
+        """Timer callback: regenerate stale summaries that have settled.
+
+        Pulls the accumulated pending-calendars set, clears the timer
+        handle under the lock, then runs the refresh and a second emit
+        scoped to whatever calendars actually got new prose. Runs in a
+        daemon thread, so any exception is logged and swallowed — the
+        webhook listener is unaffected.
+        """
+        with debounce_lock:
+            cals = set(debounce_state["pending_cals"])
+            debounce_state["pending_cals"].clear()
+            debounce_state["timer"] = None
+        if not cals:
+            return
+        try:
+            from . import summary as summary_mod
+            scoped_ids = {c.case_id for c in cases if c.calendar in cals}
+            written = summary_mod.refresh_stale(
+                cl=cl, store=store, cases=cases,
+                case_overrides=raw_cases,
+                only_case_ids=scoped_ids,
+                provider=summary_cfg.get("provider"),
+                model=summary_cfg.get("model"),
+                allow_ocr=bool(summary_cfg.get("allow_ocr", True)),
+            )
+            if not written:
+                return
+            written_cals = {c.calendar for c in cases if c.case_id in written}
+            log.info(
+                "debounced summary refresh: regenerated %d row(s); re-emitting %s",
+                sum(len(v) for v in written.values()), written_cals,
+            )
+            emit_calendars(cfg, store, only_calendars=written_cals)
+        except Exception:
+            log.exception("debounced summary refresh failed")
+
+    def _arm_debounce(only_calendars: set[str]) -> None:
+        """(Re)start the debounce timer if any of the affected calendars
+        have stale summary rows. Each call extends the wait — the regen
+        only fires after ``debounce_seconds`` of webhook quiet."""
+        if not summary_enabled:
+            return
+        # Cheap check: is any (case_id, docket_id) in these calendars stale?
+        # Avoids arming the timer on deliveries that didn't touch any
+        # operative-pleading or disposition entry.
+        any_stale = False
+        for case in cases:
+            if case.calendar not in only_calendars:
+                continue
+            for docket_id in case.dockets:
+                if store.is_summary_stale(case.case_id, docket_id):
+                    any_stale = True
+                    break
+            if any_stale:
+                break
+        if not any_stale:
+            return
+        with debounce_lock:
+            debounce_state["pending_cals"].update(only_calendars)
+            existing = debounce_state["timer"]
+            if existing is not None:
+                existing.cancel()
+            t = threading.Timer(debounce_seconds, _fire_debounced_summary)
+            t.daemon = True
+            debounce_state["timer"] = t
+            t.start()
+        log.info(
+            "debounce armed: summary refresh in %.0fs for calendars=%s",
+            debounce_seconds, only_calendars,
+        )
+
     def emit_fn(only_calendars: set[str]) -> None:
+        # Fast path: re-render ICS / push gcal+M365 immediately so the
+        # subscriber-visible calendar reflects this delivery within
+        # seconds. The (potentially expensive) Sonnet summary regen is
+        # debounced separately — a second emit_calendars call fires from
+        # the timer once the burst settles. The index rendered here will
+        # still carry the previous summary text; that's fine, the
+        # timer-fired re-emit overwrites the index a few minutes later.
         results = emit_calendars(
             cfg, store,
             only_calendars=only_calendars,
         )
+        # Debounce-arm the summary refresh. If this delivery didn't touch
+        # an operative pleading or disposition, _arm_debounce notices
+        # there are no stale rows and noops, so we don't pay for an
+        # idle timer.
+        _arm_debounce(only_calendars)
         for cal_id, r in results.items():
             if r["ics_path"]:
                 log.info(
@@ -510,6 +661,79 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_summarize(args: argparse.Namespace) -> int:
+    """Generate per-docket AI summaries for the index page.
+
+    Opt-in feature gated on ``case_summaries.enabled`` in the config. Each
+    case's dockets are scanned for the operative pleading (latest
+    indictment / amended complaint / etc.) and any disposition documents
+    (judgment, plea agreement, verdict, dismissal). The PDFs are fed to a
+    higher-tier LLM (Sonnet by default) along with the structured-events
+    scaffold the extractor already recorded, producing a 2-4 sentence
+    prose summary persisted to the ``case_summaries`` table and rendered
+    into ``index.html`` on the next emit.
+
+    Existing summary rows are reused unless ``--force`` is passed; operative
+    pleadings are stable, so re-running cheaply is the default.
+    """
+    cfg = _load_config(args.config)
+    summary_cfg = cfg.get("case_summaries") or {}
+    if not summary_cfg.get("enabled"):
+        print(
+            "case_summaries.enabled is not set in the config. "
+            "Enable it under the top-level `case_summaries:` block to use this command.",
+            file=sys.stderr,
+        )
+        return 2
+
+    from .summary import summarize_case
+
+    cases = _cases_from_config(cfg)
+    raw_cases = {c["id"]: c for c in cfg["cases"]}
+    if args.case:
+        cases = [c for c in cases if c.case_id == args.case]
+        if not cases:
+            print(f"no case with id {args.case!r}", file=sys.stderr)
+            return 2
+
+    provider = summary_cfg.get("provider")
+    model = summary_cfg.get("model")
+    allow_ocr = bool(summary_cfg.get("allow_ocr", True))
+
+    store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+    log.info("LLM: %s", llm.provider_info())
+    affected_calendars: set[str] = set()
+    with CourtListener() as cl:
+        for case in cases:
+            raw = raw_cases.get(case.case_id, {})
+            aggregation_note = raw.get("aggregation_note")
+            print(f"=== summarizing {case.case_id} — {case.name} ===")
+            written = summarize_case(
+                cl=cl, store=store, case=case,
+                aggregation_note=aggregation_note,
+                provider=provider, model=model,
+                allow_ocr=allow_ocr, force=args.force,
+            )
+            for row in written:
+                print(
+                    f"  docket {row['docket_id']}: "
+                    f"{len(row['summary'])} chars (model={row['model']})"
+                )
+            if written:
+                affected_calendars.add(case.calendar)
+
+    # Re-emit so the new summaries land in the index.html immediately.
+    if not args.no_emit and affected_calendars:
+        results = emit_calendars(
+            cfg, store, only_calendars=affected_calendars,
+        )
+        for cal_id, r in results.items():
+            if r["ics_path"]:
+                print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
+    store.close()
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -588,6 +812,25 @@ def main(argv: list[str] | None = None) -> int:
         help="which backend to authorize",
     )
     p_setup.set_defaults(func=cmd_setup)
+
+    p_summarize = sub.add_parser(
+        "summarize",
+        help="generate per-docket AI case summaries for the index page "
+             "(opt-in; gated on case_summaries.enabled in the config)",
+    )
+    p_summarize.add_argument(
+        "--case", help="only summarize this case_id",
+    )
+    p_summarize.add_argument(
+        "--force", action="store_true",
+        help="regenerate summaries even when a row already exists "
+             "(use after a model upgrade or prompt change)",
+    )
+    p_summarize.add_argument(
+        "--no-emit", action="store_true",
+        help="skip auto-emitting index.html after writing summaries",
+    )
+    p_summarize.set_defaults(func=cmd_summarize)
 
     p_show = sub.add_parser("show", help="dump current hearings")
     p_show.add_argument("--case", help="only show this case_id")
