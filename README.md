@@ -14,9 +14,8 @@ For each case in `config.yaml`:
 3. Extracts hearing and filing-deadline details with an LLM (Anthropic,
    OpenAI, or Gemini), reading both the docket text and the linked PDFs.
    Cross-references (`granting 65 Motion ...`) and recent docket activity
-   are resolved from the local store so the LLM has the context to name a
-   hearing correctly when the entry that schedules it doesn't itself name
-   the subject.
+   feed in as context, so the LLM can name a hearing correctly even when
+   the scheduling entry itself is unspecific.
 4. Stores hearings and deadlines in SQLite with stable keys, so reschedules
    and dial-in updates land on the same row. Each row is tagged `major` or
    `minor`; minor (procedural-only phone calls, routine status reports) and
@@ -44,7 +43,7 @@ Two delivery modes (both auto-emit affected calendars when work happens):
 
 - **Polling** (`case-calendar sync`) — run on a cron. A three-tier
   short-circuit (docket / entry / fingerprint dedup) means quiet hours
-  cost roughly one cheap CL request per docket and zero LLM calls.
+  cost roughly one cheap CourtListener request per docket and zero LLM calls.
   Affected calendars are re-rendered at the end of the sync.
 - **Webhook** (`case-calendar serve`) — register a public HTTPS URL with
   CourtListener and receive `DOCKET_ALERT` events in real time. Bypasses
@@ -65,14 +64,14 @@ cp config.example.yaml config.yaml
 
 CourtListener OCRs PDFs once they're contributed to RECAP, but there's a lag
 and some entries' PDFs never get uploaded. To extract text from PDFs ourselves
-when CL hasn't yet:
+when CourtListener hasn't yet:
 
 ```bash
 sudo apt install poppler-utils tesseract-ocr  # or brew install poppler tesseract
 ```
 
-Without these, the tool will still work — it just skips PDFs CL hasn't
-processed and re-tries on each sync (no cache poisoning).
+Without these, the tool will still work — it just skips PDFs CourtListener
+hasn't processed and re-tries on each sync (no cache poisoning).
 
 ### Optional: Google Calendar push
 
@@ -107,13 +106,14 @@ One-time setup (manual steps in the Google Cloud Console):
        google_calendar_id: xxx@group.calendar.google.com
    ```
 
-7. **Authorize once interactively**: `case-calendar emit --push-gcal`.
-   The first run opens a browser, you grant Calendar access, and the
-   refresh token is cached at `google_token_path`. Subsequent runs —
-   including the headless daemon — refresh silently against that cache.
+7. **Authorize once interactively**: `case-calendar setup gcal`. The
+   command opens a browser, you grant Calendar access, and the refresh
+   token is cached at `google_token_path`. Subsequent runs — including
+   the headless daemon — refresh silently against that cache.
 
-Now `case-calendar sync --push-gcal` and `case-calendar serve --push-gcal`
-will push every change to the calendar without a manual emit step.
+Once the token is staged, `case-calendar sync`, `case-calendar serve`,
+and `case-calendar emit` auto-push to Google Calendar for every calendar
+that has `google_calendar_id` set. No flag required.
 
 ### Optional: Microsoft 365 / Outlook push
 
@@ -169,24 +169,61 @@ One-time setup (manual steps in the Microsoft Entra admin center):
        # m365_use_default_calendar: true    # or push to the user's primary
    ```
 
-7. **Authorize once interactively**: `case-calendar emit --push-m365`.
-   The first run opens a browser, you grant `Calendars.ReadWrite`, and
-   the resulting `AuthenticationRecord` is cached at
+7. **Authorize once interactively**: `case-calendar setup m365`. The
+   command opens a browser, you grant `Calendars.ReadWrite`, and the
+   resulting `AuthenticationRecord` is cached at
    `~/.case-calendar/m365-token.json` plus the OS keyring
-   (DPAPI / Keychain / libsecret). The daemon
-   (`serve --push-m365`) reads the record back and refreshes silently
-   thereafter — it cannot prompt a browser on its own.
+   (DPAPI / Keychain / libsecret). The daemon reads the record back and
+   refreshes silently thereafter — it cannot prompt a browser on its own.
 
-Now `case-calendar sync --push-m365` and `case-calendar serve --push-m365`
-will push every change to Outlook without a manual emit step. Idempotency
-is automatic: the Graph event id is cached on the local row after the
-first create, and a stable `CaseCalendarKey` extended property lets the
-push recover the right event by `$filter` lookup if the local cache is
-ever wiped.
+Once the auth record is staged, `case-calendar sync`, `case-calendar
+serve`, and `case-calendar emit` auto-push to Outlook for every calendar
+that has `m365_calendar_id` or `m365_use_default_calendar` set. No flag
+required. Idempotency is automatic: the Graph event id is cached on the
+local row after the first create, and a stable `CaseCalendarKey` extended
+property lets the push recover the right event by `$filter` lookup if the
+local cache is ever wiped.
 
 [msgraph]: https://github.com/microsoftgraph/msgraph-sdk-python
 [azid]: https://learn.microsoft.com/en-us/python/api/overview/azure/identity-readme
 [gex]: https://developer.microsoft.com/en-us/graph/graph-explorer
+
+### Bootstrapping OAuth on a headless server
+
+Both `case-calendar setup gcal` and `case-calendar setup m365` need an
+interactive browser on first run: they spin up a local HTTP listener and
+complete the OAuth redirect on `http://localhost:<port>/` on the same
+machine. The auth URL is printed to the console, but opening it on a
+different machine won't complete the flow — the post-sign-in callback
+can't reach the headless server.
+
+Practical answer: do the first-run authorization on a workstation with a
+browser, then move the cached credentials to the prod box.
+
+- **Google.** The refresh token lives in
+  `~/.case-calendar/google-token.json`. Run `case-calendar setup gcal`
+  on a workstation, then copy that file to the same path on prod
+  (`scp ~/.case-calendar/google-token.json prod:~/.case-calendar/`). The
+  daemon refreshes silently from there forever.
+- **Microsoft.** Trickier, because `azure-identity` splits the cache:
+  `~/.case-calendar/m365-token.json` holds only the
+  `AuthenticationRecord` metadata, while the **refresh token itself lives
+  in the OS keyring** (DPAPI on Windows, Keychain on macOS, libsecret on
+  Linux). Copying the file alone is not enough — the prod keyring won't
+  have the matching refresh token. Workarounds:
+  - Run `case-calendar setup m365` from a graphical session on the prod
+    box itself (X11-forwarded SSH, RDP, or a one-time desktop login), so
+    the keyring on prod is populated directly.
+  - Or pick a prod host that has at least one graphical login available
+    for the one-time setup.
+
+  A cleaner long-term option is to switch the M365 path to
+  `DeviceCodeCredential`, which prints a short code + URL you can punch in
+  from any browser. Not implemented today — open an issue if you need it.
+
+Once the credentials are in place, `case-calendar serve` runs headless
+forever and auto-pushes to whichever backends have a staged token; only
+the first authorization needs a browser.
 
 ### Optional: notifications
 
@@ -215,27 +252,33 @@ the calendar owner in Google.
 
 ## Usage
 
+The intended workflow is:
+
+1. Edit `config.yaml` to list the cases / dockets / calendars you want.
+2. Optionally run `case-calendar setup gcal` and/or
+   `case-calendar setup m365` once to authorize push backends.
+3. `case-calendar sync` to backfill existing hearings + deadlines onto
+   your calendars.
+4. `case-calendar serve` to receive future updates from CourtListener
+   webhooks in real time.
+
 ```bash
-case-calendar sync                       # pull updates + auto-emit ICS
-case-calendar sync --push-gcal           # also push affected calendars to Google
-case-calendar sync --push-m365           # also push to Microsoft 365 / Outlook
+case-calendar sync                       # pull updates + auto-emit affected calendars
 case-calendar sync --no-emit             # skip the auto-emit (rare; mostly for tests)
 case-calendar sync --case us-v-wang      # sync just one case
-case-calendar emit                       # render ICS from current store (manual run)
-case-calendar emit --push-gcal           # also push to Google Calendar
-case-calendar emit --push-m365           # also push to Microsoft 365 / Outlook
+case-calendar emit                       # re-render ICS + push (e.g. after editing config)
 case-calendar show                       # dump current hearings + deadlines
 case-calendar show --case us-v-wang      # one case
 case-calendar serve --port 8000          # real-time webhook receiver (auto-emits)
-case-calendar serve --port 8000 --push-gcal --push-m365  # push everywhere on each webhook
+case-calendar setup gcal                 # one-time Google Calendar OAuth
+case-calendar setup m365                 # one-time Microsoft 365 / Outlook OAuth
 ```
 
-`sync` and `serve` both auto-emit ICS files after any change so subscribers
-stay current without a separate `emit` step. The standalone `emit` command
-is still useful for forcing a re-render (e.g. after editing config) or for
-the first-run OAuth flow on Google or M365 (neither can prompt a browser
-from inside the headless daemon, so the operator runs `emit --push-gcal`
-or `emit --push-m365` once interactively to stage the token cache).
+`sync`, `serve`, and `emit` all auto-emit ICS for every configured
+calendar and auto-push to gcal / M365 for any backend with a staged OAuth
+token — no per-command flag required. The standalone `emit` command is
+useful for forcing a re-render (e.g. after editing config) without
+pulling new data; the `setup` commands handle the one-time OAuth flows.
 
 Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
@@ -244,7 +287,7 @@ PDFs hadn't been OCR'd, get re-checked on each sync until available.
 ### Real-time via webhooks (no polling burn)
 
 CourtListener can push events to a URL you control instead of you polling.
-This is by far the cheapest mode — zero CL API calls per quiet hour, zero
+This is by far the cheapest mode — zero CourtListener API calls per quiet hour, zero
 daily-quota risk, and updates land within seconds of filing.
 
 Setup:
@@ -256,26 +299,97 @@ Setup:
    ```
 
 2. `case-calendar serve --port 8000` — runs the receiver on localhost.
-3. Expose `127.0.0.1:8000` over public HTTPS. Easy options:
-   - Cloudflare Tunnel (`cloudflared tunnel --url http://localhost:8000`)
-   - Caddy on a small VPS (auto-TLS)
-   - fly.io / Railway / Render container
-4. In the CL dashboard's webhooks panel, register:
+   On a PaaS (fly / Railway / Render) you'll want `--host 0.0.0.0 --port $PORT`
+   so the platform's router can reach it.
+3. Expose `127.0.0.1:8000` over public HTTPS. Pick the option that matches
+   where you want the receiver to live:
+
+   - **[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)** — easiest if you already use Cloudflare. No
+     VPS, no static IP, no inbound port; the tunnel daemon dials out from
+     your machine. Free for personal use.
+
+     ```bash
+     # quick / ephemeral (random *.trycloudflare.com URL each run):
+     cloudflared tunnel --url http://localhost:8000
+
+     # stable (named tunnel bound to a domain you own):
+     cloudflared tunnel login
+     cloudflared tunnel create case-calendar
+     cloudflared tunnel route dns case-calendar webhook.example.com
+     cloudflared tunnel run --url http://localhost:8000 case-calendar
+     ```
+
+   - **[Caddy](https://caddyserver.com/) on a small VPS** — best when you already have a box running
+     and want a long-lived service that doesn't depend on a third party's
+     tunnel. Caddy provisions and renews a Let's Encrypt cert
+     automatically; point a subdomain at the VPS first.
+
+     ```caddyfile
+     webhook.example.com {
+         reverse_proxy 127.0.0.1:8000
+     }
+     ```
+
+     Then run `case-calendar serve` under systemd / docker / tmux on the
+     same box; Caddy fronts it with TLS.
+
+   - **[fly.io](https://fly.io/)** — container PaaS with a generous free tier and a
+     persistent-volume option for the SQLite store. Suits the receiver
+     well: low traffic, mostly idle, must keep one DB file around.
+
+     ```bash
+     fly launch --no-deploy           # generates fly.toml + Dockerfile
+     fly volumes create cc_data --size 1
+     # mount at /data, point store_path to /data/case-calendar.sqlite,
+     # set CASE_CALENDAR_WEBHOOK_SECRET / COURTLISTENER_TOKEN /
+     # <provider>_API_KEY via `fly secrets set`, then:
+     fly deploy
+     ```
+
+     Set the internal port in `fly.toml` to 8000 and the CMD to
+     `case-calendar serve --host 0.0.0.0 --port 8000`.
+
+   - **[Railway](https://railway.com/)** — git-push deploys with a managed Postgres-ish UX.
+     Easiest if you want a hosted dashboard for env vars + logs. Mount a
+     volume for SQLite persistence (Railway's ephemeral filesystem
+     otherwise wipes the store on redeploy).
+
+     ```text
+     Build:  uv sync
+     Start:  uv run case-calendar serve --host 0.0.0.0 --port $PORT
+     Vars:   CASE_CALENDAR_WEBHOOK_SECRET, COURTLISTENER_TOKEN,
+             ANTHROPIC_API_KEY (or whichever provider you use)
+     Volume: mount at /data, set store_path: /data/case-calendar.sqlite
+     ```
+
+   - **[Render](https://render.com/)** — similar to Railway; free tier exists but spins the
+     service down on idle (a cold start adds ~30s to the first webhook
+     after quiet, and CourtListener will retry, so it still works).
+     Choose the paid "Background Worker" or "Web Service" tier with a
+     persistent disk if you don't want cold starts.
+
+     ```text
+     Build:  uv sync
+     Start:  uv run case-calendar serve --host 0.0.0.0 --port $PORT
+     Disk:   mount at /data, set store_path: /data/case-calendar.sqlite
+     ```
+
+4. In the CourtListener dashboard's webhooks panel, register:
 
    ```text
    https://<your-host>/webhooks/case-calendar/<CASE_CALENDAR_WEBHOOK_SECRET>
    ```
 
    Event type: `DOCKET_ALERT`. Pick the highest webhook version.
-5. In CL, subscribe to docket alerts for every docket in your `config.yaml`
-   (this is what tells CL to send those events to your webhook).
+5. In CourtListener, subscribe to docket alerts for every docket in your `config.yaml`
+   (this is what tells CourtListener to send those events to your webhook).
 
 The receiver makes one `/dockets/{id}/` lookup the first time it sees a new
-docket (to learn its court timezone and citation), then zero CL calls per
+docket (to learn its court timezone and citation), then zero CourtListener calls per
 event after that. Polling sync still works alongside webhooks for backfill
 or as a safety net.
 
-**Security note:** CL doesn't sign webhook payloads, so the secret in the
+**Security note:** CourtListener doesn't sign webhook payloads, so the secret in the
 URL path is your only defense against forged events. Keep `.env` private,
 and rotate the secret if it ever leaks.
 

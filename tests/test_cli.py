@@ -234,11 +234,24 @@ class TestEmitCalendars:
         assert "65: https://archive.org/65.pdf" in unfolded
         assert "65-1: https://archive.org/65a.pdf" in unfolded
 
-    def test_gcal_skipped_when_push_gcal_false(self, store, cfg):
-        # Adding a gcal id must NOT trigger a push when push_gcal is off
-        # (the daemon path defaults to off until the operator opts in).
+    def test_gcal_skipped_when_no_token_cache(self, store, cfg, tmp_path):
+        # gcal push auto-enables when a token cache is present. Without
+        # one — first run, or after a token wipe — push is skipped
+        # silently so the daemon never blocks on a missing OAuth.
         cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
         cfg["google_credentials_path"] = "/nonexistent.json"  # would crash if used
+        cfg["google_token_path"] = str(tmp_path / "no-such-token.json")
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
-        results = emit_calendars(cfg, store, push_gcal=False)
+        results = emit_calendars(cfg, store)
         assert results["cyber"]["gcal_pushed"] is False
+
+    def test_m365_skipped_when_no_token_cache(self, store, cfg, tmp_path, monkeypatch):
+        # Same auto-detect contract as gcal: configured client id but no
+        # cached token => skip, don't crash.
+        cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
+        cfg["m365_client_id"] = "00000000-0000-0000-0000-000000000000"
+        cfg["m365_token_path"] = str(tmp_path / "no-such-m365.json")
+        monkeypatch.delenv("M365_CLIENT_ID", raising=False)
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        results = emit_calendars(cfg, store)
+        assert results["cyber"]["m365_pushed"] is False

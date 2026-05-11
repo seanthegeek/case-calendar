@@ -5,25 +5,27 @@
 #   ANTHROPIC_API_KEY    — for the LLM extractor
 #
 # Run order:
-#   case-calendar -c config.yaml sync     # pull updates, fill the store
-#   case-calendar -c config.yaml emit     # write ICS files (and push gcal)
-#   case-calendar -c config.yaml show     # sanity check
+#   case-calendar -c config.yaml setup gcal   # one-time OAuth (only if pushing to gcal)
+#   case-calendar -c config.yaml setup m365   # one-time OAuth (only if pushing to M365)
+#   case-calendar -c config.yaml sync         # backfill + auto-emit to all configured backends
+#   case-calendar -c config.yaml serve        # real-time webhook receiver + auto-emit
+#   case-calendar -c config.yaml show         # sanity check
 
 store_path: data/case-calendar.sqlite
 model: claude-opus-4-7
 
-# Optional — only needed if any calendar has google_calendar_id set and you
-# pass --push-gcal to `emit`. Get this from Google Cloud Console (OAuth client
-# of type "Desktop app").
+# Optional — only needed if any calendar has google_calendar_id set.
+# Push auto-enables once `case-calendar setup gcal` has staged the token
+# cache at google_token_path. Get the credentials JSON from Google Cloud
+# Console (OAuth client of type "Desktop app").
 # google_credentials_path: ~/.case-calendar/google-credentials.json
 # google_token_path:       ~/.case-calendar/google-token.json
 
 # Optional — only needed if any calendar has m365_calendar_id set (or
-# m365_use_default_calendar: true) and you pass --push-m365. Register a
-# multi-tenant "public client" application in Azure AD / Entra and put its
-# Application (client) ID here. The first run of `emit --push-m365` opens
-# a browser to grant Calendars.ReadWrite; the daemon (`serve --push-m365`)
-# then reuses the cached AuthenticationRecord.
+# m365_use_default_calendar: true). Push auto-enables once
+# `case-calendar setup m365` has staged the AuthenticationRecord at
+# m365_token_path. Register a multi-tenant "public client" application
+# in Azure AD / Entra and put its Application (client) ID here.
 # m365_client_id:    "00000000-0000-0000-0000-000000000000"
 # m365_token_path:   ~/.case-calendar/m365-token.json
 
@@ -91,8 +93,10 @@ cases:
   # Filing deadlines are auto-detected from each docket's number: civil
   # dockets (':cv-') get deadline tracking automatically, routine criminal
   # dockets (':cr-' / ':cm-') skip it. Set `extract_deadlines: true` on a
-  # serious criminal trial where pretrial motion practice (suppression /
-  # in-limine / Daubert / sentencing memos) is itself worth watching.
+  # serious criminal case where the filing cadence is itself worth
+  # watching — pretrial motion practice (suppression / in-limine /
+  # Daubert) and the run-up to sentencing (sentencing-memo deadlines,
+  # PSR objections).
   - id: us-v-ashtor
     name: "United States v. Ashtor (DPRK IT worker)"
     calendar: cybercrime

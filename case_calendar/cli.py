@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -153,8 +154,6 @@ def cmd_sync(args: argparse.Namespace) -> int:
         results = emit_calendars(
             cfg, store,
             only_calendars=affected_calendars,
-            push_gcal=args.push_gcal,
-            push_m365=getattr(args, "push_m365", False),
         )
         for cal_id, r in results.items():
             if r["ics_path"]:
@@ -169,20 +168,75 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
+def _resolve_gcal(cfg: dict[str, Any], *, setup: bool) -> tuple[str | None, Path] | None:
+    """Return (credentials_path, token_path) if gcal push is enabled, else None.
+
+    Push is enabled when ``google_credentials_path`` is configured AND
+    either the token cache exists OR ``setup=True`` (first-run OAuth
+    permitted). Returning None means "skip gcal" with no error — typical
+    on a fresh deploy before the operator has run the one-time setup.
+    """
+    credentials_path = cfg.get("google_credentials_path")
+    if not credentials_path:
+        return None
+    token_path = Path(cfg.get(
+        "google_token_path", "~/.case-calendar/google-token.json"
+    )).expanduser()
+    if not token_path.exists() and not setup:
+        log.info(
+            "gcal push skipped: no token cache at %s. Run "
+            "`case-calendar setup gcal` once to stage it.",
+            token_path,
+        )
+        return None
+    return credentials_path, token_path
+
+
+def _resolve_m365(cfg: dict[str, Any], *, setup: bool) -> tuple[str, Path] | None:
+    """Return (client_id, token_path) if m365 push is enabled, else None.
+
+    Same auto-detect contract as :func:`_resolve_gcal`: enabled when the
+    client id is resolvable AND (token cache present OR setup=True).
+    """
+    client_id = (
+        cfg.get("m365_client_id")
+        or os.environ.get("M365_CLIENT_ID", "").strip()
+    )
+    if not client_id:
+        return None
+    token_path = Path(cfg.get(
+        "m365_token_path", "~/.case-calendar/m365-token.json"
+    )).expanduser()
+    if not token_path.exists() and not setup:
+        log.info(
+            "m365 push skipped: no token cache at %s. Run "
+            "`case-calendar setup m365` once to stage it.",
+            token_path,
+        )
+        return None
+    return client_id, token_path
+
+
 def emit_calendars(
     cfg: dict[str, Any],
     store: Store,
     *,
     only_calendars: set[str] | None = None,
-    push_gcal: bool = False,
-    push_m365: bool = False,
+    setup_gcal: bool = False,
+    setup_m365: bool = False,
 ) -> dict[str, dict[str, Any]]:
-    """Render hearings + deadlines to ICS files (and optionally gcal / M365).
+    """Render hearings + deadlines to ICS files (and gcal / M365 where configured).
 
     Used by both the ``emit`` CLI command and the polling/webhook paths so
     a single sync update flows all the way to subscribers without a manual
     re-emit. Pass ``only_calendars`` to scope the work to the calendars
     affected by a particular event (e.g. one webhook).
+
+    Push to gcal / M365 happens automatically for any calendar that has
+    the relevant id configured AND whose backend has a staged OAuth token
+    on disk. ``setup_gcal=True`` / ``setup_m365=True`` additionally allow
+    the OAuth browser flow to run if no token is cached — this is the
+    first-run code path used by ``case-calendar setup``.
 
     Returns ``{cal_id: {"events": int, "ics_path": str|None,
     "gcal_pushed": bool, "m365_pushed": bool}}``.
@@ -260,6 +314,13 @@ def emit_calendars(
                 h["reminders"] = reminders
             by_calendar[case.calendar].append(h)
 
+    # Resolve push readiness once per emit pass (auto-detect from config +
+    # token cache presence). The OAuth-capable backends initialize lazily
+    # on first push so an emit that touches only ICS-only calendars never
+    # imports the SDKs.
+    gcal_resolved = _resolve_gcal(cfg, setup=setup_gcal)
+    m365_resolved = _resolve_m365(cfg, setup=setup_m365)
+
     out: dict[str, dict[str, Any]] = {}
     gcs = None
     m365 = None
@@ -283,16 +344,14 @@ def emit_calendars(
             result["ics_path"] = ics_path
 
         gcal_id = cal_cfg.get("google_calendar_id")
-        if gcal_id and push_gcal:
+        if gcal_id and gcal_resolved is not None:
             if gcs is None:
                 from .calendars.gcal import GoogleCalendarSync
 
+                credentials_path, token_path = gcal_resolved
                 gcs = GoogleCalendarSync(
-                    credentials_path=cfg["google_credentials_path"],
-                    token_path=cfg.get(
-                        "google_token_path",
-                        "~/.case-calendar/google-token.json",
-                    ),
+                    credentials_path=credentials_path,
+                    token_path=token_path,
                 )
             gcs.sync(calendar_id=gcal_id, hearings=hearings)
             result["gcal_pushed"] = True
@@ -305,31 +364,14 @@ def emit_calendars(
             cal_cfg.get("m365_calendar_id") is not None
             or cal_cfg.get("m365_use_default_calendar")
         )
-        if m365_enabled and push_m365:
+        if m365_enabled and m365_resolved is not None:
             if m365 is None:
                 from .calendars.m365 import M365CalendarSync
 
-                # client_id is a public identifier (not a secret), so we
-                # accept it from either config or the ``M365_CLIENT_ID``
-                # env var — whichever the operator finds easier. Config
-                # wins when both are set.
-                client_id = (
-                    cfg.get("m365_client_id")
-                    or os.environ.get("M365_CLIENT_ID", "").strip()
-                )
-                if not client_id:
-                    raise SystemExit(
-                        "M365 push requires m365_client_id in config.yaml "
-                        "or the M365_CLIENT_ID env var. Register a public "
-                        "client app in Entra and put its Application "
-                        "(client) ID there."
-                    )
+                client_id, token_path = m365_resolved
                 m365 = M365CalendarSync(
                     client_id=client_id,
-                    token_path=cfg.get(
-                        "m365_token_path",
-                        "~/.case-calendar/m365-token.json",
-                    ),
+                    token_path=token_path,
                 )
             m365.sync(
                 hearings=hearings,
@@ -344,11 +386,7 @@ def emit_calendars(
 def cmd_emit(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    results = emit_calendars(
-        cfg, store,
-        push_gcal=args.push_gcal,
-        push_m365=getattr(args, "push_m365", False),
-    )
+    results = emit_calendars(cfg, store)
     for cal_id, r in results.items():
         if r["ics_path"]:
             print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
@@ -380,15 +418,10 @@ def cmd_serve(args: argparse.Namespace) -> int:
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     log.info("LLM: %s", llm.provider_info())
 
-    push_gcal = bool(getattr(args, "push_gcal", False))
-    push_m365 = bool(getattr(args, "push_m365", False))
-
     def emit_fn(only_calendars: set[str]) -> None:
         results = emit_calendars(
             cfg, store,
             only_calendars=only_calendars,
-            push_gcal=push_gcal,
-            push_m365=push_m365,
         )
         for cal_id, r in results.items():
             if r["ics_path"]:
@@ -422,6 +455,58 @@ def cmd_serve(args: argparse.Namespace) -> int:
             emit_fn=emit_fn,
         )
     store.close()
+    return 0
+
+
+def cmd_setup(args: argparse.Namespace) -> int:
+    """One-time OAuth setup for gcal or m365 push.
+
+    Triggers the interactive browser flow and stages the resulting token
+    cache, so subsequent ``sync`` / ``serve`` invocations push silently.
+    Must run on a machine with a browser; see README "Bootstrapping OAuth
+    on a headless server" for the cross-machine token-copy workaround.
+    """
+    cfg = _load_config(args.config)
+    if args.backend == "gcal":
+        if not cfg.get("google_credentials_path"):
+            print(
+                "google_credentials_path not set in config.yaml. See README "
+                "section 'Optional: Google Calendar push'.",
+                file=sys.stderr,
+            )
+            return 2
+        from .calendars.gcal import GoogleCalendarSync
+
+        token_path = Path(cfg.get(
+            "google_token_path", "~/.case-calendar/google-token.json"
+        )).expanduser()
+        GoogleCalendarSync(
+            credentials_path=cfg["google_credentials_path"],
+            token_path=token_path,
+        )
+        print(f"gcal token staged at {token_path}")
+        return 0
+
+    # m365
+    client_id = (
+        cfg.get("m365_client_id")
+        or os.environ.get("M365_CLIENT_ID", "").strip()
+    )
+    if not client_id:
+        print(
+            "m365_client_id not set in config.yaml and M365_CLIENT_ID env "
+            "var is empty. See README section 'Optional: Microsoft 365 / "
+            "Outlook push'.",
+            file=sys.stderr,
+        )
+        return 2
+    from .calendars.m365 import M365CalendarSync
+
+    token_path = Path(cfg.get(
+        "m365_token_path", "~/.case-calendar/m365-token.json"
+    )).expanduser()
+    M365CalendarSync(client_id=client_id, token_path=token_path)
+    print(f"m365 auth record staged at {token_path}")
     return 0
 
 
@@ -475,30 +560,12 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="skip auto-emitting ICS for affected calendars at end of sync",
     )
-    p_sync.add_argument(
-        "--push-gcal",
-        action="store_true",
-        help="also push affected calendars to Google Calendar after sync",
-    )
-    p_sync.add_argument(
-        "--push-m365",
-        action="store_true",
-        help="also push affected calendars to Microsoft 365 / Outlook after sync",
-    )
     p_sync.set_defaults(func=cmd_sync)
 
-    p_emit = sub.add_parser("emit", help="emit calendars from current store")
-    p_emit.add_argument(
-        "--push-gcal",
-        action="store_true",
-        help="also push to Google Calendar (requires creds in config)",
-    )
-    p_emit.add_argument(
-        "--push-m365",
-        action="store_true",
-        help="also push to Microsoft 365 / Outlook calendar (requires "
-             "m365_client_id in config; first run opens a browser to "
-             "stage the auth record at ~/.case-calendar/m365-token.json)",
+    p_emit = sub.add_parser(
+        "emit",
+        help="emit calendars from current store (auto-pushes to any "
+             "configured gcal / M365 backend with a staged token)",
     )
     p_emit.set_defaults(func=cmd_emit)
 
@@ -508,20 +575,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     p_serve.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
     p_serve.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
-    p_serve.add_argument(
-        "--push-gcal",
-        action="store_true",
-        help="also push to Google Calendar after each webhook delivery "
-             "(requires a pre-staged token; OAuth first-run can't happen headless)",
-    )
-    p_serve.add_argument(
-        "--push-m365",
-        action="store_true",
-        help="also push to Microsoft 365 / Outlook after each webhook delivery "
-             "(requires a pre-staged auth record; run `emit --push-m365` once "
-             "interactively to stage the token cache)",
-    )
     p_serve.set_defaults(func=cmd_serve)
+
+    p_setup = sub.add_parser(
+        "setup",
+        help="one-time OAuth setup for Google Calendar or Microsoft 365 / "
+             "Outlook push (opens a browser to stage the token cache)",
+    )
+    p_setup.add_argument(
+        "backend",
+        choices=["gcal", "m365"],
+        help="which backend to authorize",
+    )
+    p_setup.set_defaults(func=cmd_setup)
 
     p_show = sub.add_parser("show", help="dump current hearings")
     p_show.add_argument("--case", help="only show this case_id")

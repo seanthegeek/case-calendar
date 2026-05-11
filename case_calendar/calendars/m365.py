@@ -109,9 +109,9 @@ class M365CalendarSync:
                 authentication_record=record,
                 disable_automatic_authentication=True,
             )
-        # First-run: interactive. The operator runs ``case-calendar emit
-        # --push-m365`` once to stage the AuthenticationRecord; the daemon
-        # path then reads the record back and refreshes silently.
+        # First-run: interactive. The operator runs ``case-calendar setup
+        # m365`` once to stage the AuthenticationRecord; the daemon path
+        # then reads the record back and refreshes silently.
         cred = self._InteractiveBrowserCredential(
             client_id=self.client_id,
             cache_persistence_options=cache_opts,
