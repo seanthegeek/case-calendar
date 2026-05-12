@@ -472,7 +472,7 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
    sudo -u case-calendar git clone https://github.com/seanthegeek/case-calendar /opt/case-calendar
    sudo -u case-calendar bash
    cd
-   url -LsSf https://astral.sh/uv/install.sh | sh
+   curl -LsSf https://astral.sh/uv/install.sh | sh
    /opt/case-calendar/.local/bin/uv sync
    exit
    ```
