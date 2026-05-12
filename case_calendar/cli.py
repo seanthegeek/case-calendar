@@ -738,6 +738,51 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_webhook_url(args: argparse.Namespace) -> int:
+    """Print the full CourtListener webhook URL.
+
+    The URL has three components: the public scheme+host where this
+    ``serve`` receiver is reachable, the constant path prefix
+    ``/webhooks/case-calendar/``, and the secret from
+    ``CASE_CALENDAR_WEBHOOK_SECRET`` in ``.env``. Reads the secret from
+    the env (load_dotenv has already run by the time we get here) and
+    composes the URL ready to paste into the CourtListener webhook
+    dashboard.
+    """
+    from .serve import WEBHOOK_PATH_PREFIX
+
+    secret = os.environ.get("CASE_CALENDAR_WEBHOOK_SECRET", "").strip()
+    if not secret:
+        print(
+            "CASE_CALENDAR_WEBHOOK_SECRET not set in .env. Generate one with:\n"
+            "  python -c 'import secrets; print(secrets.token_urlsafe(32))'\n"
+            "and paste it on the CASE_CALENDAR_WEBHOOK_SECRET= line in .env.",
+            file=sys.stderr,
+        )
+        return 2
+
+    host = args.host
+    if host:
+        # If --host omits a scheme, default to https (CourtListener won't
+        # deliver to plain http in production). An explicit http://... is
+        # respected as-is so a developer can curl the local receiver.
+        if not host.startswith(("http://", "https://")):
+            host = f"https://{host}"
+        host = host.rstrip("/")
+    else:
+        host = "https://<your-public-host>"
+        print(
+            "note: pass --host <your-public-host> for a ready-to-paste URL "
+            "(e.g. --host webhook.example.com). Substitute the placeholder "
+            "below for whatever fronting host you've set up (Caddy / "
+            "Cloudflare Tunnel / fly.io / etc).",
+            file=sys.stderr,
+        )
+
+    print(f"{host}{WEBHOOK_PATH_PREFIX}{secret}")
+    return 0
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -839,6 +884,19 @@ def main(argv: list[str] | None = None) -> int:
     p_show = sub.add_parser("show", help="dump current hearings")
     p_show.add_argument("--case", help="only show this case_id")
     p_show.set_defaults(func=cmd_show)
+
+    p_webhook_url = sub.add_parser(
+        "webhook-url",
+        help="print the CourtListener webhook URL ready to paste into the "
+             "webhook dashboard (uses CASE_CALENDAR_WEBHOOK_SECRET from .env)",
+    )
+    p_webhook_url.add_argument(
+        "--host",
+        help="public host where the serve receiver is reachable, e.g. "
+             "webhook.example.com (https:// is assumed) or "
+             "http://localhost:8000 for a local curl test",
+    )
+    p_webhook_url.set_defaults(func=cmd_webhook_url)
 
     args = parser.parse_args(argv)
     return args.func(args)

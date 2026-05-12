@@ -274,6 +274,7 @@ case-calendar setup gcal                 # one-time Google Calendar OAuth
 case-calendar setup m365                 # one-time Microsoft 365 / Outlook OAuth
 case-calendar summarize                  # generate per-docket AI case summaries (opt-in)
 case-calendar summarize --force          # regenerate even when a summary already exists
+case-calendar webhook-url --host foo.example.com   # print URL to register in CourtListener
 ```
 
 `sync`, `serve`, and `emit` all auto-emit ICS for every configured
@@ -430,13 +431,17 @@ Setup:
      Disk:   mount at /data, set store_path: /data/case-calendar.sqlite
      ```
 
-4. In the CourtListener dashboard's webhooks panel, register:
+4. In the CourtListener dashboard's webhooks panel, register the full
+   URL. The shape is:
 
    ```text
    https://<your-host>/webhooks/case-calendar/<CASE_CALENDAR_WEBHOOK_SECRET>
    ```
 
-   Event type: `DOCKET_ALERT`. Pick the highest webhook version.
+   `case-calendar webhook-url --host <your-host>` prints the
+   ready-to-paste version (substituting the secret from `.env` and
+   defaulting the scheme to `https://`). Event type: `DOCKET_ALERT`.
+   Pick the highest webhook version.
 5. In CourtListener, subscribe to docket alerts for every docket in your `config.yaml`
    (this is what tells CourtListener to send those events to your webhook).
 

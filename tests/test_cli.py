@@ -999,6 +999,73 @@ class TestCmdShow:
         assert capsys.readouterr().out == ""
 
 
+class TestCmdWebhookUrl:
+    def test_missing_secret_returns_2(self, monkeypatch, capsys):
+        # The conftest autouse fixture already strips any inherited secret,
+        # but be explicit so this test reads cleanly in isolation.
+        monkeypatch.delenv("CASE_CALENDAR_WEBHOOK_SECRET", raising=False)
+        args = SimpleNamespace(host=None)
+        assert cli.cmd_webhook_url(args) == 2
+        err = capsys.readouterr().err
+        assert "CASE_CALENDAR_WEBHOOK_SECRET" in err
+
+    def test_no_host_prints_placeholder_url_and_stderr_hint(
+        self, monkeypatch, capsys,
+    ):
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        args = SimpleNamespace(host=None)
+        assert cli.cmd_webhook_url(args) == 0
+        out = capsys.readouterr()
+        assert out.out.strip() == (
+            "https://<your-public-host>/webhooks/case-calendar/abc123"
+        )
+        # The stderr hint nudges the user toward --host so they know the
+        # output isn't pasteable as-is.
+        assert "--host" in out.err
+
+    def test_host_without_scheme_gets_https(self, monkeypatch, capsys):
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        args = SimpleNamespace(host="webhook.example.com")
+        assert cli.cmd_webhook_url(args) == 0
+        out = capsys.readouterr()
+        assert out.out.strip() == (
+            "https://webhook.example.com/webhooks/case-calendar/abc123"
+        )
+        # No stderr hint when --host is supplied — the URL is ready to paste.
+        assert out.err == ""
+
+    def test_explicit_scheme_respected(self, monkeypatch, capsys):
+        # Useful for local curl testing against the receiver on 127.0.0.1.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        args = SimpleNamespace(host="http://localhost:8000")
+        assert cli.cmd_webhook_url(args) == 0
+        assert capsys.readouterr().out.strip() == (
+            "http://localhost:8000/webhooks/case-calendar/abc123"
+        )
+
+    def test_trailing_slash_on_host_normalized(self, monkeypatch, capsys):
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        args = SimpleNamespace(host="https://webhook.example.com/")
+        assert cli.cmd_webhook_url(args) == 0
+        # No double slash before the /webhooks/ prefix.
+        assert capsys.readouterr().out.strip() == (
+            "https://webhook.example.com/webhooks/case-calendar/abc123"
+        )
+
+    def test_wired_through_main(self, monkeypatch, cfg_file, capsys):
+        # main() dispatches the webhook-url subcommand. The --config flag is
+        # accepted for consistency with other subcommands even though this
+        # one doesn't read the config.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        assert main([
+            "-c", str(cfg_file), "webhook-url",
+            "--host", "webhook.example.com",
+        ]) == 0
+        assert capsys.readouterr().out.strip() == (
+            "https://webhook.example.com/webhooks/case-calendar/abc123"
+        )
+
+
 class TestMain:
     def test_dispatches_to_subcommand(self, cfg_file, monkeypatch):
         calls: list[argparse.Namespace] = []
