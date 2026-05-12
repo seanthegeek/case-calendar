@@ -1559,3 +1559,59 @@ class TestSummaryStaleMarkOnOperativeOrDisposition:
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
         assert store.is_summary_stale("us-v-x", 100) is True
+
+    def test_operative_pleading_persists_description_and_recap_docs(
+        self, store, case, monkeypatch,
+    ):
+        # Operative pleadings don't match the hearing-relevance regex, so
+        # historically their body was discarded — leaving the summary
+        # pipeline to re-fetch the same data from CL. Now sync persists the
+        # description AND the compact recap_documents (including plain_text)
+        # so summary can read locally. Without this, refresh_stale on a
+        # freshly synced docket would burn a duplicate /docket-entries/
+        # round-trip.
+        make_llm_stub(monkeypatch, by_entry={1: []})
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        entry = _entry(1, "INDICTMENT as to defendant")
+        entry["recap_documents"] = [{
+            "id": 500, "is_available": True, "plain_text": "indictment body",
+        }]
+        syncer.process_entry(case, 100, entry)
+
+        cached = store.get_entries_with_body(100)
+        assert [e["id"] for e in cached] == [1]
+        assert cached[0]["description"] == "INDICTMENT as to defendant"
+        # plain_text round-trips so pdf.extract_text can short-circuit.
+        assert cached[0]["recap_documents"][0]["plain_text"] == "indictment body"
+
+    def test_disposition_persists_description_for_summary(
+        self, store, case, monkeypatch,
+    ):
+        # Paperless minute-entry disposition: no recap_documents at all.
+        # The description still has to land so the summary pipeline can
+        # use the new description-fallback path.
+        make_llm_stub(monkeypatch, by_entry={1: []})
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(
+            1, "Electronic Clerk's Notes: Sentencing held. Court imposes "
+               "sentence: 92 months imprisonment.",
+        ))
+        cached = store.get_entries_with_body(100)
+        assert len(cached) == 1
+        assert "92 months imprisonment" in cached[0]["description"]
+
+    def test_filter_failed_entry_still_a_stub(
+        self, store, case, monkeypatch,
+    ):
+        # Notices, briefs, and attorney appearances that match neither the
+        # hearing/deadline filter nor op/disp must continue to land as
+        # fingerprint stubs — storing their body is dead weight.
+        make_llm_stub(monkeypatch, by_entry={1: []})
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "NOTICE of attorney appearance"))
+        # No body-bearing entries on the docket: stub still works for dedup
+        # but doesn't show up in summary's local-cache lookup.
+        assert store.get_entries_with_body(100) == []

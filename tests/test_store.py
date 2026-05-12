@@ -47,6 +47,55 @@ class TestEntries:
         store.mark_entry(1, 2, "2026-02-01T00:00:00Z", "fp")
         assert store.latest_entry_modified(1) == "2026-02-01T00:00:00Z"
 
+    def test_get_entries_with_body_returns_only_full_rows(self, store: Store):
+        # Body-bearing entries (hearing-relevant + op/disp) are the rows the
+        # summary pipeline reads instead of re-fetching from CL. Stubs
+        # (description IS NULL) must NOT be returned — otherwise summary's
+        # local-cache check would think it's warm when it's actually cold.
+        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
+                         date_filed="2024-01-01", entry_number=1,
+                         description="INDICTMENT",
+                         recap_documents=[{"id": 500, "plain_text": "body"}])
+        store.mark_entry(1, 11, "2024-01-02T00:00:00Z", "fp2",
+                         date_filed="2024-01-02", entry_number=2,
+                         description=None)  # filter-failed stub
+        rows = store.get_entries_with_body(1)
+        assert len(rows) == 1
+        # ``id`` is renamed from entry_id so the shape matches what CL's
+        # docket-entries response returns (callers can treat both paths the
+        # same way without branching).
+        assert rows[0]["id"] == 10
+        assert rows[0]["description"] == "INDICTMENT"
+        # recap_documents is deserialized from JSON, including plain_text.
+        assert rows[0]["recap_documents"][0]["plain_text"] == "body"
+
+    def test_get_entries_with_body_orders_by_date_filed(self, store: Store):
+        # Summary's CL fallback returns operative pleadings oldest-first and
+        # then sorts them; the local-cache path must produce the same order
+        # so swap-ability between the two paths is invariant.
+        store.mark_entry(1, 20, "2024-06-01T00:00:00Z", "fp2",
+                         date_filed="2024-06-01", entry_number=2,
+                         description="SUPERSEDING INDICTMENT",
+                         recap_documents=[])
+        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
+                         date_filed="2024-01-01", entry_number=1,
+                         description="INDICTMENT",
+                         recap_documents=[])
+        rows = store.get_entries_with_body(1)
+        assert [r["id"] for r in rows] == [10, 20]
+
+    def test_get_entries_with_body_handles_legacy_null_recap_documents(
+        self, store: Store,
+    ):
+        # Pre-fix rows have recap_documents=NULL. Reading must not crash —
+        # those rows simply have an empty list, so pdf.extract_text would
+        # find nothing to short-circuit on and fall through to network.
+        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
+                         date_filed="2024-01-01", entry_number=1,
+                         description="INDICTMENT", recap_documents=None)
+        rows = store.get_entries_with_body(1)
+        assert rows[0]["recap_documents"] == []
+
     def test_get_recent_relevant_entries_skips_filter_failed(self, store: Store):
         # Filter-failed entries are stored without description; they shouldn't
         # appear as context for downstream LLM calls.

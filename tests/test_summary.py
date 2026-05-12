@@ -277,6 +277,67 @@ class TestFindOperativeDocuments:
         operative, _ = find_operative_documents(cl, 1)
         assert [e["id"] for e in operative] == [10, 20]
 
+    def test_local_store_short_circuits_cl_call(self, store):
+        # Warm cache: sync has already persisted operative + disposition
+        # entries on this docket. find_operative_documents must read them
+        # from the store and never touch CL — otherwise normal syncs burn
+        # duplicate docket-entries calls right after sync wrote the data.
+        store.mark_entry(
+            1, 10, "2024-01-01T00:00:00Z", "fp-op", date_filed="2024-01-01",
+            entry_number=1, description="INDICTMENT",
+            recap_documents=[{"id": 500, "plain_text": "indictment body"}],
+        )
+        store.mark_entry(
+            1, 99, "2025-06-15T00:00:00Z", "fp-disp", date_filed="2025-06-15",
+            entry_number=37, description="JUDGMENT in a Criminal Case",
+            recap_documents=[{"id": 600, "plain_text": "judgment body"}],
+        )
+        # CL is wired to raise if called — proves the short-circuit hit.
+        class _BoomCL:
+            def _get(self, *a, **kw):
+                raise AssertionError("CL must not be called when local cache is warm")
+        operative, dispositions = find_operative_documents(_BoomCL(), 1, store=store)
+        assert [e["id"] for e in operative] == [10]
+        assert [e["id"] for e in dispositions] == [99]
+        # Recap document payload (with plain_text) is preserved end-to-end
+        # so pdf.extract_text can short-circuit on it.
+        assert operative[0]["recap_documents"][0]["plain_text"] == "indictment body"
+
+    def test_cold_local_store_falls_back_to_cl(self, store):
+        # No body-bearing entries cached — fall back to CL (first sync,
+        # or pre-fix data where op/disp entries were stub-only).
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
+            ],
+            (1, "-date_filed"): [
+                {"id": 99, "description": "JUDGMENT in a Criminal Case",
+                 "date_filed": "2025-06-15"},
+            ],
+        })
+        operative, dispositions = find_operative_documents(cl, 1, store=store)
+        assert [e["id"] for e in operative] == [10]
+        assert [e["id"] for e in dispositions] == [99]
+
+    def test_stub_only_rows_dont_satisfy_the_cache(self, store):
+        # Filter-failed entries land as fingerprint stubs with description
+        # IS NULL. They must NOT satisfy the local-cache check — otherwise
+        # a docket with only stubs would silently return zero op/disp and
+        # skip the CL fallback, when CL might actually have an operative
+        # pleading filed before the watermark.
+        store.mark_entry(
+            1, 42, "2024-01-01T00:00:00Z", "fp-stub", date_filed="2024-01-01",
+            entry_number=2, description=None,  # filter-failed stub
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
+            ],
+            (1, "-date_filed"): [],
+        })
+        operative, _ = find_operative_documents(cl, 1, store=store)
+        assert [e["id"] for e in operative] == [10]
+
 
 # ---------------------------------------------------------------------------
 # _attach_text / _entry_doc_text behavior, indirectly via summarize_docket

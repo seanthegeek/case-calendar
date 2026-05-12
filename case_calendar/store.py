@@ -415,6 +415,36 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def get_entries_with_body(self, docket_id: int) -> list[dict[str, Any]]:
+        """All stored entries on the docket whose description body was kept.
+
+        Used by the summary pipeline to find operative pleadings and
+        dispositions locally instead of re-fetching docket-entries pages
+        from CL right after sync wrote them down. Filter-failed stubs
+        (description IS NULL) are excluded. ``recap_documents`` is
+        deserialized from the JSON column on the way out.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT entry_id, entry_number, date_filed,
+                   description, short_description, recap_documents
+            FROM entries
+            WHERE docket_id=? AND description IS NOT NULL
+            ORDER BY date_filed
+            """,
+            (docket_id,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            d["recap_documents"] = json.loads(d.get("recap_documents") or "[]")
+            # Shape matches what CL returns to find_operative_documents
+            # ("id" key for entry_id), so callers can treat both paths
+            # interchangeably.
+            d["id"] = d.pop("entry_id")
+            out.append(d)
+        return out
+
     def get_recent_relevant_entries(
         self, docket_id: int, before_date_modified: str, limit: int = 5
     ) -> list[dict[str, Any]]:

@@ -207,7 +207,8 @@ def _list_entries_ordered(
 
 
 def find_operative_documents(
-    cl: CourtListener, docket_id: int,
+    cl: CourtListener, docket_id: int, *,
+    store: Optional[Store] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Find the operative pleading(s) and disposition documents on a docket.
 
@@ -215,18 +216,37 @@ def find_operative_documents(
     chronologically (oldest first); callers pick the latest operative
     pleading for the LLM (superseding indictment beats original) and pass
     all dispositions through (each adds context).
+
+    When ``store`` is provided AND the docket has previously been synced
+    (i.e. it has body-bearing entries cached), this reads from the local
+    `entries` table instead of re-fetching the same docket-entries pages
+    from CL — `sync.process_entry` now persists description + plain_text
+    for op/disp matches alongside hearing-relevant ones precisely so this
+    short-circuit lands. Falls back to CL for cold dockets (first ever
+    sync on this docket or pre-fix data lacking op/disp body text).
     """
-    # Operative pleadings are almost always at entry #1 (criminal) or within
-    # the first few amended-complaint entries (civil). Two pages of 50
-    # oldest-first covers 99% of cases. Dispositions on concluded cases are
-    # near the newest end; one page newest-first is enough.
+    operative: list[dict[str, Any]] = []
+    dispositions: list[dict[str, Any]] = []
+
+    if store is not None:
+        cached = store.get_entries_with_body(docket_id)
+        for entry in cached:
+            if is_operative_pleading(entry):
+                operative.append(entry)
+            elif is_disposition(entry):
+                dispositions.append(entry)
+        if operative or dispositions:
+            operative.sort(key=lambda e: e.get("date_filed") or "")
+            dispositions.sort(key=lambda e: e.get("date_filed") or "")
+            return operative, dispositions
+
+    # Cold cache — fall back to CL. Operative pleadings are almost always at
+    # entry #1 (criminal) or within the first few amended-complaint entries
+    # (civil). Two pages of 50 oldest-first covers 99% of cases. Dispositions
+    # on concluded cases are near the newest end; one page newest-first is enough.
     oldest = _list_entries_ordered(cl, docket_id, order_by="date_filed", max_pages=2)
     newest = _list_entries_ordered(cl, docket_id, order_by="-date_filed", max_pages=1)
 
-    # Operative pleadings are almost always on the oldest end; dispositions
-    # on the newest. But scan both for resilience — an amended complaint can
-    # land halfway through a long-running case, and a clerk's entry for an
-    # original complaint can occasionally show up out of order.
     seen_ids: set[int] = set()
 
     def _dedup_add(target: list[dict[str, Any]], entry: dict[str, Any]) -> None:
@@ -236,8 +256,6 @@ def find_operative_documents(
         seen_ids.add(eid)
         target.append(entry)
 
-    operative: list[dict[str, Any]] = []
-    dispositions: list[dict[str, Any]] = []
     for entry in oldest + newest:
         if is_operative_pleading(entry):
             _dedup_add(operative, entry)
@@ -369,7 +387,7 @@ def _borrow_operative_from_siblings(
             primary_docket_id, sibling_id, sibling_docket_number,
         )
         try:
-            sibling_operative, _ = find_operative_documents(cl, sibling_id)
+            sibling_operative, _ = find_operative_documents(cl, sibling_id, store=store)
         except Exception:
             log.exception(
                 "summary: failed to scan sibling docket %s for operative documents",
@@ -426,7 +444,7 @@ def summarize_docket(
         "summary: scanning docket %s (%s) for operative documents",
         docket_id, docket_number,
     )
-    operative, dispositions = find_operative_documents(cl, docket_id)
+    operative, dispositions = find_operative_documents(cl, docket_id, store=store)
     log.info(
         "summary: docket %s found %d operative pleading(s), %d disposition doc(s)",
         docket_id, len(operative), len(dispositions),

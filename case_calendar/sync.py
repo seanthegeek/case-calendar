@@ -71,9 +71,10 @@ def _compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Compact projection of an entry's recap_documents for storage.
 
     Keeps the fields we need at emit time (status flags + URLs + position
-    info), drops PDF blob fields and CL bookkeeping we don't render. Ordered
-    main-doc-first, then attachments by number, so calendar descriptions
-    list documents in PACER's natural order.
+    info) plus ``plain_text`` so the summary pipeline can read text without
+    re-fetching the entry from CL — drops other CL bookkeeping we don't
+    render. Ordered main-doc-first, then attachments by number, so calendar
+    descriptions list documents in PACER's natural order.
     """
     out: list[dict[str, Any]] = []
     for rd in entry.get("recap_documents") or []:
@@ -86,6 +87,7 @@ def _compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
             "is_sealed": bool(rd.get("is_sealed")),
             "filepath_ia": rd.get("filepath_ia") or None,
             "filepath_local": rd.get("filepath_local") or None,
+            "plain_text": (rd.get("plain_text") or "").strip() or None,
         })
 
     def _key(d: dict[str, Any]) -> tuple[int, int]:
@@ -406,16 +408,22 @@ class CaseSyncer:
         tz = tz_for(court_id)
 
         processed = self._handle_entry(case, docket_id, court_id, tz, entry, stats)
-        # Only keep the description body for entries that passed the regex
-        # pre-filter. The 70-ish percent of docket entries that are notices,
-        # briefs, attorney appearances, etc. don't get LLM'd and are never
-        # cross-referenced by hearing orders — storing their text is dead
-        # weight. We still write a stub row (fingerprint + entry_number +
-        # date_modified) so dedup and the entry-level high-water mark keep
-        # working without re-iterating these every sync. recap_documents is
-        # only persisted for hearing-relevant entries — those are the ones
-        # whose ids land on hearing.source_entry_ids and get looked up at
-        # emit time.
+        # Persist the full description body when the entry is either:
+        #   (a) hearing/deadline-relevant — already LLM-processed, body is
+        #       needed for `get_recent_relevant_entries` cross-entry context
+        #       and emit-time description rendering; or
+        #   (b) operative-pleading or disposition — needed so the summary
+        #       pipeline can find these entries locally instead of
+        #       re-fetching the same docket-entries pages from CL right
+        #       after sync wrote them down.
+        # Everything else (notices, briefs, attorney appearances, etc.) gets
+        # a fingerprint-only stub: dedup keeps working, but no dead-weight
+        # body text.
+        summary_relevant = (
+            summary_mod.is_operative_pleading(entry)
+            or summary_mod.is_disposition(entry)
+        )
+        store_full = processed or summary_relevant
         self.store.mark_entry(
             docket_id,
             eid,
@@ -423,9 +431,9 @@ class CaseSyncer:
             fp,
             date_filed=entry.get("date_filed"),
             entry_number=entry.get("entry_number"),
-            description=entry.get("description") if processed else None,
-            short_description=entry.get("short_description") if processed else None,
-            recap_documents=_compact_recap_documents(entry) if processed else None,
+            description=entry.get("description") if store_full else None,
+            short_description=entry.get("short_description") if store_full else None,
+            recap_documents=_compact_recap_documents(entry) if store_full else None,
         )
         # Advance the docket's date_modified to this entry's value if newer.
         # date_modified is the docket-level short-circuit watermark — the
@@ -455,7 +463,7 @@ class CaseSyncer:
         # this independently of `processed` because operative pleadings
         # and judgments rarely match the hearing-relevance regex but are
         # the most important signals for the summary.
-        if summary_mod.is_operative_pleading(entry) or summary_mod.is_disposition(entry):
+        if summary_relevant:
             self.store.mark_summary_stale(case.case_id, docket_id)
         return processed
 
