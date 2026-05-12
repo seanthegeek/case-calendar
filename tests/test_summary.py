@@ -15,6 +15,7 @@ import pytest
 
 from case_calendar import summary
 from case_calendar.summary import (
+    _is_disposition_document,
     find_operative_documents,
     is_disposition,
     is_operative_pleading,
@@ -236,6 +237,118 @@ class TestDispositionDetection:
         assert not is_disposition({"description": description})
 
 
+class TestDispositionDocumentDetection:
+    """The stricter sibling of ``is_disposition`` used inside
+    ``find_operative_documents`` to pick which documents reach the LLM.
+
+    ``is_disposition`` is broad on purpose (motion-on-disposition still
+    flips the case_summaries row stale). The stricter predicate must
+    keep the actual orders / judgments / minute-entries-of-decision but
+    reject the motions, briefs, and notices that surround them — those
+    are not the disposition document itself, and feeding their text to
+    the summary LLM as if they were causes the case-summary regression
+    that shipped this fix.
+    """
+
+    @pytest.mark.parametrize("description", [
+        # The exact pair that failed in Anthropic v. DoW: an "ORDER
+        # GRANTING MOTION FOR PRELIMINARY INJUNCTION" and a separately
+        # docketed "PRELIMINARY INJUNCTION ORDER" — both must reach the
+        # LLM document set so the summary can mention that the
+        # injunction was issued.
+        "ORDER GRANTING MOTION FOR PRELIMINARY INJUNCTION 6",
+        "PRELIMINARY INJUNCTION ORDER. Signed by Judge Lin on 3/26/2026.",
+        # Head-anchored disposition phrases — accepted regardless.
+        "JUDGMENT in a Criminal Case",
+        "FINAL JUDGMENT",
+        "VERDICT FORM",
+        "ORDER OF DISMISSAL",
+        "STIPULATION OF DISMISSAL",
+        "NOTICE OF VOLUNTARY DISMISSAL",
+        "PLEA AGREEMENT",
+        "MEMORANDUM OPINION and Order",
+        # Order-class entries that carry disposition vocabulary.
+        "ORDER granting Motion for TRO",
+        "ORDER denying Motion for Permanent Injunction",
+        "ORDER granting Motion for Class Certification",
+        "ORDER of REMAND to State Court",
+        "ORDER declaring mistrial sua sponte",
+        "Preliminary Order of Forfeiture as to defendant",
+        "Final Order of Forfeiture",
+        # Minute entries that are themselves the disposition.
+        "Minute Entry for proceedings held before Judge X: "
+        "Sentencing held on 2/19/2026 as to OLEKSANDR DIDENKO (1). "
+        "Imprisonment for a total term of 36 months...",
+        "PAPERLESS Minute Entry for proceedings held before Judge Y: "
+        "Sentencing held on 5/6/2026 as to ERICK PRINCE...",
+    ])
+    def test_accepts_actual_disposition_documents(self, description):
+        assert _is_disposition_document({"description": description})
+
+    @pytest.mark.parametrize("description", [
+        # Motions / requests — these are PAPERS, not the disposition.
+        # The summary LLM must not see these in the disposition slot.
+        "MOTION for Temporary Restraining Order, MOTION for "
+        "Preliminary Injunction, MOTION to Stay Pursuant to Section 705 "
+        "filed by Anthropic PBC",
+        "Motion for TRO",
+        "Motion for Preliminary Injunction",
+        "Motion for Permanent Injunction",
+        "Motion for Judgment as a Matter of Law",
+        "Motion for Judgment on the Pleadings",
+        "Motion for Class Certification",
+        "ADMINISTRATIVE MOTION for Leave to File Amicus Brief in "
+        "Support of Preliminary Injunction",
+        # Briefs / responses / status reports — same idea.
+        "Memorandum in opposition to Motion for TRO",
+        "Memorandum supporting Judgement on the Pleadings",
+        "Plaintiff's response to Motion for Injunction Pending Appeal",
+        "Government's Sentencing Memorandum",
+        "Defendant's Sentencing Memorandum",
+        "Reply in support of Motion to Dismiss",
+        "Joint Status Report regarding discovery",
+        # Notices of filing / appearance — not the disposition either.
+        "NOTICE of Appearance filed by Celine Georges Purcell",
+        "Notice of Filing of Judgments rendered against codefendants",
+        # ORDER but no disposition vocabulary — discovery / procedural.
+        "ORDER granting Motion to Compel Production",
+        "ORDER. By April 21, 2026, the parties shall submit a joint "
+        "stipulation and proposed order setting a case schedule.",
+        # Conference negative still wins.
+        "ORDER scheduling Status Conference on Motion for Preliminary "
+        "Injunction",
+        # Minute entries of MOTION HEARINGS — these contain disposition
+        # vocabulary in passing ("Motion Hearing re: 6 Motion for
+        # Preliminary Injunction held on 3/24/2026") but the disposition
+        # itself comes from a SEPARATE order issued days later. Feeding
+        # the minute-entry text as if it were the ruling produces summary
+        # prose like "PI taken under submission" forever — which is the
+        # Anthropic v. DoW regression that motivated this filter.
+        "Minute Entry for proceedings held before Judge Rita F. Lin:"
+        "Motion Hearing re: 6 Motion for Preliminary Injunction held "
+        "on 3/24/2026. Parties stated appearances and proffered "
+        "argument. Court took the matter under submission.",
+        # Case-schedule orders that reference upcoming dispositive
+        # motions in passing.
+        "ORDER RE 149 STIPULATION. Signed by Judge Rita F. Lin on "
+        "4/23/2026. The following deadlines were ordered: "
+        "Defendants' Answer due 6/8/2026. Anthropic's Motion for "
+        "Summary Judgment due 6/10/2026.",
+        # Scheduling orders that set future dispositive proceedings.
+        "PAPERLESS ORDER SETTING SENTENCING HEARING as to John Doe...",
+        "ORDER SETTING CASE SCHEDULE",
+        "ORDER SETTING BRIEFING SCHEDULE on Motion for Summary "
+        "Judgment",
+        # Continuance orders / motions.
+        "PAPERLESS ORDER granting Unopposed Motion to Continue "
+        "Sentencing Hearing as to John Doe",
+        "MOTION to Continue Trial Date",
+        "",
+    ])
+    def test_rejects_papers_and_non_dispositions(self, description):
+        assert not _is_disposition_document({"description": description})
+
+
 # ---------------------------------------------------------------------------
 # find_operative_documents
 # ---------------------------------------------------------------------------
@@ -318,6 +431,50 @@ class TestFindOperativeDocuments:
         operative, dispositions = find_operative_documents(cl, 1, store=store)
         assert [e["id"] for e in operative] == [10]
         assert [e["id"] for e in dispositions] == [99]
+
+    def test_motion_in_cache_does_not_short_circuit_cl_fallback(self, store):
+        # Anthropic v. DoW regression: pre-fix data had the actual
+        # PI-order entries stored as NULL-description fingerprint stubs
+        # (filter-failed under the old logic), while the original
+        # "MOTION for ... Preliminary Injunction" was body-bearing
+        # because it matched the hearing pre-filter. The old short-
+        # circuit then declared `dispositions = [motion]` (the broad
+        # `is_disposition` matches "injunction" anywhere in the head)
+        # and never fell back to CL, so the summary LLM saw the motion
+        # text as the disposition and wrote "PI taken under submission"
+        # forever — even after the court actually granted the
+        # injunction. The strict `_is_disposition_document` must reject
+        # the motion so the short-circuit lapses and CL is consulted.
+        store.mark_entry(
+            1, 6, "2026-03-09T00:00:00Z", "fp-motion", date_filed="2026-03-09",
+            entry_number=6,
+            description=(
+                "MOTION for Temporary Restraining Order, MOTION for "
+                "Preliminary Injunction, MOTION to Stay Pursuant to "
+                "Section 705 filed by Anthropic PBC."
+            ),
+            recap_documents=[{"id": 600}],
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {"id": 1, "description": "COMPLAINT for Declaratory and "
+                 "Injunctive Relief", "date_filed": "2026-03-09",
+                 "entry_number": 1},
+            ],
+            (1, "-date_filed"): [
+                {"id": 134, "description": "ORDER GRANTING MOTION FOR "
+                 "PRELIMINARY INJUNCTION 6", "date_filed": "2026-03-26",
+                 "entry_number": 134},
+                {"id": 135, "description": "PRELIMINARY INJUNCTION ORDER. "
+                 "Signed by Judge Lin on 3/26/2026.",
+                 "date_filed": "2026-03-26", "entry_number": 135},
+            ],
+        })
+        operative, dispositions = find_operative_documents(cl, 1, store=store)
+        assert [e["id"] for e in operative] == [1]
+        # Both real orders reach the LLM; the motion (entry 6) is NOT
+        # in the disposition set even though it's cached body-bearing.
+        assert sorted(e["id"] for e in dispositions) == [134, 135]
 
     def test_stub_only_rows_dont_satisfy_the_cache(self, store):
         # Filter-failed entries land as fingerprint stubs with description

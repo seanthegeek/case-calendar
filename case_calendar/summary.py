@@ -173,6 +173,111 @@ def is_disposition(entry: dict[str, Any]) -> bool:
     return bool(_DISPOSITION_KEYWORD_RE.search(head))
 
 
+# Stricter sibling used by ``find_operative_documents`` to pick the documents
+# that the case-summary LLM actually reads. ``is_disposition`` (above) is
+# intentionally broad — a "Motion for Preliminary Injunction" matches because
+# the motion's outcome is a disposition signal worth refreshing the summary
+# on. But that motion is NOT the order itself; feeding its 200-page brief to
+# the LLM as "the disposition" drowns out the actual ruling. This predicate
+# requires the entry to LOOK like an order / judgment / minute-entry — not a
+# motion, brief, response, status report, or notice of filing about one.
+_DISPOSITION_DOC_HEAD_RE = re.compile(
+    r"""^\s*
+    (?:\d+\s+)?
+    # Optional adjective modifiers that legitimately precede the doc-type
+    # word on actual orders (PAPERLESS ORDER, FINAL JUDGMENT, AMENDED ORDER,
+    # PRELIMINARY INJUNCTION ORDER, STIPULATED INJUNCTION, etc.).
+    (?:
+        (?:PAPERLESS|TEXT[\s-]?ONLY|TEXT|AMENDED|FINAL|PRELIMINARY|
+           STIPULATED|CORRECTED|REDACTED|SEALED|UNSEALED|SUPERSEDING|
+           INTERIM|TEMPORARY|PERMANENT)\s+
+    )*
+    (?:
+        ORDER
+        | JUDGMENT
+        | JUDGEMENT
+        | VERDICT
+        | OPINION
+        | MEMORANDUM\s+OPINION
+        | MEMORANDUM\s+ORDER
+        | MINUTE\s+ENTRY
+        | MINUTE\s+ORDER
+        | ELECTRONIC\s+CLERK['’]?S\s+NOTES
+        | CLERK['’]?S\s+NOTES
+        | PLEA\s+AGREEMENT
+        | SETTLEMENT\s+AGREEMENT
+        | DECREE
+        | INJUNCTION
+        | MANDATE
+        | NOLLE\s+(?:PROSEQUI|PROSSED)
+    )\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Additional negative patterns for the narrow predicate. ``is_disposition``
+# (broad) still matches these so the case_summaries row flips stale — a
+# motion hearing held / new scheduling order / continued sentencing still
+# changes "where the case stands". But these entries are SCHEDULING /
+# PROCEDURAL records about future or referenced dispositions, not the
+# disposition itself, so they must not reach the summary LLM as
+# disposition documents — they have no holding to draw from, just
+# references that look dispositive to the keyword regex.
+_DISPOSITION_DOC_NEGATIVE_RE = re.compile(
+    r"""\b(?:
+        # Minute entries of MOTION HEARINGS (vs minute entries of
+        # sentencings / verdicts, which ARE dispositions). Keys off the
+        # "Motion Hearing re: …" / "Motion Hearing held on …" phrasing
+        # that CL clerks use for the procedural recording.
+        motion\s+hearing\s+(?:re:?|held|on)
+        # Case-schedule orders that reference upcoming dispositive motions
+        # ("Motion for Summary Judgment due 6/10/2026") — these have
+        # disposition vocabulary in passing but the order itself is
+        # procedural.
+        | order\s+(?:re(?:garding|\s+\d+)?|on)\s+(?:joint\s+)?stipulation
+        # Orders SETTING a future hearing/trial/sentencing — scheduling,
+        # not the disposition. ("ORDER SETTING SENTENCING HEARING …",
+        # "ORDER SETTING CASE SCHEDULE …".) The hearing itself, when
+        # held, will produce a separate minute-entry / judgment.
+        | (?:order\s+|paperless\s+order\s+)?
+          setting\s+(?:case|trial|sentencing|hearing|status|motion|briefing)
+        # Continuances — the motion / order moves a date; it doesn't
+        # decide anything.
+        | motion\s+(?:to|for)\s+continu
+        | continu(?:e|ing|ed|ance)\s+(?:sentencing|hearing|trial)
+        # Notices of sentencing / hearing dates — also procedural.
+        | notice\s+of\s+(?:sentencing|hearing)\s+date
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _is_disposition_document(entry: dict[str, Any]) -> bool:
+    """Strict — the LLM document set in ``find_operative_documents``.
+
+    Accepts entries whose head is a head-anchored disposition phrase
+    (``_DISPOSITION_RE``) outright, plus any order / minute-entry whose
+    body carries disposition keywords. Rejects motions, briefs,
+    responses, status reports, and notices of filing that mention
+    disposition vocabulary in passing — those still flip the
+    case_summaries row stale via the broader ``is_disposition``, but they
+    are not themselves the ruling document and must not be fed to the
+    summary LLM as one.
+    """
+    head = _entry_description_head(entry)
+    if not head:
+        return False
+    if _DISPOSITION_NEGATIVE_RE.search(head):
+        return False
+    if _DISPOSITION_DOC_NEGATIVE_RE.search(head):
+        return False
+    if _DISPOSITION_RE.match(head):
+        return True
+    if not _DISPOSITION_DOC_HEAD_RE.match(head):
+        return False
+    return bool(_DISPOSITION_KEYWORD_RE.search(head))
+
+
 # ---------------------------------------------------------------------------
 # CourtListener helpers (lightweight wrappers around the existing client)
 # ---------------------------------------------------------------------------
@@ -233,7 +338,7 @@ def find_operative_documents(
         for entry in cached:
             if is_operative_pleading(entry):
                 operative.append(entry)
-            elif is_disposition(entry):
+            elif _is_disposition_document(entry):
                 dispositions.append(entry)
         if operative or dispositions:
             operative.sort(key=lambda e: e.get("date_filed") or "")
@@ -242,10 +347,15 @@ def find_operative_documents(
 
     # Cold cache — fall back to CL. Operative pleadings are almost always at
     # entry #1 (criminal) or within the first few amended-complaint entries
-    # (civil). Two pages of 50 oldest-first covers 99% of cases. Dispositions
-    # on concluded cases are near the newest end; one page newest-first is enough.
+    # (civil). Two pages oldest-first covers 99% of cases. For dispositions
+    # we go three pages newest-first: in a heavily-briefed civil case, the
+    # dispositive order (e.g. an order granting a preliminary injunction)
+    # can be followed by months of compliance briefing, status reports, and
+    # transcript orders that push it well past the first newest-first page.
+    # The extra two requests are cheap; the alternative (missing the
+    # disposition) makes the summary state the wrong posture.
     oldest = _list_entries_ordered(cl, docket_id, order_by="date_filed", max_pages=2)
-    newest = _list_entries_ordered(cl, docket_id, order_by="-date_filed", max_pages=1)
+    newest = _list_entries_ordered(cl, docket_id, order_by="-date_filed", max_pages=3)
 
     seen_ids: set[int] = set()
 
@@ -259,7 +369,7 @@ def find_operative_documents(
     for entry in oldest + newest:
         if is_operative_pleading(entry):
             _dedup_add(operative, entry)
-        elif is_disposition(entry):
+        elif _is_disposition_document(entry):
             _dedup_add(dispositions, entry)
 
     operative.sort(key=lambda e: e.get("date_filed") or "")
