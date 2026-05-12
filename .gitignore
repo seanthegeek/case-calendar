@@ -25,3 +25,4 @@ out/*
 .bash_history
 .bashrc
 .zshrc
+.claude/scheduled_tasks.lock
