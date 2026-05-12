@@ -561,9 +561,14 @@ class TestCmdSync:
         out = capsys.readouterr().out
         assert "us-v-x" in out
 
-    def test_skips_emit_with_no_actions(
+    def test_emits_index_with_no_actions(
         self, cfg_file, fake_cl_ctx, monkeypatch,
     ):
+        # Even when no calendar's hearings/deadlines changed, the global
+        # index is re-rendered on every sync (a sibling docket's activity
+        # may have advanced, so its row position can shift). emit_calendars
+        # is called with an empty `only_calendars` set, which skips
+        # per-calendar ICS / gcal / M365 work but still writes the index.
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer, "sync_case",
@@ -580,7 +585,33 @@ class TestCmdSync:
         )
         args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
         assert cmd_sync(args) == 0
-        assert emit_calls == []  # nothing to re-emit
+        assert emit_calls == [set()]
+
+    def test_writes_index_on_no_op_sync_when_configured(
+        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+    ):
+        # End-to-end through the real emit_calendars: a sync that touches
+        # zero calendars still refreshes index.html when index_path is set.
+        # This is the fix for the bug where index.html was never generated
+        # after a sync that produced no actions.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        index_path = tmp_path / "site" / "index.html"
+        cfg["index_path"] = str(index_path)
+        cfg_file.write_text(yaml.safe_dump(cfg))
+
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: {
+                "dockets_skipped": 1, "entries_seen": 0,
+                "entries_processed": 0, "actions": 0,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            },
+        )
+        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        assert cmd_sync(args) == 0
+        assert index_path.exists()
+        assert index_path.read_text(encoding="utf-8").startswith("<!doctype html>")
 
     def test_no_emit_flag_skips_emit(
         self, cfg_file, fake_cl_ctx, monkeypatch,
@@ -668,6 +699,44 @@ class TestCmdEmit:
         assert "wrote 3 events" in out
         assert "pushed 3 events to gcal" in out
         assert "pushed 3 events to M365" in out
+
+    def test_prints_index_line_when_configured(
+        self, cfg_file, monkeypatch, capsys,
+    ):
+        # emit_calendars writes index.html as a global side effect when
+        # `index_path` is configured. cmd_emit surfaces that to the
+        # operator alongside the per-calendar lines so the index isn't
+        # invisible in the CLI output.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["index_path"] = "/tmp/index.html"
+        cfg_file.write_text(yaml.safe_dump(cfg))
+
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda cfg, store: {"cyber": {
+                "events": 0, "ics_path": None,
+                "gcal_pushed": False, "m365_pushed": False,
+            }},
+        )
+        args = SimpleNamespace(config=str(cfg_file))
+        assert cmd_emit(args) == 0
+        out = capsys.readouterr().out
+        assert "wrote index -> /tmp/index.html" in out
+
+    def test_omits_index_line_when_unconfigured(
+        self, cfg_file, monkeypatch, capsys,
+    ):
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda cfg, store: {"cyber": {
+                "events": 0, "ics_path": None,
+                "gcal_pushed": False, "m365_pushed": False,
+            }},
+        )
+        args = SimpleNamespace(config=str(cfg_file))
+        assert cmd_emit(args) == 0
+        out = capsys.readouterr().out
+        assert "index" not in out
 
 
 class TestCmdServe:

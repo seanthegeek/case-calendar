@@ -126,6 +126,29 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
     ]
 
 
+def _print_emit_results(cfg: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:
+    """Print the per-backend summary plus the index line if configured.
+
+    The index path lives in cfg rather than ``results`` because
+    :func:`emit_calendars` writes it as a global side effect (not keyed
+    by calendar). Whenever ``index_path`` is set in cfg, emit_calendars
+    refreshed it — so we surface that to the operator alongside the
+    per-calendar lines.
+    """
+    for cal_id, r in results.items():
+        if r["ics_path"]:
+            print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
+        if r["gcal_pushed"]:
+            gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
+            print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
+        if r["m365_pushed"]:
+            m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
+            print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
+    index_path = cfg.get("index_path")
+    if index_path:
+        print(f"wrote index -> {index_path}")
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -184,20 +207,17 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 for did in docket_ids:
                     print(f"[{case_id}] regenerated summary for docket {did}")
 
-    if not args.no_emit and affected_calendars:
+    # Always run emit_calendars (unless --no-emit). Per-calendar work is
+    # scoped by `only_calendars=affected_calendars` — an empty set skips
+    # every calendar — but the index is a global view that may have moved
+    # even when no calendar's ICS changed, so it gets re-rendered on every
+    # sync.
+    if not args.no_emit:
         results = emit_calendars(
             cfg, store,
             only_calendars=affected_calendars,
         )
-        for cal_id, r in results.items():
-            if r["ics_path"]:
-                print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
-            if r["gcal_pushed"]:
-                gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
-                print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
-            if r["m365_pushed"]:
-                m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
-                print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
+        _print_emit_results(cfg, results)
     store.close()
     return 0
 
@@ -439,15 +459,7 @@ def cmd_emit(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     results = emit_calendars(cfg, store)
-    for cal_id, r in results.items():
-        if r["ics_path"]:
-            print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
-        if r["gcal_pushed"]:
-            gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
-            print(f"[{cal_id}] pushed {r['events']} events to gcal {gcal_id}")
-        if r["m365_pushed"]:
-            m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
-            print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
+    _print_emit_results(cfg, results)
     store.close()
     return 0
 
@@ -731,9 +743,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         results = emit_calendars(
             cfg, store, only_calendars=affected_calendars,
         )
-        for cal_id, r in results.items():
-            if r["ics_path"]:
-                print(f"[{cal_id}] wrote {r['events']} events -> {r['ics_path']}")
+        _print_emit_results(cfg, results)
     store.close()
     return 0
 
