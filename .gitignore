@@ -2,16 +2,21 @@
 .venv/
 config.yaml
 .coverage
-*.jaon
 __pycache__/
 *.pyc
 *.egg-info/
 dist/
 build/
 
-# generated state and outputs
-data/
-out/
+# Generated state and outputs — keep the directories themselves (via
+# .gitkeep) so the systemd unit's ReadWritePaths= can bind-mount them on
+# a fresh checkout, before sync / emit / OAuth setup has populated them.
+data/*
+!data/.gitkeep
+out/*
+!out/.gitkeep
+.case-calendar/*
+!.case-calendar/.gitkeep
 
 # Local user config
 .local/
