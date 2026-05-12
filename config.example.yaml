@@ -143,7 +143,7 @@ calendars:
 cases:
   # ---- Anthropic v. DOW family ----
   - id: anthropic-v-dow
-    name: "Anthropic PBC v. United States Department of War"
+    name: "Anthropic v. DOW"
     calendar: tech
     dockets: [72380208, 72379655, 73136734]
     # When you aggregate multiple related dockets under one case_id, an
@@ -151,7 +151,8 @@ cases:
     # the rendered summaries read like they were written by someone who
     # understands the litigation strategy rather than a per-docket
     # description in isolation. Only used by the `summarize` command.
-    # aggregation_note: "parallel federal actions in different districts over Dow's alleged exfiltration of Claude model weights"
+    aggregation_note: "parallel suits challenging separate Department of War actions taken under distinct statutory authorities, each filed in the proper venue for the action it targets"
+    
     # Per-case override of the calendar's notify_emails / reminders. Useful
     # when one case warrants different alerts than the rest of the calendar.
     # notify_emails: [counsel@example.com]
