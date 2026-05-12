@@ -504,6 +504,7 @@ def refresh_stale(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     allow_ocr: bool = True,
+    force: bool = False,
 ) -> dict[str, set[int]]:
     """Regenerate any summaries that are missing or marked stale.
 
@@ -534,11 +535,12 @@ def refresh_stale(
             continue
         aggregation_note = (case_overrides.get(case.case_id) or {}).get("aggregation_note")
         for docket_id in case.dockets:
-            if not store.is_summary_stale(case.case_id, docket_id):
+            if not force and not store.is_summary_stale(case.case_id, docket_id):
                 continue
             log.info(
-                "summary: docket %s (case %s) is stale or missing — regenerating",
+                "summary: docket %s (case %s) %s — regenerating",
                 docket_id, case.case_id,
+                "force-refresh" if force else "is stale or missing",
             )
             row = summarize_docket(
                 cl=cl, store=store, case=case, docket_id=docket_id,

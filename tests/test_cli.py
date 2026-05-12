@@ -687,6 +687,41 @@ class TestCmdSync:
         assert len(refresh_calls) == 1
         assert refresh_calls[0]["only_case_ids"] == {"us-v-x"}
         assert refresh_calls[0]["allow_ocr"] is False
+        # Default: no force, just refresh stale rows.
+        assert refresh_calls[0]["force"] is False
+
+    def test_force_summaries_flag_propagates(
+        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+    ):
+        # `sync --force-summaries` bundles the equivalent of
+        # `summarize --force` into the same CL session — avoids a second
+        # run that would hit CL's docket-entries endpoint all over again.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: {
+                "dockets_skipped": 0, "entries_seen": 0,
+                "entries_processed": 0, "actions": 0,
+                "verified": 0, "auto_held": 0, "auto_passed": 0,
+            },
+        )
+        from case_calendar import summary as summary_mod
+        refresh_calls: list[dict[str, Any]] = []
+        monkeypatch.setattr(
+            summary_mod, "refresh_stale",
+            lambda **kw: (refresh_calls.append(kw), {})[1],
+        )
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+
+        args = SimpleNamespace(
+            config=str(cfg_file), case=None, no_emit=False,
+            force_summaries=True,
+        )
+        assert cmd_sync(args) == 0
+        assert refresh_calls[0]["force"] is True
 
 
 class TestCmdEmit:

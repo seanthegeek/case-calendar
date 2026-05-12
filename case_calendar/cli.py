@@ -196,6 +196,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 provider=summary_cfg.get("provider"),
                 model=summary_cfg.get("model"),
                 allow_ocr=bool(summary_cfg.get("allow_ocr", True)),
+                force=bool(getattr(args, "force_summaries", False)),
             )
             for case_id, docket_ids in written.items():
                 case = next(c for c in cases if c.case_id == case_id)
@@ -930,6 +931,13 @@ def main(argv: list[str] | None = None) -> int:
         "--no-emit",
         action="store_true",
         help="skip auto-emitting ICS for affected calendars at end of sync",
+    )
+    p_sync.add_argument(
+        "--force-summaries",
+        action="store_true",
+        help="regenerate every case summary as part of the sync (use after "
+             "a model upgrade or prompt change — avoids a separate "
+             "`summarize --force` run that would hit CL again)",
     )
     p_sync.set_defaults(func=cmd_sync)
 

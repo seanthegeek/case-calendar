@@ -613,6 +613,30 @@ class TestRefreshStale:
         )
         assert written == {"a": {1}}
 
+    def test_force_regenerates_non_stale_rows(self, store, patch_llm, patch_pdf):
+        # Default behavior is to skip non-stale rows. force=True bypasses
+        # the stale check so a single sync can pick up a model upgrade or
+        # prompt change without a separate `summarize --force` invocation
+        # that would hit CL all over again.
+        _seed_docket_meta(store, 1)
+        store.upsert_case_summary(
+            "us-v-doe", 1, summary="old", model="prev/model", source_entry_ids=[],
+        )
+        # Row is fresh — is_summary_stale would return False.
+        assert not store.is_summary_stale("us-v-doe", 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body"}
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        written = refresh_stale(cl=cl, store=store, cases=[case], force=True)
+        assert written == {"us-v-doe": {1}}
+        assert len(patch_llm) == 1
+
     def test_uses_aggregation_note_override(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
