@@ -2,7 +2,7 @@
 
 Auth follows the standard OAuth-installed-app flow from Google's quickstart.
 First run prompts the user in a browser; tokens are cached in
-``~/.case-calendar/google-token.json`` thereafter.
+``tokens/google-token.json`` (relative to the project directory) thereafter.
 
 We sync per calendar: each hearing has a stable client-side ID derived from
 ``case_id`` + ``hearing_key``; we PATCH that ID on every sync, so reschedules
@@ -61,7 +61,7 @@ class GoogleCalendarSync:
         self,
         *,
         credentials_path: str,
-        token_path: str | Path = "~/.case-calendar/google-token.json",
+        token_path: str | Path = "tokens/google-token.json",
     ):
         self.credentials_path = Path(credentials_path).expanduser()
         self.token_path = Path(token_path).expanduser()

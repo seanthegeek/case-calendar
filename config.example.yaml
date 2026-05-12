@@ -18,8 +18,8 @@ model: claude-opus-4-7
 # Push auto-enables once `case-calendar setup gcal` has staged the token
 # cache at google_token_path. Get the credentials JSON from Google Cloud
 # Console (OAuth client of type "Desktop app").
-# google_credentials_path: ~/.case-calendar/google-credentials.json
-# google_token_path:       ~/.case-calendar/google-token.json
+# google_credentials_path: tokens/google-credentials.json
+# google_token_path:       tokens/google-token.json
 
 # Optional — only needed if any calendar has m365_calendar_id set (or
 # m365_use_default_calendar: true). Push auto-enables once
@@ -27,7 +27,7 @@ model: claude-opus-4-7
 # m365_token_path. Register a multi-tenant "public client" application
 # in Azure AD / Entra and put its Application (client) ID here.
 # m365_client_id:    "00000000-0000-0000-0000-000000000000"
-# m365_token_path:   ~/.case-calendar/m365-token.json
+# m365_token_path:   tokens/m365-token.json
 
 # Optional — generate a static index.html alongside the ICS files. The
 # page lists every calendar (with one-click subscribe links) and every

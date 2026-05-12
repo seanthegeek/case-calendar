@@ -15,8 +15,8 @@ data/*
 !data/.gitkeep
 out/*
 !out/.gitkeep
-.case-calendar/*
-!.case-calendar/.gitkeep
+tokens/*
+!tokens/.gitkeep
 
 # Local user config
 .local/
@@ -26,3 +26,4 @@ out/*
 .bashrc
 .zshrc
 .claude/scheduled_tasks.lock
+scripts/*.json

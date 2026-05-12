@@ -230,7 +230,7 @@ def _resolve_gcal(cfg: dict[str, Any], *, setup: bool) -> tuple[str | None, Path
     if not credentials_path:
         return None
     token_path = Path(cfg.get(
-        "google_token_path", "~/.case-calendar/google-token.json"
+        "google_token_path", "tokens/google-token.json"
     )).expanduser()
     if not token_path.exists() and not setup:
         log.info(
@@ -255,7 +255,7 @@ def _resolve_m365(cfg: dict[str, Any], *, setup: bool) -> tuple[str, Path] | Non
     if not client_id:
         return None
     token_path = Path(cfg.get(
-        "m365_token_path", "~/.case-calendar/m365-token.json"
+        "m365_token_path", "tokens/m365-token.json"
     )).expanduser()
     if not token_path.exists() and not setup:
         log.info(
@@ -642,7 +642,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         from .calendars.gcal import GoogleCalendarSync
 
         token_path = Path(cfg.get(
-            "google_token_path", "~/.case-calendar/google-token.json"
+            "google_token_path", "tokens/google-token.json"
         )).expanduser()
         GoogleCalendarSync(
             credentials_path=cfg["google_credentials_path"],
@@ -667,7 +667,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
     from .calendars.m365 import M365CalendarSync
 
     token_path = Path(cfg.get(
-        "m365_token_path", "~/.case-calendar/m365-token.json"
+        "m365_token_path", "tokens/m365-token.json"
     )).expanduser()
     M365CalendarSync(client_id=client_id, token_path=token_path)
     print(f"m365 auth record staged at {token_path}")

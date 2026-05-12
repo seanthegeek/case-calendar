@@ -89,7 +89,7 @@ One-time setup (manual steps in the Google Cloud Console):
 4. **Create an OAuth client of type "Desktop app"**: APIs & Services →
    Credentials → Create credentials → OAuth client ID → Desktop app.
    Download the JSON to a path you'll reference from `config.yaml` — by
-   convention `~/.case-calendar/google-credentials.json`.
+   convention `tokens/google-credentials.json` inside the project.
 5. **Find the calendar id you want events on**: open Google Calendar in a
    browser → click the calendar name in the left sidebar → Settings and
    sharing → "Integrate calendar" → Calendar ID. It looks like
@@ -98,8 +98,8 @@ One-time setup (manual steps in the Google Cloud Console):
 6. **Wire it into `config.yaml`**:
 
    ```yaml
-   google_credentials_path: ~/.case-calendar/google-credentials.json
-   # google_token_path:       ~/.case-calendar/google-token.json  # default
+   google_credentials_path: tokens/google-credentials.json
+   # google_token_path:       tokens/google-token.json  # default
 
    calendars:
      cybercrime:
@@ -161,7 +161,7 @@ One-time setup (manual steps in the Microsoft Entra admin center):
    ```yaml
    # config.yaml — or put the client id here instead and skip the env var
    # m365_client_id: "00000000-0000-0000-0000-000000000000"
-   # m365_token_path: ~/.case-calendar/m365-token.json  # default
+   # m365_token_path: tokens/m365-token.json  # default
 
    calendars:
      cybercrime:
@@ -172,7 +172,7 @@ One-time setup (manual steps in the Microsoft Entra admin center):
 7. **Authorize once interactively**: `case-calendar setup m365`. The
    command opens a browser, you grant `Calendars.ReadWrite`, and the
    resulting `AuthenticationRecord` is cached at
-   `~/.case-calendar/m365-token.json` plus the OS keyring
+   `tokens/m365-token.json` plus the OS keyring
    (DPAPI / Keychain / libsecret). The daemon reads the record back and
    refreshes silently thereafter — it cannot prompt a browser on its own.
 
@@ -200,13 +200,13 @@ can't reach the headless server.
 Practical answer: do the first-run authorization on a workstation with a
 browser, then move the cached credentials to the prod box.
 
-- **Google.** The refresh token lives in
-  `~/.case-calendar/google-token.json`. Run `case-calendar setup gcal`
-  on a workstation, then copy that file to the same path on prod
-  (`scp ~/.case-calendar/google-token.json prod:~/.case-calendar/`). The
-  daemon refreshes silently from there forever.
+- **Google.** The refresh token lives in `tokens/google-token.json` inside
+  the project. Run `case-calendar setup gcal` on a workstation, then copy
+  that file into the same `tokens/` directory on prod (`scp
+  tokens/google-token.json prod:/opt/case-calendar/tokens/`). The daemon
+  refreshes silently from there forever.
 - **Microsoft.** Trickier, because `azure-identity` splits the cache:
-  `~/.case-calendar/m365-token.json` holds only the
+  `tokens/m365-token.json` holds only the
   `AuthenticationRecord` metadata, while the **refresh token itself lives
   in the OS keyring** (DPAPI on Windows, Keychain on macOS, libsecret on
   Linux). Copying the file alone is not enough — the prod keyring won't
@@ -495,7 +495,7 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
    /opt/case-calendar/config.yaml       # cases / calendars / dockets
    /opt/case-calendar/data/             # SQLite store (writable)
    /opt/case-calendar/out/              # ICS + index.html (writable)
-   /opt/case-calendar/.case-calendar/   # OAuth token caches (writable)
+   /opt/case-calendar/tokens/           # OAuth token caches (writable)
    ```
 
    Ensure proper file permissions:
@@ -518,8 +518,8 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
 4. **OAuth setup can't run under this unit.** `case-calendar setup gcal`
    and `setup m365` need an interactive browser. Either run them as the
    `case-calendar` user on a workstation and copy the resulting JSON into
-   `/opt/case-calendar/.case-calendar/`, or SSH in with X11 forwarding
-   (`ssh -X`) and run `setup` once on the VPS.
+   `/opt/case-calendar/tokens/`, or SSH in with X11 forwarding (`ssh -X`)
+   and run `setup` once on the VPS.
 
 The unit binds `serve` to `127.0.0.1:8000` only — your fronting choice
 (Caddy / Cloudflare Tunnel / etc.) is what makes it publicly reachable.

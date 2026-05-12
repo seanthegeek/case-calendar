@@ -66,7 +66,7 @@ class M365CalendarSync:
         self,
         *,
         client_id: str,
-        token_path: str | Path = "~/.case-calendar/m365-token.json",
+        token_path: str | Path = "tokens/m365-token.json",
     ):
         # Local imports so the SDK only loads when M365 push is actually
         # configured. Keeps cold-start cost off the polling-only / ICS-only

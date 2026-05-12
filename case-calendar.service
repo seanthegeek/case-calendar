@@ -18,10 +18,11 @@ WorkingDirectory=/opt/case-calendar
 # Mode 0600, owned by the case-calendar user.
 EnvironmentFile=/opt/case-calendar/.env
 
-# OAuth token caches default to ~/.case-calendar/. Setting HOME here lets
-# the defaults resolve to a path inside the install dir without needing
-# config.yaml overrides. ProtectHome=true (below) blocks /home, /root, and
-# /run/user — none of which we need with HOME pointed inside /opt.
+# OAuth token caches now live at <project>/tokens/ (relative to
+# WorkingDirectory), so HOME isn't needed for that anymore. We still point
+# HOME inside the install dir so uv's cache + the .local/bin/uv install
+# resolve correctly here, and ProtectHome=true (below) can safely block
+# /home, /root, and /run/user.
 Environment=HOME=/opt/case-calendar
 
 # uv has no Debian/Ubuntu package; the install script
@@ -51,11 +52,11 @@ RestrictNamespaces=true
 LockPersonality=true
 RestrictRealtime=true
 
-# The serve process writes to data/, out/, and .case-calendar/ — every
-# other path stays read-only thanks to ProtectSystem=full.
+# The serve process writes to data/, out/, and tokens/ — every other path
+# stays read-only thanks to ProtectSystem=full.
 ReadWritePaths=/opt/case-calendar/data
 ReadWritePaths=/opt/case-calendar/out
-ReadWritePaths=/opt/case-calendar/.case-calendar
+ReadWritePaths=/opt/case-calendar/tokens
 
 [Install]
 WantedBy=multi-user.target
