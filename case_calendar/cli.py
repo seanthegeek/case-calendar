@@ -433,9 +433,9 @@ def emit_calendars(
 
     # index.html is global (lists every calendar + case), so we render it
     # on every emit regardless of `only_calendars` — a webhook touching one
-    # calendar still bumps another calendar's activity_date display because
-    # docket high-water marks may have advanced elsewhere in the same sync.
-    # The write is microseconds and idempotent.
+    # calendar may still move another calendar's "Last filing" display
+    # because docket date_last_filing watermarks may have advanced
+    # elsewhere in the same sync. The write is microseconds and idempotent.
     index_path = cfg.get("index_path")
     if index_path:
         models = build_calendar_models(

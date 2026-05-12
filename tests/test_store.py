@@ -197,29 +197,121 @@ class TestDockets:
         store.bump_docket_last_modified(7, "2026-05-08T00:00:00Z")
         assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
 
+    def test_date_last_filing_persists_via_upsert(self, store: Store):
+        # date_last_filing is captured from CL on the polling path; ensure
+        # it round-trips through upsert_docket_meta + get_docket_meta.
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+            "date_last_filing": "2026-05-08",
+        })
+        meta = store.get_docket_meta(7)
+        assert meta["date_last_filing"] == "2026-05-08"
+
+    def test_date_last_filing_none_does_not_clobber(self, store: Store):
+        # A subsequent upsert that doesn't pass date_last_filing (e.g. a
+        # webhook-driven path that touches metadata but never re-fetches
+        # the docket) must NOT wipe the previously-cached value.
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+            "date_last_filing": "2026-05-08",
+        })
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+        })
+        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+
+    def test_bump_last_filing_advances_forward(self, store: Store):
+        # process_entry calls this with entry.date_filed so webhook-only
+        # deployments can keep the index date current without refetching
+        # the parent docket per delivery.
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+            "date_last_filing": "2026-05-01",
+        })
+        store.bump_docket_last_filing(7, "2026-05-08")
+        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+
+    def test_bump_last_filing_ignores_older(self, store: Store):
+        # An entry whose date_filed is older than what CL already gave us
+        # (e.g. a late-arriving webhook for an old entry) must not move
+        # the watermark backwards.
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+            "date_last_filing": "2026-05-08",
+        })
+        store.bump_docket_last_filing(7, "2026-05-01")
+        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+
+    def test_bump_last_filing_inserts_when_missing(self, store: Store):
+        # First-time webhook delivery for a docket we haven't poll-synced;
+        # bump should land the value even though no row exists yet.
+        store.bump_docket_last_filing(7, "2026-05-08")
+        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+
+    def test_bump_last_filing_empty_string_noop(self, store: Store):
+        # The opportunistic bump in process_entry passes whatever the
+        # entry's date_filed was; CL sometimes omits the field, and an
+        # empty-string bump must not insert a row or clobber an existing
+        # value.
+        store.upsert_docket_meta(7, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/7/",
+            "date_last_filing": "2026-05-08",
+        })
+        store.bump_docket_last_filing(7, "")
+        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+
 
 class TestCaseAggregates:
-    def test_min_filed_max_activity_across_dockets(self, store: Store):
+    def test_min_filed_max_last_filing_across_dockets(self, store: Store):
         # Earliest date_filed across the case's dockets wins as the case's
-        # "filed" date; latest docket-level date_modified wins as activity.
-        store.set_docket_last_modified(10, "2026-05-10T12:00:00Z")
-        store.set_docket_last_modified(11, "2026-04-01T12:00:00Z")
+        # "filed" date; latest docket-level date_last_filing wins as the
+        # "last filing" date the index page surfaces.
+        store.upsert_docket_meta(10, {
+            "court_id": "nysd", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/10/",
+            "date_last_filing": "2026-05-10",
+        })
+        store.upsert_docket_meta(11, {
+            "court_id": "nysd", "docket_number": "1:24",
+            "case_name": "X", "absolute_url": "/d/11/",
+            "date_last_filing": "2026-04-01",
+        })
         store.mark_entry(10, 1, "2025-01-15T08:00:00Z", "fp",
                          date_filed="2025-01-15")
         store.mark_entry(11, 2, "2024-09-01T08:00:00Z", "fp",
                          date_filed="2024-09-01")
         agg = store.get_case_aggregates([10, 11])
         assert agg["date_filed"] == "2024-09-01"
-        assert agg["activity_date"] == "2026-05-10T12:00:00Z"
+        assert agg["last_filing_date"] == "2026-05-10"
+
+    def test_ignores_date_modified_for_last_filing(self, store: Store):
+        # Regression: the aggregate previously read from dockets.date_modified,
+        # which bumps on OCR / metadata churn. After the switch to
+        # date_last_filing, a docket whose date_modified is newer than its
+        # date_last_filing must NOT show date_modified as "last filing".
+        store.set_docket_last_modified(10, "2026-05-10T12:00:00Z")
+        store.upsert_docket_meta(10, {
+            "court_id": "nysd", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/10/",
+            "date_last_filing": "2026-04-01",
+        })
+        agg = store.get_case_aggregates([10])
+        assert agg["last_filing_date"] == "2026-04-01"
 
     def test_returns_none_when_no_rows(self, store: Store):
         agg = store.get_case_aggregates([42, 43])
-        assert agg == {"date_filed": None, "activity_date": None}
+        assert agg == {"date_filed": None, "last_filing_date": None}
 
     def test_empty_docket_list(self, store: Store):
         # A case with no dockets configured shouldn't blow up; just return None.
         agg = store.get_case_aggregates([])
-        assert agg == {"date_filed": None, "activity_date": None}
+        assert agg == {"date_filed": None, "last_filing_date": None}
 
 
 class TestCourts:

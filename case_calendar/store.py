@@ -35,6 +35,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS dockets (
     docket_id INTEGER PRIMARY KEY,
     date_modified TEXT,
+    date_last_filing TEXT,        -- CL's "most recent document filing date" on the docket; the value the index page reads to surface "Last filing"
     last_synced_at TEXT NOT NULL,
     court_id TEXT,
     docket_number TEXT,
@@ -149,6 +150,7 @@ class Store:
             ("dockets", "docket_number", "TEXT"),
             ("dockets", "case_name", "TEXT"),
             ("dockets", "absolute_url", "TEXT"),
+            ("dockets", "date_last_filing", "TEXT"),
             ("hearings", "docket_id", "INTEGER"),
             ("hearings", "significance", "TEXT"),
             ("entries", "date_filed", "TEXT"),
@@ -217,17 +219,18 @@ class Store:
     def bump_docket_last_modified(self, docket_id: int, candidate: str) -> None:
         """Advance ``dockets.date_modified`` only if ``candidate`` is newer.
 
-        The polling path sets ``date_modified`` to the parent docket's
-        authoritative value at the end of each sync_case loop. The webhook
-        path never sees the parent docket on each delivery, so the docket
-        row's ``date_modified`` would stay frozen at the last poll-time
-        value (or NULL for webhook-only deployments). ``activity_date`` on
-        the index page is derived from this column, so without this bump
-        the index would show a stale "last updated" timestamp even though
-        new entries were just processed.
+        ``date_modified`` is the docket-level short-circuit watermark
+        (``sync_case`` skips a docket whose CL ``date_modified`` hasn't
+        moved past this value). The polling path sets it to the parent
+        docket's authoritative value at end-of-loop; the webhook path
+        never sees the parent docket per delivery, so without this bump
+        the watermark would stay frozen at the last poll time and
+        webhook-only deployments would never short-circuit.
 
-        Done as a conditional UPDATE so concurrent webhook deliveries
-        can't race the value backwards.
+        Done as a conditional UPDATE so out-of-order webhook deliveries
+        can't move the value backwards. The index page's "Last filing"
+        column reads from a separate column (``date_last_filing``); this
+        is the short-circuit watermark, not the user-visible date.
         """
         self.conn.execute(
             """
@@ -243,17 +246,28 @@ class Store:
         )
 
     def upsert_docket_meta(self, docket_id: int, meta: dict[str, Any]) -> None:
-        """Cache the human-readable docket metadata we display in event bodies."""
+        """Cache the human-readable docket metadata we display in event bodies.
+
+        ``date_last_filing`` (CL's "most recent document filing date") is
+        persisted here when present so the index page can render an
+        unambiguous "Last filing" date that doesn't bump on OCR / metadata
+        churn the way ``date_modified`` does. None on the input leaves any
+        previously-cached value alone.
+        """
         self.conn.execute(
             """
             INSERT INTO dockets
-              (docket_id, last_synced_at, court_id, docket_number, case_name, absolute_url)
-            VALUES (?, ?, ?, ?, ?, ?)
+              (docket_id, last_synced_at, court_id, docket_number, case_name,
+               absolute_url, date_last_filing)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(docket_id) DO UPDATE SET
               court_id=excluded.court_id,
               docket_number=excluded.docket_number,
               case_name=excluded.case_name,
-              absolute_url=excluded.absolute_url
+              absolute_url=excluded.absolute_url,
+              date_last_filing=COALESCE(
+                  excluded.date_last_filing, dockets.date_last_filing
+              )
             """,
             (
                 docket_id,
@@ -262,12 +276,39 @@ class Store:
                 meta.get("docket_number"),
                 meta.get("case_name"),
                 meta.get("absolute_url"),
+                meta.get("date_last_filing"),
             ),
+        )
+
+    def bump_docket_last_filing(self, docket_id: int, candidate: str) -> None:
+        """Advance ``dockets.date_last_filing`` only if ``candidate`` is newer.
+
+        CL stamps the docket-level ``date_last_filing`` server-side, but
+        webhook deliveries don't refetch the parent docket on every event,
+        so without this the value would lag the entries we just processed.
+        Each ``process_entry`` call passes the entry's own ``date_filed``
+        through here; conditional update is forward-only so out-of-order
+        webhook deliveries can't move the watermark backwards.
+        """
+        if not candidate:
+            return
+        self.conn.execute(
+            """
+            INSERT INTO dockets (docket_id, date_last_filing, last_synced_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(docket_id) DO UPDATE SET
+              date_last_filing=excluded.date_last_filing,
+              last_synced_at=excluded.last_synced_at
+              WHERE dockets.date_last_filing IS NULL
+                 OR dockets.date_last_filing < excluded.date_last_filing
+            """,
+            (docket_id, candidate, _now()),
         )
 
     def get_docket_meta(self, docket_id: int) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT court_id, docket_number, case_name, absolute_url "
+            "SELECT court_id, docket_number, case_name, absolute_url, "
+            "date_last_filing "
             "FROM dockets WHERE docket_id=?",
             (docket_id,),
         ).fetchone()
@@ -463,34 +504,39 @@ class Store:
     def get_case_aggregates(
         self, docket_ids: Iterable[int]
     ) -> dict[str, Optional[str]]:
-        """Return ``{"date_filed": ..., "activity_date": ...}`` across a case's dockets.
+        """Return ``{"date_filed": ..., "last_filing_date": ...}`` across a case's dockets.
 
         ``date_filed`` = MIN(entries.date_filed) — the first filed entry on
         any of the case's dockets is the closest stand-in for the case's
         filing date (we don't store the docket-level date_filed CL exposes,
-        so this is the cheap derived value). ``activity_date`` = MAX of the
-        per-docket date_modified high-water marks, which is what the
-        docket-level short-circuit already maintains.
+        so this is the cheap derived value).
+
+        ``last_filing_date`` = MAX(dockets.date_last_filing) — CL's
+        authoritative "most recent document filing date" rolled up across
+        a multi-docket case. Distinct from ``dockets.date_modified``, which
+        bumps on OCR / metadata churn and would mislabel non-filing updates
+        as new activity.
 
         Either value may be None when no rows are present yet.
         """
         ids = [int(i) for i in docket_ids]
         if not ids:
-            return {"date_filed": None, "activity_date": None}
+            return {"date_filed": None, "last_filing_date": None}
         placeholders = ",".join("?" * len(ids))
         df = self.conn.execute(
             f"SELECT MIN(date_filed) AS d FROM entries "
             f"WHERE docket_id IN ({placeholders}) AND date_filed IS NOT NULL",
             ids,
         ).fetchone()
-        am = self.conn.execute(
-            f"SELECT MAX(date_modified) AS d FROM dockets "
-            f"WHERE docket_id IN ({placeholders}) AND date_modified IS NOT NULL",
+        lf = self.conn.execute(
+            f"SELECT MAX(date_last_filing) AS d FROM dockets "
+            f"WHERE docket_id IN ({placeholders}) "
+            f"AND date_last_filing IS NOT NULL",
             ids,
         ).fetchone()
         return {
             "date_filed": df["d"] if df and df["d"] else None,
-            "activity_date": am["d"] if am and am["d"] else None,
+            "last_filing_date": lf["d"] if lf and lf["d"] else None,
         }
 
     # --- hearings ---

@@ -2,7 +2,7 @@
 
 Writes a single self-contained HTML page that lists every calendar in the
 config plus the cases tracked in each, with subscribe links to the matching
-ICS feeds and per-case metadata (docket links, date filed, last activity).
+ICS feeds and per-case metadata (docket links, date filed, last filing).
 No external CSS/JS, no CDN — the page is one file Caddy can serve directly.
 
 Dark mode follows the system preference via ``prefers-color-scheme`` and is
@@ -275,7 +275,7 @@ _RUNTIME_JS = """
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyToggle);
 
   // Per-section sort + truncation. Each <li.case> carries
-  // data-name / data-filed / data-activity; we re-append in the chosen
+  // data-name / data-filed / data-last-filing; we re-append in the chosen
   // order, then hide everything past VISIBLE_DEFAULT unless the section
   // has been expanded. The hidden count + label update live in
   // applyTruncation so they stay in sync after every sort change.
@@ -427,18 +427,18 @@ def _render_case(case: dict[str, Any]) -> str:
             ...
         ] | [],
         "date_filed": "2025-01-15" | None,
-        "activity_date": "2026-05-10T12:34:00Z" | None,
+        "last_filing_date": "2026-05-10" | None,
       }
     """
     name = _esc(case.get("name"))
     date_filed = _format_date(case.get("date_filed"))
-    activity = _format_date(case.get("activity_date"))
+    last_filing = _format_date(case.get("last_filing_date"))
     # Sort keys are case-insensitive (name) and ISO (dates), so direct
     # string compare on data-* attributes Just Works in the JS.
     data = (
         f'data-name="{_esc((case.get("name") or "").lower())}" '
         f'data-filed="{_esc(date_filed)}" '
-        f'data-activity="{_esc(activity)}"'
+        f'data-last-filing="{_esc(last_filing)}"'
     )
     dockets_html = []
     dockets = case.get("dockets") or []
@@ -469,8 +469,8 @@ def _render_case(case: dict[str, Any]) -> str:
     dates_bits = []
     if date_filed:
         dates_bits.append(f"<span><b>Filed</b> {_esc(date_filed)}</span>")
-    if activity:
-        dates_bits.append(f"<span><b>Last activity</b> {_esc(activity)}</span>")
+    if last_filing:
+        dates_bits.append(f"<span><b>Last filing</b> {_esc(last_filing)}</span>")
     dates_block = (
         f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
     )
@@ -519,7 +519,7 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'<div class="controls">'
         f'<label>Sort by '
         f'<select class="sort">'
-        f'<option value="activity" selected>Last activity</option>'
+        f'<option value="last-filing" selected>Last filing</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'
         f'</select>'
@@ -673,7 +673,7 @@ def build_calendar_models(
                 "dockets": dockets_meta,
                 "summaries": summaries,
                 "date_filed": agg["date_filed"],
-                "activity_date": agg["activity_date"],
+                "last_filing_date": agg["last_filing_date"],
             })
         out.append({
             "id": cal_id,

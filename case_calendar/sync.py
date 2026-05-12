@@ -374,6 +374,7 @@ class CaseSyncer:
                 "docket_number": docket.get("docket_number"),
                 "case_name": docket.get("case_name"),
                 "absolute_url": docket.get("absolute_url"),
+                "date_last_filing": docket.get("date_last_filing"),
             },
         )
         self._ensure_court(docket.get("court_id") or "")
@@ -427,14 +428,23 @@ class CaseSyncer:
             recap_documents=_compact_recap_documents(entry) if processed else None,
         )
         # Advance the docket's date_modified to this entry's value if newer.
-        # The polling path sets it from the parent docket at end-of-loop;
-        # the webhook path doesn't see the parent docket per delivery, so
-        # without this the index's per-case "updated at" would never move
-        # for webhook-only deployments. Conditional update — safe to call
-        # in either path, never moves the watermark backwards.
+        # date_modified is the docket-level short-circuit watermark — the
+        # polling path sets it from the parent docket at end-of-loop, but
+        # the webhook path never sees the parent docket per delivery, so
+        # without this conditional bump webhook-only deployments would
+        # never short-circuit unchanged dockets on subsequent polls.
         entry_dm = entry.get("date_modified") or ""
         if entry_dm:
             self.store.bump_docket_last_modified(docket_id, entry_dm)
+        # Same idea for the index page's "Last filing" date: webhook
+        # deliveries don't refetch the parent docket, so CL's
+        # ``date_last_filing`` would lag the entry we just processed.
+        # Use the entry's own ``date_filed`` as a forward-only stand-in;
+        # the next docket fetch overwrites it with CL's authoritative
+        # value via ``upsert_docket_meta``.
+        entry_df = entry.get("date_filed") or ""
+        if entry_df:
+            self.store.bump_docket_last_filing(docket_id, entry_df)
         # Flag the case_summaries row stale when this entry looks like an
         # operative pleading (superseding indictment, amended complaint,
         # etc.) or a disposition (judgment, plea agreement, verdict,
@@ -470,6 +480,14 @@ class CaseSyncer:
                     "docket %s unchanged since %s; skipping (no API/LLM calls)",
                     docket_id, last_mod,
                 )
+                # We've already paid the get_docket call above; capturing
+                # date_last_filing here costs nothing extra and is the only
+                # path that populates the column for quiet dockets after
+                # the column was added.
+                if docket.get("date_last_filing"):
+                    self.store.bump_docket_last_filing(
+                        docket_id, docket["date_last_filing"],
+                    )
                 stats["dockets_skipped"] += 1
                 continue
 
@@ -481,6 +499,7 @@ class CaseSyncer:
                     "docket_number": docket.get("docket_number"),
                     "case_name": docket.get("case_name"),
                     "absolute_url": docket.get("absolute_url"),
+                    "date_last_filing": docket.get("date_last_filing"),
                 },
             )
             self._ensure_court(docket.get("court_id") or "")

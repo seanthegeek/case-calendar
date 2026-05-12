@@ -25,13 +25,15 @@ def case():
     )
 
 
-def _docket(date_modified="2026-05-01T00:00:00-07:00"):
+def _docket(date_modified="2026-05-01T00:00:00-07:00",
+            date_last_filing="2026-05-01"):
     return {
         "id": 100, "court_id": "mad",
         "docket_number": "1:25-cr-00001-X",
         "case_name": "United States v. X",
         "absolute_url": "/docket/100/x/",
         "date_modified": date_modified,
+        "date_last_filing": date_last_filing,
     }
 
 
@@ -303,6 +305,86 @@ class TestDocketMetaCaching:
         meta = store.get_docket_meta(100)
         assert meta["court_id"] == "mad"
         assert meta["docket_number"] == "1:25-cr-00001-X"
+
+
+class TestLastFilingDateCapture:
+    """The index page's "Last filing" date is sourced from CL's
+    ``date_last_filing`` (not ``date_modified``, which bumps on OCR /
+    metadata churn). Verify both capture paths: full polling sync, and
+    the webhook ``process_entry`` opportunistic bump.
+    """
+
+    def test_polling_captures_date_last_filing(
+        self, store: Store, case, monkeypatch,
+    ):
+        make_llm_stub(monkeypatch, by_entry={})
+        cl = FakeCL(
+            dockets={100: _docket(date_last_filing="2026-05-08")},
+            entries={100: [_entry(1, "x")]},
+        )
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+        meta = store.get_docket_meta(100)
+        assert meta["date_last_filing"] == "2026-05-08"
+
+    def test_webhook_bumps_last_filing_from_entry(
+        self, store: Store, case, monkeypatch,
+    ):
+        # Pre-seed the docket meta with an older date_last_filing — this
+        # simulates the polling pass having captured CL's value, and now
+        # a webhook delivers an entry filed AFTER that capture.
+        store.upsert_docket_meta(100, {
+            "court_id": "mad", "docket_number": "1:25-cr-00001-X",
+            "case_name": "X", "absolute_url": "/d/100/",
+            "date_last_filing": "2026-05-01",
+        })
+        store.upsert_court("mad", "D. Mass.", "mad", "District of Massachusetts")
+        make_llm_stub(monkeypatch, by_entry={})
+        cl = FakeCL(dockets={100: _docket(date_last_filing="2026-05-01")})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-05-10"))
+        assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-10"
+
+    def test_polling_captures_last_filing_on_short_circuit(
+        self, store: Store, case, monkeypatch,
+    ):
+        # Quiet dockets (unchanged since last sync) hit the short-circuit
+        # in sync_case before upsert_docket_meta would normally run. We
+        # still need to populate date_last_filing on those — otherwise
+        # the column stays NULL for every docket that hasn't moved since
+        # the migration landed, and the index shows empty dates.
+        # Pre-seed the watermark so the short-circuit fires.
+        store.set_docket_last_modified(100, "2026-05-01T00:00:00-07:00")
+        make_llm_stub(monkeypatch, by_entry={})
+        cl = FakeCL(
+            dockets={100: _docket(
+                date_modified="2026-05-01T00:00:00-07:00",
+                date_last_filing="2026-04-28",
+            )},
+            entries={100: []},
+        )
+        syncer = CaseSyncer(cl, store)
+        stats = syncer.sync_case(case)
+        assert stats["dockets_skipped"] == 1
+        assert store.get_docket_meta(100)["date_last_filing"] == "2026-04-28"
+
+    def test_webhook_does_not_move_last_filing_backwards(
+        self, store: Store, case, monkeypatch,
+    ):
+        # Out-of-order delivery: an older entry arriving after CL's
+        # date_last_filing has already advanced must not regress the
+        # watermark.
+        store.upsert_docket_meta(100, {
+            "court_id": "mad", "docket_number": "1:25-cr-00001-X",
+            "case_name": "X", "absolute_url": "/d/100/",
+            "date_last_filing": "2026-05-08",
+        })
+        store.upsert_court("mad", "D. Mass.", "mad", "District of Massachusetts")
+        make_llm_stub(monkeypatch, by_entry={})
+        cl = FakeCL(dockets={100: _docket(date_last_filing="2026-05-08")})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-04-01"))
+        assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-08"
 
 
 class TestStickyTimezone:

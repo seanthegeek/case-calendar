@@ -141,7 +141,7 @@ class TestRenderCaseEdges:
             "name": "US v. X",
             "dockets": [{"docket_id": 42, "docket_number": "1:24-cr-42",
                           "court_citation": "S.D.N.Y."}],
-            "date_filed": None, "activity_date": None,
+            "date_filed": None, "last_filing_date": None,
         })
         # Label appears as a bare <li>, not wrapped in <a>.
         assert "1:24-cr-42" in html
@@ -152,9 +152,35 @@ class TestRenderCaseEdges:
         # docket_id as a stringified value (no link either).
         html = _render_case({
             "name": "X", "dockets": [{"docket_id": 999}],
-            "date_filed": None, "activity_date": None,
+            "date_filed": None, "last_filing_date": None,
         })
         assert "999" in html
+
+    def test_last_filing_renders_as_last_filing_label(self):
+        # The visible label was historically "Last activity" and sourced
+        # from docket.date_modified, which conflates filings with OCR /
+        # metadata churn. The renderer now reads ``last_filing_date`` and
+        # labels it "Last filing".
+        html = _render_case({
+            "name": "US v. X",
+            "dockets": [{"docket_id": 1, "docket_number": "1:24-cr-1"}],
+            "date_filed": "2025-01-15",
+            "last_filing_date": "2026-05-10",
+        })
+        assert "<b>Last filing</b> 2026-05-10" in html
+        assert "Last activity" not in html
+        assert 'data-last-filing="2026-05-10"' in html
+
+    def test_no_last_filing_skips_label(self):
+        # Cases with no captured date_last_filing yet still render — the
+        # date row simply omits the "Last filing" span.
+        html = _render_case({
+            "name": "US v. Y",
+            "dockets": [],
+            "date_filed": None,
+            "last_filing_date": None,
+        })
+        assert "Last filing" not in html
 
 
 class TestRenderIndex:
@@ -180,14 +206,14 @@ class TestRenderIndex:
                         "absolute_url": "/docket/1/x/",
                     }],
                     "date_filed": "2025-01-15",
-                    "activity_date": "2026-05-10T12:00:00Z",
+                    "last_filing_date": "2026-05-10",
                 },
                 {
                     "id": "us-v-y",
                     "name": "US v. <evil>",  # XSS canary
                     "dockets": [],
                     "date_filed": None,
-                    "activity_date": None,
+                    "last_filing_date": None,
                 },
             ],
         }]
@@ -257,10 +283,20 @@ class TestRenderIndex:
         html = render_index(calendars=calendars)
         assert 'data-name="us v. x"' in html
         assert 'data-filed="2025-01-15"' in html
-        assert 'data-activity="2026-05-10"' in html
+        assert 'data-last-filing="2026-05-10"' in html
         # The xss-canary case has no dates; sort attrs are still emitted
         # (empty strings sort last in the JS comparator).
         assert 'data-filed=""' in html
+
+    def test_sort_dropdown_default_is_last_filing(self, calendars):
+        # The default sort option (selected on page load) is "Last filing",
+        # backed by data-last-filing. The JS reads 'data-' + option.value,
+        # so the value here must match the attribute the renderer emits.
+        html = render_index(calendars=calendars)
+        assert '<option value="last-filing" selected>Last filing</option>' in html
+        # The old "Last activity" wording is gone — that label was the bug
+        # this change fixes.
+        assert "Last activity" not in html
 
     def test_xss_in_case_name_is_escaped(self, calendars):
         html = render_index(calendars=calendars)
@@ -286,6 +322,7 @@ class TestBuildCalendarModels:
             "docket_number": "1:24-cr-12345",
             "case_name": "US v. X",
             "absolute_url": "/docket/100/x/",
+            "date_last_filing": "2026-05-10",
         })
         store.set_docket_last_modified(100, "2026-05-10T12:00:00Z")
         store.upsert_court("nysd", "S.D.N.Y.", "nysd", "Southern District of NY")
@@ -310,7 +347,7 @@ class TestBuildCalendarModels:
         assert len(cal["cases"]) == 1
         case = cal["cases"][0]
         assert case["date_filed"] == "2025-01-15"
-        assert case["activity_date"] == "2026-05-10T12:00:00Z"
+        assert case["last_filing_date"] == "2026-05-10"
         assert case["dockets"][0]["docket_number"] == "1:24-cr-12345"
         assert case["dockets"][0]["court_citation"] == "S.D.N.Y."
 
@@ -329,7 +366,7 @@ class TestBuildCalendarModels:
         models = build_calendar_models(cfg, store)
         case = models[0]["cases"][0]
         assert case["date_filed"] is None
-        assert case["activity_date"] is None
+        assert case["last_filing_date"] is None
         assert case["dockets"][0]["docket_number"] is None
 
 

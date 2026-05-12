@@ -180,11 +180,13 @@ class TestDocketAlert:
         assert len(rows) == 1
         assert rows[0]["hearing_key"] == "sentencing-x"
 
-    def test_processing_bumps_docket_activity_date(self, base_url, store):
-        # The index page's per-case "updated at" derives from
-        # dockets.date_modified. Without a bump in process_entry, every
-        # webhook-driven case would appear frozen at its last poll time
-        # (or NULL for webhook-only deployments).
+    def test_processing_bumps_docket_short_circuit_watermark(
+        self, base_url, store,
+    ):
+        # dockets.date_modified is the polling short-circuit watermark:
+        # if a webhook never advances it, a follow-up poll would still
+        # short-circuit the docket as "unchanged since last poll" even
+        # though new entries arrived via webhook.
         url, secret, _ = base_url
         _post(
             f"{url}/webhooks/case-calendar/{secret}",
@@ -194,6 +196,22 @@ class TestDocketAlert:
         assert (
             store.docket_last_modified(100) == "2026-01-07T08:00:00-07:00"
         )
+
+    def test_processing_bumps_date_last_filing_from_entry(
+        self, base_url, store,
+    ):
+        # The index page's "Last filing" column reads from
+        # dockets.date_last_filing. Webhook deliveries don't refetch the
+        # parent docket, so the bump in process_entry has to use the
+        # entry's own date_filed as a forward-only stand-in; otherwise
+        # webhook-only deployments would show stale filing dates.
+        url, secret, _ = base_url
+        _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            _docket_alert([_sample_entry()]),
+            headers={"Idempotency-Key": "k-last-filing"},
+        )
+        assert store.get_docket_meta(100)["date_last_filing"] == "2026-01-07"
 
     def test_idempotency_replay_is_noop(self, base_url, store):
         url, secret, _ = base_url
