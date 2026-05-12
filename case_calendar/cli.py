@@ -127,13 +127,12 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
 
 
 def _print_emit_results(cfg: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:
-    """Print the per-backend summary plus the index line if configured.
+    """Print the per-backend summary for the operator running the CLI.
 
-    The index path lives in cfg rather than ``results`` because
-    :func:`emit_calendars` writes it as a global side effect (not keyed
-    by calendar). Whenever ``index_path`` is set in cfg, emit_calendars
-    refreshed it — so we surface that to the operator alongside the
-    per-calendar lines.
+    The index write is logged inside :func:`emit_calendars` itself
+    (via ``log.info``), so we don't re-surface it here — the log line
+    is the authoritative signal whether the call came from the CLI or
+    the webhook auto-emit path.
     """
     for cal_id, r in results.items():
         if r["ics_path"]:
@@ -144,9 +143,6 @@ def _print_emit_results(cfg: dict[str, Any], results: dict[str, dict[str, Any]])
         if r["m365_pushed"]:
             m365_id = cfg["calendars"][cal_id].get("m365_calendar_id") or "(default)"
             print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
-    index_path = cfg.get("index_path")
-    if index_path:
-        print(f"wrote index -> {index_path}")
 
 
 def cmd_sync(args: argparse.Namespace) -> int:

@@ -716,45 +716,6 @@ class TestCmdEmit:
         assert "pushed 3 events to gcal" in out
         assert "pushed 3 events to M365" in out
 
-    def test_prints_index_line_when_configured(
-        self, cfg_file, monkeypatch, capsys,
-    ):
-        # emit_calendars writes index.html as a global side effect when
-        # `index_path` is configured. cmd_emit surfaces that to the
-        # operator alongside the per-calendar lines so the index isn't
-        # invisible in the CLI output.
-        cfg = yaml.safe_load(cfg_file.read_text())
-        cfg["index_path"] = "/tmp/index.html"
-        cfg_file.write_text(yaml.safe_dump(cfg))
-
-        monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda cfg, store: {"cyber": {
-                "events": 0, "ics_path": None,
-                "gcal_pushed": False, "m365_pushed": False,
-            }},
-        )
-        args = SimpleNamespace(config=str(cfg_file))
-        assert cmd_emit(args) == 0
-        out = capsys.readouterr().out
-        assert "wrote index -> /tmp/index.html" in out
-
-    def test_omits_index_line_when_unconfigured(
-        self, cfg_file, monkeypatch, capsys,
-    ):
-        monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda cfg, store: {"cyber": {
-                "events": 0, "ics_path": None,
-                "gcal_pushed": False, "m365_pushed": False,
-            }},
-        )
-        args = SimpleNamespace(config=str(cfg_file))
-        assert cmd_emit(args) == 0
-        out = capsys.readouterr().out
-        assert "index" not in out
-
-
 class TestCmdServe:
     def test_rejects_short_secret(self, cfg_file, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "too-short")
