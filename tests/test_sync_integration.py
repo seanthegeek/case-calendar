@@ -441,6 +441,110 @@ class TestStickyTimezone:
         assert h_after["starts_at_utc"] == "2026-05-19T04:00:00+00:00"
 
 
+class TestCrossCourtContextFilter:
+    """The per-entry extractor receives known_hearings/known_deadlines context
+    scoped to the current docket's COURT, not the whole case. Without this
+    filter, a "stay appellate proceedings" order in one venue would propagate
+    CANCEL actions onto a parallel proceeding's events in another venue.
+    """
+
+    def test_cross_court_siblings_are_filtered_from_llm_context(
+        self, store: Store, monkeypatch,
+    ):
+        cadc_docket = {
+            "id": 200, "court_id": "cadc",
+            "docket_number": "26-1049", "case_name": "X",
+            "absolute_url": "/d/200/", "date_modified": "2026-05-01T00:00:00-07:00",
+        }
+        ca9_docket = {
+            "id": 300, "court_id": "ca9",
+            "docket_number": "26-2011", "case_name": "X",
+            "absolute_url": "/d/300/", "date_modified": "2026-05-02T00:00:00-07:00",
+        }
+        cl = FakeCL(dockets={200: cadc_docket, 300: ca9_docket})
+        case_multi = CaseConfig(case_id="x", name="X",
+                                dockets=[200, 300], calendar="t",
+                                extract_deadlines=True)
+
+        # Seed a hearing + deadline on the D.C. Cir. docket.
+        store.upsert_docket_meta(200, cadc_docket)
+        store.upsert_docket_meta(300, ca9_docket)
+        store.upsert_hearing({
+            "case_id": "x", "hearing_key": "oral-arg-dc",
+            "title": "Oral Argument", "starts_at_utc": "2026-05-19T13:30:00+00:00",
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "location": None, "judge": None, "notes": None, "dial_in": None,
+            "status": "scheduled", "significance": "major", "gcal_event_id": None,
+            "docket_id": 200, "source_entry_ids": [10],
+        })
+        store.upsert_deadline({
+            "case_id": "x", "deadline_key": "reply-brief-dc",
+            "title": "Petitioner Reply Brief", "due_at_utc": "2026-05-13T21:00:00+00:00",
+            "timezone": "America/New_York", "notes": None, "status": "pending",
+            "significance": "major", "deadline_type": "brief", "gcal_event_id": None,
+            "docket_id": 200, "source_entry_ids": [10],
+        })
+
+        # Capture kwargs the LLM stub receives when we process a 9th Cir. entry.
+        captured: dict = {}
+        def fake(*, known_hearings, known_deadlines, **_):
+            captured["hearings"] = known_hearings
+            captured["deadlines"] = known_deadlines
+            return [{"type": "IGNORE", "reason": "stub"}]
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        syncer = CaseSyncer(cl, store)
+        # 9th Cir. entry that mentions a stay — the bug being guarded against
+        # is the LLM seeing the D.C. Cir. events and emitting CANCEL actions
+        # against them. The fix is upstream of the LLM: don't feed them in.
+        syncer.process_entry(case_multi, 300, _entry(
+            42, "ORDER granting unopposed motion to stay appellate proceedings"
+        ))
+
+        keys = {h["hearing_key"] for h in captured["hearings"]}
+        d_keys = {d["deadline_key"] for d in captured["deadlines"]}
+        assert "oral-arg-dc" not in keys
+        assert "reply-brief-dc" not in d_keys
+
+    def test_same_court_siblings_still_aggregate(
+        self, store: Store, monkeypatch,
+    ):
+        # Multi-defendant criminal: two dockets in the same court should still
+        # see each other's events (legitimate co-defendant aggregation).
+        a = {"id": 400, "court_id": "dcd", "docket_number": "1:24-cr-261-A",
+             "case_name": "X", "absolute_url": "/d/400/",
+             "date_modified": "2026-01-01T00:00:00-05:00"}
+        b = {"id": 401, "court_id": "dcd", "docket_number": "1:24-cr-261-B",
+             "case_name": "X", "absolute_url": "/d/401/",
+             "date_modified": "2026-01-02T00:00:00-05:00"}
+        cl = FakeCL(dockets={400: a, 401: b})
+        case_multi = CaseConfig(case_id="x", name="X",
+                                dockets=[400, 401], calendar="t")
+
+        store.upsert_docket_meta(400, a)
+        store.upsert_docket_meta(401, b)
+        store.upsert_hearing({
+            "case_id": "x", "hearing_key": "arraignment-a",
+            "title": "Arraignment", "starts_at_utc": "2026-01-15T14:00:00+00:00",
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "location": None, "judge": None, "notes": None, "dial_in": None,
+            "status": "held", "significance": "major", "gcal_event_id": None,
+            "docket_id": 400, "source_entry_ids": [1],
+        })
+
+        captured: dict = {}
+        def fake(*, known_hearings, **_):
+            captured["hearings"] = known_hearings
+            return [{"type": "IGNORE", "reason": "stub"}]
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case_multi, 401, _entry(2, "ARRAIGNMENT held"))
+
+        keys = {h["hearing_key"] for h in captured["hearings"]}
+        assert "arraignment-a" in keys
+
+
 class TestProcessEntryDirect:
     """``process_entry`` is the entry point the webhook server uses."""
 

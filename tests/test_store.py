@@ -367,6 +367,42 @@ class TestHearings:
         keys = {h["hearing_key"] for h in active}
         assert keys == {"a"}
 
+    def test_in_court_filters_cross_court_siblings(self, store: Store):
+        # Parallel proceedings in different courts must not show up in each
+        # other's known-events context — that's the contamination this guards.
+        store.upsert_docket_meta(1001, {"court_id": "cadc", "docket_number": "26-1049",
+                                         "case_name": "X", "absolute_url": "/x/"})
+        store.upsert_docket_meta(1002, {"court_id": "ca9", "docket_number": "26-2011",
+                                         "case_name": "X", "absolute_url": "/y/"})
+        store.upsert_hearing(_hearing(key="oral-arg-dc", docket_id=1001))
+        store.upsert_hearing(_hearing(key="oral-arg-9", docket_id=1002))
+        cadc = store.get_hearings_in_court("us-v-x", "cadc")
+        assert {h["hearing_key"] for h in cadc} == {"oral-arg-dc"}
+        ca9 = store.get_hearings_in_court("us-v-x", "ca9")
+        assert {h["hearing_key"] for h in ca9} == {"oral-arg-9"}
+
+    def test_in_court_keeps_same_court_siblings(self, store: Store):
+        # Multi-defendant criminal: same court, separate dockets per defendant —
+        # legitimately aggregated, must still appear together.
+        store.upsert_docket_meta(2001, {"court_id": "dcd", "docket_number": "1:24-cr-261",
+                                         "case_name": "X", "absolute_url": "/a/"})
+        store.upsert_docket_meta(2002, {"court_id": "dcd", "docket_number": "1:24-cr-261",
+                                         "case_name": "X", "absolute_url": "/b/"})
+        store.upsert_hearing(_hearing(key="arraignment-a", docket_id=2001))
+        store.upsert_hearing(_hearing(key="arraignment-b", docket_id=2002))
+        out = store.get_hearings_in_court("us-v-x", "dcd")
+        assert {h["hearing_key"] for h in out} == {"arraignment-a", "arraignment-b"}
+
+    def test_in_court_includes_dangling_rows(self, store: Store):
+        # docket_id NULL (legacy data) or court_id NULL (docket metadata not yet
+        # cached) — keep them so we don't silently drop context.
+        store.upsert_hearing(_hearing(key="legacy", docket_id=None))
+        store.upsert_docket_meta(3001, {"court_id": None, "docket_number": "x",
+                                         "case_name": "X", "absolute_url": "/c/"})
+        store.upsert_hearing(_hearing(key="uncached", docket_id=3001))
+        out = store.get_hearings_in_court("us-v-x", "cadc")
+        assert {h["hearing_key"] for h in out} == {"legacy", "uncached"}
+
 
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {
@@ -405,6 +441,36 @@ class TestDeadlines:
         d = store.get_deadline("anthropic-v-dow", "govt-response-mtd")
         assert d and d["title"] == "Govt response to MTD"
         assert store.get_deadline("anthropic-v-dow", "missing") is None
+
+    def test_in_court_filters_cross_court_siblings(self, store: Store):
+        store.upsert_docket_meta(1001, {"court_id": "cadc", "docket_number": "26-1049",
+                                         "case_name": "X", "absolute_url": "/x/"})
+        store.upsert_docket_meta(1002, {"court_id": "ca9", "docket_number": "26-2011",
+                                         "case_name": "X", "absolute_url": "/y/"})
+        store.upsert_deadline(_deadline(key="reply-dc", docket_id=1001))
+        store.upsert_deadline(_deadline(key="reply-9", docket_id=1002))
+        cadc = store.get_deadlines_in_court("anthropic-v-dow", "cadc")
+        assert {d["deadline_key"] for d in cadc} == {"reply-dc"}
+        ca9 = store.get_deadlines_in_court("anthropic-v-dow", "ca9")
+        assert {d["deadline_key"] for d in ca9} == {"reply-9"}
+
+    def test_in_court_keeps_same_court_siblings(self, store: Store):
+        store.upsert_docket_meta(2001, {"court_id": "dcd", "docket_number": "1:24-cr-261",
+                                         "case_name": "X", "absolute_url": "/a/"})
+        store.upsert_docket_meta(2002, {"court_id": "dcd", "docket_number": "1:24-cr-261",
+                                         "case_name": "X", "absolute_url": "/b/"})
+        store.upsert_deadline(_deadline(key="brief-a", docket_id=2001))
+        store.upsert_deadline(_deadline(key="brief-b", docket_id=2002))
+        out = store.get_deadlines_in_court("anthropic-v-dow", "dcd")
+        assert {d["deadline_key"] for d in out} == {"brief-a", "brief-b"}
+
+    def test_in_court_includes_dangling_rows(self, store: Store):
+        store.upsert_deadline(_deadline(key="legacy", docket_id=None))
+        store.upsert_docket_meta(3001, {"court_id": None, "docket_number": "x",
+                                         "case_name": "X", "absolute_url": "/c/"})
+        store.upsert_deadline(_deadline(key="uncached", docket_id=3001))
+        out = store.get_deadlines_in_court("anthropic-v-dow", "cadc")
+        assert {d["deadline_key"] for d in out} == {"legacy", "uncached"}
 
 
 class TestWebhookIdempotency:

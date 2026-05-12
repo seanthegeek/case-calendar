@@ -924,10 +924,17 @@ class CaseSyncer:
         stats["entries_processed"] += 1
 
         pdf_texts = self._maybe_fetch_pdfs(entry)
-        known = self.store.get_hearings(case.case_id)
+        # Restrict known-events context to siblings in the same court.
+        # Parallel proceedings in different venues must not feed each other's
+        # context — a "stay appellate proceedings" order in court B would
+        # otherwise contaminate court A's events with bogus CANCEL actions.
+        # Co-defendant dockets in the same court (multi-defendant criminal
+        # cases) still aggregate correctly.
+        known = self.store.get_hearings_in_court(case.case_id, court_id)
         referenced = self._resolve_docket_refs(docket_id, entry)
         known_deadlines = (
-            self.store.get_deadlines(case.case_id) if want_deadlines else None
+            self.store.get_deadlines_in_court(case.case_id, court_id)
+            if want_deadlines else None
         )
 
         actions = llm.extract_actions(

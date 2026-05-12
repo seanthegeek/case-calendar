@@ -547,6 +547,20 @@ class Store:
         ).fetchall()
         return [self._row_to_hearing(r) for r in rows]
 
+    def get_hearings_in_court(
+        self, case_id: str, court_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT h.* FROM hearings h
+            LEFT JOIN dockets d ON d.docket_id = h.docket_id
+            WHERE h.case_id = ?
+              AND (h.docket_id IS NULL OR d.court_id IS NULL OR d.court_id = ?)
+            """,
+            (case_id, court_id),
+        ).fetchall()
+        return [self._row_to_hearing(r) for r in rows]
+
     def get_hearing(self, case_id: str, hearing_key: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM hearings WHERE case_id=? AND hearing_key=?",
@@ -638,6 +652,20 @@ class Store:
     def get_deadlines(self, case_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             "SELECT * FROM deadlines WHERE case_id=?", (case_id,)
+        ).fetchall()
+        return [self._row_to_deadline(r) for r in rows]
+
+    def get_deadlines_in_court(
+        self, case_id: str, court_id: str,
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT dl.* FROM deadlines dl
+            LEFT JOIN dockets d ON d.docket_id = dl.docket_id
+            WHERE dl.case_id = ?
+              AND (dl.docket_id IS NULL OR d.court_id IS NULL OR d.court_id = ?)
+            """,
+            (case_id, court_id),
         ).fetchall()
         return [self._row_to_deadline(r) for r in rows]
 
