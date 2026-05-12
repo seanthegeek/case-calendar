@@ -340,11 +340,17 @@ daily-quota risk, and updates land within seconds of filing.
 
 Setup:
 
-1. Generate a secret and put it in `.env`:
+1. Generate a secret and put it in `.env`. Print a random value, then
+   paste it onto the `CASE_CALENDAR_WEBHOOK_SECRET=` line in `.env`
+   (already scaffolded by `.env.example`):
 
    ```bash
-   CASE_CALENDAR_WEBHOOK_SECRET=$(python -c 'import secrets; print(secrets.token_urlsafe(32))')
+   python -c 'import secrets; print(secrets.token_urlsafe(32))'
    ```
+
+   The line in `.env` should end up looking like
+   `CASE_CALENDAR_WEBHOOK_SECRET=<the-printed-value>`. Don't quote it —
+   `python-dotenv` reads the raw text after `=`.
 
 2. `case-calendar serve --port 8000` — runs the receiver on localhost.
    On a PaaS (fly / Railway / Render) you'll want `--host 0.0.0.0 --port $PORT`
