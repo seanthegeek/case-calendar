@@ -459,8 +459,28 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
 
    ```bash
    useradd --system --home /opt/case-calendar --shell /usr/sbin/nologin case-calendar
+   mkdir /opt/case-calendar
    chown -R case-calendar:case-calendar /opt/case-calendar
    ```
+
+2. Clone the repo into the install dir and install uv as the
+   `case-calendar` user (uv isn't packaged in Debian/Ubuntu, so use the
+   official install script — it drops the binary at
+   `/opt/case-calendar/.local/bin/uv` given the HOME we set in the unit):
+
+   ```bash
+   sudo -u case-calendar git clone hhttps://github.com/seanthegeek/case-calendar
+    sudo -u case-calendar bash
+    cd
+    url -LsSf https://astral.sh/uv/install.sh | sh
+    /opt/case-calendar/.local/bin/uv sync
+   sudo -u case-calendar HOME=/opt/case-calendar sh -c \
+   ```
+
+   Then drop your real `.env` and `config.yaml` into `/opt/case-calendar/`
+   (copy from `.env.example` / `config.example.yaml` and edit).
+
+   Confirm the binary is in place: `ls -l /opt/case-calendar/.local/bin/uv`.
 
    Assumed layout under `/opt/case-calendar/`:
 
@@ -473,21 +493,12 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
    /opt/case-calendar/.case-calendar/   # OAuth token caches (writable)
    ```
 
-2. Clone the repo into the install dir and install uv as the
-   `case-calendar` user (uv isn't packaged in Debian/Ubuntu, so use the
-   official install script — it drops the binary at
-   `/opt/case-calendar/.local/bin/uv` given the HOME we set in the unit):
+   Ensure proper file permissions"
 
    ```bash
-   sudo -u case-calendar git clone https://github.com/seanpwhalen/case-calendar.git /opt/case-calendar
-   sudo -u case-calendar HOME=/opt/case-calendar sh -c \
-     'curl -LsSf https://astral.sh/uv/install.sh | sh'
-   sudo -u case-calendar HOME=/opt/case-calendar /opt/case-calendar/.local/bin/uv sync
+   chown -R  case-calendar:case-calendar /opt/case-calendar
+   chmod 600 .env config.yaml
    ```
-
-   Then drop your real `.env` and `config.yaml` into `/opt/case-calendar/`
-   (copy from `.env.example` / `config.example.yaml` and edit). Confirm
-   the binary is in place: `ls -l /opt/case-calendar/.local/bin/uv`.
 
 3. Copy the unit into place, reload, and enable:
 

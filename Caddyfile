@@ -33,7 +33,7 @@ calendars.example.com {
 	# layout puts ICS files (cybercrime.ics, tech.ics, ...) and the
 	# generated index.html in the same directory, so a single file_server
 	# directive covers both.
-	root * /home/sean/dev/case-calendar/out
+	root * /opt/case-calendar/out
 	file_server {
 		# Serve index.html for the bare site root rather than a
 		# directory listing — keeps the auto-generated index page
