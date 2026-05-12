@@ -200,6 +200,7 @@ cases:
     name: "United States v. Didenko"
     calendar: cybercrime
     dockets: [68810724, 68810897]
+    aggregation_note: "Two dockets covering the same case"
 
   - id: us-v-jin
     name: "United States v. Kim Kwang Jin et al."
