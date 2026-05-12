@@ -263,18 +263,27 @@ The intended workflow is:
    webhooks in real time.
 
 ```bash
-case-calendar sync                       # pull updates + auto-emit affected calendars
-case-calendar sync --no-emit             # skip the auto-emit (rare; mostly for tests)
-case-calendar sync --case us-v-wang      # sync just one case
-case-calendar emit                       # re-render ICS + push (e.g. after editing config)
-case-calendar show                       # dump current hearings + deadlines
-case-calendar show --case us-v-wang      # one case
-case-calendar serve --port 8000          # real-time webhook receiver (auto-emits)
-case-calendar setup gcal                 # one-time Google Calendar OAuth
-case-calendar setup m365                 # one-time Microsoft 365 / Outlook OAuth
-case-calendar summarize                  # generate per-docket AI case summaries (opt-in)
-case-calendar summarize --force          # regenerate even when a summary already exists
+case-calendar sync                                 # pull updates + auto-emit affected calendars
+case-calendar sync --case us-v-wang                # sync just one case
+case-calendar sync --no-emit                       # skip the auto-emit (rare; mostly for tests)
+case-calendar sync --force-summaries               # bundle a force-regenerate of every case summary
+                                                   #   into this sync (no separate `summarize --force` run)
+case-calendar emit                                 # re-render ICS + push (e.g. after editing config)
+case-calendar serve --host 127.0.0.1 --port 8000   # real-time webhook receiver (auto-emits)
+case-calendar setup gcal                           # one-time Google Calendar OAuth
+case-calendar setup m365                           # one-time Microsoft 365 / Outlook OAuth
+case-calendar summarize                            # generate per-docket AI case summaries (opt-in)
+case-calendar summarize --case us-v-wang           # only this case
+case-calendar summarize --force                    # regenerate even when a summary already exists
+case-calendar summarize --no-emit                  # skip the auto-emit of index.html
+case-calendar show                                 # dump current hearings + deadlines
+case-calendar show --case us-v-wang                # one case
 case-calendar webhook-url --host foo.example.com   # print URL to register in CourtListener
+case-calendar webhook-url --host foo.example.com --check  # also probe the running receiver
+                                                   #   and report whether host / service / secret all match
+
+# Global flag (works on every subcommand):
+case-calendar --config /path/to/config.yaml sync   # `-c` short form also works
 ```
 
 `sync`, `serve`, and `emit` all auto-emit ICS for every configured
@@ -286,7 +295,10 @@ the `summarize` command is opt-in (gated on `case_summaries.enabled` in
 the config) and regenerates the per-docket AI case summaries shown on
 the index page. Summaries also auto-refresh under `sync` / `serve` when a
 new operative pleading or disposition lands — `summarize --force` is the
-explicit path for prompt or model upgrades.
+explicit per-case path for prompt or model upgrades, and
+`sync --force-summaries` bundles the equivalent into a polling run so a
+prompt change can land in one command instead of two (and one CL session
+instead of two).
 
 Run `sync` on a cron — the SQLite store dedupes already-seen entries, so
 re-running is cheap. PDFs that weren't yet on RECAP, or hearings whose
