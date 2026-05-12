@@ -7,6 +7,8 @@ ICS and gcal outputs receive a fully-built title and write it through.
 from __future__ import annotations
 
 import argparse
+import io
+import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -296,6 +298,20 @@ class TestEmitCalendars:
         assert "US v. X" in text and "Acme v. Widget" in text
         # Subscribe URLs use the configured public_base_url.
         assert "https://calendars.example.com/cyber.ics" in text
+
+    def test_index_html_write_is_logged(self, store, cfg, tmp_path, caplog):
+        # The webhook auto-emit path doesn't print to stdout, so operators
+        # watching journalctl rely on this log line to know the index was
+        # actually refreshed (vs. emit_calendars silently skipping it).
+        index_path = tmp_path / "site" / "index.html"
+        cfg["index_path"] = str(index_path)
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        with caplog.at_level("INFO", logger="case_calendar.cli"):
+            emit_calendars(cfg, store)
+        assert any(
+            "wrote index" in rec.message and str(index_path) in rec.message
+            for rec in caplog.records
+        )
 
     def test_index_html_not_written_when_unconfigured(self, store, cfg, tmp_path):
         # No index_path => no index.html. Existing files in tmp_path stay.
@@ -1073,7 +1089,7 @@ class TestCmdWebhookUrl:
         # The conftest autouse fixture already strips any inherited secret,
         # but be explicit so this test reads cleanly in isolation.
         monkeypatch.delenv("CASE_CALENDAR_WEBHOOK_SECRET", raising=False)
-        args = SimpleNamespace(host=None)
+        args = SimpleNamespace(host=None, check=False)
         assert cli.cmd_webhook_url(args) == 2
         err = capsys.readouterr().err
         assert "CASE_CALENDAR_WEBHOOK_SECRET" in err
@@ -1082,7 +1098,7 @@ class TestCmdWebhookUrl:
         self, monkeypatch, capsys,
     ):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host=None)
+        args = SimpleNamespace(host=None, check=False)
         assert cli.cmd_webhook_url(args) == 0
         out = capsys.readouterr()
         assert out.out.strip() == (
@@ -1094,7 +1110,7 @@ class TestCmdWebhookUrl:
 
     def test_host_without_scheme_gets_https(self, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="webhook.example.com")
+        args = SimpleNamespace(host="webhook.example.com", check=False)
         assert cli.cmd_webhook_url(args) == 0
         out = capsys.readouterr()
         assert out.out.strip() == (
@@ -1106,7 +1122,7 @@ class TestCmdWebhookUrl:
     def test_explicit_scheme_respected(self, monkeypatch, capsys):
         # Useful for local curl testing against the receiver on 127.0.0.1.
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="http://localhost:8000")
+        args = SimpleNamespace(host="http://localhost:8000", check=False)
         assert cli.cmd_webhook_url(args) == 0
         assert capsys.readouterr().out.strip() == (
             "http://localhost:8000/webhooks/case-calendar/abc123"
@@ -1114,7 +1130,7 @@ class TestCmdWebhookUrl:
 
     def test_trailing_slash_on_host_normalized(self, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="https://webhook.example.com/")
+        args = SimpleNamespace(host="https://webhook.example.com/", check=False)
         assert cli.cmd_webhook_url(args) == 0
         # No double slash before the /webhooks/ prefix.
         assert capsys.readouterr().out.strip() == (
@@ -1133,6 +1149,112 @@ class TestCmdWebhookUrl:
         assert capsys.readouterr().out.strip() == (
             "https://webhook.example.com/webhooks/case-calendar/abc123"
         )
+
+    def test_check_without_host_returns_2(self, monkeypatch, capsys):
+        # --check needs an actual host to probe; refuse rather than emit a
+        # bogus placeholder URL.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        args = SimpleNamespace(host=None, check=True)
+        assert cli.cmd_webhook_url(args) == 2
+        assert "--host" in capsys.readouterr().err
+
+    def test_check_happy_path(self, monkeypatch, capsys):
+        # Receiver answers the expected JSON; --check prints OK and exits 0.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        seen: list[str] = []
+
+        class _Resp:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return (
+                    b'{"status":"ok","service":"case-calendar",'
+                    b'"tracking":{"dockets":3,"cases":2}}'
+                )
+
+        def _fake_urlopen(req, timeout=10):
+            seen.append(req.full_url)
+            return _Resp()
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", _fake_urlopen,
+        )
+        args = SimpleNamespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 0
+        out = capsys.readouterr().out
+        assert "health check OK" in out
+        assert "3 dockets" in out and "2 cases" in out
+        assert seen == [
+            "https://webhook.example.com/webhooks/case-calendar/abc123/health"
+        ]
+
+    def test_check_wrong_secret_403(self, monkeypatch, capsys):
+        # 403 from origin = secret mismatch; surface it loudly.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+
+        def _fake_urlopen(req, timeout=10):
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Forbidden", hdrs=None,  # type: ignore[arg-type]
+                fp=io.BytesIO(b'{"error":"forbidden"}'),
+            )
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+        args = SimpleNamespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        err = capsys.readouterr().err
+        assert "HTTP 403" in err
+
+    def test_check_unreachable_host(self, monkeypatch, capsys):
+        # DNS failure / connection refused — print the reason and exit 1.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+
+        def _fake_urlopen(req, timeout=10):
+            raise urllib.error.URLError("nodename nor servname known")
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+        args = SimpleNamespace(host="bogus.invalid", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        err = capsys.readouterr().err
+        assert "cannot reach" in err
+        assert "nodename" in err
+
+    def test_check_200_empty_body_is_failure(self, monkeypatch, capsys):
+        # This is the Cloudflare-intercept signature we ran into in
+        # production — 200 with an empty body. The check has to flag it,
+        # not silently call it healthy.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+
+        class _Resp:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b""
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
+        )
+        args = SimpleNamespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        assert "non-JSON" in capsys.readouterr().err
+
+    def test_check_200_wrong_service_is_failure(self, monkeypatch, capsys):
+        # A 200 with valid JSON but missing/wrong "service" marker = the
+        # request reached something, but not us.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+
+        class _Resp:
+            status = 200
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"status":"ok"}'
+
+        monkeypatch.setattr(
+            "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
+        )
+        args = SimpleNamespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        assert "doesn't identify as case-calendar" in capsys.readouterr().err
 
 
 class TestMain:

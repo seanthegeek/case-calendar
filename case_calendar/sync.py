@@ -426,6 +426,15 @@ class CaseSyncer:
             short_description=entry.get("short_description") if processed else None,
             recap_documents=_compact_recap_documents(entry) if processed else None,
         )
+        # Advance the docket's date_modified to this entry's value if newer.
+        # The polling path sets it from the parent docket at end-of-loop;
+        # the webhook path doesn't see the parent docket per delivery, so
+        # without this the index's per-case "updated at" would never move
+        # for webhook-only deployments. Conditional update — safe to call
+        # in either path, never moves the watermark backwards.
+        entry_dm = entry.get("date_modified") or ""
+        if entry_dm:
+            self.store.bump_docket_last_modified(docket_id, entry_dm)
         # Flag the case_summaries row stale when this entry looks like an
         # operative pleading (superseding indictment, amended complaint,
         # etc.) or a disposition (judgment, plea agreement, verdict,

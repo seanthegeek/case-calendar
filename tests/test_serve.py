@@ -131,6 +131,39 @@ class TestRoutes:
         status, _ = _post(f"{url}/webhooks/case-calendar/wrong", {})
         assert status == 403
 
+    def test_gated_health_ok(self, base_url):
+        url, secret, _ = base_url
+        r = urllib.request.urlopen(
+            f"{url}/webhooks/case-calendar/{secret}/health"
+        )
+        assert r.status == 200
+        body = json.loads(r.read())
+        assert body == {
+            "status": "ok",
+            "service": "case-calendar",
+            "tracking": {"dockets": 1, "cases": 1},
+        }
+
+    def test_gated_health_wrong_secret_403(self, base_url):
+        url, _, _ = base_url
+        try:
+            urllib.request.urlopen(
+                f"{url}/webhooks/case-calendar/wrong-secret/health"
+            )
+            assert False, "expected 403"
+        except urllib.error.HTTPError as e:
+            assert e.code == 403
+
+    def test_gated_health_unknown_suffix_404(self, base_url):
+        url, secret, _ = base_url
+        try:
+            urllib.request.urlopen(
+                f"{url}/webhooks/case-calendar/{secret}/nope"
+            )
+            assert False, "expected 404"
+        except urllib.error.HTTPError as e:
+            assert e.code == 404
+
 
 class TestDocketAlert:
     def test_valid_payload_creates_hearing(self, base_url, store):
@@ -146,6 +179,21 @@ class TestDocketAlert:
         rows = store.get_hearings("us-v-x")
         assert len(rows) == 1
         assert rows[0]["hearing_key"] == "sentencing-x"
+
+    def test_processing_bumps_docket_activity_date(self, base_url, store):
+        # The index page's per-case "updated at" derives from
+        # dockets.date_modified. Without a bump in process_entry, every
+        # webhook-driven case would appear frozen at its last poll time
+        # (or NULL for webhook-only deployments).
+        url, secret, _ = base_url
+        _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            _docket_alert([_sample_entry()]),
+            headers={"Idempotency-Key": "k-bump"},
+        )
+        assert (
+            store.docket_last_modified(100) == "2026-01-07T08:00:00-07:00"
+        )
 
     def test_idempotency_replay_is_noop(self, base_url, store):
         url, secret, _ = base_url

@@ -1,0 +1,90 @@
+{
+  "payload": {
+    "results": [
+      {
+        "id": 463712756,
+        "docket": 68810724,
+        "date_filed": "2026-02-18",
+        "time_filed": null,
+        "description": "NOTICE OF HEARING as to OLEKSANDR DIDENKO Sentencing reset for 2/19/2026 at 11:00 AM in Courtroom 8- In Person before Judge Randolph D. Moss. (zglw)",
+        "date_created": "2026-05-11T21:02:17.036097-07:00",
+        "entry_number": null,
+        "date_modified": "2026-05-11T21:02:45.384347-07:00",
+        "recap_documents": [
+          {
+            "id": 478866929,
+            "sha1": "",
+            "file_size": null,
+            "is_sealed": null,
+            "thumbnail": null,
+            "ocr_status": null,
+            "page_count": null,
+            "date_upload": null,
+            "description": "",
+            "filepath_ia": "",
+            "absolute_url": "",
+            "date_created": "2026-05-11T21:02:17.063679-07:00",
+            "is_available": false,
+            "pacer_doc_id": "",
+            "date_modified": "2026-05-11T21:02:45.407271-07:00",
+            "document_type": 1,
+            "filepath_local": null,
+            "document_number": "",
+            "is_free_on_pacer": null,
+            "thumbnail_status": 0,
+            "attachment_number": null,
+            "acms_document_guid": "",
+            "ia_upload_failure_count": null
+          }
+        ],
+        "pacer_sequence_number": null,
+        "recap_sequence_number": "2026-02-18.001"
+      },
+      {
+        "id": 463712757,
+        "docket": 68810724,
+        "date_filed": "2026-02-19",
+        "time_filed": null,
+        "description": "Minute Entry for proceedings held before Judge Randolph D. Moss: Sentencing held on 2/19/2026 as to OLEKSANDR DIDENKO (1). Sentencing as to Count 1: 36 months incarceration to run consecutively to Count 4. Supervised Release: 12 months, to run concurrently with Count 4. Sentencing as to Count 4: 24 months incarceration to run consecutively to Count 1. Supervised Release: 12 months, to run concurrently with Count 1. Restitution in the amount of $46,547.28 and a Special Assessment of $200.00. Governments oral motion to dismiss all remaining counts GRANTED. Bond Status of Defendant: Committed/Commitment Issued; Court Reporter: Sherry Lindsay; Defense Attorney: Chrisopher Davis; US Attorney: Steven Wasserman; Prob Officer: Hana Field; Interpreter: Russian Kahrdm Mkrtchyan. (zglw) Modified on 2/19/2026 to correct consecutive incarceration time (zglw).",
+        "date_created": "2026-05-11T21:02:17.092723-07:00",
+        "entry_number": null,
+        "date_modified": "2026-05-11T21:02:45.420646-07:00",
+        "recap_documents": [
+          {
+            "id": 478866930,
+            "sha1": "",
+            "file_size": null,
+            "is_sealed": null,
+            "thumbnail": null,
+            "ocr_status": null,
+            "page_count": null,
+            "date_upload": null,
+            "description": "",
+            "filepath_ia": "",
+            "absolute_url": "",
+            "date_created": "2026-05-11T21:02:17.117957-07:00",
+            "is_available": false,
+            "pacer_doc_id": "",
+            "date_modified": "2026-05-11T21:02:45.441855-07:00",
+            "document_type": 1,
+            "filepath_local": null,
+            "document_number": "",
+            "is_free_on_pacer": null,
+            "thumbnail_status": 0,
+            "attachment_number": null,
+            "acms_document_guid": "",
+            "ia_upload_failure_count": null
+          }
+        ],
+        "pacer_sequence_number": null,
+        "recap_sequence_number": "2026-02-19.001"
+      }
+    ]
+  },
+  "webhook": {
+    "version": 2,
+    "event_type": 1,
+    "date_created": "2026-05-12T03:44:38.334716+00:00",
+    "deprecation_date": null
+  }
+}

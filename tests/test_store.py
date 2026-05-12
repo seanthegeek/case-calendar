@@ -175,6 +175,28 @@ class TestDockets:
                                      "case_name": "Y", "absolute_url": "/y/"})
         assert store.get_docket_meta(7)["docket_number"] == "new"
 
+    def test_bump_advances_forward(self, store: Store):
+        # Forward-only advance: a newer entry's date_modified bumps the
+        # docket's watermark, which is what the index's "updated at"
+        # display reads from.
+        store.set_docket_last_modified(7, "2026-05-01T00:00:00Z")
+        store.bump_docket_last_modified(7, "2026-05-08T00:00:00Z")
+        assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
+
+    def test_bump_ignores_older(self, store: Store):
+        # Out-of-order webhook delivery (older entry arrives after a
+        # newer one) must not move the watermark backwards.
+        store.set_docket_last_modified(7, "2026-05-08T00:00:00Z")
+        store.bump_docket_last_modified(7, "2026-05-01T00:00:00Z")
+        assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
+
+    def test_bump_inserts_when_missing(self, store: Store):
+        # First-time webhook delivery for a docket we haven't poll-synced —
+        # the row may not exist yet, or may exist with NULL date_modified.
+        # Either way, bump should land the value.
+        store.bump_docket_last_modified(7, "2026-05-08T00:00:00Z")
+        assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
+
 
 class TestCaseAggregates:
     def test_min_filed_max_activity_across_dockets(self, store: Store):

@@ -99,6 +99,49 @@ _DISPOSITION_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# Anything mentioning one of these keywords anywhere in the description is
+# treated as a disposition-class signal — events that materially change
+# "where does the case stand". Covers both criminal and civil practice plus
+# appellate post-decision events. Each keyword is word-boundary anchored so
+# we don't split-match inside unrelated words. The anchored regex above is
+# now mostly redundant once these keyword matches are in play, but kept for
+# explicit head-anchored coverage of dispositions that don't contain any of
+# these keywords.
+_DISPOSITION_KEYWORD_RE = re.compile(
+    r"\b(?:"
+    # Criminal — sentencing-phase and verdict-phase events.
+    r"sentencing"
+    r"|mistrials?"
+    r"|acquit(?:tals?|ted)"
+    r"|forfeitures?"
+    r"|nolle\s+prosequi"
+    r"|nolle\s+prossed"
+    # Civil — class action, removal, default, and injunctive relief.
+    r"|class\s+certification"
+    r"|remand(?:ed)?"
+    r"|entry\s+of\s+default"
+    r"|tros?"
+    r"|temporary\s+restraining\s+orders?"
+    r"|injunctions?"
+    # Cross-domain — judgments, dismissals, appellate dispositions.
+    r"|judg(?:e)?ments?"
+    r"|dismiss(?:al|als|ed)"
+    r"|mandates?"
+    r"|affirm(?:s|ed|ance|ances)?"
+    r"|reversed"
+    r"|vacated"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Negative override: any mention of "conference" in the description disables
+# the disposition match. Scheduling entries (Status Conference, Pretrial
+# Conference, Settlement Conference, Telephonic Conference re: Sentencing,
+# etc.) are exactly the false-positive class we want to filter — they're
+# logistics, not the disposition itself. The keyword regex above is broad on
+# purpose, so we lean on this negative to reject the scheduling chatter.
+_DISPOSITION_NEGATIVE_RE = re.compile(r"\bconferences?\b", re.IGNORECASE)
+
 
 def _entry_description_head(entry: dict[str, Any]) -> str:
     """Get the most informative leading text for an entry."""
@@ -119,7 +162,15 @@ def is_operative_pleading(entry: dict[str, Any]) -> bool:
 
 
 def is_disposition(entry: dict[str, Any]) -> bool:
-    return bool(_DISPOSITION_RE.match(_entry_description_head(entry)))
+    head = _entry_description_head(entry)
+    # Conference-class entries are scheduling, not dispositions. Reject
+    # outright so a "Telephonic Status Conference re: Sentencing" doesn't
+    # trip the broad keyword match below.
+    if _DISPOSITION_NEGATIVE_RE.search(head):
+        return False
+    if _DISPOSITION_RE.match(head):
+        return True
+    return bool(_DISPOSITION_KEYWORD_RE.search(head))
 
 
 # ---------------------------------------------------------------------------

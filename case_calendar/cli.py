@@ -452,6 +452,7 @@ def emit_calendars(
         if site_description:
             kwargs["site_description"] = site_description
         write_index(index_path, calendars=models, **kwargs)
+        log.info("wrote index -> %s", index_path)
     return out
 
 
@@ -758,6 +759,14 @@ def cmd_webhook_url(args: argparse.Namespace) -> int:
     the env (load_dotenv has already run by the time we get here) and
     composes the URL ready to paste into the CourtListener webhook
     dashboard.
+
+    With ``--check``, also hits the receiver's secret-gated health
+    endpoint and reports the result. This is the one-shot way to
+    confirm that the public host is reachable, that whatever fronts
+    the receiver (Caddy / Cloudflare / etc.) is forwarding to
+    ``case-calendar serve`` rather than synthesizing a 200, and that
+    the secret in your ``.env`` matches the one the running receiver
+    booted with.
     """
     from .serve import WEBHOOK_PATH_PREFIX
 
@@ -779,6 +788,12 @@ def cmd_webhook_url(args: argparse.Namespace) -> int:
         if not host.startswith(("http://", "https://")):
             host = f"https://{host}"
         host = host.rstrip("/")
+    elif args.check:
+        print(
+            "--check requires --host so we know which receiver to probe.",
+            file=sys.stderr,
+        )
+        return 2
     else:
         host = "https://<your-public-host>"
         print(
@@ -789,7 +804,84 @@ def cmd_webhook_url(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
 
-    print(f"{host}{WEBHOOK_PATH_PREFIX}{secret}")
+    url = f"{host}{WEBHOOK_PATH_PREFIX}{secret}"
+    print(url)
+
+    if args.check:
+        return _check_webhook_health(url)
+    return 0
+
+
+def _check_webhook_health(webhook_url: str) -> int:
+    """Probe the secret-gated health endpoint and report.
+
+    Returns 0 on a healthy 200 with the expected service identifier, 1
+    on any reachability / auth / shape problem. The receiver's
+    `GET <prefix>/<secret>/health` route is the contract — anything
+    else (200-empty from a stale proxy, 403 from a wrong secret, a
+    CF-served HTML error page) signals a real misconfiguration the
+    operator needs to see.
+    """
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    health_url = f"{webhook_url}/health"
+    req = urllib.request.Request(
+        health_url,
+        method="GET",
+        headers={"User-Agent": "case-calendar-webhook-check/1.0"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            status = resp.status
+            body = resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace")
+        print(
+            f"\nhealth check FAILED: HTTP {e.code} from {health_url}\n{body}",
+            file=sys.stderr,
+        )
+        return 1
+    except urllib.error.URLError as e:
+        print(
+            f"\nhealth check FAILED: cannot reach {health_url}: {e.reason}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if status != 200:
+        print(
+            f"\nhealth check FAILED: HTTP {status} from {health_url}\n{body}",
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        payload = _json.loads(body)
+    except _json.JSONDecodeError:
+        print(
+            f"\nhealth check FAILED: non-JSON 200 from {health_url} — "
+            f"something between you and the receiver is intercepting "
+            f"requests. Body was:\n{body}",
+            file=sys.stderr,
+        )
+        return 1
+
+    if payload.get("service") != "case-calendar":
+        print(
+            f"\nhealth check FAILED: 200 from {health_url} but body "
+            f"doesn't identify as case-calendar:\n{body}",
+            file=sys.stderr,
+        )
+        return 1
+
+    tracking = payload.get("tracking") or {}
+    print(
+        f"\nhealth check OK: receiver tracking "
+        f"{tracking.get('dockets', '?')} dockets "
+        f"across {tracking.get('cases', '?')} cases."
+    )
     return 0
 
 
@@ -905,6 +997,13 @@ def main(argv: list[str] | None = None) -> int:
         help="public host where the serve receiver is reachable, e.g. "
              "webhook.example.com (https:// is assumed) or "
              "http://localhost:8000 for a local curl test",
+    )
+    p_webhook_url.add_argument(
+        "--check",
+        action="store_true",
+        help="after printing the URL, hit the secret-gated health "
+             "endpoint to verify the receiver is reachable and the "
+             "secret matches (requires --host)",
     )
     p_webhook_url.set_defaults(func=cmd_webhook_url)
 

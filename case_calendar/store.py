@@ -214,6 +214,34 @@ class Store:
             (docket_id, date_modified, _now()),
         )
 
+    def bump_docket_last_modified(self, docket_id: int, candidate: str) -> None:
+        """Advance ``dockets.date_modified`` only if ``candidate`` is newer.
+
+        The polling path sets ``date_modified`` to the parent docket's
+        authoritative value at the end of each sync_case loop. The webhook
+        path never sees the parent docket on each delivery, so the docket
+        row's ``date_modified`` would stay frozen at the last poll-time
+        value (or NULL for webhook-only deployments). ``activity_date`` on
+        the index page is derived from this column, so without this bump
+        the index would show a stale "last updated" timestamp even though
+        new entries were just processed.
+
+        Done as a conditional UPDATE so concurrent webhook deliveries
+        can't race the value backwards.
+        """
+        self.conn.execute(
+            """
+            INSERT INTO dockets (docket_id, date_modified, last_synced_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(docket_id) DO UPDATE SET
+              date_modified=excluded.date_modified,
+              last_synced_at=excluded.last_synced_at
+              WHERE dockets.date_modified IS NULL
+                 OR dockets.date_modified < excluded.date_modified
+            """,
+            (docket_id, candidate, _now()),
+        )
+
     def upsert_docket_meta(self, docket_id: int, meta: dict[str, Any]) -> None:
         """Cache the human-readable docket metadata we display in event bodies."""
         self.conn.execute(

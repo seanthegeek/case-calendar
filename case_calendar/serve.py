@@ -98,8 +98,37 @@ class WebhookHandler(BaseHTTPRequestHandler):
     # --- routing ---
 
     def do_GET(self) -> None:
+        # Unauthenticated liveness probe — handy for Caddy / uptime checks.
         if self.path.rstrip("/") == "/health":
             self._respond(200, {"status": "ok"})
+            return
+        # Secret-gated health: same prefix as POST so an operator can verify
+        # in one step that (a) the host is reachable, (b) Caddy is forwarding
+        # to case-calendar serve (not synthesizing a 200), and (c) their
+        # secret is the one this receiver expects. Used by `webhook-url
+        # --check`.
+        if self.path.startswith(WEBHOOK_PATH_PREFIX):
+            suffix = self.path[len(WEBHOOK_PATH_PREFIX):].rstrip("/")
+            secret, _, tail = suffix.partition("/")
+            if secret != self.server.secret:
+                log.warning(
+                    "webhook health secret mismatch from %s",
+                    self.client_address[0],
+                )
+                self._respond(403, {"error": "forbidden"})
+                return
+            if tail != "health":
+                self._respond(404, {"error": "not found"})
+                return
+            cases = {c.case_id for c in self.server.docket_to_case.values()}
+            self._respond(200, {
+                "status": "ok",
+                "service": "case-calendar",
+                "tracking": {
+                    "dockets": len(self.server.docket_to_case),
+                    "cases": len(cases),
+                },
+            })
             return
         self._respond(404, {"error": "not found"})
 

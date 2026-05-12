@@ -133,9 +133,104 @@ class TestDispositionDetection:
         assert is_disposition({"description": description})
 
     @pytest.mark.parametrize("description", [
+        # Minute entries for sentencing hearings held — these don't anchor
+        # at the start with JUDGMENT/SENTENCE, so the keyword regex is
+        # what makes them count.
+        "Minute Entry for proceedings held before Judge X: "
+        "Sentencing held on 2/19/2026 as to OLEKSANDR DIDENKO (1). "
+        "Imprisonment for a total term of 36 months...",
+        "PAPERLESS Minute Entry for proceedings held before Judge Y: "
+        "Sentencing held on 5/6/2026 as to ERICK PRINCE...",
+        # Sentencing memoranda and continuances are sentencing-phase
+        # signals worth refreshing on — the scheduled date moves and the
+        # arguments about the term are exactly what changes "where does
+        # the case stand".
+        "PAPERLESS ORDER SETTING SENTENCING HEARING as to John Doe...",
+        "PAPERLESS ORDER granting Unopposed Motion to Continue "
+        "Sentencing Hearing as to John Doe...",
+        "Government's Sentencing Memorandum",
+        "Defendant's Sentencing Memorandum",
+    ])
+    def test_matches_sentencing_keyword(self, description):
+        assert is_disposition({"description": description})
+
+    @pytest.mark.parametrize("description", [
+        # Any mention of judgment is treated as notable — Rule 50 motions,
+        # judgments on the pleadings, amended judgments, judgment orders.
         "Motion for Judgment as a Matter of Law",
+        "Motion for Judgment on the Pleadings",
+        "ORDER denying Motion for Judgment as a Matter of Law",
+        "Amended Judgment in a Criminal Case",
+        "Notice of Filing of Judgments rendered against codefendants",
+        # British spelling, in case it ever shows up.
+        "Memorandum supporting Judgement on the Pleadings",
+    ])
+    def test_matches_judgment_keyword(self, description):
+        assert is_disposition({"description": description})
+
+    @pytest.mark.parametrize("description", [
+        # TRO — acronym or spelled out, granted, denied, or sought.
+        "Motion for TRO",
+        "Motion for Temporary Restraining Order",
+        "ORDER granting Plaintiff's Motion for TRO",
+        "ORDER denying Motion for Temporary Restraining Order",
+        "Memorandum in opposition to Motion for TRO",
+        # Injunctions — preliminary, permanent, or unqualified.
+        "Motion for Preliminary Injunction",
+        "ORDER granting Motion for Preliminary Injunction",
+        "ORDER denying Motion for Permanent Injunction",
+        "Stipulated Injunction and Agreed Order",
+        "Plaintiff's response to Motion for Injunction Pending Appeal",
+    ])
+    def test_matches_tro_and_injunction_keywords(self, description):
+        assert is_disposition({"description": description})
+
+    @pytest.mark.parametrize("description", [
+        # Criminal — verdict-phase and post-trial events.
+        "ORDER declaring mistrial sua sponte",
+        "Verdict of Acquittal returned by jury",
+        "ORDER granting Rule 29 Motion; defendant acquitted on Count 2",
+        "Preliminary Order of Forfeiture as to defendant",
+        "Final Order of Forfeiture",
+        "Nolle Prosequi as to Count 3",
+        "Notice of Nolle Prossed counts",
+        # Civil — class certification, removal, default.
+        "ORDER granting Motion for Class Certification",
+        "ORDER denying class certification",
+        "ORDER of REMAND to State Court",
+        "Case remanded to Superior Court of California",
+        "Entry of Default as to John Doe",
+        # Cross-domain — dismissal and appellate dispositions.
+        "ORDER granting Motion to Dismiss; case dismissed with prejudice",
+        "Notice of voluntary dismissal under Rule 41",
+        "MANDATE of the Court of Appeals issued",
+        "Mandates received from the D.C. Circuit",
+        "Judgment of the Court of Appeals: AFFIRMED",
+        "Per curiam opinion: affirmance of district court judgment",
+        "Order of Reversed and Remanded",
+        "ORDER vacated and remanded for further proceedings",
+    ])
+    def test_matches_extended_disposition_keywords(self, description):
+        assert is_disposition({"description": description})
+
+    @pytest.mark.parametrize("description", [
+        # Conference is the negative keyword — scheduling entries that
+        # mention disposition vocabulary must NOT trip the keyword match.
+        "Notice of Settlement Conference",
+        "ORDER setting Telephonic Status Conference re: Sentencing",
+        "Final Pretrial Conference held; further conference set",
+        "ORDER scheduling Status Conference on Motion for Preliminary "
+        "Injunction",
+    ])
+    def test_conference_overrides_disposition_match(self, description):
+        assert not is_disposition({"description": description})
+
+    @pytest.mark.parametrize("description", [
         "Notice of Filing of Plea Agreement Reply",
         "Reply in support of Motion to Dismiss",
+        # No keyword anywhere — stay un-flagged.
+        "Joint Status Report regarding discovery",
+        "ORDER granting Motion to Compel Production",
     ])
     def test_rejects_non_dispositions(self, description):
         assert not is_disposition({"description": description})
