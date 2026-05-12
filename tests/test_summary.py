@@ -466,6 +466,60 @@ class TestSummarizeDocket:
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert [d["entry_id"] for d in patch_llm[0]["disposition_docs"]] == [99]
 
+    def test_paperless_disposition_falls_back_to_description(
+        self, store, patch_llm, patch_pdf,
+    ):
+        # "Electronic Clerk's Notes" for a sentencing held in court carries
+        # the full imposed sentence in the docket text — no PDF is ever
+        # attached. The summary pipeline must still feed this text to the
+        # LLM so the resulting prose can name the actual sentence imposed.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body"}
+        clerk_notes = (
+            "Electronic Clerk's Notes for proceedings held before Judge X: "
+            "Sentencing held. Court imposes sentence: 92 months imprisonment, "
+            "3 years Supervised Release; $200 Special Assessment."
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [{
+                "id": 99, "description": clerk_notes,
+                "date_filed": "2026-04-15",
+                "entry_number": 37,
+                "recap_documents": [],  # paperless — no attachments
+            }],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        dispositions = patch_llm[0]["disposition_docs"]
+        assert [d["entry_id"] for d in dispositions] == [99]
+        # The sentence figures must reach the LLM — that's the whole point.
+        assert "92 months imprisonment" in dispositions[0]["text"]
+
+    def test_operative_pleading_without_pdf_is_still_dropped(
+        self, store, patch_llm, patch_pdf,
+    ):
+        # By design the description fallback is scoped to dispositions only.
+        # Operative pleadings are indictments / complaints — a clerk's
+        # minute-entry stub isn't an acceptable substitute, and feeding one
+        # in would produce a vacuous summary. Confirm the asymmetry.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {}  # no PDF text extracts
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        assert patch_llm == []
+
     def test_falls_back_to_attachments_when_main_doc_has_no_text(
         self, store, patch_llm, patch_pdf,
     ):

@@ -287,11 +287,20 @@ def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
 
 def _attach_text(
     entries: Iterable[dict[str, Any]], *, allow_ocr: bool = True,
+    allow_description_fallback: bool = False,
 ) -> list[dict[str, Any]]:
-    """Pull PDF text for each entry; drop entries with no extractable text."""
+    """Pull document text for each entry; drop entries with no extractable text.
+
+    When ``allow_description_fallback`` is true, entries with no PDF text fall
+    back to the entry description. Used for dispositions, where paperless
+    "Electronic Clerk's Notes" can record the full sentence imposed inline in
+    the docket text without ever attaching a separate judgment PDF.
+    """
     out: list[dict[str, Any]] = []
     for entry in entries:
         text = _entry_doc_text(entry, allow_ocr=allow_ocr)
+        if not text and allow_description_fallback:
+            text = _entry_description_head(entry)
         if not text:
             log.info(
                 "summary: skipping entry %s (%s) — no PDF text extractable",
@@ -424,7 +433,9 @@ def summarize_docket(
     )
 
     operative_docs = _attach_text(operative, allow_ocr=allow_ocr)
-    disposition_docs = _attach_text(dispositions, allow_ocr=allow_ocr)
+    disposition_docs = _attach_text(
+        dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
+    )
 
     if not operative_docs and len(case.dockets) > 1:
         # Appellate dockets (and parallel filings that pivot off a sibling)
