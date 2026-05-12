@@ -503,7 +503,7 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
 3. Copy the unit into place, reload, and enable:
 
    ```bash
-   cp case-calendar.service /etc/systemd/system/case-calendar.service
+   cp /opt/case-calendar/case-calendar.service /etc/systemd/system/case-calendar.service
    # edit User=, paths, and the uv binary path inside ExecStart= if needed
    systemctl daemon-reload
    systemctl enable --now case-calendar.service
