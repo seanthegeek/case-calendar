@@ -493,11 +493,11 @@ self-hosted setup (Caddy, Cloudflare Tunnel, raw exposed port). To install:
    /opt/case-calendar/.case-calendar/   # OAuth token caches (writable)
    ```
 
-   Ensure proper file permissions"
+   Ensure proper file permissions:
 
    ```bash
    chown -R  case-calendar:case-calendar /opt/case-calendar
-   chmod 600 .env config.yaml
+   chmod 600 /opt/case-calendar/.env /opt/case-calendar/config.yaml
    ```
 
 3. Copy the unit into place, reload, and enable:
