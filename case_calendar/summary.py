@@ -340,7 +340,19 @@ def find_operative_documents(
                 operative.append(entry)
             elif _is_disposition_document(entry):
                 dispositions.append(entry)
-        if operative or dispositions:
+        # Short-circuit only when the cache yielded an operative pleading.
+        # An operative-pleading hit is the strong signal that this docket
+        # has been (re)synced under the post-fix code path that persists
+        # op/disp bodies — at which point we trust the rest of the cache
+        # too. If only dispositions came back, the cache may be holding
+        # post-fix judgment bodies alongside a pre-fix indictment stub
+        # (NULL description) — exactly the us-v-chapman / us-v-mcgonigal
+        # shape — and the summary pipeline needs CL to recover the
+        # operative pleading text. Falling through to CL in this case
+        # costs at most 3 docket-entries pages; the alternative is
+        # silently skipping the docket with "no operative pleading text
+        # could be extracted" even though CL has it.
+        if operative:
             operative.sort(key=lambda e: e.get("date_filed") or "")
             dispositions.sort(key=lambda e: e.get("date_filed") or "")
             return operative, dispositions
@@ -357,7 +369,15 @@ def find_operative_documents(
     oldest = _list_entries_ordered(cl, docket_id, order_by="date_filed", max_pages=2)
     newest = _list_entries_ordered(cl, docket_id, order_by="-date_filed", max_pages=3)
 
-    seen_ids: set[int] = set()
+    # Seed the dedup set with anything the local cache already supplied
+    # (the disposition-only fallthrough case): we WANT to keep those
+    # cached entries — their plain_text was harvested at sync time, so
+    # pdf.extract_text short-circuits on them — and just augment with
+    # whatever else CL turns up that the cache didn't see (typically the
+    # missing operative pleading, sitting as a NULL stub locally).
+    seen_ids: set[int] = {
+        e["id"] for e in operative + dispositions if e.get("id") is not None
+    }
 
     def _dedup_add(target: list[dict[str, Any]], entry: dict[str, Any]) -> None:
         eid = entry.get("id")

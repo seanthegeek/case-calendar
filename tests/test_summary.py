@@ -432,6 +432,43 @@ class TestFindOperativeDocuments:
         assert [e["id"] for e in operative] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
+    def test_disposition_only_cache_does_not_short_circuit(self, store):
+        # us-v-chapman / us-v-mcgonigal shape: pre-fix sync stored the
+        # INDICTMENT as a NULL-description stub (filter-failed under the
+        # old logic that didn't persist op/disp bodies), while later
+        # dispositive orders were processed under the post-fix logic and
+        # ARE body-bearing. The local cache thus has dispositions but no
+        # operative pleading. The old short-circuit (`if operative or
+        # dispositions`) returned the disposition list with `operative=[]`,
+        # `summarize_docket` then bailed with "no operative pleading text
+        # could be extracted" and the summary went stale. The cache hit
+        # must only short-circuit when an operative pleading is found;
+        # otherwise we go to CL to recover the indictment text.
+        store.mark_entry(
+            1, 99, "2025-06-15T00:00:00Z", "fp-disp",
+            date_filed="2025-06-15", entry_number=37,
+            description="JUDGMENT in a Criminal Case",
+            recap_documents=[{"id": 600, "plain_text": "judgment body"}],
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {"id": 10, "description": "INDICTMENT",
+                 "date_filed": "2024-01-01", "entry_number": 1,
+                 "recap_documents": [{"id": 500,
+                                      "plain_text": "indictment body"}]},
+            ],
+            (1, "-date_filed"): [
+                {"id": 99, "description": "JUDGMENT in a Criminal Case",
+                 "date_filed": "2025-06-15", "entry_number": 37,
+                 "recap_documents": [{"id": 600,
+                                      "plain_text": "judgment body"}]},
+            ],
+        })
+        operative, dispositions = find_operative_documents(cl, 1, store=store)
+        # CL fallback gave us the indictment that the local cache lacked.
+        assert [e["id"] for e in operative] == [10]
+        assert [e["id"] for e in dispositions] == [99]
+
     def test_motion_in_cache_does_not_short_circuit_cl_fallback(self, store):
         # Anthropic v. DoW regression: pre-fix data had the actual
         # PI-order entries stored as NULL-description fingerprint stubs
