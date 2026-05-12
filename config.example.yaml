@@ -11,8 +11,11 @@
 #   case-calendar -c config.yaml serve        # real-time webhook receiver + auto-emit
 #   case-calendar -c config.yaml show         # sanity check
 
+# Required — SQLite database that tracks processed docket entries, extracted
+# hearings and deadlines, AI case summaries, and webhook idempotency keys.
+# Created on first run; safe to back up by copying the file while the
+# daemon is stopped (or with `.backup` from the sqlite3 shell while running).
 store_path: data/case-calendar.sqlite
-model: claude-opus-4-7
 
 # Optional — only needed if any calendar has google_calendar_id set.
 # Push auto-enables once `case-calendar setup gcal` has staged the token
@@ -164,13 +167,13 @@ cases:
   # Daubert) and the run-up to sentencing (sentencing-memo deadlines,
   # PSR objections).
   - id: us-v-ashtor
-    name: "United States v. Ashtor (DPRK IT worker)"
+    name: "United States v. Ashtor"
     calendar: cybercrime
     dockets: [69570297]
     # extract_deadlines: true     # uncomment for big-trial deadline tracking
 
   - id: us-v-knoot
-    name: "United States v. Knoot (DPRK IT worker)"
+    name: "United States v. Knoot"
     calendar: cybercrime
     dockets: [69026861]
 
@@ -188,7 +191,7 @@ cases:
     dockets: [70678228]
 
   - id: us-v-kejia-wang
-    name: "United States v. Kejia (Tony) Wang"
+    name: "United States v. Kejia \"Tony\" Wang"
     calendar: cybercrime
     dockets: [70691920]
 
