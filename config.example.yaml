@@ -125,7 +125,7 @@ calendars:
     #   - {method: popup, minutes: 1440}    # 1 day before
     #   - {method: email, minutes: 1440}    # owner-only in Google; visible in public ICS
   tech:
-    name: "Tech court cases"
+    name: "Tech cases"
     ics_path: out/tech.ics
     # google_calendar_id: def456@group.calendar.google.com
     #
