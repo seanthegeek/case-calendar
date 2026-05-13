@@ -590,6 +590,168 @@ class TestWebhookIdempotency:
         assert store.webhook_seen("uuid-1")
 
 
+class TestProvenanceSplit:
+    """The _split_provenance_segments helper that powers the
+    notes→provenance migration. Docket-derived narrative stays in
+    ``notes``; ``[verify-pass]``/``[dedupe]``-prefixed paragraphs move
+    to ``provenance``."""
+
+    def test_empty_input(self):
+        from case_calendar.store import _split_provenance_segments
+        assert _split_provenance_segments(None) == ("", "")
+        assert _split_provenance_segments("") == ("", "")
+
+    def test_no_bracketed_paragraphs_passes_through(self):
+        from case_calendar.store import _split_provenance_segments
+        notes = "Trial commences 6/12/2024.\nResponses due 5/24/2024."
+        docket, prov = _split_provenance_segments(notes)
+        assert docket == notes
+        assert prov == ""
+
+    def test_extracts_verify_pass_paragraph(self):
+        from case_calendar.store import _split_provenance_segments
+        notes = (
+            "Trial commences June 12, 2024.\n\n"
+            "[verify-pass] Cancelled per recent docket entries"
+        )
+        docket, prov = _split_provenance_segments(notes)
+        assert docket == "Trial commences June 12, 2024."
+        assert prov == "[verify-pass] Cancelled per recent docket entries"
+
+    def test_extracts_dedupe_paragraph(self):
+        from case_calendar.store import _split_provenance_segments
+        notes = (
+            "Motion Hearing originally scheduled by stipulation.\n\n"
+            "[dedupe] Merged into msj-hearing: same date and time"
+        )
+        docket, prov = _split_provenance_segments(notes)
+        assert docket == "Motion Hearing originally scheduled by stipulation."
+        assert "[dedupe]" in prov
+
+    def test_extracts_multiple_audit_paragraphs(self):
+        from case_calendar.store import _split_provenance_segments
+        notes = (
+            "Final pretrial conf scheduled.\n\n"
+            "[verify-pass] Time updated\n\n"
+            "[dedupe] Merged into other-key"
+        )
+        docket, prov = _split_provenance_segments(notes)
+        assert docket == "Final pretrial conf scheduled."
+        assert "[verify-pass] Time updated" in prov
+        assert "[dedupe] Merged into other-key" in prov
+
+    def test_bracketed_at_start_is_extracted(self):
+        # Some rows have ONLY a bracketed paragraph — docket-derived
+        # column drops to empty.
+        from case_calendar.store import _split_provenance_segments
+        notes = "[verify-pass] No docket entry supports this hearing"
+        docket, prov = _split_provenance_segments(notes)
+        assert docket == ""
+        assert prov == "[verify-pass] No docket entry supports this hearing"
+
+    def test_inline_mentions_not_extracted(self):
+        # A docket entry that happens to contain the literal "[verify-pass]"
+        # INSIDE its substantive paragraph (not at paragraph start) must
+        # not be moved — only paragraph-leading brackets count.
+        from case_calendar.store import _split_provenance_segments
+        notes = (
+            "Defendant's brief discusses prior orders including "
+            "[verify-pass] markers in an unrelated context.\nNo other audit."
+        )
+        docket, prov = _split_provenance_segments(notes)
+        assert "[verify-pass]" in docket
+        assert prov == ""
+
+
+class TestProvenanceMigration:
+    """The Store._migrate one-time recategorization that moves
+    ``[verify-pass]``/``[dedupe]`` bracketed paragraphs out of ``notes``
+    and into ``provenance``. Driven by the McGonigal trial-row
+    circular-notes regression: a verify pass that sees its own prior
+    reasoning in ``notes`` will self-confirm.
+    """
+
+    def test_migration_moves_verify_pass_segment(self, tmp_path):
+        # Seed a DB at the OLD schema (no provenance column), then open
+        # via Store() to trigger the migration. Verify the segment moved.
+        import sqlite3
+        from case_calendar.store import Store
+        path = tmp_path / "old.sqlite"
+        Store(str(path))  # initialize to current schema then we'll insert
+        # Wipe provenance so we test the migration path on a pre-existing row.
+        conn = sqlite3.connect(str(path))
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """INSERT INTO hearings (case_id, hearing_key, title, timezone,
+               notes, provenance, status, source_entry_ids, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("us-v-x", "trial-x", "Jury Trial", "America/New_York",
+             "Trial set 6/12/2024.\n\n[verify-pass] Cancelled per plea",
+             None, "cancelled", "[]", "2024-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+        # Reopen via Store — migration runs.
+        store = Store(str(path))
+        row = store.conn.execute(
+            "SELECT notes, provenance FROM hearings "
+            "WHERE case_id='us-v-x' AND hearing_key='trial-x'"
+        ).fetchone()
+        assert row["notes"] == "Trial set 6/12/2024."
+        assert "[verify-pass] Cancelled per plea" in row["provenance"]
+
+    def test_migration_is_idempotent(self, tmp_path):
+        # Running the migration twice (e.g. on a re-opened store) must
+        # not duplicate the provenance content.
+        import sqlite3
+        from case_calendar.store import Store
+        path = tmp_path / "idem.sqlite"
+        Store(str(path))
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            """INSERT INTO hearings (case_id, hearing_key, title, timezone,
+               notes, provenance, status, source_entry_ids, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("us-v-x", "k", "T", "America/New_York",
+             "Trial.\n\n[verify-pass] Cancelled", None,
+             "cancelled", "[]", "2024-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+        Store(str(path))  # first migration
+        Store(str(path))  # second migration — should be no-op
+        store = Store(str(path))
+        row = store.conn.execute(
+            "SELECT notes, provenance FROM hearings WHERE hearing_key='k'"
+        ).fetchone()
+        # Single occurrence of the verify-pass line.
+        assert row["provenance"].count("[verify-pass] Cancelled") == 1
+        assert "[verify-pass]" not in (row["notes"] or "")
+
+    def test_migration_handles_deadlines_too(self, tmp_path):
+        import sqlite3
+        from case_calendar.store import Store
+        path = tmp_path / "dl.sqlite"
+        Store(str(path))
+        conn = sqlite3.connect(str(path))
+        conn.execute(
+            """INSERT INTO deadlines (case_id, deadline_key, title, timezone,
+               notes, provenance, status, source_entry_ids, last_updated)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ("us-v-x", "reply-mtd", "Reply ISO MTD", "America/New_York",
+             "Reply due 5/31/2026.\n\n[verify-pass] Vacated", None,
+             "cancelled", "[]", "2024-01-01T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+        store = Store(str(path))
+        row = store.conn.execute(
+            "SELECT notes, provenance FROM deadlines WHERE deadline_key='reply-mtd'"
+        ).fetchone()
+        assert row["notes"] == "Reply due 5/31/2026."
+        assert "[verify-pass] Vacated" in row["provenance"]
+
+
 class TestTxRollback:
     def test_exception_inside_tx_triggers_rollback(self, store: Store):
         # Write something that would commit on success, then raise inside

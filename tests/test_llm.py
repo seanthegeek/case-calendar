@@ -364,6 +364,38 @@ class TestVerifyHearing:
         assert "Order vacating trial date" in captured["user"]
         assert "audit a single court hearing" in captured["system"]
 
+    def test_provenance_never_reaches_verify_user_message(self, monkeypatch):
+        # Hardens the structural fix for the McGonigal circular-notes
+        # failure mode: even if a row carries system audit text in its
+        # ``provenance`` field, the verify-pass user message must never
+        # include that text. The LLM's only narrative context is
+        # ``notes`` (docket-derived) and the recent docket entries.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured: dict[str, str] = {}
+
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            return '{"type": "CONFIRM"}'
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.verify_hearing(
+            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            hearing=_hearing(
+                notes="Trial commences 6/12/2024.",
+                provenance=(
+                    "[verify-pass] Cancelled per plea (synthesized "
+                    "reasoning from a prior pass — must not be visible "
+                    "to verify)"
+                ),
+            ),
+            recent_entries=[],
+        )
+        # Docket-derived notes ARE shown.
+        assert "Trial commences 6/12/2024" in captured["user"]
+        # System audit provenance is NOT shown.
+        assert "[verify-pass]" not in captured["user"]
+        assert "synthesized reasoning" not in captured["user"]
+
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(

@@ -859,7 +859,11 @@ class TestPastScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "plea" in (h["notes"] or "")
+        # Verify-pass audit text goes to provenance, not notes. notes
+        # remains docket-derived only so a future verify pass can't
+        # self-confirm its own prior reasoning (see McGonigal regression).
+        assert "plea" in (h["provenance"] or "")
+        assert "[verify-pass]" in (h["provenance"] or "")
 
     def test_no_separate_auto_held_sweep(self, store: Store, case, monkeypatch):
         # sync_case stats no longer carry an 'auto_held' key — the
@@ -955,9 +959,14 @@ class TestPastCancelledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "scheduled"
-        assert "[verify-pass]" in (h["notes"] or "")
-        assert "Cancellation not supported" in (h["notes"] or "") or \
-               "No vacatur" in (h["notes"] or "")
+        # System audit text lives in `provenance`, never `notes` —
+        # see the McGonigal circular-notes failure mode.
+        assert "[verify-pass]" in (h["provenance"] or "")
+        assert "Cancellation not supported" in (h["provenance"] or "") or \
+               "No vacatur" in (h["provenance"] or "")
+        # notes stays None on a row that has no docket-derived narrative
+        # — the verify pass must not write its reasoning there.
+        assert "[verify-pass]" not in (h["notes"] or "")
 
     def test_confirm_leaves_supported_cancellation(
         self, store: Store, case, monkeypatch,
@@ -1066,7 +1075,10 @@ class TestVerifyScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "vacated" in (h["notes"] or "")
+        # CANCEL reason goes to provenance (system audit), not notes
+        # (docket-derived) — see McGonigal circular-notes regression.
+        assert "vacated" in (h["provenance"] or "")
+        assert "[verify-pass]" not in (h["notes"] or "")
 
     def test_delete_hallucination_flips_to_cancelled(
         self, store, case, monkeypatch,
@@ -1085,7 +1097,9 @@ class TestVerifyScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "no docket entry" in (h["notes"] or "")
+        # DELETE_HALLUCINATION reason goes to provenance, not notes.
+        assert "no docket entry" in (h["provenance"] or "")
+        assert "[verify-pass]" not in (h["notes"] or "")
 
     def test_reschedule_moves_starts_at_utc(self, store, case, monkeypatch):
         self._seed_future_hearing(store)
@@ -1608,9 +1622,13 @@ class TestDedupeConcurrentHearings:
         # source_entry_ids from the duplicate were merged into the target,
         # deduping against the target's existing list.
         assert rows["msj-hearing"]["source_entry_ids"] == [42, 43, 99]
-        # The cancelled row carries a [dedupe] note pointing at the target.
-        assert "[dedupe]" in (rows["motion-hearing-2"]["notes"] or "")
-        assert "msj-hearing" in (rows["motion-hearing-2"]["notes"] or "")
+        # The cancelled row carries a [dedupe] note pointing at the
+        # target — in provenance (system audit), NOT notes (docket-
+        # derived). Same McGonigal regression rule: future verify
+        # passes only see docket-grounded content.
+        assert "[dedupe]" in (rows["motion-hearing-2"]["provenance"] or "")
+        assert "msj-hearing" in (rows["motion-hearing-2"]["provenance"] or "")
+        assert "[dedupe]" not in (rows["motion-hearing-2"]["notes"] or "")
 
     def test_keep_both_leaves_cluster_alone(self, store, case, monkeypatch):
         # Stacked back-to-back proceedings — LLM says they're distinct.
@@ -1740,7 +1758,9 @@ class TestVerifyPendingDeadlines:
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "cancelled"
-        assert "dismissed" in (d["notes"] or "")
+        # Audit text goes to provenance, not notes — same rule as hearings.
+        assert "dismissed" in (d["provenance"] or "")
+        assert "[verify-pass]" not in (d["notes"] or "")
 
     def test_delete_hallucination_flips_to_cancelled(
         self, store, case, monkeypatch,
@@ -1756,7 +1776,8 @@ class TestVerifyPendingDeadlines:
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "cancelled"
-        assert "no scheduling order" in (d["notes"] or "")
+        assert "no scheduling order" in (d["provenance"] or "")
+        assert "[verify-pass]" not in (d["notes"] or "")
 
     def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
         self._seed_future_deadline(store)
