@@ -125,6 +125,31 @@ header {
 }
 header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
 header .meta { color: var(--muted); font-size: 0.9rem; }
+.search-bar {
+  padding: 0.9rem 1.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--card-bg);
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.search-bar input {
+  flex: 1;
+  min-width: 200px;
+  max-width: 500px;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.45rem 0.7rem;
+}
+.search-bar .status { color: var(--muted); font-size: 0.9rem; }
+section.calendar.hidden-by-search { display: none; }
+ol.cases > li.hidden-by-search { display: none; }
 main { padding: 1.6rem; max-width: 1100px; margin: 0 auto; }
 section.calendar {
   margin-bottom: 2.4rem;
@@ -254,7 +279,7 @@ _PREPAINT_JS = """
 })();
 """
 
-_RUNTIME_JS = """
+_RUNTIME_JS = r"""
 (function() {
   var root = document.documentElement;
   var btn = document.getElementById('theme-toggle');
@@ -275,11 +300,16 @@ _RUNTIME_JS = """
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', applyToggle);
 
   // Per-section sort + truncation. Each <li.case> carries
-  // data-name / data-filed / data-last-filing; we re-append in the chosen
-  // order, then hide everything past VISIBLE_DEFAULT unless the section
-  // has been expanded. The hidden count + label update live in
+  // data-name / data-filed / data-last-filing / data-search; we re-append
+  // in the chosen order, then hide everything past VISIBLE_DEFAULT unless
+  // the section has been expanded. The hidden count + label update live in
   // applyTruncation so they stay in sync after every sort change.
   var VISIBLE_DEFAULT = 3;
+  var searchInput = document.getElementById('case-search');
+  var searchStatus = document.getElementById('search-status');
+  function isSearching() {
+    return !!(searchInput && searchInput.value && searchInput.value.trim());
+  }
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
@@ -301,23 +331,81 @@ _RUNTIME_JS = """
     applyTruncation(section);
   }
   function applyTruncation(section) {
-    var expanded = section.getAttribute('data-expanded') === 'true';
+    // Search overrides truncation: when filtering, every match is visible
+    // and the show-more button is hidden. Items the search hid are skipped
+    // when counting against VISIBLE_DEFAULT so a filtered list of 2 doesn't
+    // also get truncated.
+    var searching = isSearching();
+    var expanded = section.getAttribute('data-expanded') === 'true' || searching;
     var items = section.querySelectorAll('ol.cases > li');
+    var visibleIndex = 0;
     var hidden = 0;
     for (var i = 0; i < items.length; i++) {
-      if (!expanded && i >= VISIBLE_DEFAULT) {
-        items[i].classList.add('truncated');
+      var li = items[i];
+      if (li.classList.contains('hidden-by-search')) {
+        li.classList.remove('truncated');
+        continue;
+      }
+      if (!expanded && visibleIndex >= VISIBLE_DEFAULT) {
+        li.classList.add('truncated');
         hidden++;
       } else {
-        items[i].classList.remove('truncated');
+        li.classList.remove('truncated');
       }
+      visibleIndex++;
     }
     var btn = section.querySelector('button.show-more');
     if (btn) {
-      btn.textContent = expanded
-        ? 'Show fewer'
-        : 'Show all (' + hidden + ' more)';
-      btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      if (searching) {
+        btn.style.display = 'none';
+      } else {
+        btn.style.display = '';
+        btn.textContent = expanded
+          ? 'Show fewer'
+          : 'Show all (' + hidden + ' more)';
+        btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+      }
+    }
+  }
+  function applySearch() {
+    // AND-tokenized substring match against data-search (already lowercased
+    // at render time). Empty query clears all hidden-by-search markers and
+    // unhides every section; truncation then re-applies per section.
+    var raw = (searchInput && searchInput.value || '').trim().toLowerCase();
+    var tokens = raw ? raw.split(/\s+/) : [];
+    var totalShown = 0;
+    document.querySelectorAll('section.calendar').forEach(function(section) {
+      var items = section.querySelectorAll('ol.cases > li');
+      var sectionShown = 0;
+      for (var i = 0; i < items.length; i++) {
+        var li = items[i];
+        var haystack = li.getAttribute('data-search') || '';
+        var match = true;
+        for (var j = 0; j < tokens.length; j++) {
+          if (haystack.indexOf(tokens[j]) === -1) { match = false; break; }
+        }
+        if (tokens.length === 0 || match) {
+          li.classList.remove('hidden-by-search');
+          sectionShown++;
+        } else {
+          li.classList.add('hidden-by-search');
+        }
+      }
+      if (tokens.length > 0 && sectionShown === 0) {
+        section.classList.add('hidden-by-search');
+      } else {
+        section.classList.remove('hidden-by-search');
+      }
+      totalShown += sectionShown;
+      applyTruncation(section);
+    });
+    if (searchStatus) {
+      if (tokens.length === 0) {
+        searchStatus.textContent = '';
+      } else {
+        searchStatus.textContent = totalShown +
+          (totalShown === 1 ? ' match' : ' matches');
+      }
     }
   }
   document.querySelectorAll('section.calendar').forEach(function(section) {
@@ -337,6 +425,9 @@ _RUNTIME_JS = """
     }
     sortCases(section);  // apply initial order + truncation
   });
+  if (searchInput) {
+    searchInput.addEventListener('input', applySearch);
+  }
 })();
 """
 
@@ -410,6 +501,30 @@ def _render_summaries(
     return f'<div class="summary">{"".join(paragraphs)}</div>'
 
 
+def _case_search_text(case: dict[str, Any]) -> str:
+    """Build the lowercased haystack the client-side filter searches over.
+
+    Includes the case name, every docket number + court citation, and every
+    per-docket summary body. The JS does AND-tokenized substring matching
+    against this string, so subscribers can search by defendant name,
+    docket number, court, judge name (when it appears in the summary), or
+    any vocabulary from the prose without us maintaining a search index.
+    """
+    parts: list[str] = []
+    if case.get("name"):
+        parts.append(str(case["name"]))
+    for d in case.get("dockets") or []:
+        if d.get("docket_number"):
+            parts.append(str(d["docket_number"]))
+        if d.get("court_citation"):
+            parts.append(str(d["court_citation"]))
+    for s in case.get("summaries") or []:
+        body = (s.get("summary") or "").strip()
+        if body:
+            parts.append(body)
+    return " ".join(parts).lower()
+
+
 def _render_case(case: dict[str, Any]) -> str:
     """Render one <li> for a case row.
 
@@ -438,7 +553,8 @@ def _render_case(case: dict[str, Any]) -> str:
     data = (
         f'data-name="{_esc((case.get("name") or "").lower())}" '
         f'data-filed="{_esc(date_filed)}" '
-        f'data-last-filing="{_esc(last_filing)}"'
+        f'data-last-filing="{_esc(last_filing)}" '
+        f'data-search="{_esc(_case_search_text(case))}"'
     )
     dockets_html = []
     dockets = case.get("dockets") or []
@@ -584,6 +700,12 @@ def render_index(
         f'<span class="meta">Generated {_esc(gen_iso)} '
         f'<button id="theme-toggle" type="button">Dark mode</button></span>\n'
         '</header>\n'
+        '<div class="search-bar">\n'
+        '<input type="search" id="case-search" '
+        'placeholder="Search cases, dockets, courts, or summary text…" '
+        'aria-label="Search cases" autocomplete="off">\n'
+        '<span class="status" id="search-status" aria-live="polite"></span>\n'
+        '</div>\n'
         f'<main>{sections}</main>\n'
         '<footer>'
         '<p>Subscribe to a calendar above, or download the raw .ics. '

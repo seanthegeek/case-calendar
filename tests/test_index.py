@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import pytest
 
 from case_calendar.calendars.index import (
+    _case_search_text,
     _esc,
     _format_date,
     _ics_links,
@@ -183,6 +184,37 @@ class TestRenderCaseEdges:
         assert "Last filing" not in html
 
 
+class TestCaseSearchText:
+    def test_includes_name_dockets_courts_summaries_lowercased(self):
+        text = _case_search_text({
+            "name": "US v. Wang",
+            "dockets": [
+                {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y."},
+                {"docket_number": "24-1234", "court_citation": "2d Cir."},
+            ],
+            "summaries": [
+                {"docket_id": 1, "summary": "Indicted on wire fraud."},
+                {"docket_id": 2, "summary": "Appeal pending."},
+            ],
+        })
+        # Lowercased so the JS comparator can do a single-pass indexOf.
+        assert text == text.lower()
+        for needle in [
+            "us v. wang", "1:24-cr-12345", "s.d.n.y.",
+            "24-1234", "2d cir.",
+            "indicted on wire fraud.", "appeal pending.",
+        ]:
+            assert needle in text, needle
+
+    def test_skips_empty_or_missing_fields(self):
+        # Missing name, no dockets, blank/whitespace summary -> empty string,
+        # which the JS treats as "no match for any non-empty query".
+        assert _case_search_text({}) == ""
+        assert _case_search_text({
+            "name": "", "dockets": [], "summaries": [{"summary": "   "}],
+        }) == ""
+
+
 class TestRenderIndex:
     @pytest.fixture
     def calendars(self):
@@ -302,6 +334,65 @@ class TestRenderIndex:
         html = render_index(calendars=calendars)
         assert "<evil>" not in html
         assert "&lt;evil&gt;" in html
+
+    def test_search_bar_rendered(self, calendars):
+        # The global search input sits in its own bar between <header> and
+        # <main>; the JS hooks find it by id, so both the input id and the
+        # status span id are part of the contract.
+        html = render_index(calendars=calendars)
+        assert 'id="case-search"' in html
+        assert 'type="search"' in html
+        assert 'id="search-status"' in html
+        # aria-live makes the result count discoverable to screen readers
+        # without requiring focus.
+        assert 'aria-live="polite"' in html
+
+    def test_case_rows_carry_data_search_attribute(self):
+        # Each case row needs a lowercased haystack the JS can substring-
+        # match against. Includes name + docket number + court citation +
+        # summary prose.
+        html = render_index(calendars=[{
+            "id": "c", "name": "C",
+            "links": {"webcal": None, "https": None, "relative": "c.ics"},
+            "cases": [{
+                "id": "us-v-wang",
+                "name": "US v. Wang",
+                "dockets": [{
+                    "docket_id": 1,
+                    "docket_number": "1:24-cr-12345",
+                    "court_citation": "S.D.N.Y.",
+                }],
+                "summaries": [
+                    {"docket_id": 1, "summary": "Indicted on wire fraud."},
+                ],
+                "date_filed": None, "last_filing_date": None,
+            }],
+        }])
+        assert "data-search=" in html
+        # All four search-relevant fields must be present in the haystack
+        # so subscribers can find a case by any of them.
+        for needle in ["us v. wang", "1:24-cr-12345", "s.d.n.y.",
+                       "indicted on wire fraud."]:
+            assert needle in html, needle
+
+    def test_data_search_attribute_is_xss_safe(self):
+        # Summary text is user-ish (LLM output); a quote or angle bracket
+        # in there must not break out of the attribute.
+        html = render_index(calendars=[{
+            "id": "c", "name": "C",
+            "links": {"webcal": None, "https": None, "relative": "c.ics"},
+            "cases": [{
+                "id": "x", "name": 'US v. "X"',
+                "dockets": [],
+                "summaries": [{"docket_id": 1, "summary": '<script>alert(1)</script>'}],
+                "date_filed": None, "last_filing_date": None,
+            }],
+        }])
+        # Raw script tag must not survive into the data-search attribute.
+        assert "<script>alert(1)</script>" not in html
+        # Quotes in the name must be entity-encoded inside the attribute.
+        assert 'data-search="' in html
+        assert 'us v. &quot;x&quot;' in html
 
     def test_empty_calendar_renders_placeholder(self):
         html = render_index(calendars=[{
