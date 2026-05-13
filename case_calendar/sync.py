@@ -559,32 +559,49 @@ class CaseSyncer:
         return stats
 
     def _verify_scheduled_hearings(self, case: CaseConfig) -> int:
-        """Audit every scheduled hearing (past AND future) against recent
-        docket entries. Returns the number of hearings whose row was
-        modified by the audit.
+        """Audit non-terminal hearings against recent docket entries.
 
-        For each hearing the LLM returns one of: CONFIRM (no-op),
-        RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, UNCLEAR.
-        Anything other than CONFIRM/UNCLEAR mutates the row.
+        Returns the number of hearings whose row was modified by the audit.
 
-        Past-dated rows participate too: the prompt requires the LLM to
-        cite a minute entry / verdict / transcript / judgment-after
-        before returning MARK_HELD on a past row. Date-passed alone is
-        not evidence of occurrence — trials and other hearings can pass
-        their scheduled date without an explicit cancellation entry, so
-        UNCLEAR (no change) is the correct default for past rows the
-        docket doesn't confirm.
+        Scope: every ``scheduled`` row (past and future) plus every PAST
+        ``cancelled`` row. The action grid:
+
+        - For ``scheduled`` rows the LLM returns CONFIRM (no-op),
+          RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, or
+          UNCLEAR. Past-dated rows require explicit evidence
+          (minute entry / verdict / transcript / judgment-after) for
+          MARK_HELD — date-passed alone is not enough. Trials and other
+          hearings can pass their scheduled date without an explicit
+          cancellation entry, so UNCLEAR (no change) is the correct
+          default for past rows the docket doesn't confirm.
+
+        - For PAST ``cancelled`` rows the LLM additionally returns
+          UNCANCEL when the cancellation isn't supported by docket
+          evidence (no vacatur entry, no plea agreement, no dismissal —
+          just an absence of activity that a prior LLM misread as
+          cancellation). The caller flips the row back to ``scheduled``
+          so the next sync can MARK_HELD it on real evidence or leave it
+          UNCLEAR. This catches the inverse-Moucka failure mode where a
+          live trial got falsely marked cancelled.
+
+          Future cancelled rows are NOT verified — a deliberately
+          cancelled future hearing should stay cancelled until something
+          actively un-cancels it.
         """
         from . import llm as llm_mod
 
-        # No date filter — verify pulls past and future scheduled rows.
-        # Past 'scheduled' rows are exactly the ones at risk of false
-        # 'held' status, so they need the LLM's judgment most.
+        now_iso = datetime.now(timezone.utc).isoformat()
         rows = self.store.conn.execute(
-            "SELECT * FROM hearings "
-            "WHERE case_id=? AND status='scheduled' "
-            "AND starts_at_utc IS NOT NULL",
-            (case.case_id,),
+            """
+            SELECT * FROM hearings
+            WHERE case_id=?
+              AND starts_at_utc IS NOT NULL
+              AND (
+                status='scheduled'
+                OR (status='cancelled' AND starts_at_utc < ?)
+              )
+            """,
+            (case.case_id, now_iso),
         ).fetchall()
         if not rows:
             return 0
@@ -660,6 +677,22 @@ class CaseSyncer:
             ).strip()
         elif atype == "MARK_HELD":
             merged.update(status="held")
+        elif atype == "UNCANCEL":
+            # Issued for a 'cancelled' row whose cancellation is not
+            # supported by an explicit docket entry. Revert to
+            # 'scheduled' so the next verify pass can MARK_HELD it on
+            # real evidence (or leave it UNCLEAR if the outcome still
+            # isn't documented). The McGonigal-shape regression — a
+            # past trial row marked cancelled even though the case
+            # continued to be actively briefed after the trial date —
+            # is the canonical case.
+            merged.update(status="scheduled")
+            note = action.get("reason") or (
+                "Cancellation not supported by docket; reverted to scheduled"
+            )
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "RESCHEDULE":
             local_date = action.get("local_date")
             local_time = action.get("local_time")

@@ -362,7 +362,7 @@ class TestVerifyHearing:
         )
         assert "trial-x" in captured["user"]
         assert "Order vacating trial date" in captured["user"]
-        assert "audit a single scheduled court hearing" in captured["system"]
+        assert "audit a single court hearing" in captured["system"]
 
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")

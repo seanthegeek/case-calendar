@@ -874,16 +874,23 @@ class TestPastScheduledHearings:
         # CONFIRM is a no-op so past row stays as 'scheduled'.
         assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
 
-    def test_cancelled_past_row_skipped_by_verify(
+    def test_future_cancelled_row_skipped_by_verify(
         self, store: Store, case, monkeypatch,
     ):
-        # Only 'scheduled' rows reach verify; an already-cancelled past
-        # row is left alone (no LLM call).
+        # Future 'cancelled' rows are NOT verified — a deliberately
+        # cancelled future hearing should stay cancelled until something
+        # actively un-cancels it. Only PAST 'cancelled' rows are checked
+        # for inverse-Moucka false-cancellations (see
+        # TestPastCancelledHearings below).
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=30)
+        ).isoformat()
         store.upsert_hearing({
             "case_id": "us-v-x",
-            "hearing_key": "cancelled-conf",
+            "hearing_key": "future-cancelled",
             "title": "Status Conference",
-            "starts_at_utc": "2024-01-01T12:00:00+00:00",
+            "starts_at_utc": future_iso,
             "duration_minutes": 30,
             "timezone": "America/New_York",
             "status": "cancelled",
@@ -893,12 +900,117 @@ class TestPastScheduledHearings:
         })
 
         def boom(**_):
-            raise AssertionError("verify_hearing called for a cancelled row")
+            raise AssertionError("verify_hearing called for a future cancelled row")
 
         monkeypatch.setattr(llm_mod, "verify_hearing", boom)
         cl = FakeCL(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert store.get_hearings("us-v-x")[0]["status"] == "cancelled"
+
+
+class TestPastCancelledHearings:
+    """The inverse-Moucka path: past 'cancelled' rows ARE verified, so a
+    cancellation that was inferred-but-not-supported (a prior pass
+    flipped the row without an explicit vacatur entry, but the case
+    has continued to be actively briefed past the cancelled hearing's
+    date) can be reverted to 'scheduled'.
+
+    The us-v-mcgonigal regression is the canonical case: trial set for
+    6/12/2024 with the only source entry being the 2023-05-30 scheduling
+    order, status flipped to 'cancelled' on inference, but the docket
+    continued to have body-bearing activity through 2025 — the case is
+    plainly still live.
+    """
+
+    def _seed_past_cancelled(self, store, key="trial-x", title="Jury Trial"):
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": key,
+            "title": title,
+            # Past, but not ancient — within the verify pass's working window.
+            "starts_at_utc": "2024-06-12T14:00:00+00:00",
+            "duration_minutes": 240,
+            "timezone": "America/New_York",
+            "status": "cancelled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [46],
+        })
+
+    def test_uncancel_reverts_to_scheduled(
+        self, store: Store, case, monkeypatch,
+    ):
+        # The LLM finds no explicit vacatur AND sees that the docket
+        # continued to be active past the cancelled date — UNCANCEL.
+        self._seed_past_cancelled(store, key="trial-mcgonigal")
+        stub_verify(monkeypatch, by_key={
+            "trial-mcgonigal": {
+                "type": "UNCANCEL",
+                "reason": "No vacatur, dismissal, or plea entry; case continued to be "
+                          "actively briefed past 6/12/2024.",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "scheduled"
+        assert "[verify-pass]" in (h["notes"] or "")
+        assert "Cancellation not supported" in (h["notes"] or "") or \
+               "No vacatur" in (h["notes"] or "")
+
+    def test_confirm_leaves_supported_cancellation(
+        self, store: Store, case, monkeypatch,
+    ):
+        # The other normal path: the LLM finds an explicit plea / vacatur
+        # entry and CONFIRMs. Row stays cancelled.
+        self._seed_past_cancelled(store, key="trial-with-plea")
+        stub_verify(monkeypatch, by_key={
+            "trial-with-plea": {
+                "type": "CONFIRM",
+                "reason": "Plea agreement filed before trial date; trial vacated by plea.",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "cancelled"
+
+    def test_mark_held_flips_cancelled_to_held(
+        self, store: Store, case, monkeypatch,
+    ):
+        # Rare but valid: the row was wrongly cancelled, and a minute
+        # entry / verdict on the docket shows the event actually
+        # happened. Bypass UNCANCEL → 'scheduled' → MARK_HELD on next
+        # sync; do it in one step.
+        self._seed_past_cancelled(store, key="trial-actually-held")
+        stub_verify(monkeypatch, by_key={
+            "trial-actually-held": {
+                "type": "MARK_HELD",
+                "reason": "verdict form filed; trial demonstrably happened",
+            },
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+
+    def test_unclear_leaves_cancelled_row_alone(
+        self, store: Store, case, monkeypatch,
+    ):
+        # When the LLM can't tell whether the cancellation holds, the
+        # conservative move is to leave the row cancelled (vs. blindly
+        # un-cancelling on weak signal).
+        self._seed_past_cancelled(store, key="ambiguous")
+        stub_verify(monkeypatch, by_key={
+            "ambiguous": {"type": "UNCLEAR", "reason": "silent docket"},
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "cancelled"
 
 
 class TestVerifyScheduledHearings:
