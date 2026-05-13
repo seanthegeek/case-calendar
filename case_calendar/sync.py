@@ -660,30 +660,21 @@ class CaseSyncer:
         merged = dict(hearing)
         sources = list(hearing.get("source_entry_ids") or [])
 
-        # Verify-pass mutations write their audit trail to ``provenance``,
-        # NEVER to ``notes``. ``notes`` is the docket-derived field — what
-        # the extractor read out of entry text — and is the only narrative
-        # context the verify pass sees on subsequent runs. If we wrote
-        # synthesized reasoning into ``notes``, the next pass would read
-        # its own prior conclusion and self-confirm (the McGonigal trial-
-        # row circular-notes failure mode). Provenance is system-only:
-        # tooling and operators see it; the verify-pass LLM does not.
-        def _append_provenance(prefix: str, note: str) -> str:
-            prior = hearing.get("provenance") or ""
-            line = f"[{prefix}] {note}"
-            return (prior + "\n\n" + line).strip() if prior else line
-
         if atype == "CANCEL":
             merged.update(status="cancelled")
             note = action.get("reason") or "Cancelled per recent docket entries"
-            merged["provenance"] = _append_provenance("verify-pass", note)
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "DELETE_HALLUCINATION":
             # Don't actually delete — preserve the audit trail by marking
-            # cancelled with a provenance note. Renderers skip cancelled
+            # cancelled with an explanatory note. Renderers skip cancelled
             # rows so the calendar shows the right thing.
             merged.update(status="cancelled")
             note = action.get("reason") or "No docket entry supports this hearing"
-            merged["provenance"] = _append_provenance("verify-pass", note)
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "MARK_HELD":
             merged.update(status="held")
         elif atype == "UNCANCEL":
@@ -699,7 +690,9 @@ class CaseSyncer:
             note = action.get("reason") or (
                 "Cancellation not supported by docket; reverted to scheduled"
             )
-            merged["provenance"] = _append_provenance("verify-pass", note)
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "RESCHEDULE":
             local_date = action.get("local_date")
             local_time = action.get("local_time")
@@ -714,7 +707,9 @@ class CaseSyncer:
                 local_date, local_time, convert_tz
             )
             note = action.get("reason") or "Rescheduled per recent docket entries"
-            merged["provenance"] = _append_provenance("verify-pass", note)
+            merged["notes"] = (
+                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         else:
             log.warning(
                 "verify-pass unknown action type %s for case=%s key=%r",
@@ -823,11 +818,9 @@ class CaseSyncer:
         target["source_entry_ids"] = merged_sources
         self.store.upsert_hearing(target)
 
-        # Cancel each duplicate with a provenance note pointing back to
+        # Cancel each duplicate with an explanatory note pointing back to
         # the target. Renderers skip cancelled rows so the calendar shows
         # the right thing; the row is preserved for the audit trail.
-        # Audit text goes to ``provenance``, NOT ``notes`` — see the
-        # comment in _apply_verify_action for the rationale.
         n_cancelled = 0
         reason = action.get("reason") or f"Duplicate of {target_key}"
         for dup in cluster:
@@ -835,11 +828,10 @@ class CaseSyncer:
                 continue
             dup_row = dict(dup)
             dup_row["status"] = "cancelled"
-            prior_prov = dup_row.get("provenance") or ""
-            new_prov = f"[dedupe] Merged into {target_key}: {reason}"
-            dup_row["provenance"] = (
-                (prior_prov + "\n\n" + new_prov).strip() if prior_prov else new_prov
-            )
+            dup_row["notes"] = (
+                (dup_row.get("notes") or "")
+                + f"\n\n[dedupe] Merged into {target_key}: {reason}"
+            ).strip()
             self.store.upsert_hearing(dup_row)
             n_cancelled += 1
 
@@ -914,21 +906,18 @@ class CaseSyncer:
         merged = dict(deadline)
         sources = list(deadline.get("source_entry_ids") or [])
 
-        # Same provenance-not-notes rule as hearings — see
-        # _apply_verify_action for the rationale.
-        def _append_provenance(note: str) -> str:
-            prior = deadline.get("provenance") or ""
-            line = f"[verify-pass] {note}"
-            return (prior + "\n\n" + line).strip() if prior else line
-
         if atype == "CANCEL":
             merged["status"] = "cancelled"
             note = action.get("reason") or "Vacated per recent docket entries"
-            merged["provenance"] = _append_provenance(note)
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "DELETE_HALLUCINATION":
             merged["status"] = "cancelled"
             note = action.get("reason") or "No docket entry supports this deadline"
-            merged["provenance"] = _append_provenance(note)
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         elif atype == "MARK_FILED":
             merged["status"] = "met"
         elif atype == "RESCHEDULE":
@@ -944,7 +933,9 @@ class CaseSyncer:
                 local_date, action.get("local_time"), convert_tz
             )
             note = action.get("reason") or "Extended per recent docket entries"
-            merged["provenance"] = _append_provenance(note)
+            merged["notes"] = (
+                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
+            ).strip()
         else:
             log.warning(
                 "verify_deadline unknown action type %s: case=%s key=%r",

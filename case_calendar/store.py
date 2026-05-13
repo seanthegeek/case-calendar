@@ -25,7 +25,6 @@ Keeps:
 from __future__ import annotations
 
 import json
-import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -75,15 +74,7 @@ CREATE TABLE IF NOT EXISTS hearings (
     timezone TEXT NOT NULL,
     location TEXT,
     judge TEXT,
-    notes TEXT,                  -- DOCKET-DERIVED only: what the LLM extracted from
-                                 -- entry text. Visible to the verify pass and to
-                                 -- renderers. Never used as audit-trail storage.
-    provenance TEXT,             -- SYSTEM-GENERATED audit trail: [verify-pass] /
-                                 -- [dedupe] / etc. mutations appended here.
-                                 -- Deliberately invisible to the verify-pass LLM
-                                 -- so a future pass cannot self-confirm its own
-                                 -- prior reasoning (the McGonigal trial-row
-                                 -- circular-notes failure mode).
+    notes TEXT,
     dial_in TEXT,
     status TEXT NOT NULL,        -- scheduled | held | cancelled | unknown
     significance TEXT,           -- "major" (default) | "minor" — calendar filter
@@ -101,8 +92,7 @@ CREATE TABLE IF NOT EXISTS deadlines (
     title TEXT NOT NULL,
     due_at_utc TEXT,              -- UTC ISO; renderer converts to court-local
     timezone TEXT NOT NULL,       -- IANA tz of the court the deadline was set in
-    notes TEXT,                   -- DOCKET-DERIVED only (see hearings.notes).
-    provenance TEXT,              -- SYSTEM-GENERATED audit trail (see hearings.provenance).
+    notes TEXT,
     status TEXT NOT NULL,         -- pending | passed | met | cancelled | unknown
     significance TEXT,            -- "major" (default) | "minor" — calendar filter
     deadline_type TEXT,           -- response | reply | brief | other (informational)
@@ -140,38 +130,6 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# Matches a paragraph that BEGINS with [verify-pass] or [dedupe] — the
-# system audit lines older code wrote into ``notes``. Anchored at start
-# of a paragraph so a docket entry that happens to contain the literal
-# string "[verify-pass]" inside its substantive text isn't moved.
-_PROVENANCE_PARA_RE = re.compile(
-    r"(?:\A|\n\n)(?P<prov>\[(?:verify-pass|dedupe)\][^\n][^\n]*"
-    r"(?:\n(?!\n)[^\n]+)*)",
-)
-
-
-def _split_provenance_segments(notes: Optional[str]) -> tuple[str, str]:
-    """Split ``notes`` into ``(docket-derived, system-audit)``.
-
-    Migration helper for the schema split. Returns the docket-derived
-    portion (everything except paragraphs beginning with ``[verify-pass]``
-    or ``[dedupe]``) and the audit portion (those paragraphs concatenated).
-    """
-    if not notes:
-        return "", ""
-    audit_parts: list[str] = []
-
-    def _capture(m: re.Match) -> str:
-        audit_parts.append(m.group("prov").strip())
-        return ""
-
-    docket_only = _PROVENANCE_PARA_RE.sub(_capture, notes)
-    # Collapse any double-blank-line gaps the substitution leaves.
-    docket_only = re.sub(r"\n{3,}", "\n\n", docket_only).strip()
-    audit = "\n\n".join(audit_parts).strip()
-    return docket_only, audit
-
-
 class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -202,8 +160,6 @@ class Store:
             ("entries", "recap_documents", "TEXT"),
             ("hearings", "m365_event_id", "TEXT"),
             ("deadlines", "m365_event_id", "TEXT"),
-            ("hearings", "provenance", "TEXT"),
-            ("deadlines", "provenance", "TEXT"),
             ("case_summaries", "stale", "INTEGER NOT NULL DEFAULT 0"),
             ("case_summaries", "stale_since", "TEXT"),
         ]:
@@ -225,35 +181,6 @@ class Store:
             "CREATE INDEX IF NOT EXISTS idx_entries_docket_entry_number "
             "ON entries (docket_id, entry_number)"
         )
-        # Recategorize pre-existing system-generated audit text out of the
-        # ``notes`` column into ``provenance``. The verify pass and the
-        # dedupe pass used to append "[verify-pass] ..." / "[dedupe] ..."
-        # lines to ``notes`` — same field the extractor used for
-        # docket-derived narrative. That conflation caused the McGonigal
-        # circular-notes failure: a future verify pass saw its own prior
-        # reasoning in ``notes`` and self-confirmed. The new schema
-        # separates the two; this migration moves existing bracketed
-        # segments to where they should have been all along. Idempotent:
-        # rows already migrated have no remaining bracketed prefixes in
-        # ``notes``.
-        for table, key_col in (("hearings", "hearing_key"),
-                                ("deadlines", "deadline_key")):
-            rows = self.conn.execute(
-                f"SELECT case_id, {key_col}, notes, provenance FROM {table} "
-                f"WHERE notes LIKE '%[verify-pass]%' OR notes LIKE '%[dedupe]%'"
-            ).fetchall()
-            for r in rows:
-                docket_notes, audit_notes = _split_provenance_segments(r["notes"])
-                merged_provenance = (
-                    ((r["provenance"] or "") + "\n\n" + audit_notes).strip()
-                    if audit_notes else (r["provenance"] or None)
-                )
-                self.conn.execute(
-                    f"UPDATE {table} SET notes=?, provenance=? "
-                    f"WHERE case_id=? AND {key_col}=?",
-                    (docket_notes or None, merged_provenance,
-                     r["case_id"], r[key_col]),
-                )
 
     def close(self) -> None:
         self.conn.close()
@@ -711,9 +638,9 @@ class Store:
             """
             INSERT INTO hearings
             (case_id, hearing_key, title, starts_at_utc, duration_minutes, timezone,
-             location, judge, notes, provenance, dial_in, status, significance,
-             gcal_event_id, docket_id, source_entry_ids, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             location, judge, notes, dial_in, status, significance, gcal_event_id,
+             docket_id, source_entry_ids, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(case_id, hearing_key) DO UPDATE SET
               title=excluded.title,
               starts_at_utc=excluded.starts_at_utc,
@@ -722,7 +649,6 @@ class Store:
               location=excluded.location,
               judge=excluded.judge,
               notes=excluded.notes,
-              provenance=COALESCE(excluded.provenance, hearings.provenance),
               dial_in=excluded.dial_in,
               status=excluded.status,
               significance=COALESCE(excluded.significance, hearings.significance),
@@ -741,7 +667,6 @@ class Store:
                 h.get("location"),
                 h.get("judge"),
                 h.get("notes"),
-                h.get("provenance"),
                 h.get("dial_in"),
                 h["status"],
                 h.get("significance"),
@@ -820,16 +745,15 @@ class Store:
         self.conn.execute(
             """
             INSERT INTO deadlines
-            (case_id, deadline_key, title, due_at_utc, timezone, notes, provenance,
+            (case_id, deadline_key, title, due_at_utc, timezone, notes,
              status, significance, deadline_type, gcal_event_id,
              docket_id, source_entry_ids, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(case_id, deadline_key) DO UPDATE SET
               title=excluded.title,
               due_at_utc=excluded.due_at_utc,
               timezone=excluded.timezone,
               notes=excluded.notes,
-              provenance=COALESCE(excluded.provenance, deadlines.provenance),
               status=excluded.status,
               significance=COALESCE(excluded.significance, deadlines.significance),
               deadline_type=COALESCE(excluded.deadline_type, deadlines.deadline_type),
@@ -845,7 +769,6 @@ class Store:
                 d.get("due_at_utc"),
                 d["timezone"],
                 d.get("notes"),
-                d.get("provenance"),
                 d["status"],
                 d.get("significance"),
                 d.get("deadline_type"),
