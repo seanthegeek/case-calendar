@@ -1235,6 +1235,143 @@ class TestDeadlineExtraction:
         assert captured["known_deadlines"] == []
 
 
+class TestConditionalDeadline:
+    """Deadlines relative to an unknown future event must NOT estimate a
+    calendar date. The extractor LLM emits ADD_DEADLINE with
+    ``local_date=null`` and ``conditional=true``, and the verbatim court
+    text rides on ``notes``. The row persists with ``due_at_utc=NULL`` so
+    the renderers skip it, but the summary scaffold still surfaces the
+    trigger language. This is the 9th Cir. ``appellants-motion-relief-stay``
+    shape from Anthropic v. DoW (docket 73136734 entry 17): "Appellants
+    must file a motion for appropriate relief within 21 days after
+    resolution of [the related D.C. Cir. case]."
+    """
+
+    @pytest.fixture
+    def case(self):
+        return CaseConfig(
+            case_id="us-v-x", name="United States v. X",
+            dockets=[100], calendar="cyber",
+            extract_deadlines=True,
+        )
+
+    def test_conditional_add_persists_row_with_null_due_at_utc(
+        self, store: Store, case, monkeypatch,
+    ):
+        verbatim = (
+            "Appellants must file a motion for appropriate relief within "
+            "21 days after resolution of related case No. 26-1049."
+        )
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "appellants-motion-relief-stay",
+                 "title": "Appellants' Motion for Appropriate Relief",
+                 "local_date": None,
+                 "conditional": True,
+                 "notes": verbatim,
+                 "significance": "major"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(
+            case, 100,
+            # "shall file" + "scheduling order" + "stipulation" so the
+            # pre-filter routes this to the LLM.
+            _entry(1, "ORDER on stipulation staying appellate "
+                      "proceedings; appellants shall file a motion "
+                      "within 21 days."),
+        )
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        d = rows[0]
+        # Persisted, but no calendar date — the renderers skip null-date rows.
+        assert d["due_at_utc"] is None
+        assert d["status"] == "pending"
+        # Verbatim court language is preserved for the summary LLM.
+        assert d["notes"] == verbatim
+        assert d["docket_id"] == 100
+
+    def test_non_conditional_dateless_add_is_still_dropped(
+        self, store: Store, case, monkeypatch,
+    ):
+        # Without conditional=true, a date-less ADD_DEADLINE is the
+        # motion-anticipating-a-deadline pattern the LLM should have
+        # IGNOREd. Defensive guard remains.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "ghost",
+                 "title": "Ghost",
+                 "local_date": None,
+                 "significance": "major"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(
+            case, 100,
+            _entry(1, "MOTION requesting a briefing schedule "
+                      "and an extension of time"),
+        )
+        assert store.get_deadlines("us-v-x") == []
+
+    def test_conditional_row_is_skipped_by_deadline_to_hearing_adapter(
+        self, store: Store, case, monkeypatch,
+    ):
+        # The render-time adapter turns a deadline row into a hearing-
+        # shaped dict for ICS / gcal / index. Null due_at_utc → None
+        # return → the row never reaches a renderer (and so never lands
+        # on a calendar). This guard is what makes "no fake dates"
+        # actually true at emit time.
+        from case_calendar.cli import _deadline_to_hearing
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "appellants-motion-relief-stay",
+                 "title": "Appellants' Motion for Appropriate Relief",
+                 "local_date": None,
+                 "conditional": True,
+                 "notes": "Within 21 days after resolution of related case.",
+                 "significance": "major"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(
+            case, 100,
+            _entry(1, "ORDER on stipulation staying appellate "
+                      "proceedings; appellants shall file a motion "
+                      "within 21 days."),
+        )
+        row = store.get_deadlines("us-v-x")[0]
+        assert _deadline_to_hearing(row) is None
+
+    def test_conditional_then_concrete_reschedule_fills_in_date(
+        self, store: Store, case, monkeypatch,
+    ):
+        # When the triggering event eventually occurs, a follow-up
+        # RESCHEDULE_DEADLINE pins the date. The row remains the same
+        # key, gets a real due_at_utc, and rejoins the calendar.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "appellants-motion-relief-stay",
+                 "title": "Appellants' Motion for Appropriate Relief",
+                 "local_date": None, "conditional": True,
+                 "notes": "Within 21 days after resolution of related case.",
+                 "significance": "major"}],
+            2: [{"type": "RESCHEDULE_DEADLINE",
+                 "deadline_key": "appellants-motion-relief-stay",
+                 "title": "Appellants' Motion for Appropriate Relief",
+                 "local_date": "2026-08-15"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100,
+            _entry(1, "ORDER on stipulation staying proceedings; "
+                      "appellants shall file motion within 21 days."),
+        )
+        syncer.process_entry(
+            case, 100,
+            _entry(2, "ORDER lifting stay; relief motion due by 8/15/2026."),
+        )
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["due_at_utc"] == "2026-08-15T21:00:00+00:00"
+
+
 # --- end-of-sync dedupe sweep (same-docket same-slot hearings) ---
 
 

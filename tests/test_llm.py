@@ -1153,6 +1153,51 @@ class TestBuildSummaryUserMessage:
         # disposition_docs empty -> "(none)"
         assert "(none)" in msg
 
+    def test_conditional_deadline_surfaces_notes_verbatim(self):
+        # Conditional deadlines (no fixed date — court order triggered by
+        # an unknown future event) ride into the summary scaffold with
+        # ``due_at_utc=None`` and the court's verbatim trigger language in
+        # ``notes``. The scaffold MUST surface notes for these rows so
+        # the summary LLM can describe the deadline in the court's own
+        # words instead of inventing a date.
+        msg = llm._build_summary_user_message(
+            case_name="Anthropic v. DOW",
+            aggregation_note=None,
+            docket={"docket_number": "26-2011", "court_id": "ca9"},
+            operative_docs=[], disposition_docs=[],
+            hearings=[],
+            deadlines=[{
+                "title": "Appellants' Motion for Appropriate Relief",
+                "status": "pending",
+                "due_at_utc": None,
+                "deadline_type": None,
+                "notes": "Appellants must file within 21 days after "
+                         "resolution of related D.C. Cir. case 26-1049.",
+            }],
+            operative_char_budget=100, disposition_char_budget=100,
+        )
+        assert "due_at_utc=None" in msg
+        assert "21 days after resolution" in msg
+
+    def test_fixed_deadline_does_not_inline_notes(self):
+        # Non-conditional deadlines keep the scaffold line tight — the
+        # date already says everything; notes would just add noise.
+        msg = llm._build_summary_user_message(
+            case_name="X", aggregation_note=None,
+            docket={"docket_number": "x", "court_id": "x"},
+            operative_docs=[], disposition_docs=[],
+            hearings=[],
+            deadlines=[{
+                "title": "Govt response to MTD",
+                "status": "pending",
+                "due_at_utc": "2026-05-24T21:00:00+00:00",
+                "deadline_type": "response",
+                "notes": "Some operator-added side note that shouldn't reach the LLM.",
+            }],
+            operative_char_budget=100, disposition_char_budget=100,
+        )
+        assert "Some operator-added side note" not in msg
+
     def test_omits_aggregation_note_when_unset(self):
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,

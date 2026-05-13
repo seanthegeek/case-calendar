@@ -1375,12 +1375,28 @@ class CaseSyncer:
             log.warning("deadline action without deadline_key: %s", action)
             return
 
+        # ADD_DEADLINE with no date is allowed ONLY when the LLM explicitly
+        # marks it conditional (deadline runs from an unknown future event,
+        # e.g. "21 days after resolution of [related case]"). The row is
+        # persisted with due_at_utc=NULL so the renderers skip it (no fake
+        # calendar entry) while the summary scaffold still surfaces the
+        # verbatim court text from `notes`. A date-less ADD_DEADLINE without
+        # the conditional flag is a motion-anticipating-a-deadline that the
+        # LLM should have IGNOREd — drop it.
         if atype == "ADD_DEADLINE" and not action.get("local_date"):
-            log.warning(
-                "skipping date-less ADD_DEADLINE: case=%s key=%r entry=%s",
+            if not action.get("conditional"):
+                log.warning(
+                    "skipping date-less ADD_DEADLINE: case=%s key=%r entry=%s "
+                    "(LLM should have IGNOREd or marked conditional)",
+                    case.case_id, key, entry["id"],
+                )
+                return
+            log.info(
+                "applying conditional ADD_DEADLINE: case=%s key=%r entry=%s "
+                "notes=%r",
                 case.case_id, key, entry["id"],
+                (action.get("notes") or "")[:120],
             )
-            return
 
         log.info(
             "applying %s case=%s key=%r entry=%s date=%s",
@@ -1459,6 +1475,11 @@ class CaseSyncer:
             due_at_utc = _deadline_local_to_utc(
                 action["local_date"], action.get("local_time"), convert_tz
             )
+        elif atype == "ADD_DEADLINE" and action.get("conditional"):
+            # Explicitly conditional — clear any prior date so the renderer
+            # skips this row and the summary scaffold surfaces the verbatim
+            # court text in `notes` instead of an estimated date.
+            due_at_utc = None
         significance = action.get("significance") or (
             existing.get("significance") if existing else None
         )
