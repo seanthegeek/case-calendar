@@ -476,7 +476,6 @@ class CaseSyncer:
             "entries_processed": 0,
             "actions": 0,
             "verified": 0,
-            "auto_held": 0,
         }
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
@@ -540,37 +539,52 @@ class CaseSyncer:
         #      comparison is timezone-free.
         # Verify first so a "rescheduled to past date" outcome can't get
         # double-flipped to held by the second sweep.
+        # _verify_scheduled_hearings audits BOTH future and past 'scheduled'
+        # rows. There is no separate auto-held sweep: a past hearing is only
+        # marked 'held' when the LLM cites a minute entry / verdict /
+        # transcript / judgment-after as evidence of occurrence. Past-dated
+        # rows without that evidence stay 'scheduled' — accurately
+        # reflecting "the docket has not confirmed this happened" rather
+        # than guessing 'held' because the calendar date passed. (Trials
+        # get continued or vacated by plea without an explicit cancellation
+        # entry; the auto-held heuristic was wrong by default for them.)
         stats["verified"] = self._verify_scheduled_hearings(case)
         # Run dedupe AFTER verify so any RESCHEDULE / CANCEL from verify
         # gets a chance to clear concurrency before we ask the LLM to
-        # resolve it, and BEFORE auto_held so we don't dedupe a row that's
-        # about to flip to held on its own.
+        # resolve it.
         stats["deduped"] = self._dedupe_concurrent_hearings(case)
-        stats["auto_held"] = self._auto_mark_held_stale(case.case_id)
         if self.resolve_extract_deadlines(case):
             stats["deadlines_verified"] = self._verify_pending_deadlines(case)
             stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
     def _verify_scheduled_hearings(self, case: CaseConfig) -> int:
-        """Audit every future scheduled hearing for the case against recent
+        """Audit every scheduled hearing (past AND future) against recent
         docket entries. Returns the number of hearings whose row was
         modified by the audit.
 
         For each hearing the LLM returns one of: CONFIRM (no-op),
         RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, UNCLEAR.
         Anything other than CONFIRM/UNCLEAR mutates the row.
+
+        Past-dated rows participate too: the prompt requires the LLM to
+        cite a minute entry / verdict / transcript / judgment-after
+        before returning MARK_HELD on a past row. Date-passed alone is
+        not evidence of occurrence — trials and other hearings can pass
+        their scheduled date without an explicit cancellation entry, so
+        UNCLEAR (no change) is the correct default for past rows the
+        docket doesn't confirm.
         """
         from . import llm as llm_mod
 
-        now_iso = datetime.now(timezone.utc).isoformat()
-        # Future scheduled hearings only — past ones are handled by the
-        # auto-held sweep instead.
+        # No date filter — verify pulls past and future scheduled rows.
+        # Past 'scheduled' rows are exactly the ones at risk of false
+        # 'held' status, so they need the LLM's judgment most.
         rows = self.store.conn.execute(
             "SELECT * FROM hearings "
             "WHERE case_id=? AND status='scheduled' "
-            "AND starts_at_utc IS NOT NULL AND starts_at_utc >= ?",
-            (case.case_id, now_iso),
+            "AND starts_at_utc IS NOT NULL",
+            (case.case_id,),
         ).fetchall()
         if not rows:
             return 0
@@ -931,39 +945,6 @@ class CaseSyncer:
                 "UPDATE deadlines SET status='passed', last_updated=? "
                 "WHERE case_id=? AND deadline_key=?",
                 (now_iso, r["case_id"], r["deadline_key"]),
-            )
-            n += 1
-        if n:
-            self.store.conn.commit()
-        return n
-
-    def _auto_mark_held_stale(self, case_id: str) -> int:
-        """Flip past-dated 'scheduled' rows to 'held'. Returns count flipped.
-
-        ``starts_at_utc`` is already in UTC and the server clock is in UTC,
-        so the comparison is timezone-free. No buffer: once the start is in
-        the past, status='scheduled' is wrong by definition. If a
-        late-arriving reschedule entry says otherwise, it'll flip the row
-        back to 'scheduled' on the next sync.
-        """
-        now_iso = datetime.now(timezone.utc).isoformat()
-        rows = self.store.conn.execute(
-            "SELECT case_id, hearing_key, starts_at_utc FROM hearings "
-            "WHERE case_id=? AND status='scheduled' "
-            "AND starts_at_utc IS NOT NULL AND starts_at_utc < ?",
-            (case_id, now_iso),
-        ).fetchall()
-        n = 0
-        now = datetime.now(timezone.utc).isoformat()
-        for r in rows:
-            log.info(
-                "auto-marking held: case=%s key=%r starts=%s",
-                r["case_id"], r["hearing_key"], r["starts_at_utc"],
-            )
-            self.store.conn.execute(
-                "UPDATE hearings SET status='held', last_updated=? "
-                "WHERE case_id=? AND hearing_key=?",
-                (now, r["case_id"], r["hearing_key"]),
             )
             n += 1
         if n:

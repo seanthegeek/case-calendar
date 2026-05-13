@@ -554,7 +554,7 @@ class TestCmdSync:
             return {
                 "dockets_skipped": 0, "entries_seen": 1,
                 "entries_processed": 1, "actions": 1,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             }
 
         monkeypatch.setattr(cli.CaseSyncer, "sync_case", _fake_sync_case)
@@ -591,7 +591,7 @@ class TestCmdSync:
             lambda self, case: {
                 "dockets_skipped": 1, "entries_seen": 0,
                 "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             },
         )
         emit_calls: list[Any] = []
@@ -621,7 +621,7 @@ class TestCmdSync:
             lambda self, case: {
                 "dockets_skipped": 1, "entries_seen": 0,
                 "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             },
         )
         args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
@@ -638,7 +638,7 @@ class TestCmdSync:
             lambda self, case: {
                 "dockets_skipped": 0, "entries_seen": 1,
                 "entries_processed": 1, "actions": 1,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             },
         )
         emit_calls: list[Any] = []
@@ -663,7 +663,7 @@ class TestCmdSync:
             lambda self, case: {
                 "dockets_skipped": 0, "entries_seen": 0,
                 "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             },
         )
         from case_calendar import summary as summary_mod
@@ -705,7 +705,7 @@ class TestCmdSync:
             lambda self, case: {
                 "dockets_skipped": 0, "entries_seen": 0,
                 "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_held": 0, "auto_passed": 0,
+                "verified": 0, "auto_passed": 0,
             },
         )
         from case_calendar import summary as summary_mod

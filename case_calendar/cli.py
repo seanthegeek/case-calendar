@@ -175,7 +175,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             # condition those links never appear because the LLM returns
             # zero actions for a doc-availability flip.
             if stats.get("actions") or stats.get("verified") \
-                    or stats.get("auto_held") or stats.get("auto_passed") \
+                    or stats.get("auto_passed") \
                     or stats.get("entries_processed"):
                 affected_calendars.add(case.calendar)
 
