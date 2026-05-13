@@ -869,6 +869,223 @@ class TestVerifyHearingNoRecentEntries:
         assert "(none)" in captured["user"]
 
 
+class TestResolveDuplicateHearings:
+    """End-of-sync dedupe sweep — same-docket same-slot LLM resolver."""
+
+    def _cluster(self):
+        return [
+            _hearing(
+                hearing_key="msj-hearing-anthropic-v-usdw",
+                title="Hearing on Motion for Summary Judgment and Cross-Motion",
+                starts_at_utc="2099-07-30T17:00:00+00:00",
+                source_entry_ids=[149, 150],
+                docket_id=72379655,
+            ),
+            _hearing(
+                hearing_key="motion-hearing-anthropic-v-usdw-2",
+                title="Motion Hearing",
+                starts_at_utc="2099-07-30T17:00:00+00:00",
+                source_entry_ids=[150],
+                docket_id=72379655,
+            ),
+        ]
+
+    def test_returns_merge_into_action(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="Anthropic v. DOW", court_id="cand",
+            court_tz="America/Los_Angeles",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "MERGE_INTO"
+        assert out["target_key"] == "msj-hearing-anthropic-v-usdw"
+
+    def test_returns_keep_both_when_truly_distinct(self, monkeypatch):
+        # Stacked back-to-back proceedings — the LLM keeps both.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="US v. X", court_id="dcd", court_tz="America/New_York",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "KEEP_BOTH"
+
+    def test_strips_markdown_fences(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '```json\n{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "..."}\n```',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="cand", court_tz="America/Los_Angeles",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "MERGE_INTO"
+
+    def test_unwraps_actions_array(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens:
+                '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "KEEP_BOTH"
+
+    def test_empty_actions_array_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens: '{"actions": []}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_non_json_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens: "I cannot tell.",
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_missing_type_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_anthropic",
+            lambda system, user, max_tokens: '{"reason": "no type"}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_llm_call_failure_returns_unclear(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+        def boom(system, user, max_tokens):
+            raise RuntimeError("api down")
+
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "UNCLEAR"
+
+    def test_no_provider_configured_raises(self, monkeypatch):
+        # Strip every *_API_KEY and LLM_PROVIDER override so detection fails.
+        for k in ("LLM_PROVIDER", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
+                  "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+            monkeypatch.delenv(k, raising=False)
+        with pytest.raises(RuntimeError, match="No LLM provider"):
+            llm.resolve_duplicate_hearings(
+                case_name="X", court_id="x", court_tz="UTC",
+                cluster=self._cluster(), recent_entries=[],
+            )
+
+    def test_user_message_lists_all_candidates_and_recent(self, monkeypatch):
+        # Captures the user message to assert all cluster keys + a recent
+        # entry line appear in it — the LLM needs both to pick a target.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured: dict[str, str] = {}
+
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            return '{"type": "UNCLEAR"}'
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.resolve_duplicate_hearings(
+            case_name="Anthropic v. DOW", court_id="cand",
+            court_tz="America/Los_Angeles",
+            cluster=self._cluster(),
+            recent_entries=[{
+                "entry_number": 150, "entry_id": 461818939,
+                "date_filed": "2026-04-23",
+                "description": "ORDER RE 149 STIPULATION ...",
+            }],
+        )
+        msg = captured["user"]
+        assert "msj-hearing-anthropic-v-usdw" in msg
+        assert "motion-hearing-anthropic-v-usdw-2" in msg
+        assert "ORDER RE 149 STIPULATION" in msg
+
+    def test_empty_recent_entries_renders_none_marker(self, monkeypatch):
+        # The user message must still be valid when the docket window is
+        # empty — exercises the `if not recent_entries` branch.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured: dict[str, str] = {}
+
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            return '{"type": "UNCLEAR"}'
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert "(none)" in captured["user"]
+
+    def test_openai_provider_dispatch(self, monkeypatch):
+        monkeypatch.delenv("LLM_PROVIDER", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_openai",
+            lambda system, user, max_tokens:
+                '{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "..."}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "MERGE_INTO"
+
+    def test_gemini_provider_dispatch(self, monkeypatch):
+        monkeypatch.delenv("LLM_PROVIDER", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "x")
+        monkeypatch.setattr(
+            llm, "_call_gemini",
+            lambda system, user, max_tokens:
+                '{"type": "KEEP_BOTH", "reason": "..."}',
+        )
+        out = llm.resolve_duplicate_hearings(
+            case_name="X", court_id="x", court_tz="UTC",
+            cluster=self._cluster(), recent_entries=[],
+        )
+        assert out["type"] == "KEEP_BOTH"
+
+
 # --- summary pipeline ---
 
 

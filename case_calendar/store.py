@@ -591,6 +591,41 @@ class Store:
         ).fetchall()
         return [self._row_to_hearing(r) for r in rows]
 
+    def find_concurrent_hearing_clusters(
+        self, case_id: str,
+    ) -> list[list[dict[str, Any]]]:
+        """Future scheduled hearings sharing (docket_id, starts_at_utc).
+
+        Returns a list of clusters, each a list of >=2 hearing dicts with
+        ``source_entry_ids`` already JSON-decoded. A single court cannot
+        hold two hearings on one docket at the same date and time, so
+        equal ``(docket_id, starts_at_utc)`` across ``status='scheduled'``
+        rows is a signal that the per-entry extractor split one logical
+        event across keys (e.g. a stipulation referred to "Hearing on
+        Motion for Summary Judgment" and the signed order called it
+        "Motion Hearing" — same slot, two ``hearing_key``s). The end-of-
+        sync dedupe sweep in :class:`CaseSyncer` resolves these via a
+        focused LLM call. Past hearings are excluded — the auto-held
+        sweep handles them.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat()
+        rows = self.conn.execute(
+            """
+            SELECT * FROM hearings
+            WHERE case_id=? AND status='scheduled'
+              AND starts_at_utc IS NOT NULL AND starts_at_utc >= ?
+              AND docket_id IS NOT NULL
+            ORDER BY docket_id, starts_at_utc, hearing_key
+            """,
+            (case_id, now_iso),
+        ).fetchall()
+        clusters: dict[tuple[int, str], list[dict[str, Any]]] = {}
+        for r in rows:
+            h = self._row_to_hearing(r)
+            key = (h["docket_id"], h["starts_at_utc"])
+            clusters.setdefault(key, []).append(h)
+        return [c for c in clusters.values() if len(c) > 1]
+
     def get_hearing(self, case_id: str, hearing_key: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
             "SELECT * FROM hearings WHERE case_id=? AND hearing_key=?",

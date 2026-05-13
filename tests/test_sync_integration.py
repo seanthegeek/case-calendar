@@ -1235,6 +1235,157 @@ class TestDeadlineExtraction:
         assert captured["known_deadlines"] == []
 
 
+# --- end-of-sync dedupe sweep (same-docket same-slot hearings) ---
+
+
+def stub_dedupe(monkeypatch, *, action: dict | None = None):
+    """Stub llm.resolve_duplicate_hearings.
+
+    Captures the cluster it sees so tests can assert on the prompt
+    contents. The default action is KEEP_BOTH (no-op).
+    """
+    captured: dict = {"cluster": None}
+
+    def fake(*, cluster, **_):
+        captured["cluster"] = cluster
+        return action or {"type": "KEEP_BOTH", "reason": "stub"}
+
+    monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", fake)
+    return captured
+
+
+class TestDedupeConcurrentHearings:
+    """End-of-sync sweep that resolves same-docket same-slot hearings
+    (the Anthropic v. DoW failure mode: a stipulation scheduled a "MSJ
+    Hearing" key, the order setting it called it "Motion Hearing", and
+    the per-entry extractor allocated two ``hearing_key``s for one
+    logical event)."""
+
+    def _seed_concurrent_pair(self, store, when="2099-04-14T15:00:00+00:00"):
+        # Target has [42, 43]; duplicate has [43, 99]. After merge, the
+        # target's source_entry_ids should be [42, 43, 99] — 43 dedupes
+        # against the target's existing copy, 99 gets appended (this
+        # exercises the inner-loop add branch in _apply_dedupe_action).
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "msj-hearing",
+            "title": "Hearing on Motion for Summary Judgment",
+            "starts_at_utc": when, "duration_minutes": 60,
+            "timezone": "America/New_York", "status": "scheduled",
+            "significance": "major", "docket_id": 100,
+            "source_entry_ids": [42, 43],
+        })
+        store.upsert_hearing({
+            "case_id": "us-v-x",
+            "hearing_key": "motion-hearing-2",
+            "title": "Motion Hearing",
+            "starts_at_utc": when, "duration_minutes": 60,
+            "timezone": "America/New_York", "status": "scheduled",
+            "significance": "major", "docket_id": 100,
+            "source_entry_ids": [43, 99],
+        })
+
+    def test_no_clusters_skips_llm_call(self, store, case, monkeypatch):
+        # The 99% case: nothing shares (docket, time), so the LLM is
+        # never asked. boom-stub verifies this stays free on quiet syncs.
+        def boom(*a, **k):
+            raise AssertionError("resolve_duplicate_hearings called when no clusters")
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        stub_verify(monkeypatch)
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 0
+
+    def test_merge_into_cancels_duplicates_and_combines_sources(
+        self, store, case, monkeypatch,
+    ):
+        self._seed_concurrent_pair(store)
+        stub_verify(monkeypatch)
+        captured = stub_dedupe(monkeypatch, action={
+            "type": "MERGE_INTO",
+            "target_key": "msj-hearing",
+            "reason": "Same slot — order called the SJ hearing a Motion Hearing.",
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        # One row got cancelled.
+        assert stats["deduped"] == 1
+        # Both hearings were sent to the LLM as one cluster.
+        keys_seen = {h["hearing_key"] for h in captured["cluster"]}
+        assert keys_seen == {"msj-hearing", "motion-hearing-2"}
+        # Target preserved, duplicate cancelled.
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["msj-hearing"]["status"] == "scheduled"
+        assert rows["motion-hearing-2"]["status"] == "cancelled"
+        # source_entry_ids from the duplicate were merged into the target,
+        # deduping against the target's existing list.
+        assert rows["msj-hearing"]["source_entry_ids"] == [42, 43, 99]
+        # The cancelled row carries a [dedupe] note pointing at the target.
+        assert "[dedupe]" in (rows["motion-hearing-2"]["notes"] or "")
+        assert "msj-hearing" in (rows["motion-hearing-2"]["notes"] or "")
+
+    def test_keep_both_leaves_cluster_alone(self, store, case, monkeypatch):
+        # Stacked back-to-back proceedings — LLM says they're distinct.
+        self._seed_concurrent_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(monkeypatch, action={
+            "type": "KEEP_BOTH",
+            "reason": "Order explicitly schedules both back-to-back",
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 0
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["msj-hearing"]["status"] == "scheduled"
+        assert rows["motion-hearing-2"]["status"] == "scheduled"
+
+    def test_unclear_leaves_cluster_alone(self, store, case, monkeypatch):
+        # On UNCLEAR (or a non-MERGE/non-KEEP_BOTH type), don't guess.
+        self._seed_concurrent_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(monkeypatch, action={"type": "UNCLEAR", "reason": "ambiguous"})
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 0
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["msj-hearing"]["status"] == "scheduled"
+        assert rows["motion-hearing-2"]["status"] == "scheduled"
+
+    def test_merge_into_unknown_target_is_a_noop(self, store, case, monkeypatch):
+        # Defensive: the LLM returned a target_key that isn't in the cluster.
+        # Don't touch any of the rows — leave the operator to investigate.
+        self._seed_concurrent_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(monkeypatch, action={
+            "type": "MERGE_INTO",
+            "target_key": "completely-different-key",
+            "reason": "...",
+        })
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 0
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["msj-hearing"]["status"] == "scheduled"
+        assert rows["motion-hearing-2"]["status"] == "scheduled"
+
+    def test_past_concurrent_hearings_are_not_deduped(
+        self, store, case, monkeypatch,
+    ):
+        # Past slots flip to held by the auto-held sweep — the dedupe
+        # pass is for future scheduled rows only. Boom-stub the LLM to
+        # prove it isn't consulted.
+        self._seed_concurrent_pair(store, when="2020-01-01T00:00:00+00:00")
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("dedupe LLM called for past hearings")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 0
+
+
 # --- verify_deadline end-of-case pass (parallel to TestVerifyScheduledHearings) ---
 
 

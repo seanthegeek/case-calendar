@@ -541,6 +541,11 @@ class CaseSyncer:
         # Verify first so a "rescheduled to past date" outcome can't get
         # double-flipped to held by the second sweep.
         stats["verified"] = self._verify_scheduled_hearings(case)
+        # Run dedupe AFTER verify so any RESCHEDULE / CANCEL from verify
+        # gets a chance to clear concurrency before we ask the LLM to
+        # resolve it, and BEFORE auto_held so we don't dedupe a row that's
+        # about to flip to held on its own.
+        stats["deduped"] = self._dedupe_concurrent_hearings(case)
         stats["auto_held"] = self._auto_mark_held_stale(case.case_id)
         if self.resolve_extract_deadlines(case):
             stats["deadlines_verified"] = self._verify_pending_deadlines(case)
@@ -673,6 +678,121 @@ class CaseSyncer:
         merged["source_entry_ids"] = sources
         self.store.upsert_hearing(merged)
         return True
+
+    def _dedupe_concurrent_hearings(self, case: CaseConfig) -> int:
+        """Resolve future scheduled hearings sharing (docket_id, starts_at_utc).
+
+        A single court cannot hold two hearings on one docket at the same
+        date and time, so equal ``(docket_id, starts_at_utc)`` across
+        ``status='scheduled'`` rows is a signal the per-entry extractor
+        split one logical event across keys (e.g. a stipulation said
+        "Hearing on Motion for Summary Judgment" and the signed order
+        called it "Motion Hearing" — same slot, two ``hearing_key``s).
+        The verify pass operates on one row in isolation and has no view
+        of sibling future hearings; this sweep closes that gap.
+
+        For each cluster the LLM returns MERGE_INTO (cancel duplicates,
+        merge their source_entry_ids into the target row) or KEEP_BOTH /
+        UNCLEAR (no-op — used for the rare case where two distinct
+        proceedings really are scheduled back-to-back at the same time).
+        Returns the count of rows cancelled by merge.
+        """
+        from . import llm as llm_mod
+
+        clusters = self.store.find_concurrent_hearing_clusters(case.case_id)
+        if not clusters:
+            return 0
+
+        n_merged = 0
+        for cluster in clusters:
+            # find_concurrent_hearing_clusters guarantees docket_id NOT
+            # NULL via its SQL filter — no defensive check needed here.
+            docket_id = cluster[0]["docket_id"]
+            meta = self.ensure_docket_cached(docket_id)
+            court_id = meta.get("court_id") or ""
+            tz = tz_for(court_id)
+            recent = self.store.get_recent_relevant_entries(
+                docket_id, "9999-12-31T00:00:00", limit=15,
+            )
+            action = llm_mod.resolve_duplicate_hearings(
+                case_name=case.name,
+                court_id=court_id,
+                court_tz=tz,
+                cluster=cluster,
+                recent_entries=recent,
+            )
+            n_merged += self._apply_dedupe_action(case, cluster, action)
+
+        if n_merged:
+            self.store.conn.commit()
+        return n_merged
+
+    def _apply_dedupe_action(
+        self,
+        case: CaseConfig,
+        cluster: list[dict[str, Any]],
+        action: dict[str, Any],
+    ) -> int:
+        """Apply one MERGE_INTO / KEEP_BOTH / UNCLEAR action to a cluster.
+
+        Returns the number of rows that were cancelled (i.e. merged into
+        the target).
+        """
+        atype = (action.get("type") or "UNCLEAR").upper()
+        if atype != "MERGE_INTO":
+            log.info(
+                "dedupe: keys=%s -> %s reason=%r",
+                [h.get("hearing_key") for h in cluster], atype,
+                (action.get("reason") or "")[:120],
+            )
+            return 0
+
+        target_key = action.get("target_key")
+        target = next(
+            (h for h in cluster if h.get("hearing_key") == target_key), None,
+        )
+        if not target:
+            log.warning(
+                "dedupe MERGE_INTO target_key %r not in cluster %s: leaving cluster alone",
+                target_key, [h.get("hearing_key") for h in cluster],
+            )
+            return 0
+
+        # Merge source_entry_ids from all duplicates into the target.
+        merged_sources: list[Any] = list(target.get("source_entry_ids") or [])
+        seen: set[Any] = set(merged_sources)
+        for dup in cluster:
+            if dup.get("hearing_key") == target_key:
+                continue
+            for sid in dup.get("source_entry_ids") or []:
+                if sid not in seen:
+                    seen.add(sid)
+                    merged_sources.append(sid)
+        target["source_entry_ids"] = merged_sources
+        self.store.upsert_hearing(target)
+
+        # Cancel each duplicate with an explanatory note pointing back to
+        # the target. Renderers skip cancelled rows so the calendar shows
+        # the right thing; the row is preserved for the audit trail.
+        n_cancelled = 0
+        reason = action.get("reason") or f"Duplicate of {target_key}"
+        for dup in cluster:
+            if dup.get("hearing_key") == target_key:
+                continue
+            dup_row = dict(dup)
+            dup_row["status"] = "cancelled"
+            dup_row["notes"] = (
+                (dup_row.get("notes") or "")
+                + f"\n\n[dedupe] Merged into {target_key}: {reason}"
+            ).strip()
+            self.store.upsert_hearing(dup_row)
+            n_cancelled += 1
+
+        log.info(
+            "dedupe: merged %d hearing(s) into %r on docket %s (case=%s)",
+            n_cancelled, target_key, target.get("docket_id"), case.case_id,
+        )
+        return n_cancelled
 
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:
         """Audit every future pending deadline against recent docket entries.

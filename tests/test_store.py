@@ -452,6 +452,60 @@ class TestHearings:
         out = store.get_hearings_in_court("us-v-x", "cadc")
         assert {h["hearing_key"] for h in out} == {"legacy", "uncached"}
 
+    def test_find_concurrent_hearing_clusters_groups_by_docket_and_time(
+        self, store: Store,
+    ):
+        # Two future hearings sharing the same (docket_id, starts_at_utc)
+        # form a cluster. A third hearing at a different time on the same
+        # docket does NOT. A fourth hearing at the same time but on a
+        # different docket does NOT (the rule is same-court same-slot,
+        # not same-time-anywhere).
+        future = "2099-04-14T15:00:00+00:00"
+        store.upsert_hearing(_hearing(
+            key="msj-hearing", starts_at_utc=future, docket_id=1,
+        ))
+        store.upsert_hearing(_hearing(
+            key="motion-hearing-2", starts_at_utc=future, docket_id=1,
+        ))
+        store.upsert_hearing(_hearing(
+            key="status", starts_at_utc="2099-04-15T15:00:00+00:00",
+            docket_id=1,
+        ))
+        store.upsert_hearing(_hearing(
+            key="other-docket", starts_at_utc=future, docket_id=2,
+        ))
+        clusters = store.find_concurrent_hearing_clusters("us-v-x")
+        assert len(clusters) == 1
+        keys = {h["hearing_key"] for h in clusters[0]}
+        assert keys == {"msj-hearing", "motion-hearing-2"}
+        # source_entry_ids is JSON-decoded for the caller.
+        assert all(isinstance(h["source_entry_ids"], list) for h in clusters[0])
+
+    def test_find_concurrent_hearing_clusters_excludes_past_and_non_scheduled(
+        self, store: Store,
+    ):
+        # Past slots are handled by the auto-held sweep — don't bother
+        # the LLM about them.
+        past = "2020-01-01T00:00:00+00:00"
+        store.upsert_hearing(_hearing(
+            key="past-a", starts_at_utc=past, docket_id=1,
+        ))
+        store.upsert_hearing(_hearing(
+            key="past-b", starts_at_utc=past, docket_id=1,
+        ))
+        # Cancelled / held rows must not poison a future cluster either —
+        # only count 'scheduled' rows.
+        future = "2099-04-14T15:00:00+00:00"
+        store.upsert_hearing(_hearing(
+            key="future-cancelled", starts_at_utc=future, docket_id=1,
+            status="cancelled",
+        ))
+        store.upsert_hearing(_hearing(
+            key="future-scheduled", starts_at_utc=future, docket_id=1,
+            status="scheduled",
+        ))
+        assert store.find_concurrent_hearing_clusters("us-v-x") == []
+
 
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {
