@@ -882,6 +882,70 @@ def _check_webhook_health(webhook_url: str) -> int:
     return 0
 
 
+def cmd_prune(args: argparse.Namespace) -> int:
+    """Delete every store row tied to a docket_id no longer in config.
+
+    Two-phase by default: print the plan (which dockets, how many rows per
+    table) and exit. Re-run with ``--apply`` to actually delete. The destructive
+    step is irreversible — the AGENTS.md backup-before-DDL rule extends in
+    spirit to bulk DML against a real store; back the DB up first.
+    """
+    cfg = _load_config(args.config)
+    cases = _cases_from_config(cfg)
+    live: set[int] = {int(d) for c in cases for d in c.dockets}
+    store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+    try:
+        known = set(store.list_all_docket_ids())
+        orphans = sorted(known - live)
+        if not orphans:
+            print(
+                f"No orphan dockets — store has {len(known)} docket(s), "
+                f"all referenced by config."
+            )
+            return 0
+        print(
+            f"Found {len(orphans)} orphan docket(s) "
+            f"(in store, not referenced by any case in config):"
+        )
+        plan: list[tuple[int, dict[str, int], dict[str, Any]]] = []
+        for did in orphans:
+            counts = store.count_docket_rows(did)
+            meta_row = store.conn.execute(
+                "SELECT court_id, docket_number, case_name "
+                "FROM dockets WHERE docket_id=?",
+                (did,),
+            ).fetchone()
+            meta = dict(meta_row) if meta_row else {
+                "court_id": None, "docket_number": None, "case_name": None,
+            }
+            plan.append((did, counts, meta))
+            label = (
+                f"{meta['docket_number'] or '?'} "
+                f"({meta['court_id'] or '?'}) — "
+                f"{meta['case_name'] or '<no metadata>'}"
+            )
+            total = sum(counts.values())
+            per_table = ", ".join(f"{k}={v}" for k, v in counts.items() if v)
+            print(f"  docket_id={did}  {label}")
+            print(f"    {total} rows: {per_table or '(empty)'}")
+        if not args.apply:
+            print()
+            print("Dry run — re-run with --apply to delete.")
+            return 0
+        print()
+        print("Deleting...")
+        for did, _, _ in plan:
+            deleted = store.delete_docket(did)
+            per_table = ", ".join(f"{k}={v}" for k, v in deleted.items() if v)
+            print(
+                f"  docket_id={did}  deleted {sum(deleted.values())} rows: "
+                f"{per_table or '(none)'}"
+            )
+        return 0
+    finally:
+        store.close()
+
+
 def cmd_show(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -990,6 +1054,20 @@ def main(argv: list[str] | None = None) -> int:
     p_show = sub.add_parser("show", help="dump current hearings")
     p_show.add_argument("--case", help="only show this case_id")
     p_show.set_defaults(func=cmd_show)
+
+    p_prune = sub.add_parser(
+        "prune",
+        help="delete store rows tied to docket_ids no longer in the config "
+             "(dry-run by default; pass --apply to actually delete)",
+    )
+    p_prune.add_argument(
+        "--apply",
+        action="store_true",
+        help="actually delete the orphan rows. Default is dry-run, which "
+             "prints the deletion plan without modifying the store. Back up "
+             "the SQLite store before applying.",
+    )
+    p_prune.set_defaults(func=cmd_prune)
 
     p_webhook_url = sub.add_parser(
         "webhook-url",

@@ -1038,3 +1038,141 @@ class TestAuditNotesMigration:
         assert "Already-extracted" in h["audit_notes"]
         assert "Stale reason" in h["audit_notes"]
         s.close()
+
+
+class TestPruneHelpers:
+    def _seed_docket(
+        self,
+        store: Store,
+        docket_id: int,
+        *,
+        case_id: str = "us-v-x",
+    ) -> None:
+        # Full row set: dockets meta + one entry + one hearing + one deadline
+        # + one case_summary, all keyed on docket_id. Mirrors what a normal
+        # sync leaves on disk for one docket.
+        store.upsert_docket_meta(docket_id, {
+            "court_id": "dcd",
+            "docket_number": f"1:24-cr-{docket_id:05d}",
+            "case_name": f"US v. Docket {docket_id}",
+            "absolute_url": None,
+            "date_last_filing": None,
+        })
+        entry_id = docket_id * 100 + 1
+        store.mark_entry(
+            docket_id=docket_id,
+            entry_id=entry_id,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="Indictment",
+            short_description="Indictment",
+            recap_documents=[],
+        )
+        store.upsert_hearing({
+            "case_id": case_id, "hearing_key": f"sentencing-{docket_id}",
+            "title": "Sentencing",
+            "starts_at_utc": "2099-01-01T00:00:00+00:00",
+            "duration_minutes": 60, "timezone": "America/New_York",
+            "status": "scheduled", "significance": "major",
+            "docket_id": docket_id, "source_entry_ids": [entry_id],
+        })
+        store.upsert_deadline({
+            "case_id": case_id, "deadline_key": f"reply-{docket_id}",
+            "title": "Reply ISO MTD",
+            "due_at_utc": "2099-01-15T22:00:00+00:00",
+            "timezone": "America/New_York", "status": "pending",
+            "significance": "major", "deadline_type": "reply",
+            "docket_id": docket_id, "source_entry_ids": [entry_id],
+        })
+        store.upsert_case_summary(
+            case_id=case_id, docket_id=docket_id,
+            summary="text", model="anthropic/test",
+            source_entry_ids=[entry_id],
+        )
+        store.conn.commit()
+
+    def test_list_all_docket_ids_includes_dockets_and_child_orphans(
+        self, store: Store,
+    ):
+        # Two dockets with full metadata + a child-only orphan whose dockets
+        # row never landed (sync interrupted between mark_entry and
+        # upsert_docket_meta). The child row alone should still surface so
+        # prune can sweep it.
+        self._seed_docket(store, 100)
+        self._seed_docket(store, 200)
+        store.mark_entry(
+            docket_id=300,
+            entry_id=30001,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="x",
+            short_description="x",
+            recap_documents=[],
+        )
+        store.conn.commit()
+        assert store.list_all_docket_ids() == [100, 200, 300]
+
+    def test_list_all_docket_ids_empty_store(self, store: Store):
+        assert store.list_all_docket_ids() == []
+
+    def test_count_docket_rows_per_table(self, store: Store):
+        self._seed_docket(store, 100)
+        counts = store.count_docket_rows(100)
+        assert counts == {
+            "entries": 1, "hearings": 1, "deadlines": 1,
+            "case_summaries": 1, "dockets": 1,
+        }
+
+    def test_count_docket_rows_unknown_id_is_all_zero(self, store: Store):
+        assert store.count_docket_rows(999) == {
+            "entries": 0, "hearings": 0, "deadlines": 0,
+            "case_summaries": 0, "dockets": 0,
+        }
+
+    def test_delete_docket_removes_every_referenced_row(self, store: Store):
+        self._seed_docket(store, 100)
+        self._seed_docket(store, 200)
+        deleted = store.delete_docket(100)
+        assert deleted == {
+            "entries": 1, "hearings": 1, "deadlines": 1,
+            "case_summaries": 1, "dockets": 1,
+        }
+        # Sibling docket 200 untouched.
+        assert store.list_all_docket_ids() == [200]
+        assert store.count_docket_rows(100) == {
+            "entries": 0, "hearings": 0, "deadlines": 0,
+            "case_summaries": 0, "dockets": 0,
+        }
+        # Tx commits inside delete_docket — close+reopen still shows the
+        # deletion (catches a "forgot to commit" regression).
+        path = store.path
+        store.close()
+        s2 = Store(path)
+        try:
+            assert s2.list_all_docket_ids() == [200]
+        finally:
+            s2.close()
+
+    def test_delete_docket_handles_child_only_orphan(self, store: Store):
+        # No dockets row, only a child entry — delete still cleans it up
+        # and reports dockets=0 for the row that wasn't there.
+        store.mark_entry(
+            docket_id=300,
+            entry_id=30001,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="x",
+            short_description="x",
+            recap_documents=[],
+        )
+        store.conn.commit()
+        deleted = store.delete_docket(300)
+        assert deleted["entries"] == 1
+        assert deleted["dockets"] == 0
+        assert store.list_all_docket_ids() == []

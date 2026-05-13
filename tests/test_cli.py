@@ -1080,6 +1080,121 @@ class TestCmdShow:
         assert capsys.readouterr().out == ""
 
 
+class TestCmdPrune:
+    def _seed_two_dockets(self, store_path: str) -> None:
+        # Seed the store with two dockets — one referenced by config, one not.
+        # Config (fixture above) has dockets=[100] only, so 200 is the orphan.
+        s = cli.Store(store_path)
+        for did, key in ((100, "k100"), (200, "k200")):
+            s.upsert_docket_meta(did, {
+                "court_id": "dcd",
+                "docket_number": f"1:24-cr-{did:05d}",
+                "case_name": f"US v. Docket {did}",
+                "absolute_url": None,
+                "date_last_filing": None,
+            })
+            s.mark_entry(
+                docket_id=did, entry_id=did,
+                date_modified="2026-01-01T00:00:00+00:00",
+                fingerprint="fp", entry_number=1,
+                date_filed="2026-01-01",
+                description="x", short_description="x", recap_documents=[],
+            )
+            s.upsert_hearing({
+                "case_id": "us-v-x", "hearing_key": key,
+                "title": "Sentencing",
+                "starts_at_utc": "2099-01-01T00:00:00+00:00",
+                "duration_minutes": 60, "timezone": "America/New_York",
+                "status": "scheduled", "significance": "major",
+                "docket_id": did, "source_entry_ids": [did],
+            })
+        s.conn.commit()
+        s.close()
+
+    def test_no_orphans_prints_clean_message(self, cfg_file, capsys):
+        # Only docket 100, which is in config — no orphans to remove.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        s = cli.Store(cfg["store_path"])
+        s.upsert_docket_meta(100, {
+            "court_id": "dcd", "docket_number": "1:24-cr-00100",
+            "case_name": "US v. X", "absolute_url": None,
+            "date_last_filing": None,
+        })
+        s.conn.commit()
+        s.close()
+        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        assert cli.cmd_prune(args) == 0
+        out = capsys.readouterr().out
+        assert "No orphan dockets" in out
+        assert "1 docket" in out
+
+    def test_dry_run_lists_orphans_without_deleting(self, cfg_file, capsys):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        self._seed_two_dockets(cfg["store_path"])
+        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        assert cli.cmd_prune(args) == 0
+        out = capsys.readouterr().out
+        # Plan surfaces docket_id, label, and per-table counts.
+        assert "Found 1 orphan docket" in out
+        assert "docket_id=200" in out
+        assert "1:24-cr-00200" in out
+        assert "US v. Docket 200" in out
+        # Per-table counts: every populated table on the orphan side.
+        assert "entries=1" in out
+        assert "hearings=1" in out
+        assert "dockets=1" in out
+        assert "Dry run" in out
+        # docket 100 (in config) is NOT in the plan.
+        assert "docket_id=100" not in out
+        # Verify nothing was actually deleted.
+        s = cli.Store(cfg["store_path"])
+        try:
+            assert sorted(s.list_all_docket_ids()) == [100, 200]
+        finally:
+            s.close()
+
+    def test_apply_deletes_orphan_rows(self, cfg_file, capsys):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        self._seed_two_dockets(cfg["store_path"])
+        args = SimpleNamespace(config=str(cfg_file), apply=True)
+        assert cli.cmd_prune(args) == 0
+        out = capsys.readouterr().out
+        assert "Deleting" in out
+        assert "deleted 3 rows" in out  # entries + hearings + dockets
+        # Re-open store and confirm orphan is gone, in-config docket survives.
+        s = cli.Store(cfg["store_path"])
+        try:
+            assert s.list_all_docket_ids() == [100]
+            assert s.count_docket_rows(200) == {
+                "entries": 0, "hearings": 0, "deadlines": 0,
+                "case_summaries": 0, "dockets": 0,
+            }
+        finally:
+            s.close()
+
+    def test_child_only_orphan_surfaces_in_plan_with_no_metadata_label(
+        self, cfg_file, capsys,
+    ):
+        # An entry whose docket row was never written. Plan should list it
+        # under the "<no metadata>" label rather than crashing on the
+        # missing dockets row.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        s = cli.Store(cfg["store_path"])
+        s.mark_entry(
+            docket_id=999, entry_id=999,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp", entry_number=1, date_filed="2026-01-01",
+            description="x", short_description="x", recap_documents=[],
+        )
+        s.conn.commit()
+        s.close()
+        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        assert cli.cmd_prune(args) == 0
+        out = capsys.readouterr().out
+        assert "docket_id=999" in out
+        assert "<no metadata>" in out
+
+
 class TestCmdWebhookUrl:
     def test_missing_secret_returns_2(self, monkeypatch, capsys):
         # The conftest autouse fixture already strips any inherited secret,

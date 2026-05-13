@@ -1024,3 +1024,55 @@ class Store:
             "VALUES (?, ?, ?)",
             (idempotency_key, event_type, _now()),
         )
+
+    # --- prune helpers ---
+
+    # Tables that carry a docket_id FK. Order matters for delete_docket: the
+    # `dockets` row must be removed last so a mid-DELETE crash leaves the
+    # parent row pointing at no children rather than an orphan child fan-out
+    # pointing at no parent.
+    _DOCKET_CHILD_TABLES = ("entries", "hearings", "deadlines", "case_summaries")
+    _DOCKET_TABLES = _DOCKET_CHILD_TABLES + ("dockets",)
+
+    def list_all_docket_ids(self) -> list[int]:
+        """Every docket_id mentioned anywhere in the store, sorted ascending.
+
+        Includes both the ``dockets`` table and every child table — a child
+        row whose parent ``dockets`` row never landed (sync interrupted
+        between the entry write and the docket meta upsert) is still an
+        orphan we want ``prune`` to surface and remove.
+        """
+        ids: set[int] = set()
+        for table in self._DOCKET_TABLES:
+            for row in self.conn.execute(
+                f"SELECT DISTINCT docket_id FROM {table} WHERE docket_id IS NOT NULL"
+            ):
+                ids.add(int(row["docket_id"]))
+        return sorted(ids)
+
+    def count_docket_rows(self, docket_id: int) -> dict[str, int]:
+        """Per-table row count for a single docket — feeds the ``prune`` preview."""
+        counts: dict[str, int] = {}
+        for table in self._DOCKET_TABLES:
+            row = self.conn.execute(
+                f"SELECT COUNT(*) AS n FROM {table} WHERE docket_id=?",
+                (docket_id,),
+            ).fetchone()
+            counts[table] = int(row["n"])
+        return counts
+
+    def delete_docket(self, docket_id: int) -> dict[str, int]:
+        """Cascade-delete every row tied to a docket_id. Returns per-table counts.
+
+        Caller is responsible for backing up the DB first — there are no
+        FOREIGN KEY constraints, so this is the only delete path.
+        """
+        counts: dict[str, int] = {}
+        with self.tx():
+            for table in self._DOCKET_TABLES:
+                cur = self.conn.execute(
+                    f"DELETE FROM {table} WHERE docket_id=?",
+                    (docket_id,),
+                )
+                counts[table] = cur.rowcount
+        return counts
