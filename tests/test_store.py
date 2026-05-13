@@ -606,6 +606,79 @@ class TestTxRollback:
         assert not store.webhook_seen("rollback-key")
 
 
+class TestConcurrencyPragmas:
+    """The polling sync and the webhook-serving process share the same
+    SQLite file. Without WAL + a busy_timeout, the second writer raises
+    SQLITE_BUSY immediately on any commit overlap — a webhook landing
+    mid-sync would bubble up as HTTP 500 (CL retries with the same
+    Idempotency-Key, but transient errors show up in the log), and a
+    sync that loses a race aborts the whole invocation.
+    """
+
+    def test_wal_mode_enabled(self, store: Store):
+        mode = store.conn.execute("PRAGMA journal_mode").fetchone()[0]
+        assert mode.lower() == "wal"
+
+    def test_busy_timeout_set(self, store: Store):
+        timeout = store.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        assert timeout == 5000
+
+    def test_contending_writer_blocks_instead_of_immediately_raising(
+        self, tmp_path,
+    ):
+        # Two Store instances against the same DB file (simulates the
+        # sync-process / serve-process split). Hold a write lock on one,
+        # then attempt a write on the other in a background thread —
+        # without busy_timeout this would raise OperationalError immediately;
+        # with it, the loser blocks until the holder commits, then succeeds.
+        import threading
+        import time
+
+        db = tmp_path / "concurrency.sqlite"
+        a = Store(db)
+        b = Store(db)
+
+        a.conn.execute("BEGIN IMMEDIATE")
+        a.conn.execute(
+            "INSERT INTO webhook_events (idempotency_key, event_type, received_at) "
+            "VALUES ('a', 1, datetime('now'))"
+        )
+
+        result: dict = {}
+
+        def contend():
+            try:
+                b.conn.execute(
+                    "INSERT INTO webhook_events "
+                    "(idempotency_key, event_type, received_at) "
+                    "VALUES ('b', 1, datetime('now'))"
+                )
+                b.conn.commit()
+                result["status"] = "ok"
+            except sqlite3.OperationalError as e:
+                result["status"] = "busy"
+                result["error"] = str(e)
+
+        t = threading.Thread(target=contend)
+        t.start()
+        # Give the contender enough time to attempt the write and start
+        # blocking on the busy lock.
+        time.sleep(0.2)
+        # Holder releases — contender should unblock and commit, NOT
+        # have already raised SQLITE_BUSY.
+        a.conn.commit()
+        t.join(timeout=2.0)
+
+        assert result.get("status") == "ok", (
+            f"expected loser to block-and-succeed, got {result!r}"
+        )
+        # Both rows landed.
+        assert a.webhook_seen("a")
+        assert b.webhook_seen("b")
+        a.close()
+        b.close()
+
+
 class TestEntryByNumber:
     def test_returns_row(self, store: Store):
         store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",

@@ -176,6 +176,20 @@ class Store:
         # explicitly — see WebhookServer.process_locked.
         self.conn = sqlite3.connect(self.path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        # WAL + a small busy_timeout let the polling `sync` process and the
+        # long-running `serve` process safely share the same DB file. Without
+        # these the second writer raises SQLITE_BUSY *immediately* on any
+        # commit overlap: a webhook delivery that lands mid-sync would
+        # bubble up as HTTP 500 (CL retries via Idempotency-Key, no data
+        # loss but transient errors in the webhook log), and a sync that
+        # collides with a webhook would abort the whole invocation. WAL
+        # lets readers and one writer coexist; busy_timeout makes the
+        # loser block-and-retry for up to 5 seconds before raising — long
+        # enough to cover any of our actual transactions (single-row
+        # UPSERTs, no long-held writes). Sidecar `<db>-wal` and `<db>-shm`
+        # files appear next to the DB; include them in backups.
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()
