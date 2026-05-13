@@ -74,7 +74,8 @@ CREATE TABLE IF NOT EXISTS hearings (
     timezone TEXT NOT NULL,
     location TEXT,
     judge TEXT,
-    notes TEXT,
+    notes TEXT,                  -- LLM-extracted summary of docket text; shown to subscribers
+    audit_notes TEXT,            -- pipeline-synthesized audit trail (verify-pass / dedupe); never shown to LLM as input
     dial_in TEXT,
     status TEXT NOT NULL,        -- scheduled | held | cancelled | unknown
     significance TEXT,           -- "major" (default) | "minor" — calendar filter
@@ -92,7 +93,8 @@ CREATE TABLE IF NOT EXISTS deadlines (
     title TEXT NOT NULL,
     due_at_utc TEXT,              -- UTC ISO; renderer converts to court-local
     timezone TEXT NOT NULL,       -- IANA tz of the court the deadline was set in
-    notes TEXT,
+    notes TEXT,                   -- LLM-extracted summary of docket text; shown to subscribers
+    audit_notes TEXT,             -- pipeline-synthesized audit trail; never shown to LLM as input
     status TEXT NOT NULL,         -- pending | passed | met | cancelled | unknown
     significance TEXT,            -- "major" (default) | "minor" — calendar filter
     deadline_type TEXT,           -- response | reply | brief | other (informational)
@@ -130,6 +132,41 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_AUDIT_PARAGRAPH_PREFIXES = ("[verify-pass]", "[dedupe]")
+
+
+def _split_audit_segments(notes: Optional[str]) -> tuple[str, str]:
+    """Separate pipeline-synthesized audit paragraphs from docket-derived notes.
+
+    A paragraph (text separated by blank lines) is "audit" if its first
+    non-whitespace characters are ``[verify-pass]`` or ``[dedupe]``. These
+    prefixes are written ONLY by :class:`CaseSyncer` audit passes, never
+    by the per-entry extractor or by docket text, so the split is unambiguous.
+
+    Returns ``(clean_notes, audit_text)``: ``clean_notes`` is the original
+    string with audit paragraphs removed; ``audit_text`` joins the audit
+    paragraphs with blank-line separators. Either can be empty. The
+    migration helper persists them to the ``notes`` / ``audit_notes``
+    columns respectively. Inline bracketed text inside a docket-derived
+    paragraph is left alone — only paragraphs that LEAD with the prefix
+    are moved.
+    """
+    if not notes:
+        return "", ""
+    paragraphs = notes.split("\n\n")
+    kept: list[str] = []
+    moved: list[str] = []
+    for p in paragraphs:
+        stripped = p.lstrip()
+        if any(stripped.startswith(prefix) for prefix in _AUDIT_PARAGRAPH_PREFIXES):
+            moved.append(p.strip())
+        else:
+            kept.append(p)
+    clean_notes = "\n\n".join(kept).strip()
+    audit_text = "\n\n".join(moved).strip()
+    return clean_notes, audit_text
+
+
 class Store:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -160,6 +197,8 @@ class Store:
             ("entries", "recap_documents", "TEXT"),
             ("hearings", "m365_event_id", "TEXT"),
             ("deadlines", "m365_event_id", "TEXT"),
+            ("hearings", "audit_notes", "TEXT"),
+            ("deadlines", "audit_notes", "TEXT"),
             ("case_summaries", "stale", "INTEGER NOT NULL DEFAULT 0"),
             ("case_summaries", "stale_since", "TEXT"),
         ]:
@@ -181,6 +220,49 @@ class Store:
             "CREATE INDEX IF NOT EXISTS idx_entries_docket_entry_number "
             "ON entries (docket_id, entry_number)"
         )
+        # Move existing [verify-pass] / [dedupe] paragraphs from notes to
+        # audit_notes. The verify pass was previously writing audit trail
+        # into the same `notes` column it later read as docket evidence,
+        # producing circular self-confirmation (the McGonigal trial regression).
+        # The split makes that impossible structurally: verify pass writes to
+        # audit_notes, reads only notes. This migration recategorizes the
+        # already-written legacy rows. Idempotent — second run finds nothing
+        # to move because the prefixes only live in notes pre-migration.
+        # Un-prefixed legacy brackets (e.g. "[Trial vacated by guilty plea ...]"
+        # without a [verify-pass] header) are intentionally left in notes;
+        # they may be real docket text that happens to be bracketed, so a
+        # blanket move is unsafe. Those rows get hand-cleanup.
+        self._migrate_audit_segments()
+
+    def _migrate_audit_segments(self) -> None:
+        """Split existing [verify-pass] / [dedupe] paragraphs out of `notes`
+        into `audit_notes`. Called by :meth:`_migrate`; safe to re-run."""
+        for table, key_col in (("hearings", "hearing_key"), ("deadlines", "deadline_key")):
+            rows = self.conn.execute(
+                f"SELECT case_id, {key_col}, notes, audit_notes FROM {table} "
+                f"WHERE notes IS NOT NULL "
+                f"  AND (notes LIKE '%[verify-pass]%' OR notes LIKE '%[dedupe]%')"
+            ).fetchall()
+            for row in rows:
+                clean_notes, extracted = _split_audit_segments(row["notes"])
+                if not extracted:
+                    continue
+                # Merge any pre-existing audit_notes with the newly-extracted
+                # paragraphs (extracted ones come last, preserving chronology).
+                existing_audit = (row["audit_notes"] or "").strip()
+                new_audit = "\n\n".join(
+                    p for p in (existing_audit, extracted) if p
+                )
+                self.conn.execute(
+                    f"UPDATE {table} SET notes=?, audit_notes=? "
+                    f"WHERE case_id=? AND {key_col}=?",
+                    (
+                        clean_notes or None,
+                        new_audit or None,
+                        row["case_id"],
+                        row[key_col],
+                    ),
+                )
 
     def close(self) -> None:
         self.conn.close()
@@ -638,9 +720,9 @@ class Store:
             """
             INSERT INTO hearings
             (case_id, hearing_key, title, starts_at_utc, duration_minutes, timezone,
-             location, judge, notes, dial_in, status, significance, gcal_event_id,
-             docket_id, source_entry_ids, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             location, judge, notes, audit_notes, dial_in, status, significance,
+             gcal_event_id, docket_id, source_entry_ids, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(case_id, hearing_key) DO UPDATE SET
               title=excluded.title,
               starts_at_utc=excluded.starts_at_utc,
@@ -649,6 +731,7 @@ class Store:
               location=excluded.location,
               judge=excluded.judge,
               notes=excluded.notes,
+              audit_notes=COALESCE(excluded.audit_notes, hearings.audit_notes),
               dial_in=excluded.dial_in,
               status=excluded.status,
               significance=COALESCE(excluded.significance, hearings.significance),
@@ -667,6 +750,7 @@ class Store:
                 h.get("location"),
                 h.get("judge"),
                 h.get("notes"),
+                h.get("audit_notes"),
                 h.get("dial_in"),
                 h["status"],
                 h.get("significance"),
@@ -745,15 +829,16 @@ class Store:
         self.conn.execute(
             """
             INSERT INTO deadlines
-            (case_id, deadline_key, title, due_at_utc, timezone, notes,
+            (case_id, deadline_key, title, due_at_utc, timezone, notes, audit_notes,
              status, significance, deadline_type, gcal_event_id,
              docket_id, source_entry_ids, last_updated)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(case_id, deadline_key) DO UPDATE SET
               title=excluded.title,
               due_at_utc=excluded.due_at_utc,
               timezone=excluded.timezone,
               notes=excluded.notes,
+              audit_notes=COALESCE(excluded.audit_notes, deadlines.audit_notes),
               status=excluded.status,
               significance=COALESCE(excluded.significance, deadlines.significance),
               deadline_type=COALESCE(excluded.deadline_type, deadlines.deadline_type),
@@ -769,6 +854,7 @@ class Store:
                 d.get("due_at_utc"),
                 d["timezone"],
                 d.get("notes"),
+                d.get("audit_notes"),
                 d["status"],
                 d.get("significance"),
                 d.get("deadline_type"),

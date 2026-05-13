@@ -815,3 +815,226 @@ class TestSchemaMigration:
         path = tmp_path / "x.sqlite"
         Store(path).close()
         Store(path).close()
+
+
+class TestSplitAuditSegments:
+    """``_split_audit_segments`` is the migration helper that separates
+    pipeline-synthesized audit paragraphs (``[verify-pass]`` / ``[dedupe]``)
+    from docket-derived ``notes``. Both writers AND the migration rely on
+    its exact semantics; an over-eager split would drop real court text,
+    an under-eager one would leave self-confirming audit text in ``notes``
+    where the verify-pass LLM reads it.
+    """
+
+    def test_none_returns_empty_pair(self):
+        from case_calendar.store import _split_audit_segments
+        assert _split_audit_segments(None) == ("", "")
+        assert _split_audit_segments("") == ("", "")
+
+    def test_no_audit_prefix_passes_notes_through_unchanged(self):
+        from case_calendar.store import _split_audit_segments
+        notes = "Trial commences June 12, 2024. Pretrial deadlines: ..."
+        clean, audit = _split_audit_segments(notes)
+        assert clean == notes
+        assert audit == ""
+
+    def test_verify_pass_paragraph_moves(self):
+        from case_calendar.store import _split_audit_segments
+        notes = (
+            "Trial commences June 12, 2024.\n\n"
+            "[verify-pass] Cancellation not supported by docket; reverted."
+        )
+        clean, audit = _split_audit_segments(notes)
+        assert clean == "Trial commences June 12, 2024."
+        assert audit == (
+            "[verify-pass] Cancellation not supported by docket; reverted."
+        )
+
+    def test_dedupe_paragraph_moves(self):
+        from case_calendar.store import _split_audit_segments
+        notes = "Motion hearing on MSJ.\n\n[dedupe] Merged into msj-hearing: same slot"
+        clean, audit = _split_audit_segments(notes)
+        assert clean == "Motion hearing on MSJ."
+        assert audit == "[dedupe] Merged into msj-hearing: same slot"
+
+    def test_multiple_audit_paragraphs_concatenated(self):
+        from case_calendar.store import _split_audit_segments
+        notes = (
+            "Original scheduling order text.\n\n"
+            "[verify-pass] First reschedule per entry 65.\n\n"
+            "[verify-pass] Second reschedule per entry 88.\n\n"
+            "[dedupe] Merged into other-key: same slot"
+        )
+        clean, audit = _split_audit_segments(notes)
+        assert clean == "Original scheduling order text."
+        # Order preserved chronologically.
+        assert audit == (
+            "[verify-pass] First reschedule per entry 65.\n\n"
+            "[verify-pass] Second reschedule per entry 88.\n\n"
+            "[dedupe] Merged into other-key: same slot"
+        )
+
+    def test_un_prefixed_brackets_stay_in_notes(self):
+        # The McGonigal-shape legacy hallucination: bracketed paragraph
+        # without a [verify-pass] / [dedupe] tag. We must NOT auto-move
+        # these — they might be real court text that happens to contain
+        # brackets. Manual cleanup only.
+        from case_calendar.store import _split_audit_segments
+        notes = (
+            "Trial commences June 12, 2024.\n\n"
+            "[Trial vacated by guilty plea entered 8/15/2023.]"
+        )
+        clean, audit = _split_audit_segments(notes)
+        assert clean == notes  # whole string preserved
+        assert audit == ""
+
+    def test_inline_brackets_inside_paragraph_stay_inline(self):
+        # A docket entry's notes may contain inline bracket references
+        # like "[1]" or "[Doc. 65]". Only paragraphs that LEAD with the
+        # audit prefix are moved.
+        from case_calendar.store import _split_audit_segments
+        notes = "Order [Doc. 65] resets trial to 6/12/2024."
+        clean, audit = _split_audit_segments(notes)
+        assert clean == notes
+        assert audit == ""
+
+
+class TestAuditNotesMigration:
+    """The store opens with a migration that moves existing
+    ``[verify-pass]`` / ``[dedupe]`` paragraphs out of ``notes`` into
+    the new ``audit_notes`` column. Tests cover the migration AND the
+    runtime contract that subsequent writes preserve the separation.
+    """
+
+    def test_legacy_notes_get_split_on_open(self, tmp_path):
+        # Pre-migration DB: hearings table without audit_notes column,
+        # notes containing a [verify-pass] paragraph.
+        path = tmp_path / "legacy.sqlite"
+        c = sqlite3.connect(path)
+        c.executescript("""
+            CREATE TABLE hearings (
+                case_id TEXT NOT NULL,
+                hearing_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                starts_at_utc TEXT,
+                duration_minutes INTEGER,
+                timezone TEXT NOT NULL,
+                location TEXT, judge TEXT, notes TEXT, dial_in TEXT,
+                status TEXT NOT NULL,
+                gcal_event_id TEXT,
+                source_entry_ids TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, hearing_key)
+            );
+            CREATE TABLE deadlines (
+                case_id TEXT NOT NULL,
+                deadline_key TEXT NOT NULL,
+                title TEXT NOT NULL,
+                due_at_utc TEXT,
+                timezone TEXT NOT NULL,
+                notes TEXT,
+                status TEXT NOT NULL,
+                gcal_event_id TEXT,
+                source_entry_ids TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, deadline_key)
+            );
+        """)
+        c.execute(
+            "INSERT INTO hearings VALUES "
+            "('us-v-x', 'trial', 'Trial', '2024-06-12T14:00:00+00:00', "
+            "240, 'America/New_York', NULL, NULL, "
+            "'Trial commences June 12, 2024.\n\n"
+            "[verify-pass] Cancellation not supported per recent entries.', "
+            "NULL, 'scheduled', NULL, '[1]', '2026-01-01T00:00:00+00:00')"
+        )
+        c.execute(
+            "INSERT INTO deadlines VALUES "
+            "('us-v-x', 'reply-mtd', 'Reply', '2026-02-01T22:00:00+00:00', "
+            "'America/New_York', "
+            "'Reply due 2/1/2026.\n\n[verify-pass] Extended per docket.', "
+            "'pending', NULL, '[1]', '2026-01-01T00:00:00+00:00')"
+        )
+        c.commit()
+        c.close()
+
+        s = Store(path)
+        h = s.get_hearing("us-v-x", "trial")
+        assert h["notes"] == "Trial commences June 12, 2024."
+        assert h["audit_notes"] == (
+            "[verify-pass] Cancellation not supported per recent entries."
+        )
+        d = s.get_deadlines("us-v-x")[0]
+        assert d["notes"] == "Reply due 2/1/2026."
+        assert d["audit_notes"] == "[verify-pass] Extended per docket."
+        s.close()
+
+    def test_migration_is_idempotent(self, tmp_path):
+        # Running open twice mustn't double-split: by the second open the
+        # audit text already lives in audit_notes, so notes contains no
+        # [verify-pass] paragraph and the migration finds nothing to move.
+        path = tmp_path / "idem.sqlite"
+        c = sqlite3.connect(path)
+        c.executescript("""
+            CREATE TABLE hearings (
+                case_id TEXT NOT NULL, hearing_key TEXT NOT NULL,
+                title TEXT NOT NULL, starts_at_utc TEXT,
+                duration_minutes INTEGER, timezone TEXT NOT NULL,
+                location TEXT, judge TEXT, notes TEXT, dial_in TEXT,
+                status TEXT NOT NULL, gcal_event_id TEXT,
+                source_entry_ids TEXT NOT NULL, last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, hearing_key)
+            );
+            CREATE TABLE deadlines (
+                case_id TEXT NOT NULL, deadline_key TEXT NOT NULL,
+                title TEXT NOT NULL, due_at_utc TEXT,
+                timezone TEXT NOT NULL, notes TEXT, status TEXT NOT NULL,
+                gcal_event_id TEXT, source_entry_ids TEXT NOT NULL,
+                last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, deadline_key)
+            );
+        """)
+        c.execute(
+            "INSERT INTO hearings VALUES "
+            "('us-v-x', 'trial', 'Trial', '2024-06-12T14:00:00+00:00', "
+            "240, 'America/New_York', NULL, NULL, "
+            "'Court text.\n\n[verify-pass] Reason A.', "
+            "NULL, 'scheduled', NULL, '[1]', '2026-01-01T00:00:00+00:00')"
+        )
+        c.commit()
+        c.close()
+
+        s = Store(path)
+        s.close()
+        # Second open: nothing to migrate, results unchanged.
+        s2 = Store(path)
+        h = s2.get_hearing("us-v-x", "trial")
+        assert h["notes"] == "Court text."
+        assert h["audit_notes"] == "[verify-pass] Reason A."
+        s2.close()
+
+    def test_pre_existing_audit_notes_preserved_during_migration(self, tmp_path):
+        # If a row already has audit_notes set (from a prior write) AND
+        # notes still contains a legacy [verify-pass] paragraph, the
+        # migration appends rather than overwrites.
+        path = tmp_path / "mixed.sqlite"
+        s = Store(path)  # fresh DB, all columns present
+        s.conn.execute(
+            "INSERT INTO hearings (case_id, hearing_key, title, starts_at_utc, "
+            "duration_minutes, timezone, notes, audit_notes, status, "
+            "source_entry_ids, last_updated) VALUES "
+            "('us-v-x', 'trial', 'Trial', '2024-06-12T14:00:00+00:00', "
+            "240, 'America/New_York', "
+            "'Court text.\n\n[verify-pass] Stale reason.', "
+            "'[verify-pass] Already-extracted.', "
+            "'scheduled', '[1]', '2026-01-01T00:00:00+00:00')"
+        )
+        s.conn.commit()
+        # Re-run the migration in place — production opens hit it
+        # automatically on every Store() construction.
+        s._migrate_audit_segments()
+        h = s.get_hearing("us-v-x", "trial")
+        assert h["notes"] == "Court text."
+        assert "Already-extracted" in h["audit_notes"]
+        assert "Stale reason" in h["audit_notes"]
+        s.close()

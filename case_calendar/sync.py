@@ -277,6 +277,24 @@ def _deadline_local_to_utc(
     return _local_to_utc(date_str, time_str or DEADLINE_DEFAULT_LOCAL_TIME, tz)
 
 
+def _append_audit_line(
+    existing_audit: Optional[str], source: str, note: str,
+) -> str:
+    """Append a new ``[<source>]`` audit line to a row's existing audit_notes.
+
+    ``source`` is the writer tag ("verify-pass" or "dedupe") that lets a
+    future reader (or a future migration) tell which audit pass wrote the
+    line. Audit paragraphs are separated by blank lines so they stay
+    readable when concatenated over multiple sync runs. Note: this column
+    is NEVER fed back to any LLM call — see the verify-pass user message
+    builders in ``llm.py``.
+    """
+    line = f"[{source}] {note}".strip()
+    if not existing_audit:
+        return line
+    return f"{existing_audit.rstrip()}\n\n{line}"
+
+
 def _mark_held_date_matches(
     action: dict[str, Any], existing: dict[str, Any], tolerance_days: int = 2
 ) -> bool:
@@ -576,7 +594,7 @@ class CaseSyncer:
           default for past rows the docket doesn't confirm.
 
         - For PAST ``cancelled`` rows the LLM additionally returns
-          UNCANCEL when the cancellation isn't supported by docket
+          REINSTATE when the cancellation isn't supported by docket
           evidence (no vacatur entry, no plea agreement, no dismissal —
           just an absence of activity that a prior LLM misread as
           cancellation). The caller flips the row back to ``scheduled``
@@ -659,25 +677,20 @@ class CaseSyncer:
 
         merged = dict(hearing)
         sources = list(hearing.get("source_entry_ids") or [])
+        audit_note: Optional[str] = None
 
         if atype == "CANCEL":
             merged.update(status="cancelled")
-            note = action.get("reason") or "Cancelled per recent docket entries"
-            merged["notes"] = (
-                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "Cancelled per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
             # Don't actually delete — preserve the audit trail by marking
             # cancelled with an explanatory note. Renderers skip cancelled
             # rows so the calendar shows the right thing.
             merged.update(status="cancelled")
-            note = action.get("reason") or "No docket entry supports this hearing"
-            merged["notes"] = (
-                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "No docket entry supports this hearing"
         elif atype == "MARK_HELD":
             merged.update(status="held")
-        elif atype == "UNCANCEL":
+        elif atype == "REINSTATE":
             # Issued for a 'cancelled' row whose cancellation is not
             # supported by an explicit docket entry. Revert to
             # 'scheduled' so the next verify pass can MARK_HELD it on
@@ -687,12 +700,9 @@ class CaseSyncer:
             # continued to be actively briefed after the trial date —
             # is the canonical case.
             merged.update(status="scheduled")
-            note = action.get("reason") or (
-                "Cancellation not supported by docket; reverted to scheduled"
+            audit_note = action.get("reason") or (
+                "Cancellation not supported by docket; reinstated to scheduled"
             )
-            merged["notes"] = (
-                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
         elif atype == "RESCHEDULE":
             local_date = action.get("local_date")
             local_time = action.get("local_time")
@@ -706,10 +716,7 @@ class CaseSyncer:
             merged["starts_at_utc"] = _local_to_utc(
                 local_date, local_time, convert_tz
             )
-            note = action.get("reason") or "Rescheduled per recent docket entries"
-            merged["notes"] = (
-                (hearing.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "Rescheduled per recent docket entries"
         else:
             log.warning(
                 "verify-pass unknown action type %s for case=%s key=%r",
@@ -717,6 +724,18 @@ class CaseSyncer:
             )
             return False
 
+        # Audit text lands in `audit_notes`, NOT `notes`. The split is
+        # load-bearing: the verify-pass LLM is fed `notes` as docket
+        # context but NEVER `audit_notes`, so it cannot read its own
+        # prior conclusions and self-confirm. The McGonigal trial
+        # regression — a row marked 'cancelled' by an earlier pass whose
+        # synthesized "[Trial vacated by guilty plea...]" line then read
+        # like docket testimony on the next sync — is the canonical
+        # circular-reasoning shape this column split eliminates.
+        if audit_note is not None:
+            merged["audit_notes"] = _append_audit_line(
+                hearing.get("audit_notes"), "verify-pass", audit_note,
+            )
         log.info(
             "verify-pass applying %s case=%s key=%r reason=%s",
             atype, case.case_id, hearing.get("hearing_key"),
@@ -828,10 +847,11 @@ class CaseSyncer:
                 continue
             dup_row = dict(dup)
             dup_row["status"] = "cancelled"
-            dup_row["notes"] = (
-                (dup_row.get("notes") or "")
-                + f"\n\n[dedupe] Merged into {target_key}: {reason}"
-            ).strip()
+            dup_row["audit_notes"] = _append_audit_line(
+                dup_row.get("audit_notes"),
+                "dedupe",
+                f"Merged into {target_key}: {reason}",
+            )
             self.store.upsert_hearing(dup_row)
             n_cancelled += 1
 
@@ -905,19 +925,14 @@ class CaseSyncer:
 
         merged = dict(deadline)
         sources = list(deadline.get("source_entry_ids") or [])
+        audit_note: Optional[str] = None
 
         if atype == "CANCEL":
             merged["status"] = "cancelled"
-            note = action.get("reason") or "Vacated per recent docket entries"
-            merged["notes"] = (
-                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
             merged["status"] = "cancelled"
-            note = action.get("reason") or "No docket entry supports this deadline"
-            merged["notes"] = (
-                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "No docket entry supports this deadline"
         elif atype == "MARK_FILED":
             merged["status"] = "met"
         elif atype == "RESCHEDULE":
@@ -932,10 +947,7 @@ class CaseSyncer:
             merged["due_at_utc"] = _deadline_local_to_utc(
                 local_date, action.get("local_time"), convert_tz
             )
-            note = action.get("reason") or "Extended per recent docket entries"
-            merged["notes"] = (
-                (deadline.get("notes") or "") + f"\n\n[verify-pass] {note}"
-            ).strip()
+            audit_note = action.get("reason") or "Extended per recent docket entries"
         else:
             log.warning(
                 "verify_deadline unknown action type %s: case=%s key=%r",
@@ -943,6 +955,10 @@ class CaseSyncer:
             )
             return False
 
+        if audit_note is not None:
+            merged["audit_notes"] = _append_audit_line(
+                deadline.get("audit_notes"), "verify-pass", audit_note,
+            )
         log.info(
             "verify_deadline applying %s case=%s key=%r reason=%s",
             atype, case.case_id, deadline.get("deadline_key"),

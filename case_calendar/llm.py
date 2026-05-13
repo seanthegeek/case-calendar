@@ -171,6 +171,47 @@ a parade of continuance events. When in doubt, push the date change onto
 the trial / hearing row and skip creating a new row for the procedural
 machinery around it.
 
+CRITICAL — CANCEL / MARK_HELD need EXPLICIT GROUNDING; never inference.
+To emit CANCEL, the entry being processed (or one in RELATED DOCKET
+ENTRIES) must explicitly state the hearing is vacated, cancelled, struck,
+withdrawn, terminated, adjourned, continued without a new date, or that
+the underlying case/charges are dismissed. To emit MARK_HELD, the entry
+must explicitly state the hearing happened (minute entry "held on",
+verdict, transcript, judgment-after). The following are NOT grounds and
+must NEVER trigger CANCEL or MARK_HELD on their own:
+
+- Another row's status in `known_hearings`. A `held` Change-of-Plea or
+  `held` Sentencing for ONE defendant does NOT vacate or "hold" a Trial
+  scheduled for OTHER defendants. Multi-defendant cases routinely have
+  one defendant plead while others proceed to trial — the McGonigal /
+  Shestakov case is the textbook example. The `known_hearings` list is
+  context for KEY REUSE and same-slot detection, not evidence of what
+  happened to OTHER hearings. Hearings don't carry defendant info in
+  the key, so you cannot tell from the list which row applies to which
+  defendant — don't guess.
+- Absence of docket activity. A hearing whose scheduled date has passed
+  without a minute entry is NOT evidence it was cancelled OR held; the
+  date may have been continued via a sealed CIPA order, the minute entry
+  may not yet be filed, or the case may simply have stalled. Emit
+  IGNORE — the verify pass operates with stricter, row-focused rules and
+  decides later.
+- A trial date passing in a case where ANY plea was entered. Trials in
+  co-defendant cases are not automatically vacated by one defendant's plea.
+
+If you're tempted to emit CANCEL or MARK_HELD from inference rather than
+explicit docket text in the entry being processed, emit IGNORE instead.
+
+`notes` echoes what the entry says — NO inferred commentary. The
+`notes` field is shown to subscribers in the calendar event description
+AND fed to the verify-pass LLM as docket context on later syncs. Writing
+your own conclusions there ("[Trial vacated by guilty plea...]",
+"[appears to have been vacated]", "[never held]", "[presumed cancelled]")
+creates a circular-reasoning trap: a future verify pass reads your bracket
+as if it were court testimony and self-confirms the conclusion. If the
+docket text doesn't say it, it doesn't go in `notes`. Pipeline reasoning
+belongs in the separate audit-trail column the system maintains; it is
+not your job to write there, and you do not have a way to.
+
 If the user message includes a "RELATED DOCKET ENTRIES" block, those are
 recent entries on the same docket — either explicitly cited by the new
 entry ("granting 65 Motion ...") or just the last few hearing-relevant
@@ -808,7 +849,7 @@ Return ONE of these action types as JSON:
   on", transcript filing) — calendar row should flip to held. Valid on
   EITHER a 'scheduled' or a 'cancelled' candidate: a row that was
   wrongly cancelled but actually took place flips to 'held'.
-- {"type": "UNCANCEL", "reason": "..."}
+- {"type": "REINSTATE", "reason": "..."}
   ONLY valid on a 'cancelled' candidate. The cancellation is NOT
   supported by an explicit docket entry — no vacatur order, no plea
   agreement, no dismissal, no clear scheduling-order supersession — and
@@ -889,8 +930,8 @@ you must cite at least ONE explicit signal from the recent entries:
 
 If you see none of those AND recent docket activity contradicts a
 cancellation (later filings, new deadlines set, new scheduling order
-referencing the case as live, etc.), return UNCANCEL. The caller flips
-the row to 'scheduled' with a [verify-pass] note. This is exactly the
+referencing the case as live, etc.), return REINSTATE. The caller flips
+the row to 'scheduled' with an audit-trail entry. This is exactly the
 inverse-Moucka shape: a trial that the case docket clearly continued
 past, but a prior pass marked the trial row 'cancelled' on inference.
 

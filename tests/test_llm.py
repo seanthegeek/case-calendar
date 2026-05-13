@@ -869,6 +869,62 @@ class TestVerifyHearingNoRecentEntries:
         assert "(none)" in captured["user"]
 
 
+class TestVerifyUserMessageNeverShowsAuditNotes:
+    """Load-bearing structural invariant: the verify-pass LLM is fed
+    ``notes`` (docket-derived context) but NEVER ``audit_notes`` (its
+    own prior conclusions). Violating this collapses the column split
+    back into the McGonigal-shape circular-reasoning bug. If a future
+    edit adds ``audit_notes`` to the user message, these tests fail.
+    """
+
+    def test_hearing_audit_notes_never_in_user_message(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured: dict[str, str] = {}
+
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            return '{"type": "CONFIRM"}'
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        hearing = _hearing(
+            notes="Trial commences June 12, 2024.",
+            audit_notes=(
+                "[verify-pass] DO NOT LEAK THIS — "
+                "if the verify LLM reads its own prior reason, the bug is back."
+            ),
+        )
+        llm.verify_hearing(
+            case_name="X", court_id="x", court_tz="x",
+            hearing=hearing, recent_entries=[],
+        )
+        # The docket-derived notes ARE shown — verify needs them as context.
+        assert "Trial commences June 12, 2024." in captured["user"]
+        # The audit text is structurally invisible to the LLM.
+        assert "DO NOT LEAK THIS" not in captured["user"]
+        assert "[verify-pass]" not in captured["user"]
+
+    def test_deadline_audit_notes_never_in_user_message(self, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured: dict[str, str] = {}
+
+        def fake(system, user, max_tokens):
+            captured["user"] = user
+            return '{"type": "CONFIRM"}'
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        deadline = _deadline(
+            notes="Reply due 2/1/2026.",
+            audit_notes="[verify-pass] DO NOT LEAK THIS deadline audit reason.",
+        )
+        llm.verify_deadline(
+            case_name="X", court_id="x", court_tz="x",
+            deadline=deadline, recent_entries=[],
+        )
+        assert "Reply due 2/1/2026." in captured["user"]
+        assert "DO NOT LEAK THIS" not in captured["user"]
+        assert "[verify-pass]" not in captured["user"]
+
+
 class TestResolveDuplicateHearings:
     """End-of-sync dedupe sweep — same-docket same-slot LLM resolver."""
 
@@ -1334,3 +1390,41 @@ class TestGenerateDocketSummary:
         )
         # Picks Sonnet (the summary-tier default), not Haiku.
         assert ident == "anthropic/" + llm._DEFAULT_SUMMARY_MODELS["anthropic"]
+
+
+class TestSystemPromptAntiInferenceGuards:
+    """Regression guards for the prompt sections added after the McGonigal
+    hallucination — a CANCEL emitted by the LLM purely from co-defendant
+    inference (held plea on one defendant → inferred "trial vacated" for
+    another). These tests aren't behavioral (no real LLM call), they
+    just assert the key instruction phrases survive future prompt edits.
+    Delete a phrase here and you must replace it with an equivalent one,
+    not just remove the test.
+    """
+
+    def test_cancel_requires_explicit_grounding(self):
+        # The header is the load-bearing phrase: a future edit should
+        # not drop the explicit-grounding rule without replacing it.
+        assert "CANCEL / MARK_HELD need EXPLICIT GROUNDING" in llm.SYSTEM_PROMPT
+
+    def test_co_defendant_inference_explicitly_forbidden(self):
+        # The McGonigal-shape: a held plea for one defendant must NOT
+        # cancel a trial for another.
+        assert "co-defendant cases" in llm.SYSTEM_PROMPT
+        assert "Multi-defendant" in llm.SYSTEM_PROMPT
+        # Calls out the actual failure mode — `known_hearings` is for
+        # key reuse, not status inference.
+        assert "KEY REUSE and same-slot detection" in llm.SYSTEM_PROMPT
+
+    def test_absence_of_activity_explicitly_not_grounds(self):
+        # Status-conf-mcgonigal-2 shape: a "no minute entry" inference
+        # writing "[appears to have been vacated]" into notes.
+        assert "Absence of docket activity" in llm.SYSTEM_PROMPT
+
+    def test_notes_forbids_inferred_brackets(self):
+        # The circular-reasoning trap the column split also addresses
+        # structurally — but the prompt rule catches it at write time,
+        # so audit_notes only collects audit-pass writes, not extractor
+        # inferences.
+        assert "NO inferred commentary" in llm.SYSTEM_PROMPT
+        assert "circular-reasoning trap" in llm.SYSTEM_PROMPT

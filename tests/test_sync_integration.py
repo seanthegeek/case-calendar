@@ -859,7 +859,13 @@ class TestPastScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "plea" in (h["notes"] or "")
+        # Verify-pass reason lands in audit_notes, never in notes — so the
+        # verify LLM can't read its own prior conclusion on the next sync.
+        assert "plea" in (h["audit_notes"] or "")
+        assert "[verify-pass]" in (h["audit_notes"] or "")
+        # notes was empty when the row was seeded; verify pass must NOT
+        # have touched it.
+        assert not (h["notes"] or "").strip()
 
     def test_no_separate_auto_held_sweep(self, store: Store, case, monkeypatch):
         # sync_case stats no longer carry an 'auto_held' key — the
@@ -937,15 +943,15 @@ class TestPastCancelledHearings:
             "source_entry_ids": [46],
         })
 
-    def test_uncancel_reverts_to_scheduled(
+    def test_reinstate_reverts_to_scheduled(
         self, store: Store, case, monkeypatch,
     ):
         # The LLM finds no explicit vacatur AND sees that the docket
-        # continued to be active past the cancelled date — UNCANCEL.
+        # continued to be active past the cancelled date — REINSTATE.
         self._seed_past_cancelled(store, key="trial-mcgonigal")
         stub_verify(monkeypatch, by_key={
             "trial-mcgonigal": {
-                "type": "UNCANCEL",
+                "type": "REINSTATE",
                 "reason": "No vacatur, dismissal, or plea entry; case continued to be "
                           "actively briefed past 6/12/2024.",
             },
@@ -955,9 +961,9 @@ class TestPastCancelledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "scheduled"
-        assert "[verify-pass]" in (h["notes"] or "")
-        assert "Cancellation not supported" in (h["notes"] or "") or \
-               "No vacatur" in (h["notes"] or "")
+        assert "[verify-pass]" in (h["audit_notes"] or "")
+        assert "Cancellation not supported" in (h["audit_notes"] or "") or \
+               "No vacatur" in (h["audit_notes"] or "")
 
     def test_confirm_leaves_supported_cancellation(
         self, store: Store, case, monkeypatch,
@@ -982,7 +988,7 @@ class TestPastCancelledHearings:
     ):
         # Rare but valid: the row was wrongly cancelled, and a minute
         # entry / verdict on the docket shows the event actually
-        # happened. Bypass UNCANCEL → 'scheduled' → MARK_HELD on next
+        # happened. Bypass REINSTATE → 'scheduled' → MARK_HELD on next
         # sync; do it in one step.
         self._seed_past_cancelled(store, key="trial-actually-held")
         stub_verify(monkeypatch, by_key={
@@ -1066,7 +1072,7 @@ class TestVerifyScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "vacated" in (h["notes"] or "")
+        assert "vacated" in (h["audit_notes"] or "")
 
     def test_delete_hallucination_flips_to_cancelled(
         self, store, case, monkeypatch,
@@ -1085,7 +1091,7 @@ class TestVerifyScheduledHearings:
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
-        assert "no docket entry" in (h["notes"] or "")
+        assert "no docket entry" in (h["audit_notes"] or "")
 
     def test_reschedule_moves_starts_at_utc(self, store, case, monkeypatch):
         self._seed_future_hearing(store)
@@ -1608,9 +1614,9 @@ class TestDedupeConcurrentHearings:
         # source_entry_ids from the duplicate were merged into the target,
         # deduping against the target's existing list.
         assert rows["msj-hearing"]["source_entry_ids"] == [42, 43, 99]
-        # The cancelled row carries a [dedupe] note pointing at the target.
-        assert "[dedupe]" in (rows["motion-hearing-2"]["notes"] or "")
-        assert "msj-hearing" in (rows["motion-hearing-2"]["notes"] or "")
+        # The cancelled row carries a [dedupe] audit line pointing at the target.
+        assert "[dedupe]" in (rows["motion-hearing-2"]["audit_notes"] or "")
+        assert "msj-hearing" in (rows["motion-hearing-2"]["audit_notes"] or "")
 
     def test_keep_both_leaves_cluster_alone(self, store, case, monkeypatch):
         # Stacked back-to-back proceedings — LLM says they're distinct.
@@ -1740,7 +1746,7 @@ class TestVerifyPendingDeadlines:
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "cancelled"
-        assert "dismissed" in (d["notes"] or "")
+        assert "dismissed" in (d["audit_notes"] or "")
 
     def test_delete_hallucination_flips_to_cancelled(
         self, store, case, monkeypatch,
@@ -1756,7 +1762,7 @@ class TestVerifyPendingDeadlines:
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "cancelled"
-        assert "no scheduling order" in (d["notes"] or "")
+        assert "no scheduling order" in (d["audit_notes"] or "")
 
     def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
         self._seed_future_deadline(store)
