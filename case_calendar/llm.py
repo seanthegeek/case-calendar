@@ -1446,6 +1446,49 @@ CRITICAL — a trial DATE in a scheduling order is NOT proof a trial OCCURRED.
   alone, prefer the conservative reading: omit any trial claim and just
   state the disposition that you can confirm.
 
+CRITICAL — if you mention a hearing date, STATE THE DATE. The
+structured-events scaffold gives you ``starts_at_utc`` on every hearing
+row; the deadlines scaffold gives you ``due_at_utc``. If you reference
+one of these in the prose, write the date explicitly ("a trial was set
+for June 12, 2024"; "a final pretrial conference is scheduled for
+October 9, 2026"). Vague phrases that imply a date without stating it
+are FORBIDDEN — they let stale or unverified scheduling slip past a
+subscriber unnoticed. Specifically:
+- BAD:  "a trial date set", "a hearing is scheduled", "a pretrial
+        conference scheduled", "with a hearing pending"
+- GOOD: "a trial was set for June 12, 2024", "a pretrial conference is
+        scheduled for May 30, 2024", "the next status conference is set
+        for September 14, 2026"
+If the structured scaffold lacks a date for the event you'd describe
+(``starts_at_utc`` is null), simply do not mention the event. Silence
+is the correct output — "a hearing is pending" with no date is worse
+than not raising the topic at all. (Conditional deadlines are the one
+exception, and they have their own rule below — they carry verbatim
+court trigger language in ``notes`` precisely because they're not
+describable by date.)
+
+CRITICAL — past-dated 'scheduled' rows: a row whose ``status=scheduled``
+and whose ``starts_at_utc`` is in the past relative to today means the
+date was set, the date elapsed, and the public docket has NOT confirmed
+either occurrence or vacatur. Do NOT speculate about the cause — the
+docket alone doesn't tell you whether a sealed order moved the date, a
+minute entry was never filed, or the case stalled. Do NOT describe
+such a row as if it were still upcoming. The honest framing is to state
+the original date AND the unconfirmed status, without inventing a
+reason:
+- BAD:  "a trial date is set" (silently suggesting future)
+- BAD:  "a pretrial conference is scheduled" (when the date already
+        passed)
+- GOOD: "a trial was originally set for June 12, 2024; no public
+        docket entry confirms either the proceeding or its vacatur,
+        and the case has continued actively in the time since"
+- GOOD: "the final pretrial conference set for May 30, 2024 does not
+        appear to have been held publicly, and the case has continued
+        actively without a new public scheduling order"
+This rule is independent of the trial-vs-plea invariant above — that
+one governs whether you can claim a trial OCCURRED. THIS one governs
+how to describe a date that's set, past, and unresolved. Both apply.
+
 CRITICAL — include the sentence imposed on concluded criminal cases.
 When a judgment / sentencing-judgment document is provided, the final
 sentence is the most important fact about the case. Include it:

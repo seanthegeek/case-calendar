@@ -1428,3 +1428,37 @@ class TestSystemPromptAntiInferenceGuards:
         # inferences.
         assert "NO inferred commentary" in llm.SYSTEM_PROMPT
         assert "circular-reasoning trap" in llm.SYSTEM_PROMPT
+
+
+class TestSummaryPromptDatedReferenceGuards:
+    """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
+    after the McGonigal/Shestakov "trial date set" hedge — where the
+    Sonnet model named scheduled events without stating their dates
+    because the dates were past-but-unconfirmed and the model defaulted
+    to vague language rather than describe the staleness honestly.
+    """
+
+    def test_must_state_dates_when_referencing_schedule(self):
+        assert "if you mention a hearing date, STATE THE DATE" in llm.SUMMARY_SYSTEM_PROMPT
+        # Concrete forbidden phrases — these are the actual hedges the
+        # model produced. If a future edit drops them, the door reopens.
+        assert '"a trial date set"' in llm.SUMMARY_SYSTEM_PROMPT
+        assert '"a hearing is scheduled"' in llm.SUMMARY_SYSTEM_PROMPT
+        # The good-form example must also stay so the model knows what
+        # the rule looks like in practice.
+        assert "a trial was set for June 12, 2024" in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_past_dated_scheduled_rows_must_be_called_out(self):
+        # The McGonigal trial-mcgonigal / status-conf-mcgonigal shape:
+        # past `starts_at_utc` on a still-`scheduled` row means the
+        # public docket has not confirmed occurrence or vacatur. Must
+        # be described honestly, not as if upcoming.
+        assert "past-dated 'scheduled' rows" in llm.SUMMARY_SYSTEM_PROMPT
+        # And the model must NOT speculate about why — naming a
+        # mechanism (sealed orders, missed minute entries, etc.) the
+        # docket doesn't actually confirm is itself the speculation
+        # this rule is supposed to prevent.
+        assert "Do NOT speculate about the cause" in llm.SUMMARY_SYSTEM_PROMPT
+        # The rule must be marked independent of trial-vs-plea — the
+        # two govern different concerns and both apply.
+        assert "independent of the trial-vs-plea invariant" in llm.SUMMARY_SYSTEM_PROMPT
