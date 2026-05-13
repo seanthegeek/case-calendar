@@ -27,3 +27,6 @@ tokens/*
 .zshrc
 .claude/scheduled_tasks.lock
 scripts/*.json
+
+# Local-only operational scripts (deploy creds, host-specific commands).
+private/
