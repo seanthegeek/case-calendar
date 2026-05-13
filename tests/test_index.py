@@ -296,10 +296,47 @@ class TestRenderIndex:
 
     def test_subscribe_links_rendered(self, calendars):
         html = render_index(calendars=calendars)
+        # webcal:// stays as a one-click subscribe anchor.
         assert "webcal://x/cyber.ics" in html
-        assert "https://x/cyber.ics" in html
-        # Download link uses the relative filename so it works under file:// too.
-        assert 'href="cyber.ics" download' in html
+        # The https URL is no longer rendered as its own anchor — it's
+        # the data-url payload on the Copy-feed-URL button. The old
+        # standalone "HTTPS feed" link AND the redundant Download link
+        # are both gone when a public_base_url is configured: clicking
+        # Subscribe in a desktop browser already downloads the .ics, and
+        # the button copies the same URL Download used to point at.
+        assert 'class="copy-feed" data-url="https://x/cyber.ics"' in html
+        assert ">Copy feed URL<" in html
+        assert ">HTTPS feed<" not in html
+        assert 'href="cyber.ics" download' not in html
+
+    def test_no_public_base_url_falls_back_to_download(self):
+        # Without a public_base_url, links["https"] / links["webcal"] are
+        # both None — copying a bare relative filename like "cyber.ics"
+        # would be useless to subscribers, so the renderer falls back to
+        # a plain Download link instead of the copy button.
+        html = render_index(calendars=[{
+            "id": "c", "name": "C",
+            "links": {"webcal": None, "https": None, "relative": "c.ics"},
+            "cases": [],
+        }])
+        assert 'href="c.ics" download' in html
+        # The JS still ships its querySelectorAll('button.copy-feed') line
+        # — it's harmless when no button matches — so the assertion guards
+        # the rendered button element specifically, not the bare string.
+        assert 'class="copy-feed"' not in html
+        assert ">Copy feed URL<" not in html
+
+    def test_copy_feed_button_handler_present(self, calendars):
+        # The runtime JS attaches one click handler per copy-feed button
+        # and reads data-url at click time. Both the selector and the
+        # success/failure transitions are part of the contract, so guard
+        # the strings so a future refactor doesn't silently drop them.
+        html = render_index(calendars=calendars)
+        assert "button.copy-feed" in html
+        assert "navigator.clipboard.writeText" in html
+        assert "'Copied!'" in html
+        assert "is-copied" in html
+        assert "'Copy failed'" in html
 
     def test_docket_absolute_url_promoted_to_full_cl_url(self, calendars):
         # CL gives us absolute_url as a path. The index renders into pages
