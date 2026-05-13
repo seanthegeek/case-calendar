@@ -36,9 +36,14 @@ RULE 2 — Type wins. If the hearing's title clearly matches one of these
 types, emit "major" without further reasoning:
   - trial / jury trial / bench trial
   - sentencing / sentencing hearing
-  - arraignment
-  - initial appearance / initial conference (where charges are read)
-  - change of plea / plea hearing / Rule 11 hearing / waiver of indictment
+  - arraignment (where the indictment / information is read or its
+    substance stated, per Fed. R. Crim. P. 10(a))
+  - initial appearance (advice of the complaint and rights, per Fed. R.
+    Crim. P. 5(d) — charges are NOT read at this proceeding)
+  - initial conference (the criminal case's first scheduling status
+    conference, separate from the initial appearance)
+  - change of plea / plea hearing / Rule 11 hearing (Fed. R. Crim. P. 11)
+    / waiver of indictment (Fed. R. Crim. P. 7)
   - oral argument
   - evidentiary hearing / suppression hearing / Franks hearing
   - motion-in-limine hearing / Daubert hearing
@@ -68,7 +73,8 @@ Conference Call", "Chambers Conference", or untyped "Hearing":
     status conference that became a plea hearing).
   - minor if the agenda is only setting next dates, attorney
     substitutions, case-management housekeeping, joint status reports,
-    initial-pretrial / Rule 16 scheduling, or clerk's housekeeping.
+    initial-pretrial / Fed. R. Civ. P. 16(b) scheduling (or its
+    criminal-case scheduling analogue), or clerk's housekeeping.
 
 RULE 5 — Default to "major" when uncertain. Only emit "minor" when one
 of rules 1–4 clearly applies."""
@@ -1434,14 +1440,17 @@ CRITICAL — do NOT confuse closely-related dispositions:
 CRITICAL — a trial DATE in a scheduling order is NOT proof a trial OCCURRED.
 - Trial dates are set early in nearly every case and frequently move or get
   vacated.
-- A guilty plea entered before the scheduled trial date VACATES the trial —
-  the trial does NOT occur. Do not write "a jury trial was held" merely
-  because the structured-events scaffold lists a trial hearing on some date.
+- A guilty plea entered before the scheduled trial date moots the trial —
+  the trial does NOT go forward. (Fed. R. Crim. P. 11 doesn't itself use
+  "vacate"; courts vary on whether they enter a formal vacatur order or
+  just take the date off-calendar.) Do not write "a jury trial was held"
+  merely because the structured-events scaffold lists a trial hearing on
+  some date.
 - Say "a jury trial was held" or "tried before a jury" ONLY when there is a
   verdict form (jury or bench), a judgment after trial, or unambiguous text
   in a disposition document confirming a verdict was returned.
 - If a plea was entered: state the plea, and DO NOT also claim a trial
-  occurred. The trial setting was vacated by the plea, full stop.
+  occurred. The plea moots the trial setting, full stop.
 - If you can't tell whether a trial happened from the disposition documents
   alone, prefer the conservative reading: omit any trial claim and just
   state the disposition that you can confirm.
