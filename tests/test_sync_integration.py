@@ -562,6 +562,173 @@ class TestCrossCourtContextFilter:
         assert "arraignment-a" in keys
 
 
+class TestCrossCourtActionGuard:
+    """The LLM context filter prevents the model from *seeing* cross-court
+    rows on the same case, but ``_apply_action`` / ``_apply_deadline_action``
+    look up ``existing`` by ``(case_id, key)`` only. When an LLM in court B
+    independently invents a kebab-case key that happens to collide with an
+    existing court-A row (generic slugs like ``petitioner-reply-brief-
+    appellate`` are hit-prone), the court-B entry would otherwise pollute
+    the court-A row's source_entry_ids and could clobber its fields. The
+    apply-layer guard rejects the action entirely.
+    """
+
+    def _seed_aggregated_case(self, store):
+        cadc = {"id": 200, "court_id": "cadc",
+                "docket_number": "26-1049", "case_name": "X",
+                "absolute_url": "/d/200/",
+                "date_modified": "2026-05-01T00:00:00-07:00"}
+        ca9 = {"id": 300, "court_id": "ca9",
+               "docket_number": "26-2011", "case_name": "X",
+               "absolute_url": "/d/300/",
+               "date_modified": "2026-05-02T00:00:00-07:00"}
+        store.upsert_docket_meta(200, cadc)
+        store.upsert_docket_meta(300, ca9)
+        case_multi = CaseConfig(case_id="x", name="X",
+                                dockets=[200, 300], calendar="t",
+                                extract_deadlines=True)
+        cl = FakeCL(dockets={200: cadc, 300: ca9})
+        return cl, case_multi
+
+    def test_cross_court_deadline_action_rejected(
+        self, store: Store, monkeypatch,
+    ):
+        cl, case_multi = self._seed_aggregated_case(store)
+        # Seed the D.C. Cir. row.
+        store.upsert_deadline({
+            "case_id": "x", "deadline_key": "petitioner-reply-brief-appellate",
+            "title": "Petitioner's Reply Brief",
+            "due_at_utc": "2026-05-13T21:00:00+00:00",
+            "timezone": "America/New_York", "notes": "Original",
+            "status": "pending", "significance": "major",
+            "deadline_type": "reply", "gcal_event_id": None,
+            "docket_id": 200, "source_entry_ids": [101],
+        })
+        # 9th Cir. entry whose LLM invents the SAME deadline_key. Without
+        # the guard, this entry would land on source_entry_ids and possibly
+        # rewrite fields. With the guard, action is dropped.
+        make_llm_stub(monkeypatch, by_entry={
+            42: [{"type": "RESCHEDULE_DEADLINE",
+                  "deadline_key": "petitioner-reply-brief-appellate",
+                  "title": "Petitioner's Reply Brief",
+                  "local_date": "2026-06-01", "local_time": None,
+                  "deadline_type": "reply", "significance": "major"}],
+        })
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case_multi, 300, _entry(
+            42,
+            "ORDER stay appellate proceedings granted; brief schedule moved",
+        ))
+
+        d = store.get_deadline("x", "petitioner-reply-brief-appellate")
+        # Unchanged: still owned by D.C. Cir.; date and notes intact;
+        # ca9 entry 42 NOT folded into source_entry_ids.
+        assert d["docket_id"] == 200
+        assert d["due_at_utc"] == "2026-05-13T21:00:00+00:00"
+        assert d["notes"] == "Original"
+        assert d["source_entry_ids"] == [101]
+
+    def test_cross_court_hearing_action_rejected(
+        self, store: Store, monkeypatch,
+    ):
+        cl, case_multi = self._seed_aggregated_case(store)
+        store.upsert_hearing({
+            "case_id": "x", "hearing_key": "oral-arg",
+            "title": "Oral Argument",
+            "starts_at_utc": "2026-05-19T13:30:00+00:00",
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "location": None, "judge": None, "notes": None, "dial_in": None,
+            "status": "scheduled", "significance": "major",
+            "gcal_event_id": None,
+            "docket_id": 200, "source_entry_ids": [101],
+        })
+        # 9th Cir. entry inventing a colliding hearing_key.
+        make_llm_stub(monkeypatch, by_entry={
+            42: [{"type": "UPDATE_DETAILS", "hearing_key": "oral-arg",
+                  "notes": "ca9 reference"}],
+        })
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case_multi, 300, _entry(
+            42, "ORDER referencing oral argument in D.C. Cir.",
+        ))
+
+        h = store.get_hearing("x", "oral-arg")
+        assert h["docket_id"] == 200
+        assert h["notes"] is None  # not overwritten with the ca9 string
+        assert h["source_entry_ids"] == [101]
+
+    def test_same_court_sibling_docket_still_allowed(
+        self, store: Store, monkeypatch,
+    ):
+        # Co-defendant aggregation: same court, two dockets. A sibling
+        # docket in the SAME court can legitimately touch the row.
+        a = {"id": 400, "court_id": "dcd", "docket_number": "1:24-cr-261-A",
+             "case_name": "X", "absolute_url": "/d/400/",
+             "date_modified": "2026-01-01T00:00:00-05:00"}
+        b = {"id": 401, "court_id": "dcd", "docket_number": "1:24-cr-261-B",
+             "case_name": "X", "absolute_url": "/d/401/",
+             "date_modified": "2026-01-02T00:00:00-05:00"}
+        store.upsert_docket_meta(400, a)
+        store.upsert_docket_meta(401, b)
+        case_multi = CaseConfig(case_id="x", name="X",
+                                dockets=[400, 401], calendar="t")
+        cl = FakeCL(dockets={400: a, 401: b})
+        store.upsert_hearing({
+            "case_id": "x", "hearing_key": "status-conf",
+            "title": "Status Conference",
+            "starts_at_utc": "2026-02-10T14:00:00+00:00",
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "location": None, "judge": None, "notes": None, "dial_in": None,
+            "status": "scheduled", "significance": "major",
+            "gcal_event_id": None,
+            "docket_id": 400, "source_entry_ids": [1],
+        })
+        make_llm_stub(monkeypatch, by_entry={
+            2: [{"type": "MARK_HELD", "hearing_key": "status-conf",
+                 "local_date": "2026-02-10"}],
+        })
+        syncer = CaseSyncer(cl, store)
+        # Co-defendant docket 401 (same court) MARK_HELDs the row.
+        syncer.process_entry(case_multi, 401, _entry(
+            2, "Minute entry: status conference held",
+        ))
+
+        h = store.get_hearing("x", "status-conf")
+        assert h["status"] == "held"
+        # Source entries gained the sibling-docket entry — legit aggregation.
+        assert h["source_entry_ids"] == [1, 2]
+
+    def test_no_metadata_falls_through_for_backcompat(
+        self, store: Store, monkeypatch,
+    ):
+        # Old data: existing row carries no docket_id. Can't determine its
+        # court, so the guard falls through and behaves as before. This
+        # preserves backward compatibility on rows from pre-docket_id eras.
+        case_local = CaseConfig(case_id="legacy", name="L",
+                                dockets=[100], calendar="t")
+        store.upsert_docket_meta(100, _docket())
+        store.upsert_hearing({
+            "case_id": "legacy", "hearing_key": "h1",
+            "title": "Hearing", "starts_at_utc": "2026-05-01T14:00:00+00:00",
+            "duration_minutes": 30, "timezone": "America/New_York",
+            "location": None, "judge": None, "notes": None, "dial_in": None,
+            "status": "scheduled", "significance": "major",
+            "gcal_event_id": None,
+            "docket_id": None, "source_entry_ids": [],
+        })
+        make_llm_stub(monkeypatch, by_entry={
+            7: [{"type": "MARK_HELD", "hearing_key": "h1",
+                 "local_date": "2026-05-01"}],
+        })
+        cl = FakeCL(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case_local, 100, _entry(
+            7, "Minute entry: hearing held",
+        ))
+        h = store.get_hearing("legacy", "h1")
+        assert h["status"] == "held"
+
+
 class TestProcessEntryDirect:
     """``process_entry`` is the entry point the webhook server uses."""
 

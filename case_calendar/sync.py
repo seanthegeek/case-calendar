@@ -375,6 +375,44 @@ class CaseSyncer:
                 saw_classifiable_off = True
         return not saw_classifiable_off
 
+    def _is_cross_court_mutation(
+        self, existing: Optional[dict[str, Any]], current_docket_id: int,
+    ) -> Optional[tuple[Optional[str], Optional[str]]]:
+        """Detect when an action would mutate a row owned by another court.
+
+        The per-entry LLM context filter (``get_hearings_in_court`` /
+        ``get_deadlines_in_court``) prevents the LLM from *seeing* sibling-
+        court rows on the same case, but the action-apply layer looks up
+        ``existing`` by ``(case_id, key)`` only — so when the LLM in court
+        B independently invents a kebab-case key that collides with an
+        existing court-A row (a generic slug like
+        ``petitioner-reply-brief-appellate`` is hit-prone), the court-B
+        entry pollutes the court-A row's ``source_entry_ids`` and can
+        clobber its fields. This guard reproduces the same-court
+        principle at the apply step.
+
+        Returns ``(existing_court, current_court)`` when both can be
+        resolved and they differ; ``None`` otherwise (no existing row,
+        same docket, or either side's court metadata isn't cached — fall
+        through and behave as before).
+        """
+        if not existing:
+            return None
+        existing_docket = existing.get("docket_id")
+        if not existing_docket or existing_docket == current_docket_id:
+            return None
+        existing_court = (
+            self.store.get_docket_meta(existing_docket) or {}
+        ).get("court_id")
+        current_court = (
+            self.store.get_docket_meta(current_docket_id) or {}
+        ).get("court_id")
+        if not existing_court or not current_court:
+            return None
+        if existing_court == current_court:
+            return None
+        return (existing_court, current_court)
+
     def ensure_docket_cached(self, docket_id: int) -> dict[str, Any]:
         """Return cached docket meta, fetching from CL exactly once if missing.
 
@@ -1248,6 +1286,15 @@ class CaseSyncer:
         )
 
         existing = self.store.get_hearing(case.case_id, key)
+        cross = self._is_cross_court_mutation(existing, docket_id)
+        if cross:
+            log.warning(
+                "rejecting cross-court hearing action: case=%s key=%r "
+                "existing_court=%s current_court=%s entry=%s type=%s "
+                "(LLM in current court reused a key already owned by another court)",
+                case.case_id, key, cross[0], cross[1], entry["id"], atype,
+            )
+            return
         eid = entry["id"]
         prev_sources = list(existing.get("source_entry_ids", [])) if existing else []
         if eid not in prev_sources:
@@ -1434,6 +1481,15 @@ class CaseSyncer:
         )
 
         existing = self.store.get_deadline(case.case_id, key)
+        cross = self._is_cross_court_mutation(existing, docket_id)
+        if cross:
+            log.warning(
+                "rejecting cross-court deadline action: case=%s key=%r "
+                "existing_court=%s current_court=%s entry=%s type=%s "
+                "(LLM in current court reused a key already owned by another court)",
+                case.case_id, key, cross[0], cross[1], entry["id"], atype,
+            )
+            return
         eid = entry["id"]
         prev_sources = list(existing.get("source_entry_ids", [])) if existing else []
         if eid not in prev_sources:
