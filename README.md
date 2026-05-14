@@ -10,7 +10,7 @@ too much: cybercrime prosecutions, multi-docket tech litigation, etc.
 For each case in `config.yaml`:
 
 1. Pulls new docket entries from CourtListener (one or more dockets per case).
-2. Filters for entries that look hearing- or deadline-related.
+2. Filters for entries that look hearing or deadline-related.
 3. Extracts hearing and filing-deadline details with an LLM (Anthropic,
    OpenAI, or Gemini), reading both the docket text and the linked PDFs.
    Cross-references (`granting 65 Motion ...`) and recent docket activity
@@ -25,6 +25,18 @@ For each case in `config.yaml`:
    pushes to Google Calendar and/or Microsoft 365 / Outlook —
    automatically, after every sync or webhook delivery, so subscribers
    see updates without a manual re-emit.
+6. Generates a static `index.html` page (opt-in via `index_path` in
+   `config.yaml`) listing every calendar with `webcal://` + `https://`
+   subscribe buttons, the cases on each (court, docket number, filing
+   date, last-filing date, and an optional 2-4 sentence AI case-summary
+   paragraph when `case_summaries.enabled: true`), client-side sort
+   (case name / date filed / last filing, ascending or descending), and
+   system-preference dark mode with a header toggle that persists in
+   `localStorage`. The page is self-contained — inline CSS + JS, no
+   external requests, no CDN, Darkreader-compatible — so it drops behind
+   any static HTTP server. A working `Caddyfile` template for serving
+   the ICS feeds + index page (and reverse-proxying the webhook
+   receiver) ships in the repo root.
 
 Filing-deadline tracking is auto-detected from each docket's number:
 civil dockets get response/reply/brief deadlines, routine criminal dockets
@@ -60,18 +72,27 @@ cp config.example.yaml config.yaml
 # Edit config.yaml to list your cases and dockets
 ```
 
-### Optional: local OCR for un-OCR'd PDFs
+### Highly recommended: Local OCR for garbled or missing PDF text
 
-CourtListener OCRs PDFs once they're contributed to RECAP, but there's a lag
-and some entries' PDFs never get uploaded. To extract text from PDFs ourselves
-when CourtListener hasn't yet:
+CourtListener stores RECAP PDFs unedited — it does NOT re-OCR documents
+contributed to RECAP. The `plain_text` CL returns is whatever the
+uploader's PDF carried natively, which on a non-trivial fraction of
+court PDFs is either empty (image-only scans) or garbled (e.g., custom font
+subsets with no `/ToUnicode` map produce multi-KB strings of `ÿ` /
+glyph-index tokens that the summary LLM can't read). Installing the
+local OCR fallback lets case-calendar re-process those PDFs itself so
+the summary pipeline sees usable text instead of skipping the docket summary
+with an insufficient-documents refusal:
 
 ```bash
 sudo apt install poppler-utils tesseract-ocr  # or brew install poppler tesseract
 ```
 
-Without these, the tool will still work — it just skips PDFs CourtListener
-hasn't processed and re-tries on each sync (no cache poisoning).
+Without these, the tool still works — it just skips un-OCR'd or
+garbled PDFs and retries on each sync (no cache poisoning), which means
+affected dockets render with the explicit
+"Documents available for this docket are insufficient to generate a
+reliable summary." fallback.
 
 ### Optional: Google Calendar push
 
