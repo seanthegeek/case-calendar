@@ -246,6 +246,19 @@ class TestDockets:
         store.bump_docket_last_modified(7, "2026-05-08T00:00:00Z")
         assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
 
+    def test_known_docket_ids(self, store: Store):
+        # Backs the `sync --only-new` filter: a docket is "known" once it
+        # has a row in the dockets table — set_docket_last_modified is the
+        # usual path; upsert_docket_meta gets there too via a different
+        # column write.
+        assert store.known_docket_ids() == set()
+        store.set_docket_last_modified(100, "2026-05-08T00:00:00Z")
+        store.upsert_docket_meta(200, {
+            "court_id": "mad", "docket_number": "1:25",
+            "case_name": "X", "absolute_url": "/d/200/",
+        })
+        assert store.known_docket_ids() == {100, 200}
+
     def test_date_last_filing_persists_via_upsert(self, store: Store):
         # date_last_filing is captured from CL on the polling path; ensure
         # it round-trips through upsert_docket_meta + get_docket_meta.

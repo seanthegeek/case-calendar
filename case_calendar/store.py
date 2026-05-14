@@ -410,6 +410,17 @@ class Store:
         ).fetchone()
         return dict(row) if row else None
 
+    def known_docket_ids(self) -> set[int]:
+        """Return every docket_id that has a row in the ``dockets`` table.
+
+        Used by ``case-calendar sync --only-new`` to skip cases whose
+        dockets the syncer has already seen at least once.
+        """
+        return {
+            row["docket_id"]
+            for row in self.conn.execute("SELECT docket_id FROM dockets")
+        }
+
     # --- courts ---
 
     def get_court_citation(self, court_id: str) -> Optional[str]:

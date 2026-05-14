@@ -848,6 +848,102 @@ class TestCmdSync:
         assert cmd_sync(args) == 0
         assert refresh_calls[0]["force"] is True
 
+    def test_only_new_filters_to_unseen_dockets(
+        self, tmp_path, fake_cl_ctx, monkeypatch, capsys,
+    ):
+        # `sync --only-new` skips cases whose dockets are already in the
+        # store (the use case: you added new cases to config.yaml and
+        # don't want to remember their ids).
+        cfg = {
+            "store_path": str(tmp_path / "x.sqlite"),
+            "calendars": {
+                "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
+            },
+            "cases": [
+                {"id": "us-v-old", "name": "US v. Old",
+                 "calendar": "cyber", "dockets": [100]},
+                {"id": "us-v-new", "name": "US v. New",
+                 "calendar": "cyber", "dockets": [200]},
+            ],
+        }
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg))
+
+        # Pre-populate the store so docket 100 is "known" and 200 is not.
+        # Different Store instances → must commit via tx() for the cmd_sync
+        # connection to see the row.
+        from case_calendar.store import Store
+        pre_store = Store(cfg["store_path"])
+        with pre_store.tx() as _:
+            pre_store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
+        pre_store.close()
+
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        synced_ids: list[str] = []
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: synced_ids.append(case.case_id) or {
+                "dockets_skipped": 0, "entries_seen": 0,
+                "entries_processed": 0, "actions": 0,
+                "verified": 0, "auto_passed": 0,
+            },
+        )
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+
+        args = SimpleNamespace(
+            config=str(cfg_path), case=None, no_emit=False,
+            only_new=True,
+        )
+        assert cmd_sync(args) == 0
+        # Only the new case ran — the one with a docket already in the store
+        # was filtered out before sync_case was called.
+        assert synced_ids == ["us-v-new"]
+
+    def test_only_new_with_no_new_cases_short_circuits(
+        self, tmp_path, fake_cl_ctx, monkeypatch, capsys,
+    ):
+        # When every configured case's dockets are already known, --only-new
+        # prints a friendly message and returns 0 without invoking sync_case
+        # or emit_calendars at all.
+        cfg = {
+            "store_path": str(tmp_path / "x.sqlite"),
+            "calendars": {
+                "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
+            },
+            "cases": [
+                {"id": "us-v-x", "name": "US v. X",
+                 "calendar": "cyber", "dockets": [100]},
+            ],
+        }
+        cfg_path = tmp_path / "config.yaml"
+        cfg_path.write_text(yaml.safe_dump(cfg))
+        from case_calendar.store import Store
+        pre_store = Store(cfg["store_path"])
+        with pre_store.tx() as _:
+            pre_store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
+        pre_store.close()
+
+        sync_calls: list[str] = []
+        emit_calls: list[Any] = []
+        monkeypatch.setattr(
+            cli.CaseSyncer, "sync_case",
+            lambda self, case: sync_calls.append(case.case_id),
+        )
+        monkeypatch.setattr(
+            cli, "emit_calendars",
+            lambda *a, **kw: emit_calls.append(1) or {},
+        )
+
+        args = SimpleNamespace(
+            config=str(cfg_path), case=None, no_emit=False,
+            only_new=True,
+        )
+        assert cmd_sync(args) == 0
+        assert sync_calls == []
+        assert emit_calls == []
+        out = capsys.readouterr().out
+        assert "no new cases" in out
+
 
 class TestCmdEmit:
     def test_runs_and_prints_each_backend(

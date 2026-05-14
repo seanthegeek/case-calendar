@@ -218,6 +218,15 @@ def cmd_sync(args: argparse.Namespace) -> int:
             return 2
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+
+    if getattr(args, "only_new", False):
+        known = store.known_docket_ids()
+        cases = [c for c in cases if any(d not in known for d in c.dockets)]
+        if not cases:
+            print("no new cases — every configured case's dockets are already in the store")
+            store.close()
+            return 0
+
     log.info("LLM: %s", llm.provider_info())
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
@@ -1054,6 +1063,13 @@ def main(argv: list[str] | None = None) -> int:
 
     p_sync = sub.add_parser("sync", help="pull updates from CourtListener")
     p_sync.add_argument("--case", help="only sync this case_id")
+    p_sync.add_argument(
+        "--only-new",
+        action="store_true",
+        help="only sync cases whose dockets aren't yet in the store — "
+             "useful after adding new cases to config.yaml without needing "
+             "to remember their ids",
+    )
     p_sync.add_argument(
         "--no-emit",
         action="store_true",
