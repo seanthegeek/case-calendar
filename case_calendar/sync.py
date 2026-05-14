@@ -38,17 +38,22 @@ class ExtraDocument:
     document the public should be able to see — e.g. an indictment that was
     ordered unsealed but where entries 1-4 still show as missing in the API
     (see CourtListener bug #7345) — the operator lists the out-of-band URL
-    here and the summary pipeline folds it into the document set as if it had
-    come from CL. The accompanying ``note`` is trusted operator-supplied
-    context that rides into the LLM prompt alongside the document text, so
-    the model can be told *why* the document was added (the indictment still
-    bears "SEALED" stamps even though the seal was lifted, etc.).
+    here and the summary pipeline feeds the text to the LLM as a separate
+    "extra documents" block, alongside whatever the normal pipeline found.
+
+    The required ``note`` is trusted operator-supplied context: it describes
+    what the document IS (e.g. "the unsealed indictment in S.D. Tex.
+    4:23-cr-00523") and any necessary caveats (e.g. "bears SEALED stamps
+    because it was filed under seal, but the seal has since been lifted").
+    The note carries the meaning that a structural ``role`` field couldn't —
+    real documents don't always slot cleanly into "pleading" vs
+    "disposition", and the operator's natural-language description of what
+    the document is and why it was added is the right primary signal.
     """
 
     docket: int           # which docket this document belongs to
     url: str              # PDF URL to fetch
-    role: str             # "pleading" (indictment / complaint / etc.) or "disposition"
-    note: Optional[str] = None  # trusted operator context shown to the LLM
+    note: str             # required — trusted operator context shown to the LLM
 
 
 @dataclass
@@ -66,12 +71,10 @@ class CaseConfig:
     cadence IS worth watching."""
 
     extra_documents: list[ExtraDocument] = field(default_factory=list)
-    """Out-of-band documents to fold into the case-summary document set.
-    Empty by default. Each entry is scoped to one ``docket`` id on this
-    case; ``role`` is one of {``pleading``, ``disposition``} — ``pleading``
-    is the umbrella that covers indictments, informations, complaints, and
-    petitions (anything the internal :func:`is_operative_pleading` would
-    match); ``note`` is trusted operator context shown to the LLM."""
+    """Out-of-band documents to feed into the case-summary LLM as a
+    distinct supplementary block. Empty by default. Each entry is scoped
+    to one ``docket`` id on this case and carries a required ``note``
+    that describes what the document is and why it was added."""
 
 
 # Federal docket-number type codes that indicate a routine criminal matter

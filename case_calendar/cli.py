@@ -118,12 +118,18 @@ def _extra_documents_from_config(
 ) -> list[ExtraDocument]:
     """Parse the per-case ``extra_documents`` list out of the YAML.
 
-    Validates each entry has the required fields, the ``docket`` id is one
-    the case actually tracks, and the role is recognized. We fail loud (via
-    ``SystemExit``) on misconfiguration rather than silently skipping — an
-    extra-document entry is hand-added by an operator for a specific case
-    and a typo should be surfaced now rather than presented later as "the
-    LLM didn't see the document we told it about."
+    Validates that each entry has the required fields (``docket``, ``url``,
+    ``note``), the ``docket`` id is one the case actually tracks, and the
+    ``note`` is a non-empty string. We fail loud (via ``SystemExit``) on
+    misconfiguration rather than silently skipping — an extra-document
+    entry is hand-added by an operator for a specific case, and a typo
+    should be surfaced now rather than presented later as "the LLM didn't
+    see the document we told it about."
+
+    There is no ``role`` field: a real out-of-band document doesn't always
+    slot cleanly into "pleading" / "disposition", and the operator's
+    natural-language ``note`` already carries the meaning a role taxonomy
+    would. The note is shown verbatim to the summary LLM.
     """
     if raw in (None, []):
         return []
@@ -132,14 +138,13 @@ def _extra_documents_from_config(
             f"case {case_id!r}: extra_documents must be a list, got {type(raw).__name__}"
         )
     docket_set = set(dockets)
-    valid_roles = {"pleading", "disposition"}
     out: list[ExtraDocument] = []
     for i, item in enumerate(raw):
         if not isinstance(item, dict):
             raise SystemExit(
                 f"case {case_id!r}: extra_documents[{i}] must be a mapping"
             )
-        missing = [k for k in ("docket", "url", "role") if k not in item]
+        missing = [k for k in ("docket", "url", "note") if k not in item]
         if missing:
             raise SystemExit(
                 f"case {case_id!r}: extra_documents[{i}] missing key(s): {missing}"
@@ -150,20 +155,19 @@ def _extra_documents_from_config(
                 f"case {case_id!r}: extra_documents[{i}].docket={docket_id!r} is not "
                 f"in this case's dockets list {sorted(docket_set)}"
             )
-        role = item["role"]
-        if role not in valid_roles:
-            raise SystemExit(
-                f"case {case_id!r}: extra_documents[{i}].role={role!r} must be one of "
-                f"{sorted(valid_roles)}"
-            )
-        note = item.get("note")
-        if note is not None and not isinstance(note, str):
+        note = item["note"]
+        if not isinstance(note, str):
             raise SystemExit(
                 f"case {case_id!r}: extra_documents[{i}].note must be a string"
             )
+        note = note.strip()
+        if not note:
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}].note must be a non-empty "
+                f"string describing the document and why it was added"
+            )
         out.append(ExtraDocument(
-            docket=docket_id, url=str(item["url"]), role=role,
-            note=note.strip() if isinstance(note, str) else None,
+            docket=docket_id, url=str(item["url"]), note=note,
         ))
     return out
 

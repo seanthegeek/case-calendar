@@ -488,27 +488,26 @@ def _deadlines_for_docket(store: Store, case_id: str, docket_id: int) -> list[di
 
 def _fetch_extra_documents(
     case: CaseConfig, docket_id: int, *, allow_ocr: bool = True,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     """Fetch operator-provided ``extra_documents`` for one docket.
 
-    Returns ``(operative_extras, disposition_extras)`` shaped to match the
-    output of :func:`_attach_text` so callers can concatenate directly. Each
-    entry carries ``source_url`` (for the LLM prompt's provenance line) and
-    ``operator_note`` (trusted context the operator supplied in config —
-    e.g. "this indictment was filed under seal but has since been
-    unsealed; treat the SEALED watermarks as stale"). Documents that fail
-    to fetch / extract are logged and dropped so the rest of the summary
-    pipeline still gets to run on whatever CL did surface.
+    Returns one flat list of doc dicts, each carrying ``source_url`` (the
+    LLM prompt's provenance line) and ``operator_note`` (the trusted
+    operator-supplied description that tells the LLM what the document is
+    and why it was added). Documents that fail to fetch / extract are
+    logged and dropped so the rest of the summary pipeline still gets to
+    run on whatever CL did surface. The summary LLM sees these in their
+    own "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section, distinct from the
+    operative-pleading and disposition slots that the CL-walk fills.
     """
     extras = getattr(case, "extra_documents", None) or []
-    operative_extras: list[dict[str, Any]] = []
-    disposition_extras: list[dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     for extra in extras:
         if extra.docket != docket_id:
             continue
         log.info(
-            "summary: docket %s — fetching operator-provided %s document from %s",
-            docket_id, extra.role, extra.url,
+            "summary: docket %s — fetching operator-provided document from %s",
+            docket_id, extra.url,
         )
         text = pdf.extract_text_from_url(extra.url, allow_ocr=allow_ocr)
         if not text:
@@ -517,7 +516,7 @@ def _fetch_extra_documents(
                 docket_id, extra.url,
             )
             continue
-        doc = {
+        out.append({
             "entry_id": None,
             "entry_number": None,
             "description": "operator-provided document",
@@ -525,12 +524,8 @@ def _fetch_extra_documents(
             "text": text,
             "source_url": extra.url,
             "operator_note": extra.note,
-        }
-        if extra.role == "pleading":
-            operative_extras.append(doc)
-        elif extra.role == "disposition":
-            disposition_extras.append(doc)
-    return operative_extras, disposition_extras
+        })
+    return out
 
 
 def _borrow_operative_from_siblings(
@@ -632,15 +627,11 @@ def summarize_docket(
         dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
     )
 
-    # Fold in operator-provided extra_documents AFTER CL-sourced documents,
-    # so the LLM sees the canonical CL document first when both are present
-    # (the operator removes the extras line once CL fixes the data gap, but
-    # there's a brief overlap window where both can show up).
-    extra_operative, extra_disposition = _fetch_extra_documents(
-        case, docket_id, allow_ocr=allow_ocr,
-    )
-    operative_docs.extend(extra_operative)
-    disposition_docs.extend(extra_disposition)
+    # Fetch any operator-supplied extra_documents for this docket. These
+    # don't slot into operative/disposition — they ride into the LLM
+    # prompt as their own block, each carrying the operator's note
+    # describing what it is.
+    extra_docs = _fetch_extra_documents(case, docket_id, allow_ocr=allow_ocr)
 
     if not operative_docs and len(case.dockets) > 1:
         # Appellate dockets (and parallel filings that pivot off a sibling)
@@ -657,7 +648,7 @@ def summarize_docket(
             primary_docket_id=docket_id, allow_ocr=allow_ocr,
         )
 
-    if not operative_docs:
+    if not operative_docs and not extra_docs:
         log.warning(
             "summary: skipping docket %s — no operative pleading text could be extracted",
             docket_id,
@@ -673,13 +664,17 @@ def summarize_docket(
         docket=docket_for_prompt,
         operative_docs=operative_docs,
         disposition_docs=disposition_docs,
+        extra_docs=extra_docs,
         hearings=hearings,
         deadlines=deadlines,
         provider=provider,
         model=model,
     )
 
-    source_ids = [d["entry_id"] for d in operative_docs + disposition_docs if d.get("entry_id")]
+    source_ids = [
+        d["entry_id"] for d in operative_docs + disposition_docs
+        if d.get("entry_id")
+    ]
     store.upsert_case_summary(
         case.case_id, docket_id,
         summary=summary_text,

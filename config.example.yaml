@@ -239,15 +239,18 @@ cases:
   # the seal has since been lifted so it doesn't describe the case as
   # still sealed.
   #
-  # Fields:
+  # Fields (all required):
   #   docket   integer  — must be one of this case's `dockets` ids
   #   url      string   — absolute https:// URL to a PDF
-  #   role     string   — "pleading" (indictment, information, complaint,
-  #                       petition — anything that opens or supersedes the
-  #                       case) or "disposition" (judgment, verdict, plea
-  #                       agreement, dismissal, dispositive order)
-  #   note     string   — trusted operator context (provenance / why
-  #                       the document is being fed in out-of-band)
+  #   note     string   — required. Tells the summary LLM what the
+  #                       document is and why it was added — the operator's
+  #                       natural-language description carries more meaning
+  #                       than any rigid role taxonomy would (real-world
+  #                       documents don't always slot cleanly into
+  #                       "pleading" vs "disposition"). The note rides
+  #                       into the prompt as trusted operator metadata;
+  #                       the document TEXT itself is still treated as
+  #                       untrusted in the same way as CL / PACER text.
   - id: us-v-zewei
     name: "United States v. Zewei"
     calendar: cybercrime
@@ -255,7 +258,6 @@ cases:
     extra_documents:
       - docket: 70789744
         url: https://www.justice.gov/opa/media/1407196/dl
-        role: pleading
         note: >-
           This PDF is the unsealed indictment in S.D. Tex. case
           4:23-cr-00523 (United States v. Xu Zewei). It was filed under

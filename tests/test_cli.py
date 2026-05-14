@@ -454,7 +454,6 @@ class TestCasesFromConfig:
             "extra_documents": [{
                 "docket": 70789744,
                 "url": "https://www.justice.gov/opa/media/1407196/dl",
-                "role": "pleading",
                 "note": "Sourced from DoJ press release attachment; "
                         "indictment was unsealed by court order despite "
                         "SEALED watermarks.",
@@ -465,18 +464,17 @@ class TestCasesFromConfig:
         extra = cases[0].extra_documents[0]
         assert extra.docket == 70789744
         assert extra.url == "https://www.justice.gov/opa/media/1407196/dl"
-        assert extra.role == "pleading"
         assert extra.note.startswith("Sourced from DoJ")
 
     def test_strips_extra_documents_note_whitespace(self):
-        # YAML literal-block notes often arrive with trailing newlines; the
-        # parser strips them so the LLM prompt isn't dotted with blank
-        # tails that change cache fingerprints on whitespace churn.
+        # YAML literal-block notes often arrive with leading / trailing
+        # whitespace; the parser strips them so the LLM prompt isn't
+        # dotted with blank tails that change cache fingerprints on
+        # whitespace churn.
         cfg = {"cases": [{
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": 1, "url": "https://example.com/x.pdf",
-                "role": "disposition",
                 "note": "\n  trailing newline note  \n",
             }],
         }]}
@@ -509,7 +507,8 @@ class TestCasesFromConfig:
             _cases_from_config(cfg)
 
     def test_extra_documents_missing_required_key_raises(self):
-        # `role` missing — operator typo we want to catch loudly.
+        # Missing `note` — operator forgot to describe the document.
+        # Catch loudly; the note is the whole reason the field exists.
         cfg = {"cases": [{
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{"docket": 1, "url": "https://x.com/y.pdf"}],
@@ -524,7 +523,7 @@ class TestCasesFromConfig:
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": 999, "url": "https://x.com/y.pdf",
-                "role": "pleading",
+                "note": "test",
             }],
         }]}
         with pytest.raises(SystemExit, match="is not in this case's dockets"):
@@ -535,21 +534,10 @@ class TestCasesFromConfig:
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": "1", "url": "https://x.com/y.pdf",
-                "role": "pleading",
+                "note": "test",
             }],
         }]}
         with pytest.raises(SystemExit, match="is not in this case's dockets"):
-            _cases_from_config(cfg)
-
-    def test_extra_documents_rejects_unknown_role(self):
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{
-                "docket": 1, "url": "https://x.com/y.pdf",
-                "role": "exhibit",
-            }],
-        }]}
-        with pytest.raises(SystemExit, match="must be one of"):
             _cases_from_config(cfg)
 
     def test_extra_documents_note_must_be_string(self):
@@ -557,11 +545,25 @@ class TestCasesFromConfig:
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": 1, "url": "https://x.com/y.pdf",
-                "role": "disposition", "note": 12345,
+                "note": 12345,
             }],
         }]}
         with pytest.raises(SystemExit, match="note must be a string"):
             _cases_from_config(cfg)
+
+    def test_extra_documents_note_must_be_non_empty(self):
+        # Empty / whitespace-only note is a misconfiguration — the
+        # entire point of the field is to describe the document.
+        for empty in ("", "   ", "\n\n"):
+            cfg = {"cases": [{
+                "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+                "extra_documents": [{
+                    "docket": 1, "url": "https://x.com/y.pdf",
+                    "note": empty,
+                }],
+            }]}
+            with pytest.raises(SystemExit, match="non-empty string"):
+                _cases_from_config(cfg)
 
 
 # ---------------------------------------------------------------------------
