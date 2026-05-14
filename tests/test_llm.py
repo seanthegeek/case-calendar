@@ -1521,3 +1521,46 @@ class TestSummaryPromptDatedReferenceGuards:
         # The rule must be marked independent of trial-vs-plea — the
         # two govern different concerns and both apply.
         assert "independent of the trial-vs-plea invariant" in llm.SUMMARY_SYSTEM_PROMPT
+
+
+class TestSummaryPromptInsufficientDocumentsRefusal:
+    """Regression guards for the refuse-rather-than-fabricate rule added
+    after the us-v-dubranova "CSRERI / Roskomnadzor" hallucination — the
+    upstream PDF text was garbled font-encoding noise and the summary
+    model invented organization names plausible enough to read as real.
+    The rule tells the model that for unusable input the ONLY correct
+    output is the canonical refusal sentence verbatim.
+    """
+
+    def test_constant_is_present_in_prompt(self):
+        # The constant `summary.py` greps for must appear in the prompt
+        # exactly — otherwise the model will emit a paraphrased version
+        # and the detection in `summarize_docket` will miss it.
+        assert llm.SUMMARY_INSUFFICIENT_DOCUMENTS in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_constant_is_a_complete_sentence(self):
+        # Sanity check on the constant shape so a future "shorten this"
+        # refactor doesn't accidentally make it ambiguous.
+        s = llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+        assert s.endswith("."), s
+        assert "insufficient" in s.lower()
+        assert "summary" in s.lower()
+
+    def test_refusal_rule_calls_out_garbled_text_as_a_trigger(self):
+        # The garbled-text case is the canonical trigger; pin it so the
+        # rule survives future prompt revisions.
+        assert "garbled font-encoding output" in llm.SUMMARY_SYSTEM_PROMPT
+        # Explicit prohibition on fabrication to fill the gap. (The
+        # phrase "organization names" wraps across a line in the prompt,
+        # so collapse whitespace before matching.)
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "Do NOT invent organization names" in normalized
+
+    def test_refusal_overrides_length_guidance(self):
+        # The 2-4-sentence rule applies to normal summaries, not the
+        # fallback — make sure the prompt is explicit about this so the
+        # model doesn't try to "pad out" the refusal to meet the length
+        # target.
+        assert "overrides the" in llm.SUMMARY_SYSTEM_PROMPT
+        assert "length guidance" in llm.SUMMARY_SYSTEM_PROMPT

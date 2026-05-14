@@ -629,6 +629,48 @@ class TestSummarizeDocket:
         assert patch_llm == []
         assert store.get_docket_summary("us-v-doe", 1) is None
 
+    def test_insufficient_documents_fallback_is_stored_and_warns(
+        self, store, patch_pdf, monkeypatch, caplog,
+    ):
+        # When the LLM exercises its prompt-level refusal — emitting the
+        # canonical `SUMMARY_INSUFFICIENT_DOCUMENTS` sentence — the
+        # response IS stored (subscribers see the explicit refusal on
+        # the index, not silence), and a warning is logged so the
+        # operator can investigate. Mirrors the us-v-dubranova garbled
+        # path: extraction was bad, the model honestly refused, and we
+        # surface the situation visibly without confabulating.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
+        def _refusal(**kwargs):
+            return (SUMMARY_INSUFFICIENT_DOCUMENTS, "fake/model-v1")
+
+        monkeypatch.setattr(summary.llm, "generate_docket_summary", _refusal)
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text..."}  # text passes _attach_text
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+
+        import logging
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert row is not None
+        assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        persisted = store.get_docket_summary("us-v-doe", 1)
+        assert persisted["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        # And the warning fired so the operator can find the docket.
+        assert any(
+            "insufficient-documents fallback" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
     def test_borrows_from_sibling_when_primary_has_no_operative(
         self, store, patch_llm, patch_pdf,
     ):

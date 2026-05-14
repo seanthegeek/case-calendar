@@ -671,6 +671,20 @@ def summarize_docket(
         model=model,
     )
 
+    if llm.SUMMARY_INSUFFICIENT_DOCUMENTS in summary_text:
+        # The model exercised its prompt-level refusal — store and render
+        # the fallback prose but surface it loudly so the operator can
+        # investigate whether the extraction chain is at fault (e.g., a
+        # PDF that needs OCR tools we don't have installed, or an entry
+        # whose only document is still sealed).
+        log.warning(
+            "summary: docket %s — LLM emitted insufficient-documents "
+            "fallback (operative=%d disposition=%d extra=%d); store will "
+            "show the refusal text. Check whether the extracted document "
+            "text actually carried the case's substance.",
+            docket_id, len(operative_docs), len(disposition_docs), len(extra_docs),
+        )
+
     source_ids = [
         d["entry_id"] for d in operative_docs + disposition_docs
         if d.get("entry_id")
