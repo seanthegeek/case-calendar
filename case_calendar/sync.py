@@ -33,7 +33,7 @@ log = logging.getLogger(__name__)
 class ExtraDocument:
     """A document the operator points the case-summary pipeline at directly.
 
-    The case-summary pipeline normally finds operative pleadings + dispositions
+    The case-summary pipeline normally finds primary documents + dispositions
     on each docket by walking CourtListener. When CL / PACER is missing a
     document the public should be able to see — e.g. an indictment that was
     ordered unsealed but where entries 1-4 still show as missing in the API
@@ -501,7 +501,7 @@ class CaseSyncer:
         #   (a) hearing/deadline-relevant — already LLM-processed, body is
         #       needed for `get_recent_relevant_entries` cross-entry context
         #       and emit-time description rendering; or
-        #   (b) operative-pleading or disposition — needed so the summary
+        #   (b) primary-document or disposition — needed so the summary
         #       pipeline can find these entries locally instead of
         #       re-fetching the same docket-entries pages from CL right
         #       after sync wrote them down.
@@ -509,7 +509,7 @@ class CaseSyncer:
         # a fingerprint-only stub: dedup keeps working, but no dead-weight
         # body text.
         summary_relevant = (
-            summary_mod.is_operative_pleading(entry)
+            summary_mod.is_primary_document(entry)
             or summary_mod.is_disposition(entry)
         )
         store_full = processed or summary_relevant
@@ -542,14 +542,14 @@ class CaseSyncer:
         entry_df = entry.get("date_filed") or ""
         if entry_df:
             self.store.bump_docket_last_filing(docket_id, entry_df)
-        # Flag the case_summaries row stale when this entry looks like an
-        # operative pleading (superseding indictment, amended complaint,
+        # Flag the case_summaries row stale when this entry looks like a
+        # primary document (superseding indictment, amended complaint,
         # etc.) or a disposition (judgment, plea agreement, verdict,
         # dismissal, dispositive memo). These are exactly the entries that
         # change the substantive answer to "what is this case about, and
         # where does it stand?" — so the next sync/webhook auto-emit will
         # regenerate the summary before re-rendering the index. We check
-        # this independently of `processed` because operative pleadings
+        # this independently of `processed` because primary documents
         # and judgments rarely match the hearing-relevance regex but are
         # the most important signals for the summary.
         if summary_relevant:

@@ -2,7 +2,7 @@
 
 A separate, opt-in pass from the per-entry extractor. For each docket, we:
 
-  1. Walk the docket via the CourtListener API to find the operative pleading
+  1. Walk the docket via the CourtListener API to find the primary document
      (latest indictment / superseding indictment / information for criminal
      dockets; latest amended complaint / complaint / petition for civil).
   2. Look for any disposition documents (judgment, plea agreement, verdict,
@@ -15,7 +15,7 @@ A separate, opt-in pass from the per-entry extractor. For each docket, we:
      ``case_summaries`` table.
 
 The pipeline is intentionally independent of the cheap extractor pipeline:
-operative pleadings rarely match the hearing-relevance regex, so we don't
+primary documents rarely match the hearing-relevance regex, so we don't
 have their text in the local entries table. Hitting CL directly here keeps
 the extractor's storage shape unchanged.
 """
@@ -33,7 +33,7 @@ from .store import Store
 
 if TYPE_CHECKING:
     # ``CaseConfig`` lives in sync.py, which itself imports this module to
-    # call ``is_operative_pleading`` / ``is_disposition`` on each entry.
+    # call ``is_primary_document`` / ``is_disposition`` on each entry.
     # The runtime import would form a cycle, but ``from __future__ import
     # annotations`` (above) defers signature evaluation to strings so we
     # only need it for type checkers.
@@ -43,17 +43,17 @@ log = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Operative-document detection
+# Prime-document detection
 # ---------------------------------------------------------------------------
 
 # Match the leading word(s) of an entry description. CL descriptions are
 # typically uppercase or title-case sentences. We anchor at the start to
 # avoid catching mentions inside other entries ("Response to Motion to
-# Dismiss the Indictment" should NOT match the operative-pleading pattern).
+# Dismiss the Indictment" should NOT match the primary-document pattern).
 # The optional "amended / superseding" qualifier captures the latest-wins
 # logic naturally: each variant gets its own entry, and we sort by
 # entry_number descending when picking.
-_OPERATIVE_PLEADING_RE = re.compile(
+_PRIMARY_DOCUMENT_RE = re.compile(
     r"""^\s*
     (?:\d+\s+)?                                              # sometimes prefixed with entry number
     (?:[A-Z]+\s+)?                                           # optional REDACTED/SEALED prefix
@@ -157,8 +157,8 @@ def _entry_description_head(entry: dict[str, Any]) -> str:
     return ""
 
 
-def is_operative_pleading(entry: dict[str, Any]) -> bool:
-    return bool(_OPERATIVE_PLEADING_RE.match(_entry_description_head(entry)))
+def is_primary_document(entry: dict[str, Any]) -> bool:
+    return bool(_PRIMARY_DOCUMENT_RE.match(_entry_description_head(entry)))
 
 
 def is_disposition(entry: dict[str, Any]) -> bool:
@@ -173,7 +173,7 @@ def is_disposition(entry: dict[str, Any]) -> bool:
     return bool(_DISPOSITION_KEYWORD_RE.search(head))
 
 
-# Stricter sibling used by ``find_operative_documents`` to pick the documents
+# Stricter sibling used by ``find_primary_documents`` to pick the documents
 # that the case-summary LLM actually reads. ``is_disposition`` (above) is
 # intentionally broad — a "Motion for Preliminary Injunction" matches because
 # the motion's outcome is a disposition signal worth refreshing the summary
@@ -181,7 +181,7 @@ def is_disposition(entry: dict[str, Any]) -> bool:
 # the LLM as "the disposition" drowns out the actual ruling. This predicate
 # requires the entry to LOOK like an order / judgment / minute-entry — not a
 # motion, brief, response, status report, or notice of filing about one.
-_DISPOSITION_DOC_HEAD_RE = re.compile(
+_DISPOSITION_DOCUMENT_HEAD_RE = re.compile(
     r"""^\s*
     (?:\d+\s+)?
     # Optional adjective modifiers that legitimately precede the doc-type
@@ -223,7 +223,7 @@ _DISPOSITION_DOC_HEAD_RE = re.compile(
 # disposition itself, so they must not reach the summary LLM as
 # disposition documents — they have no holding to draw from, just
 # references that look dispositive to the keyword regex.
-_DISPOSITION_DOC_NEGATIVE_RE = re.compile(
+_DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
     r"""\b(?:
         # Minute entries of MOTION HEARINGS (vs minute entries of
         # sentencings / verdicts, which ARE dispositions). Keys off the
@@ -253,7 +253,7 @@ _DISPOSITION_DOC_NEGATIVE_RE = re.compile(
 
 
 def _is_disposition_document(entry: dict[str, Any]) -> bool:
-    """Strict — the LLM document set in ``find_operative_documents``.
+    """Strict — the LLM document set in ``find_primary_documents``.
 
     Accepts entries whose head is a head-anchored disposition phrase
     (``_DISPOSITION_RE``) outright, plus any order / minute-entry whose
@@ -269,11 +269,11 @@ def _is_disposition_document(entry: dict[str, Any]) -> bool:
         return False
     if _DISPOSITION_NEGATIVE_RE.search(head):
         return False
-    if _DISPOSITION_DOC_NEGATIVE_RE.search(head):
+    if _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(head):
         return False
     if _DISPOSITION_RE.match(head):
         return True
-    if not _DISPOSITION_DOC_HEAD_RE.match(head):
+    if not _DISPOSITION_DOCUMENT_HEAD_RE.match(head):
         return False
     return bool(_DISPOSITION_KEYWORD_RE.search(head))
 
@@ -291,7 +291,7 @@ def _list_entries_ordered(
 
     Uses CL's native order_by so we don't have to scan the whole docket
     when we only want a head or tail slice. The first page alone covers
-    operative pleadings on nearly every docket (entries 1-50 oldest-first)
+    primary documents on nearly every docket (entries 1-50 oldest-first)
     and dispositions on nearly every concluded case (entries 50 newest-first).
     """
     out: list[dict[str, Any]] = []
@@ -311,53 +311,53 @@ def _list_entries_ordered(
     return out
 
 
-def find_operative_documents(
+def find_primary_documents(
     cl: CourtListener, docket_id: int, *,
     store: Optional[Store] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Find the operative pleading(s) and disposition documents on a docket.
+    """Find the primary document(s) and disposition documents on a docket.
 
-    Returns ``(operative_pleadings, dispositions)``. Both lists are sorted
-    chronologically (oldest first); callers pick the latest operative
-    pleading for the LLM (superseding indictment beats original) and pass
-    all dispositions through (each adds context).
+    Returns ``(primary_documents, dispositions)``. Both lists are sorted
+    chronologically (oldest first); callers pick the latest primary document
+    for the LLM (superseding indictment beats original) and pass all
+    dispositions through (each adds context).
 
     When ``store`` is provided AND the docket has previously been synced
     (i.e. it has body-bearing entries cached), this reads from the local
     `entries` table instead of re-fetching the same docket-entries pages
     from CL — `sync.process_entry` now persists description + plain_text
-    for op/disp matches alongside hearing-relevant ones precisely so this
+    for primary/disp matches alongside hearing-relevant ones precisely so this
     short-circuit lands. Falls back to CL for cold dockets (first ever
-    sync on this docket or pre-fix data lacking op/disp body text).
+    sync on this docket or pre-fix data lacking primary/disp body text).
     """
-    operative: list[dict[str, Any]] = []
+    primary: list[dict[str, Any]] = []
     dispositions: list[dict[str, Any]] = []
 
     if store is not None:
         cached = store.get_entries_with_body(docket_id)
         for entry in cached:
-            if is_operative_pleading(entry):
-                operative.append(entry)
+            if is_primary_document(entry):
+                primary.append(entry)
             elif _is_disposition_document(entry):
                 dispositions.append(entry)
-        # Short-circuit only when the cache yielded an operative pleading.
-        # An operative-pleading hit is the strong signal that this docket
+        # Short-circuit only when the cache yielded a primary document.
+        # A primary-document hit is the strong signal that this docket
         # has been (re)synced under the post-fix code path that persists
-        # op/disp bodies — at which point we trust the rest of the cache
+        # primary/disp bodies — at which point we trust the rest of the cache
         # too. If only dispositions came back, the cache may be holding
         # post-fix judgment bodies alongside a pre-fix indictment stub
         # (NULL description) — exactly the us-v-chapman / us-v-mcgonigal
         # shape — and the summary pipeline needs CL to recover the
-        # operative pleading text. Falling through to CL in this case
+        # primary document text. Falling through to CL in this case
         # costs at most 3 docket-entries pages; the alternative is
-        # silently skipping the docket with "no operative pleading text
+        # silently skipping the docket with "no primary document text
         # could be extracted" even though CL has it.
-        if operative:
-            operative.sort(key=lambda e: e.get("date_filed") or "")
+        if primary:
+            primary.sort(key=lambda e: e.get("date_filed") or "")
             dispositions.sort(key=lambda e: e.get("date_filed") or "")
-            return operative, dispositions
+            return primary, dispositions
 
-    # Cold cache — fall back to CL. Operative pleadings are almost always at
+    # Cold cache — fall back to CL. Prime documents are almost always at
     # entry #1 (criminal) or within the first few amended-complaint entries
     # (civil). Two pages oldest-first covers 99% of cases. For dispositions
     # we go three pages newest-first: in a heavily-briefed civil case, the
@@ -374,9 +374,9 @@ def find_operative_documents(
     # cached entries — their plain_text was harvested at sync time, so
     # pdf.extract_text short-circuits on them — and just augment with
     # whatever else CL turns up that the cache didn't see (typically the
-    # missing operative pleading, sitting as a NULL stub locally).
+    # missing primary document, sitting as a NULL stub locally).
     seen_ids: set[int] = {
-        e["id"] for e in operative + dispositions if e.get("id") is not None
+        e["id"] for e in primary + dispositions if e.get("id") is not None
     }
 
     def _dedup_add(target: list[dict[str, Any]], entry: dict[str, Any]) -> None:
@@ -387,14 +387,14 @@ def find_operative_documents(
         target.append(entry)
 
     for entry in oldest + newest:
-        if is_operative_pleading(entry):
-            _dedup_add(operative, entry)
+        if is_primary_document(entry):
+            _dedup_add(primary, entry)
         elif _is_disposition_document(entry):
             _dedup_add(dispositions, entry)
 
-    operative.sort(key=lambda e: e.get("date_filed") or "")
+    primary.sort(key=lambda e: e.get("date_filed") or "")
     dispositions.sort(key=lambda e: e.get("date_filed") or "")
-    return operative, dispositions
+    return primary, dispositions
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +405,7 @@ def find_operative_documents(
 def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
     """Concatenate text from all recap_documents on an entry.
 
-    Some entries (especially amended complaints) attach the operative
+    Some entries (especially amended complaints) attach the primary
     document AND its exhibits. We pull text from each available main+attachment
     in order and return the concatenation. Exhibits add noise but are
     truncated downstream by the LLM's character budget anyway.
@@ -414,7 +414,7 @@ def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
     parts: list[str] = []
     for rd in rds:
         # Prefer the main document; only include attachments if the main
-        # document is unavailable, to keep the input focused on the operative
+        # document is unavailable, to keep the input focused on the primary
         # text rather than exhibits.
         if rd.get("attachment_number"):
             continue
@@ -498,7 +498,7 @@ def _fetch_extra_documents(
     logged and dropped so the rest of the summary pipeline still gets to
     run on whatever CL did surface. The summary LLM sees these in their
     own "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section, distinct from the
-    operative-pleading and disposition slots that the CL-walk fills.
+    primary-document and disposition slots that the CL-walk fills.
     """
     extras = getattr(case, "extra_documents", None) or []
     out: list[dict[str, Any]] = []
@@ -528,7 +528,7 @@ def _fetch_extra_documents(
     return out
 
 
-def _borrow_operative_from_siblings(
+def _borrow_primary_from_siblings(
     *,
     cl: CourtListener,
     store: Store,
@@ -536,9 +536,9 @@ def _borrow_operative_from_siblings(
     primary_docket_id: int,
     allow_ocr: bool = True,
 ) -> list[dict[str, Any]]:
-    """Pull operative-pleading text from any sibling docket on the same case.
+    """Pull primary-document text from any sibling docket on the same case.
 
-    Stops at the first sibling that yields extractable operative text.
+    Stops at the first sibling that yields extractable primary text.
     Tags the returned entry descriptions with the sibling's docket number
     and court so the LLM prompt makes the cross-docket borrowing explicit
     — without that label, the model writes the summary as if the
@@ -555,24 +555,24 @@ def _borrow_operative_from_siblings(
             if meta.get("court_id") else None
         )
         log.info(
-            "summary: docket %s has no operative pleading — borrowing from sibling %s (%s)",
+            "summary: docket %s has no primary document — borrowing from sibling %s (%s)",
             primary_docket_id, sibling_id, sibling_docket_number,
         )
         try:
-            sibling_operative, _ = find_operative_documents(cl, sibling_id, store=store)
+            sibling_primary, _ = find_primary_documents(cl, sibling_id, store=store)
         except Exception:
             log.exception(
-                "summary: failed to scan sibling docket %s for operative documents",
+                "summary: failed to scan sibling docket %s for primary documents",
                 sibling_id,
             )
             continue
-        borrowed = _attach_text(sibling_operative, allow_ocr=allow_ocr)
+        borrowed = _attach_text(sibling_primary, allow_ocr=allow_ocr)
         if not borrowed:
             continue
         label_bits = [b for b in (sibling_docket_number, sibling_court_citation) if b]
         label = " ".join(label_bits) or f"docket {sibling_id}"
         for doc in borrowed:
-            existing = doc.get("description") or "operative pleading"
+            existing = doc.get("description") or "primary document"
             doc["description"] = f"{existing} [from sibling {label}]"
         return borrowed
     return []
@@ -596,7 +596,7 @@ def summarize_docket(
 ) -> Optional[dict[str, Any]]:
     """Generate, persist, and return the summary row for one docket.
 
-    Returns ``None`` when no operative-pleading text is available — we
+    Returns ``None`` when no primary-document text is available — we
     don't want to hallucinate a summary from the docket metadata alone.
     """
     meta = store.get_docket_meta(docket_id) or {}
@@ -613,44 +613,44 @@ def summarize_docket(
     }
 
     log.info(
-        "summary: scanning docket %s (%s) for operative documents",
+        "summary: scanning docket %s (%s) for primary documents",
         docket_id, docket_number,
     )
-    operative, dispositions = find_operative_documents(cl, docket_id, store=store)
+    primary, dispositions = find_primary_documents(cl, docket_id, store=store)
     log.info(
-        "summary: docket %s found %d operative pleading(s), %d disposition doc(s)",
-        docket_id, len(operative), len(dispositions),
+        "summary: docket %s found %d primary document(s), %d disposition document(s)",
+        docket_id, len(primary), len(dispositions),
     )
 
-    operative_docs = _attach_text(operative, allow_ocr=allow_ocr)
-    disposition_docs = _attach_text(
+    primary_documents = _attach_text(primary, allow_ocr=allow_ocr)
+    disposition_documents = _attach_text(
         dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
     )
 
     # Fetch any operator-supplied extra_documents for this docket. These
-    # don't slot into operative/disposition — they ride into the LLM
+    # don't slot into primary/disposition — they ride into the LLM
     # prompt as their own block, each carrying the operator's note
     # describing what it is.
-    extra_docs = _fetch_extra_documents(case, docket_id, allow_ocr=allow_ocr)
+    extra_documents = _fetch_extra_documents(case, docket_id, allow_ocr=allow_ocr)
 
-    if not operative_docs and len(case.dockets) > 1:
+    if not primary_documents and len(case.dockets) > 1:
         # Appellate dockets (and parallel filings that pivot off a sibling)
         # don't re-file their own complaint — the opener is a clerical
         # "case opened, notice of appeal from <lower court>" entry, which
-        # the operative-pleading regex correctly refuses to match. Borrow
-        # the operative text from a sibling docket on the same case_id so
+        # the primary-document regex correctly refuses to match. Borrow
+        # the primary text from a sibling docket on the same case_id so
         # we still get a summary; this docket's own entries continue to
         # supply dispositions and the structured-events scaffold so the
         # framing stays appellate-perspective rather than collapsing into
         # the trial-court narrative.
-        operative_docs = _borrow_operative_from_siblings(
+        primary_documents = _borrow_primary_from_siblings(
             cl=cl, store=store, case=case,
             primary_docket_id=docket_id, allow_ocr=allow_ocr,
         )
 
-    if not operative_docs and not extra_docs:
+    if not primary_documents and not extra_documents:
         log.warning(
-            "summary: skipping docket %s — no operative pleading text could be extracted",
+            "summary: skipping docket %s — no primary document text could be extracted",
             docket_id,
         )
         return None
@@ -662,9 +662,9 @@ def summarize_docket(
         case_name=case.name,
         aggregation_note=aggregation_note,
         docket=docket_for_prompt,
-        operative_docs=operative_docs,
-        disposition_docs=disposition_docs,
-        extra_docs=extra_docs,
+        primary_documents=primary_documents,
+        disposition_documents=disposition_documents,
+        extra_documents=extra_documents,
         hearings=hearings,
         deadlines=deadlines,
         provider=provider,
@@ -679,14 +679,14 @@ def summarize_docket(
         # whose only document is still sealed).
         log.warning(
             "summary: docket %s — LLM emitted insufficient-documents "
-            "fallback (operative=%d disposition=%d extra=%d); store will "
+            "fallback (primary=%d disposition=%d extra=%d); store will "
             "show the refusal text. Check whether the extracted document "
             "text actually carried the case's substance.",
-            docket_id, len(operative_docs), len(disposition_docs), len(extra_docs),
+            docket_id, len(primary_documents), len(disposition_documents), len(extra_documents),
         )
 
     source_ids = [
-        d["entry_id"] for d in operative_docs + disposition_docs
+        d["entry_id"] for d in primary_documents + disposition_documents
         if d.get("entry_id")
     ]
     store.upsert_case_summary(
@@ -729,7 +729,7 @@ def refresh_stale(
     emit to the affected calendars.
 
     This is the agentic path: ``sync.process_entry`` flips ``stale=1`` when
-    it sees an operative-pleading or disposition entry, and ``cmd_sync`` /
+    it sees a primary-document or disposition entry, and ``cmd_sync`` /
     the webhook ``emit_fn`` call this at the end of a sync, before
     ``emit_calendars``, so a freshly-landed judgment shows up in the
     rendered index in the same cycle without operator intervention.
@@ -780,7 +780,7 @@ def summarize_case(
     """Summarize every docket on a case.
 
     With ``force=False`` (the default), dockets that already have a summary
-    row are skipped — operative pleadings are stable, so existing summaries
+    row are skipped — primary documents are stable, so existing summaries
     are still valid. Pass ``force=True`` after a model upgrade or prompt
     change to overwrite.
     """

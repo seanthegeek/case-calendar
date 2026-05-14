@@ -16,9 +16,9 @@ import pytest
 from case_calendar import summary
 from case_calendar.summary import (
     _is_disposition_document,
-    find_operative_documents,
+    find_primary_documents,
     is_disposition,
-    is_operative_pleading,
+    is_primary_document,
     refresh_stale,
     summarize_case,
     summarize_docket,
@@ -54,7 +54,7 @@ class _FakeResp:
 class _FakeCL:
     """Records GETs and replays canned ``/docket-entries/`` pages.
 
-    Pages are keyed by ``(docket_id, order_by)`` — `find_operative_documents`
+    Pages are keyed by ``(docket_id, order_by)`` — `find_primary_documents`
     makes two such requests per docket (date_filed and -date_filed). Each
     page payload is the raw CL response shape: ``{"results": [...], "next": ...}``.
     """
@@ -79,11 +79,11 @@ class _FakeCL:
 
 
 # ---------------------------------------------------------------------------
-# Operative / disposition classifiers
+# Primary-document / disposition classifiers
 # ---------------------------------------------------------------------------
 
 
-class TestOperativeDetection:
+class TestPrimaryDocumentDetection:
     @pytest.mark.parametrize("description", [
         "INDICTMENT as to John Doe",
         "SUPERSEDING INDICTMENT (Count Three)",
@@ -92,8 +92,8 @@ class TestOperativeDetection:
         "Petition for Writ of Habeas Corpus",
         "COMPLAINT and Demand for Jury Trial",
     ])
-    def test_matches_operative_pleadings(self, description):
-        assert is_operative_pleading({"description": description})
+    def test_matches_primary_documents(self, description):
+        assert is_primary_document({"description": description})
 
     @pytest.mark.parametrize("description", [
         "Response to Motion to Dismiss the Indictment",
@@ -101,12 +101,12 @@ class TestOperativeDetection:
         "Order on Motion for Discovery",
         "",
     ])
-    def test_rejects_non_operative(self, description):
-        assert not is_operative_pleading({"description": description})
+    def test_rejects_non_primary(self, description):
+        assert not is_primary_document({"description": description})
 
     def test_falls_back_to_short_description(self):
         entry = {"description": "", "short_description": "INDICTMENT"}
-        assert is_operative_pleading(entry)
+        assert is_primary_document(entry)
 
     def test_falls_back_to_recap_document_description(self):
         entry = {
@@ -114,10 +114,10 @@ class TestOperativeDetection:
             "short_description": "",
             "recap_documents": [{"description": "INDICTMENT"}],
         }
-        assert is_operative_pleading(entry)
+        assert is_primary_document(entry)
 
     def test_empty_entry_returns_false(self):
-        assert not is_operative_pleading({})
+        assert not is_primary_document({})
 
 
 class TestDispositionDetection:
@@ -241,7 +241,7 @@ class TestDispositionDetection:
 
 class TestDispositionDocumentDetection:
     """The stricter sibling of ``is_disposition`` used inside
-    ``find_operative_documents`` to pick which documents reach the LLM.
+    ``find_primary_documents`` to pick which documents reach the LLM.
 
     ``is_disposition`` is broad on purpose (motion-on-disposition still
     flips the case_summaries row stale). The stricter predicate must
@@ -352,12 +352,12 @@ class TestDispositionDocumentDetection:
 
 
 # ---------------------------------------------------------------------------
-# find_operative_documents
+# find_primary_documents
 # ---------------------------------------------------------------------------
 
 
-class TestFindOperativeDocuments:
-    def test_returns_operative_and_disposition_lists(self):
+class TestFindPrimaryDocuments:
+    def test_returns_primary_and_disposition_lists(self):
         cl = _FakeCL({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
@@ -367,8 +367,8 @@ class TestFindOperativeDocuments:
                 {"id": 99, "description": "JUDGMENT in a Criminal Case", "date_filed": "2025-06-15"},
             ],
         })
-        operative, dispositions = find_operative_documents(cl, 1)
-        assert [e["id"] for e in operative] == [10]
+        primary, dispositions = find_primary_documents(cl, 1)
+        assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
     def test_dedups_overlap_between_oldest_and_newest_pages(self):
@@ -378,8 +378,8 @@ class TestFindOperativeDocuments:
             (1, "date_filed"): [same],
             (1, "-date_filed"): [same],
         })
-        operative, _ = find_operative_documents(cl, 1)
-        assert [e["id"] for e in operative] == [10]
+        primary, _ = find_primary_documents(cl, 1)
+        assert [e["id"] for e in primary] == [10]
 
     def test_sorts_oldest_first_within_each_group(self):
         cl = _FakeCL({
@@ -389,12 +389,12 @@ class TestFindOperativeDocuments:
             ],
             (1, "-date_filed"): [],
         })
-        operative, _ = find_operative_documents(cl, 1)
-        assert [e["id"] for e in operative] == [10, 20]
+        primary, _ = find_primary_documents(cl, 1)
+        assert [e["id"] for e in primary] == [10, 20]
 
     def test_local_store_short_circuits_cl_call(self, store):
-        # Warm cache: sync has already persisted operative + disposition
-        # entries on this docket. find_operative_documents must read them
+        # Warm cache: sync has already persisted primary + disposition
+        # entries on this docket. find_primary_documents must read them
         # from the store and never touch CL — otherwise normal syncs burn
         # duplicate docket-entries calls right after sync wrote the data.
         store.mark_entry(
@@ -411,16 +411,16 @@ class TestFindOperativeDocuments:
         class _BoomCL:
             def _get(self, *a, **kw):
                 raise AssertionError("CL must not be called when local cache is warm")
-        operative, dispositions = find_operative_documents(_BoomCL(), 1, store=store)
-        assert [e["id"] for e in operative] == [10]
+        primary, dispositions = find_primary_documents(_BoomCL(), 1, store=store)
+        assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
         # Recap document payload (with plain_text) is preserved end-to-end
         # so pdf.extract_text can short-circuit on it.
-        assert operative[0]["recap_documents"][0]["plain_text"] == "indictment body"
+        assert primary[0]["recap_documents"][0]["plain_text"] == "indictment body"
 
     def test_cold_local_store_falls_back_to_cl(self, store):
         # No body-bearing entries cached — fall back to CL (first sync,
-        # or pre-fix data where op/disp entries were stub-only).
+        # or pre-fix data where primary/disp entries were stub-only).
         cl = _FakeCL({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
@@ -430,21 +430,21 @@ class TestFindOperativeDocuments:
                  "date_filed": "2025-06-15"},
             ],
         })
-        operative, dispositions = find_operative_documents(cl, 1, store=store)
-        assert [e["id"] for e in operative] == [10]
+        primary, dispositions = find_primary_documents(cl, 1, store=store)
+        assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
     def test_disposition_only_cache_does_not_short_circuit(self, store):
         # us-v-chapman / us-v-mcgonigal shape: pre-fix sync stored the
         # INDICTMENT as a NULL-description stub (filter-failed under the
-        # old logic that didn't persist op/disp bodies), while later
+        # old logic that didn't persist primary/disp bodies), while later
         # dispositive orders were processed under the post-fix logic and
         # ARE body-bearing. The local cache thus has dispositions but no
-        # operative pleading. The old short-circuit (`if operative or
-        # dispositions`) returned the disposition list with `operative=[]`,
-        # `summarize_docket` then bailed with "no operative pleading text
+        # primary document. The old short-circuit (`if primary_list or
+        # dispositions`) returned the disposition list with `primary=[]`,
+        # `summarize_docket` then bailed with "no primary document text
         # could be extracted" and the summary went stale. The cache hit
-        # must only short-circuit when an operative pleading is found;
+        # must only short-circuit when a primary document is found;
         # otherwise we go to CL to recover the indictment text.
         store.mark_entry(
             1, 99, "2025-06-15T00:00:00Z", "fp-disp",
@@ -466,9 +466,9 @@ class TestFindOperativeDocuments:
                                       "plain_text": "judgment body"}]},
             ],
         })
-        operative, dispositions = find_operative_documents(cl, 1, store=store)
+        primary, dispositions = find_primary_documents(cl, 1, store=store)
         # CL fallback gave us the indictment that the local cache lacked.
-        assert [e["id"] for e in operative] == [10]
+        assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
     def test_motion_in_cache_does_not_short_circuit_cl_fallback(self, store):
@@ -509,8 +509,8 @@ class TestFindOperativeDocuments:
                  "date_filed": "2026-03-26", "entry_number": 135},
             ],
         })
-        operative, dispositions = find_operative_documents(cl, 1, store=store)
-        assert [e["id"] for e in operative] == [1]
+        primary, dispositions = find_primary_documents(cl, 1, store=store)
+        assert [e["id"] for e in primary] == [1]
         # Both real orders reach the LLM; the motion (entry 6) is NOT
         # in the disposition set even though it's cached body-bearing.
         assert sorted(e["id"] for e in dispositions) == [134, 135]
@@ -518,9 +518,9 @@ class TestFindOperativeDocuments:
     def test_stub_only_rows_dont_satisfy_the_cache(self, store):
         # Filter-failed entries land as fingerprint stubs with description
         # IS NULL. They must NOT satisfy the local-cache check — otherwise
-        # a docket with only stubs would silently return zero op/disp and
-        # skip the CL fallback, when CL might actually have an operative
-        # pleading filed before the watermark.
+        # a docket with only stubs would silently return zero primary/disp and
+        # skip the CL fallback, when CL might actually have a primary
+        # document filed before the watermark.
         store.mark_entry(
             1, 42, "2024-01-01T00:00:00Z", "fp-stub", date_filed="2024-01-01",
             entry_number=2, description=None,  # filter-failed stub
@@ -531,8 +531,8 @@ class TestFindOperativeDocuments:
             ],
             (1, "-date_filed"): [],
         })
-        operative, _ = find_operative_documents(cl, 1, store=store)
-        assert [e["id"] for e in operative] == [10]
+        primary, _ = find_primary_documents(cl, 1, store=store)
+        assert [e["id"] for e in primary] == [10]
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +581,7 @@ def _seed_docket_meta(store, docket_id, *, court_id="dcd", docket_number="1:24-c
 
 
 class TestSummarizeDocket:
-    def test_writes_summary_when_operative_text_available(self, store, patch_llm, patch_pdf):
+    def test_writes_summary_when_primary_text_available(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body text..."}
         cl = _FakeCL({
@@ -610,11 +610,11 @@ class TestSummarizeDocket:
         assert call["case_name"] == "US v. Doe"
         assert call["docket"]["court_citation"] == "D.D.C."
         assert call["docket"]["court_tz"] is not None
-        assert [d["entry_id"] for d in call["operative_docs"]] == [10]
+        assert [d["entry_id"] for d in call["primary_documents"]] == [10]
 
-    def test_returns_none_when_no_operative_text_extractable(self, store, patch_llm, patch_pdf):
+    def test_returns_none_when_no_primary_text_extractable(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
-        # Operative pleading present but PDF text is empty for every doc.
+        # Primary document present but PDF text is empty for every doc.
         patch_pdf["texts"] = {}
         cl = _FakeCL({
             (1, "date_filed"): [{
@@ -671,10 +671,10 @@ class TestSummarizeDocket:
             for r in caplog.records
         ), [r.message for r in caplog.records]
 
-    def test_borrows_from_sibling_when_primary_has_no_operative(
+    def test_borrows_from_sibling_when_primary_docket_has_no_primary_document(
         self, store, patch_llm, patch_pdf,
     ):
-        # Primary docket 1 has no operative pleading (appellate-style).
+        # Primary docket 1 has no primary document (appellate-style).
         # Sibling docket 2 has the indictment.
         _seed_docket_meta(store, 1, docket_number="24-1234", court_id="ca9")
         _seed_docket_meta(store, 2, docket_number="1:24-cr-100", court_id="dcd")
@@ -696,8 +696,8 @@ class TestSummarizeDocket:
 
         assert row is not None
         # The borrowed-from label was appended to the description.
-        operative_docs = patch_llm[0]["operative_docs"]
-        assert operative_docs[0]["description"].endswith("[from sibling 1:24-cr-100 D.D.C.]")
+        primary_documents = patch_llm[0]["primary_documents"]
+        assert primary_documents[0]["description"].endswith("[from sibling 1:24-cr-100 D.D.C.]")
 
     def test_borrowing_swallows_sibling_failure_and_continues(
         self, store, patch_llm, patch_pdf, caplog,
@@ -731,7 +731,7 @@ class TestSummarizeDocket:
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
 
-    def test_returns_none_when_no_sibling_has_operative(
+    def test_returns_none_when_no_sibling_has_primary(
         self, store, patch_llm, patch_pdf,
     ):
         _seed_docket_meta(store, 1, docket_number="24-1", court_id="ca9")
@@ -763,7 +763,7 @@ class TestSummarizeDocket:
         })
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
-        assert [d["entry_id"] for d in patch_llm[0]["disposition_docs"]] == [99]
+        assert [d["entry_id"] for d in patch_llm[0]["disposition_documents"]] == [99]
 
     def test_paperless_disposition_falls_back_to_description(
         self, store, patch_llm, patch_pdf,
@@ -794,16 +794,16 @@ class TestSummarizeDocket:
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
 
-        dispositions = patch_llm[0]["disposition_docs"]
+        dispositions = patch_llm[0]["disposition_documents"]
         assert [d["entry_id"] for d in dispositions] == [99]
         # The sentence figures must reach the LLM — that's the whole point.
         assert "92 months imprisonment" in dispositions[0]["text"]
 
-    def test_operative_pleading_without_pdf_is_still_dropped(
+    def test_primary_document_without_pdf_is_still_dropped(
         self, store, patch_llm, patch_pdf,
     ):
         # By design the description fallback is scoped to dispositions only.
-        # Operative pleadings are indictments / complaints — a clerk's
+        # Primary documents are indictments / complaints — a clerk's
         # minute-entry stub isn't an acceptable substitute, and feeding one
         # in would produce a vacuous summary. Confirm the asymmetry.
         _seed_docket_meta(store, 1)
@@ -845,7 +845,7 @@ class TestExtraDocuments:
     """The ``extra_documents`` workaround for CL data gaps (e.g. unsealed
     indictments whose docket entries are still hidden by CL bug #7345).
     Each entry is fetched at summary time and fed to the LLM as part of a
-    distinct "EXTRA DOCUMENTS" section, alongside the operative-pleading
+    distinct "EXTRA DOCUMENTS" section, alongside the primary-document
     and disposition slots that the CL walk fills. The operator's required
     ``note`` describes what the document is and why it was added — that
     natural-language description carries the meaning a rigid role
@@ -854,7 +854,7 @@ class TestExtraDocuments:
     def test_feeds_extras_when_cl_has_no_indictment(
         self, store, patch_llm, patch_pdf, monkeypatch,
     ):
-        # The canonical Zewei case: CL has no operative pleading
+        # The canonical Zewei case: CL has no primary document
         # (entries 1-4 missing), so the only document the summary LLM
         # sees is the operator-provided one — in the extras section,
         # with its note describing what it is.
@@ -872,15 +872,15 @@ class TestExtraDocuments:
                 docket=1,
                 url="https://www.justice.gov/opa/media/1407196/dl",
                 note="Indictment was filed under seal but the seal has "
-                     "since been lifted; treat as the operative pleading.",
+                     "since been lifted; treat as the primary document.",
             )],
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
         # CL-sourced slots are empty; the extras section carries the doc.
-        assert patch_llm[0]["operative_docs"] == []
-        assert patch_llm[0]["disposition_docs"] == []
-        extras = patch_llm[0]["extra_docs"]
+        assert patch_llm[0]["primary_documents"] == []
+        assert patch_llm[0]["disposition_documents"] == []
+        extras = patch_llm[0]["extra_documents"]
         assert len(extras) == 1
         doc = extras[0]
         assert doc["source_url"] == "https://www.justice.gov/opa/media/1407196/dl"
@@ -891,8 +891,8 @@ class TestExtraDocuments:
     def test_feeds_extras_alongside_cl_documents(
         self, store, patch_llm, patch_pdf, monkeypatch,
     ):
-        # Overlap window: CL has the operative pleading AND an operator
-        # also listed an extra. CL doc fills the operative slot; the
+        # Overlap window: CL has the primary document AND an operator
+        # also listed an extra. CL doc fills the primary slot; the
         # extra rides in its own section (the LLM sees both, with the
         # provenance distinction explicit).
         _seed_docket_meta(store, 1)
@@ -916,8 +916,8 @@ class TestExtraDocuments:
             )],
         )
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
-        assert [d["entry_id"] for d in patch_llm[0]["operative_docs"]] == [10]
-        extras = patch_llm[0]["extra_docs"]
+        assert [d["entry_id"] for d in patch_llm[0]["primary_documents"]] == [10]
+        extras = patch_llm[0]["extra_documents"]
         assert len(extras) == 1
         assert extras[0]["source_url"] == "https://example.gov/i.pdf"
 
@@ -950,8 +950,8 @@ class TestExtraDocuments:
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
         # Only the CL doc reaches the LLM; the dropped one isn't appended.
-        assert [d["entry_id"] for d in patch_llm[0]["operative_docs"]] == [10]
-        assert patch_llm[0]["extra_docs"] == []
+        assert [d["entry_id"] for d in patch_llm[0]["primary_documents"]] == [10]
+        assert patch_llm[0]["extra_documents"] == []
 
     def test_only_extras_for_target_docket_are_fetched(
         self, store, patch_llm, patch_pdf, monkeypatch,
@@ -992,7 +992,7 @@ class TestExtraDocuments:
         self, store, patch_llm, patch_pdf, monkeypatch,
     ):
         # Without the extras-aware content gate, this docket would hit
-        # the "no operative pleading text could be extracted" branch and
+        # the "no primary document text could be extracted" branch and
         # return None. With the extras-aware gate, the operator's doc
         # satisfies the content check on its own and the summary
         # proceeds — the canonical Zewei flow.
@@ -1011,8 +1011,8 @@ class TestExtraDocuments:
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
-        assert patch_llm[0]["operative_docs"] == []
-        assert len(patch_llm[0]["extra_docs"]) == 1
+        assert patch_llm[0]["primary_documents"] == []
+        assert len(patch_llm[0]["extra_documents"]) == 1
 
 
 # ---------------------------------------------------------------------------

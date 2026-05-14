@@ -2137,14 +2137,14 @@ class TestApplyDeadlineActionEdgeCases:
         assert store.get_deadlines("us-v-x") == []
 
 
-class TestSummaryStaleMarkOnOperativeOrDisposition:
-    """An operative-pleading or disposition entry must flip the docket's
+class TestSummaryStaleMarkOnPrimaryOrDisposition:
+    """A primary-document or disposition entry must flip the docket's
     case_summaries.stale flag — that's how the agentic summary refresh knows
     a regeneration is needed before the next emit."""
 
-    def test_operative_pleading_marks_stale(self, store, case, monkeypatch):
+    def test_primary_document_marks_stale(self, store, case, monkeypatch):
         # Seed a non-stale summary row, then process an entry whose
-        # description matches summary.is_operative_pleading. After
+        # description matches summary.is_primary_document. After
         # process_entry, the row should be flagged stale.
         store.upsert_case_summary(
             "us-v-x", 100, summary="old", model="m", source_entry_ids=[],
@@ -2156,7 +2156,7 @@ class TestSummaryStaleMarkOnOperativeOrDisposition:
         })
         cl = FakeCL(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
-        # "INDICTMENT" head matches summary.is_operative_pleading.
+        # "INDICTMENT" head matches summary.is_primary_document.
         syncer.process_entry(case, 100, _entry(1, "INDICTMENT as to defendant"))
         assert store.is_summary_stale("us-v-x", 100) is True
 
@@ -2172,10 +2172,10 @@ class TestSummaryStaleMarkOnOperativeOrDisposition:
         syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
         assert store.is_summary_stale("us-v-x", 100) is True
 
-    def test_operative_pleading_persists_description_and_recap_docs(
+    def test_primary_document_persists_description_and_recap_docs(
         self, store, case, monkeypatch,
     ):
-        # Operative pleadings don't match the hearing-relevance regex, so
+        # Primary documents don't match the hearing-relevance regex, so
         # historically their body was discarded — leaving the summary
         # pipeline to re-fetch the same data from CL. Now sync persists the
         # description AND the compact recap_documents (including plain_text)

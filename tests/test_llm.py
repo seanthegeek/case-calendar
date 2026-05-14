@@ -1168,11 +1168,11 @@ class TestBuildSummaryUserMessage:
                 "docket_number": "1:24-cr-100",
                 "court_citation": "S.D.N.Y.",
             },
-            operative_docs=[{
+            primary_documents=[{
                 "entry_number": 1, "description": "INDICTMENT",
                 "date_filed": "2024-01-01", "text": "Body of indictment...",
             }],
-            disposition_docs=[{
+            disposition_documents=[{
                 "entry_number": 99, "description": "JUDGMENT",
                 "date_filed": "2025-06-15", "text": "Judgment body...",
             }],
@@ -1186,7 +1186,7 @@ class TestBuildSummaryUserMessage:
                 "due_at_utc": "2024-12-15T22:00:00+00:00",
                 "deadline_type": "reply",
             }],
-            operative_char_budget=10_000, disposition_char_budget=10_000,
+            primary_char_budget=10_000, disposition_char_budget=10_000,
         )
         assert "US v. X" in msg
         assert "Parallel district + appellate" in msg
@@ -1199,14 +1199,14 @@ class TestBuildSummaryUserMessage:
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "(none recorded)" in msg
-        # operative_docs empty -> "no operative pleading text available"
-        assert "no operative pleading text available" in msg
-        # disposition_docs empty -> "(none)"
+        # primary_documents empty -> "no primary document text available"
+        assert "no primary document text available" in msg
+        # disposition_documents empty -> "(none)"
         assert "(none)" in msg
 
     def test_conditional_deadline_surfaces_notes_verbatim(self):
@@ -1220,7 +1220,7 @@ class TestBuildSummaryUserMessage:
             case_name="Anthropic v. DOW",
             aggregation_note=None,
             docket={"docket_number": "26-2011", "court_id": "ca9"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[],
             deadlines=[{
                 "title": "Appellants' Motion for Appropriate Relief",
@@ -1230,7 +1230,7 @@ class TestBuildSummaryUserMessage:
                 "notes": "Appellants must file within 21 days after "
                          "resolution of related D.C. Cir. case 26-1049.",
             }],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "due_at_utc=None" in msg
         assert "21 days after resolution" in msg
@@ -1241,7 +1241,7 @@ class TestBuildSummaryUserMessage:
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[],
             deadlines=[{
                 "title": "Govt response to MTD",
@@ -1250,7 +1250,7 @@ class TestBuildSummaryUserMessage:
                 "deadline_type": "response",
                 "notes": "Some operator-added side note that shouldn't reach the LLM.",
             }],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "Some operator-added side note" not in msg
 
@@ -1258,24 +1258,24 @@ class TestBuildSummaryUserMessage:
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "AGGREGATION NOTE" not in msg
 
-    def test_extra_docs_render_in_their_own_section(self):
+    def test_extra_documents_render_in_their_own_section(self):
         # extra_documents (from operator-supplied URLs) render in a
         # distinct "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section after
-        # the operative-pleading and disposition slots. Each entry is
+        # the primary-document and disposition slots. Each entry is
         # labeled with its source URL and the operator's required note.
         msg = llm._build_summary_user_message(
             case_name="US v. Zewei",
             aggregation_note=None,
             docket={"docket_number": "4:23-cr-00523", "court_citation": "S.D. Tex."},
-            operative_docs=[],
-            disposition_docs=[],
-            extra_docs=[{
+            primary_documents=[],
+            disposition_documents=[],
+            extra_documents=[{
                 "entry_id": None, "entry_number": None,
                 "description": "operator-provided document",
                 "date_filed": None,
@@ -1285,7 +1285,7 @@ class TestBuildSummaryUserMessage:
                                  "entries 1-4 are missing due to bug #7345.",
             }],
             hearings=[], deadlines=[],
-            operative_char_budget=10_000, disposition_char_budget=10_000,
+            primary_char_budget=10_000, disposition_char_budget=10_000,
         )
         assert "EXTRA DOCUMENTS PROVIDED BY OPERATOR" in msg
         assert "OPERATOR-PROVIDED DOCUMENT" in msg
@@ -1306,9 +1306,9 @@ class TestBuildSummaryUserMessage:
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "EXTRA DOCUMENTS" not in msg
 
@@ -1316,10 +1316,10 @@ class TestBuildSummaryUserMessage:
         msg = llm._build_summary_user_message(
             case_name="X", aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            operative_docs=[], disposition_docs=[],
-            extra_docs=[],
+            primary_documents=[], disposition_documents=[],
+            extra_documents=[],
             hearings=[], deadlines=[],
-            operative_char_budget=100, disposition_char_budget=100,
+            primary_char_budget=100, disposition_char_budget=100,
         )
         assert "EXTRA DOCUMENTS" not in msg
 
@@ -1330,7 +1330,7 @@ class TestGenerateDocketSummary:
             llm.generate_docket_summary(
                 case_name="x", aggregation_note=None,
                 docket={"docket_number": "x"},
-                operative_docs=[], disposition_docs=[],
+                primary_documents=[], disposition_documents=[],
                 hearings=[], deadlines=[],
             )
 
@@ -1339,7 +1339,7 @@ class TestGenerateDocketSummary:
             llm.generate_docket_summary(
                 case_name="x", aggregation_note=None,
                 docket={"docket_number": "x"},
-                operative_docs=[], disposition_docs=[],
+                primary_documents=[], disposition_documents=[],
                 hearings=[], deadlines=[],
                 provider="bogus",
             )
@@ -1355,7 +1355,7 @@ class TestGenerateDocketSummary:
         text, ident = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
             provider="anthropic",
         )
@@ -1375,7 +1375,7 @@ class TestGenerateDocketSummary:
         text, ident = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
             provider="openai", model="custom-model",
         )
@@ -1394,7 +1394,7 @@ class TestGenerateDocketSummary:
         text, ident = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
             provider="gemini",
         )
@@ -1409,7 +1409,7 @@ class TestGenerateDocketSummary:
         text, _ = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
             provider="anthropic",
         )
@@ -1428,7 +1428,7 @@ class TestGenerateDocketSummary:
         _, ident = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
         )
         assert ident == "anthropic/claude-opus-4-7"
@@ -1444,7 +1444,7 @@ class TestGenerateDocketSummary:
         text, ident = llm.generate_docket_summary(
             case_name="x", aggregation_note=None,
             docket={"docket_number": "x"},
-            operative_docs=[], disposition_docs=[],
+            primary_documents=[], disposition_documents=[],
             hearings=[], deadlines=[],
         )
         # Picks Sonnet (the summary-tier default), not Haiku.

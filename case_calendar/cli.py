@@ -252,7 +252,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 affected_calendars.add(case.calendar)
 
         # Agentic summary refresh: process_entry flipped stale=1 on the
-        # rows whose dockets received an operative pleading or disposition
+        # rows whose dockets received a primary document or disposition
         # this sync; refresh_stale also picks up dockets that have no
         # summary row yet (new cases / new dockets in config). Calendars
         # whose summary text changed get added to affected_calendars so
@@ -616,7 +616,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             return
         # Cheap check: is any (case_id, docket_id) in these calendars stale?
         # Avoids arming the timer on deliveries that didn't touch any
-        # operative-pleading or disposition entry.
+        # primary-document or disposition entry.
         any_stale = False
         for case in cases:
             if case.calendar not in only_calendars:
@@ -656,7 +656,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
             only_calendars=only_calendars,
         )
         # Debounce-arm the summary refresh. If this delivery didn't touch
-        # an operative pleading or disposition, _arm_debounce notices
+        # a primary document or disposition, _arm_debounce notices
         # there are no stale rows and noops, so we don't pay for an
         # idle timer.
         _arm_debounce(only_calendars)
@@ -751,7 +751,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     """Generate per-docket AI summaries for the index page.
 
     Opt-in feature gated on ``case_summaries.enabled`` in the config. Each
-    case's dockets are scanned for the operative pleading (latest
+    case's dockets are scanned for the primary document (latest
     indictment / amended complaint / etc.) and any disposition documents
     (judgment, plea agreement, verdict, dismissal). The PDFs are fed to a
     higher-tier LLM (Sonnet by default) along with the structured-events
@@ -759,8 +759,8 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     prose summary persisted to the ``case_summaries`` table and rendered
     into ``index.html`` on the next emit.
 
-    Existing summary rows are reused unless ``--force`` is passed; operative
-    pleadings are stable, so re-running cheaply is the default.
+    Existing summary rows are reused unless ``--force`` is passed; primary
+    documents are stable, so re-running cheaply is the default.
     """
     cfg = _load_config(args.config)
     summary_cfg = cfg.get("case_summaries") or {}

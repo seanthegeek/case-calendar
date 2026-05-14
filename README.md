@@ -294,7 +294,7 @@ pulling new data; the `setup` commands handle the one-time OAuth flows;
 the `summarize` command is opt-in (gated on `case_summaries.enabled` in
 the config) and regenerates the per-docket AI case summaries shown on
 the index page. Summaries also auto-refresh under `sync` / `serve` when a
-new operative pleading or disposition lands — `summarize --force` is the
+new primary document or disposition lands — `summarize --force` is the
 explicit per-case path for prompt or model upgrades, and
 `sync --force-summaries` bundles the equivalent into a polling run so a
 prompt change can land in one command instead of two (and one CL session

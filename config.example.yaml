@@ -57,8 +57,8 @@ store_path: data/case-calendar.sqlite
 
 # Optional — AI-generated per-docket summaries on the index page.
 #
-# When enabled, `case-calendar summarize` walks each docket for its operative
-# pleading (latest indictment / amended complaint / etc.) plus any disposition
+# When enabled, `case-calendar summarize` walks each docket for its primary
+# document (latest indictment / amended complaint / etc.) plus any disposition
 # documents (judgment, plea agreement, verdict, dismissal), feeds the PDF
 # text to a higher-tier LLM, and writes a 2-4 sentence prose summary to the
 # `case_summaries` table. The index renderer surfaces these summaries
@@ -220,7 +220,7 @@ cases:
   # but that CourtListener / PACER are not surfacing — e.g. an unsealed
   # indictment whose docket entries are still hidden by a data bug, or a
   # sentencing order that wasn't uploaded to RECAP. Each entry is fetched
-  # at summary-generation time and folded into the operative-pleading or
+  # at summary-generation time and folded into the primary-document or
   # disposition set as if it had come from CL. The `note` is trusted
   # operator context shown to the LLM (the document TEXT itself is still
   # treated as untrusted, the same way CL/PACER text is).

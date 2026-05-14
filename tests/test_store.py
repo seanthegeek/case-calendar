@@ -70,7 +70,7 @@ class TestEntries:
         assert rows[0]["recap_documents"][0]["plain_text"] == "body"
 
     def test_get_entries_with_body_orders_by_date_filed(self, store: Store):
-        # Summary's CL fallback returns operative pleadings oldest-first and
+        # Summary's CL fallback returns primary documents oldest-first and
         # then sorts them; the local-cache path must produce the same order
         # so swap-ability between the two paths is invariant.
         store.mark_entry(1, 20, "2024-06-01T00:00:00Z", "fp2",
