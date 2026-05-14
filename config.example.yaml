@@ -227,17 +227,31 @@ cases:
   #
   # Worked example below: Xu Zewei, charged in S.D. Tex. 4:23-cr-00523
   # with the HAFNIUM-era Microsoft Exchange intrusions and extradited
-  # from Italy in 2025. The indictment was filed under seal and ordered
-  # unsealed before extradition, but CourtListener / PACER currently
-  # show docket entries 1-4 as missing rather than unsealed (CL bug
-  # https://github.com/freelawproject/courtlistener/issues/7345). The
-  # only public copy of the unsealed indictment is the one DoJ attached
-  # to its press release; we point `extra_documents` at that URL so the
-  # case still gets a meaningful summary on the index page. The PDF
-  # still carries "SEALED" watermarks on every page because it was
-  # filed under seal — the operator `note` tells the summary LLM that
-  # the seal has since been lifted so it doesn't describe the case as
-  # still sealed.
+  # from Italy in 2025. The docket has two distinct upstream gaps,
+  # each worked around by its own `extra_documents` entry:
+  #
+  #   (a) docket entries 1-4 — including the original indictment —
+  #       remain sealed in the public record at the courthouse level
+  #       even though the seal was lifted in connection with
+  #       extradition. This is an upstream sealing decision on the
+  #       court's side, NOT a CourtListener data bug, and won't
+  #       resolve until the clerk re-uploads the unsealed copies.
+  #       The DoJ press release attachment is the only public copy
+  #       of the indictment in the meantime.
+  #
+  #   (b) entry 20's PDF (the agreed motion to designate the case
+  #       as complex) is reachable directly from CL's storage bucket,
+  #       but the v4 API reports `is_available: false` because the
+  #       file was uploaded under an older `pacer_case_id` (1940635)
+  #       than the docket's current one (1940634), and CL's
+  #       availability reconciler matches on the current id only
+  #       (CL bug https://github.com/freelawproject/courtlistener/issues/7345).
+  #
+  # Remove each entry once its upstream gap closes. Keep operator
+  # `note` text short — just identify the document; details about
+  # the upstream gap belong in this comment block, not in the note,
+  # since the note is shown to the summary LLM and bug/workaround
+  # context only confuses the summary.
   #
   # Fields (all required):
   #   docket   integer  — must be one of this case's `dockets` ids
@@ -260,14 +274,14 @@ cases:
         url: https://www.justice.gov/opa/media/1407196/dl
         note: >-
           This PDF is the unsealed indictment in S.D. Tex. case
-          4:23-cr-00523 (United States v. Xu Zewei). It was filed under
-          seal and so every page bears a "SEALED" watermark, but the
-          seal has since been lifted by court order — the indictment
-          was unsealed in connection with Zewei's extradition from
-          Italy. Sourced from the DoJ press release attachment because
-          CourtListener / PACER currently show docket entries 1-4 as
-          missing rather than unsealed. Treat this PDF as the
-          operative indictment despite the "SEALED" stamps.
+          4:23-cr-00523 (United States v. Xu Zewei).
+      - docket: 70789744
+        url: https://storage.courtlistener.com/recap/gov.uscourts.txsd.1940635/gov.uscourts.txsd.1940635.20.0_1.pdf
+        note: >-
+          This PDF is "Government's Agreed Motion to Designate the
+          Case as Complex under the Speedy Trial Act and for
+          Continuance" — docket entry 20 in S.D. Tex. 4:23-cr-00523
+          (United States v. Xu Zewei).
 
   # ---- National security ----
   - id: us-v-mcgonigal
