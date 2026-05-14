@@ -26,7 +26,7 @@ from .calendars.ics import write_ics
 from .calendars.index import build_calendar_models, write_index
 from .courtlistener import CourtListener
 from .store import Store
-from .sync import CaseConfig, CaseSyncer
+from .sync import CaseConfig, CaseSyncer, ExtraDocument
 
 
 # Deadline status -> hearing-equivalent status used by the renderers.
@@ -113,17 +113,76 @@ def _load_config(path: str) -> dict[str, Any]:
     return cfg
 
 
+def _extra_documents_from_config(
+    case_id: str, dockets: list[int], raw: Any,
+) -> list[ExtraDocument]:
+    """Parse the per-case ``extra_documents`` list out of the YAML.
+
+    Validates each entry has the required fields, the ``docket`` id is one
+    the case actually tracks, and the role is recognized. We fail loud (via
+    ``SystemExit``) on misconfiguration rather than silently skipping — an
+    extra-document entry is hand-added by an operator for a specific case
+    and a typo should be surfaced now rather than presented later as "the
+    LLM didn't see the document we told it about."
+    """
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise SystemExit(
+            f"case {case_id!r}: extra_documents must be a list, got {type(raw).__name__}"
+        )
+    docket_set = set(dockets)
+    valid_roles = {"operative_pleading", "disposition"}
+    out: list[ExtraDocument] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, dict):
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}] must be a mapping"
+            )
+        missing = [k for k in ("docket", "url", "role") if k not in item]
+        if missing:
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}] missing key(s): {missing}"
+            )
+        docket_id = item["docket"]
+        if not isinstance(docket_id, int) or docket_id not in docket_set:
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}].docket={docket_id!r} is not "
+                f"in this case's dockets list {sorted(docket_set)}"
+            )
+        role = item["role"]
+        if role not in valid_roles:
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}].role={role!r} must be one of "
+                f"{sorted(valid_roles)}"
+            )
+        note = item.get("note")
+        if note is not None and not isinstance(note, str):
+            raise SystemExit(
+                f"case {case_id!r}: extra_documents[{i}].note must be a string"
+            )
+        out.append(ExtraDocument(
+            docket=docket_id, url=str(item["url"]), role=role,
+            note=note.strip() if isinstance(note, str) else None,
+        ))
+    return out
+
+
 def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
-    return [
-        CaseConfig(
+    cases: list[CaseConfig] = []
+    for c in cfg["cases"]:
+        dockets = list(c["dockets"])
+        cases.append(CaseConfig(
             case_id=c["id"],
             name=c["name"],
-            dockets=list(c["dockets"]),
+            dockets=dockets,
             calendar=c["calendar"],
             extract_deadlines=bool(c.get("extract_deadlines", False)),
-        )
-        for c in cfg["cases"]
-    ]
+            extra_documents=_extra_documents_from_config(
+                c["id"], dockets, c.get("extra_documents"),
+            ),
+        ))
+    return cases
 
 
 def _print_emit_results(cfg: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:

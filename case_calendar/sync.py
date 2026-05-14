@@ -15,7 +15,7 @@ import hashlib
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
@@ -27,6 +27,28 @@ from .extractor import is_extractable
 from .store import Store
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class ExtraDocument:
+    """A document the operator points the case-summary pipeline at directly.
+
+    The case-summary pipeline normally finds operative pleadings + dispositions
+    on each docket by walking CourtListener. When CL / PACER is missing a
+    document the public should be able to see — e.g. an indictment that was
+    ordered unsealed but where entries 1-4 still show as missing in the API
+    (see CourtListener bug #7345) — the operator lists the out-of-band URL
+    here and the summary pipeline folds it into the document set as if it had
+    come from CL. The accompanying ``note`` is trusted operator-supplied
+    context that rides into the LLM prompt alongside the document text, so
+    the model can be told *why* the document was added (the indictment still
+    bears "SEALED" stamps even though the seal was lifted, etc.).
+    """
+
+    docket: int           # which docket this document belongs to
+    url: str              # PDF URL to fetch
+    role: str             # "operative_pleading" or "disposition"
+    note: Optional[str] = None  # trusted operator context shown to the LLM
 
 
 @dataclass
@@ -42,6 +64,12 @@ class CaseConfig:
     ``true`` to force deadline tracking on regardless — useful for serious
     criminal trials with real pretrial motion practice where the briefing
     cadence IS worth watching."""
+
+    extra_documents: list[ExtraDocument] = field(default_factory=list)
+    """Out-of-band documents to fold into the case-summary document set.
+    Empty by default. Each entry is scoped to one ``docket`` id on this
+    case; ``role`` is one of {``operative_pleading``, ``disposition``};
+    ``note`` is trusted operator context shown to the LLM."""
 
 
 # Federal docket-number type codes that indicate a routine criminal matter

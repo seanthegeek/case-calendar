@@ -1264,6 +1264,59 @@ class TestBuildSummaryUserMessage:
         )
         assert "AGGREGATION NOTE" not in msg
 
+    def test_operator_provided_document_labeled_distinctly(self):
+        # Documents pulled from `extra_documents` (sourced outside CL,
+        # e.g. a DoJ press release attachment for an unsealed indictment
+        # whose CL entry is still missing) carry `source_url` and an
+        # optional `operator_note`. The user message must label these
+        # distinctly so the LLM knows the provenance, and surface the
+        # note as trusted context.
+        msg = llm._build_summary_user_message(
+            case_name="US v. Zewei",
+            aggregation_note=None,
+            docket={"docket_number": "4:23-cr-00523", "court_citation": "S.D. Tex."},
+            operative_docs=[{
+                "entry_id": None, "entry_number": None,
+                "description": "operator-provided document",
+                "date_filed": None,
+                "text": "REDACTED INDICTMENT body...",
+                "source_url": "https://www.justice.gov/opa/media/1407196/dl",
+                "operator_note": "Indictment was filed under seal but the "
+                                 "seal has since been lifted; CourtListener "
+                                 "entries 1-4 are missing due to bug #7345.",
+            }],
+            disposition_docs=[],
+            hearings=[], deadlines=[],
+            operative_char_budget=10_000, disposition_char_budget=10_000,
+        )
+        assert "OPERATOR-PROVIDED DOCUMENT" in msg
+        assert "https://www.justice.gov/opa/media/1407196/dl" in msg
+        assert "NOTE FROM OPERATOR:" in msg
+        assert "bug #7345" in msg
+        assert "REDACTED INDICTMENT body" in msg
+        # No spurious "entry #None" header on the operator-provided doc.
+        assert "entry #None" not in msg
+
+    def test_operator_provided_document_without_note_renders_cleanly(self):
+        # `note` is optional — when absent, render only the provenance
+        # line plus the document text, with no dangling label.
+        msg = llm._build_summary_user_message(
+            case_name="X", aggregation_note=None,
+            docket={"docket_number": "x", "court_id": "x"},
+            operative_docs=[{
+                "entry_id": None, "entry_number": None, "description": "x",
+                "date_filed": None, "text": "body text",
+                "source_url": "https://example.gov/x.pdf",
+                "operator_note": None,
+            }],
+            disposition_docs=[],
+            hearings=[], deadlines=[],
+            operative_char_budget=100, disposition_char_budget=100,
+        )
+        assert "OPERATOR-PROVIDED DOCUMENT" in msg
+        assert "https://example.gov/x.pdf" in msg
+        assert "NOTE FROM OPERATOR" not in msg
+
 
 class TestGenerateDocketSummary:
     def test_no_provider_raises(self):

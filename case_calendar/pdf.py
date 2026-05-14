@@ -122,6 +122,46 @@ def ocr_with_tesseract(pdf_bytes: bytes) -> str:
         return "\n".join(text_parts).strip()
 
 
+def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
+    """Fetch arbitrary bytes from an absolute URL.
+
+    Used by the case-summary pipeline for operator-provided documents
+    (``extra_documents`` in config) — sources outside CL/PACER such as DoJ
+    press release attachments that work around CourtListener data gaps.
+    Returns ``None`` on any non-200 / network error so callers can fall
+    open the same way they do on a missing recap_document.
+    """
+    try:
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            r = client.get(url)
+            if r.status_code == 200 and r.content:
+                return r.content
+            log.warning("url fetch %s -> %s", url, r.status_code)
+    except Exception as e:
+        log.warning("url fetch %s failed: %s", url, e)
+    return None
+
+
+def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
+    """Fetch a PDF by URL and run the pypdf → OCR fallback chain on it.
+
+    The operator-supplied analogue of :func:`extract_text` — same extraction
+    pipeline, different fetch source. Returns ``None`` if the URL is
+    unreachable or every extraction path yields nothing usable.
+    """
+    pdf_bytes = fetch_url_bytes(url)
+    if not pdf_bytes:
+        return None
+    text = extract_with_pypdf(pdf_bytes)
+    if len(text) >= _MIN_USEFUL_CHARS:
+        return text
+    if allow_ocr:
+        ocr = ocr_with_tesseract(pdf_bytes)
+        if len(ocr) >= _MIN_USEFUL_CHARS:
+            return ocr
+    return text or None
+
+
 def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 

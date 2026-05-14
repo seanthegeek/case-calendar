@@ -486,6 +486,53 @@ def _deadlines_for_docket(store: Store, case_id: str, docket_id: int) -> list[di
     ]
 
 
+def _fetch_extra_documents(
+    case: CaseConfig, docket_id: int, *, allow_ocr: bool = True,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Fetch operator-provided ``extra_documents`` for one docket.
+
+    Returns ``(operative_extras, disposition_extras)`` shaped to match the
+    output of :func:`_attach_text` so callers can concatenate directly. Each
+    entry carries ``source_url`` (for the LLM prompt's provenance line) and
+    ``operator_note`` (trusted context the operator supplied in config —
+    e.g. "this indictment was filed under seal but has since been
+    unsealed; treat the SEALED watermarks as stale"). Documents that fail
+    to fetch / extract are logged and dropped so the rest of the summary
+    pipeline still gets to run on whatever CL did surface.
+    """
+    extras = getattr(case, "extra_documents", None) or []
+    operative_extras: list[dict[str, Any]] = []
+    disposition_extras: list[dict[str, Any]] = []
+    for extra in extras:
+        if extra.docket != docket_id:
+            continue
+        log.info(
+            "summary: docket %s — fetching operator-provided %s document from %s",
+            docket_id, extra.role, extra.url,
+        )
+        text = pdf.extract_text_from_url(extra.url, allow_ocr=allow_ocr)
+        if not text:
+            log.warning(
+                "summary: docket %s — operator-provided document %s yielded no text; skipping",
+                docket_id, extra.url,
+            )
+            continue
+        doc = {
+            "entry_id": None,
+            "entry_number": None,
+            "description": "operator-provided document",
+            "date_filed": None,
+            "text": text,
+            "source_url": extra.url,
+            "operator_note": extra.note,
+        }
+        if extra.role == "operative_pleading":
+            operative_extras.append(doc)
+        elif extra.role == "disposition":
+            disposition_extras.append(doc)
+    return operative_extras, disposition_extras
+
+
 def _borrow_operative_from_siblings(
     *,
     cl: CourtListener,
@@ -584,6 +631,16 @@ def summarize_docket(
     disposition_docs = _attach_text(
         dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
     )
+
+    # Fold in operator-provided extra_documents AFTER CL-sourced documents,
+    # so the LLM sees the canonical CL document first when both are present
+    # (the operator removes the extras line once CL fixes the data gap, but
+    # there's a brief overlap window where both can show up).
+    extra_operative, extra_disposition = _fetch_extra_documents(
+        case, docket_id, allow_ocr=allow_ocr,
+    )
+    operative_docs.extend(extra_operative)
+    disposition_docs.extend(extra_disposition)
 
     if not operative_docs and len(case.dockets) > 1:
         # Appellate dockets (and parallel filings that pivot off a sibling)

@@ -8,7 +8,7 @@ pre-canned ``/docket-entries/`` pages.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -23,6 +23,7 @@ from case_calendar.summary import (
     summarize_case,
     summarize_docket,
 )
+from case_calendar.sync import ExtraDocument
 
 
 # ---------------------------------------------------------------------------
@@ -39,6 +40,7 @@ class _Case:
     dockets: list[int]
     calendar: str = "test"
     extract_deadlines: bool = False
+    extra_documents: list[ExtraDocument] = field(default_factory=list)
 
 
 class _FakeResp:
@@ -793,6 +795,204 @@ class TestSummarizeDocket:
             (1, "-date_filed"): [],
         })
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+
+
+class TestExtraDocuments:
+    """The `extra_documents` workaround for CL data gaps (e.g. unsealed
+    indictments whose docket entries are still hidden by CL bug #7345).
+    Each entry is fetched at summary time and folded into the operative-
+    pleading or disposition slot as if it had come from CL — with a
+    distinct provenance label and the operator's trusted context note."""
+
+    def test_fills_operative_slot_when_cl_has_no_indictment(
+        self, store, patch_llm, patch_pdf, monkeypatch,
+    ):
+        # The canonical Zewei case: CL has no operative pleading
+        # (entries 1-4 missing), so the only operative document the
+        # summary LLM sees is the operator-provided one.
+        _seed_docket_meta(store, 1, docket_number="4:23-cr-00523", court_id="txsd")
+        store.upsert_court("txsd", "S.D. Tex.", "TXSD", "Southern District of Texas")
+        monkeypatch.setattr(
+            summary.pdf, "extract_text_from_url",
+            lambda url, allow_ocr=True: "REDACTED INDICTMENT body from DoJ PR PDF...",
+        )
+        cl = _FakeCL({(1, "date_filed"): [], (1, "-date_filed"): []})
+        case = _Case(
+            case_id="us-v-zewei", name="US v. Zewei",
+            dockets=[1], calendar="cyber",
+            extra_documents=[ExtraDocument(
+                docket=1,
+                url="https://www.justice.gov/opa/media/1407196/dl",
+                role="operative_pleading",
+                note="Indictment was filed under seal but the seal has "
+                     "since been lifted; treat as operative.",
+            )],
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        operative_docs = patch_llm[0]["operative_docs"]
+        assert len(operative_docs) == 1
+        doc = operative_docs[0]
+        assert doc["source_url"] == "https://www.justice.gov/opa/media/1407196/dl"
+        assert doc["operator_note"].startswith("Indictment was filed under seal")
+        assert doc["entry_id"] is None  # not a CL entry
+        assert "REDACTED INDICTMENT" in doc["text"]
+
+    def test_appends_after_cl_documents_when_both_present(
+        self, store, patch_llm, patch_pdf, monkeypatch,
+    ):
+        # Overlap window: CL has the doc and an operator also listed one.
+        # Both reach the LLM; CL comes first, the operator-provided doc
+        # is appended after — keeps the canonical CL document as the
+        # primary signal while the operator's note still surfaces.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "CL INDICTMENT body"}
+        monkeypatch.setattr(
+            summary.pdf, "extract_text_from_url",
+            lambda url, allow_ocr=True: "OPERATOR INDICTMENT body",
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(
+            case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
+            extra_documents=[ExtraDocument(
+                docket=1, url="https://example.gov/i.pdf",
+                role="operative_pleading", note="overlap-window operator copy",
+            )],
+        )
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        operative_docs = patch_llm[0]["operative_docs"]
+        assert len(operative_docs) == 2
+        assert operative_docs[0]["entry_id"] == 10
+        assert operative_docs[1]["source_url"] == "https://example.gov/i.pdf"
+
+    def test_disposition_role_routes_to_disposition_slot(
+        self, store, patch_llm, patch_pdf, monkeypatch,
+    ):
+        # An operator-provided judgment / sentencing-order PDF lands in
+        # the disposition slot, not the operative-pleading slot.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body"}
+        monkeypatch.setattr(
+            summary.pdf, "extract_text_from_url",
+            lambda url, allow_ocr=True: "Sentencing order: 60 months, "
+                                        "$112,000 restitution.",
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(
+            case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
+            extra_documents=[ExtraDocument(
+                docket=1, url="https://example.gov/j.pdf",
+                role="disposition", note="sentencing order missing from CL",
+            )],
+        )
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        operative_docs = patch_llm[0]["operative_docs"]
+        disposition_docs = patch_llm[0]["disposition_docs"]
+        assert len(operative_docs) == 1 and operative_docs[0]["entry_id"] == 10
+        assert len(disposition_docs) == 1
+        assert disposition_docs[0]["source_url"] == "https://example.gov/j.pdf"
+
+    def test_failed_fetch_is_silently_dropped(
+        self, store, patch_llm, patch_pdf, monkeypatch, caplog,
+    ):
+        # URL is down / the PDF won't extract. The summary pipeline still
+        # runs on whatever CL did surface — extra_documents failures are
+        # logged but not fatal.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "CL INDICTMENT body"}
+        monkeypatch.setattr(
+            summary.pdf, "extract_text_from_url",
+            lambda url, allow_ocr=True: None,
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(
+            case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
+            extra_documents=[ExtraDocument(
+                docket=1, url="https://broken.example/x.pdf",
+                role="operative_pleading", note=None,
+            )],
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        # Only the CL doc reaches the LLM; the dropped one isn't appended.
+        operative_docs = patch_llm[0]["operative_docs"]
+        assert [d["entry_id"] for d in operative_docs] == [10]
+
+    def test_only_extras_for_target_docket_are_fetched(
+        self, store, patch_llm, patch_pdf, monkeypatch,
+    ):
+        # extra_documents scope to ONE docket via the `docket` field. When
+        # summarize_docket runs on docket A, extras pointing at docket B
+        # must NOT be fetched / folded in.
+        _seed_docket_meta(store, 1)
+        _seed_docket_meta(store, 2)
+        patch_pdf["texts"] = {500: "DOCKET 1 INDICTMENT"}
+        fetched: list[str] = []
+
+        def _fake_fetch(url, allow_ocr=True):
+            fetched.append(url)
+            return "OPERATOR doc text"
+
+        monkeypatch.setattr(summary.pdf, "extract_text_from_url", _fake_fetch)
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(
+            case_id="us-v-x", name="US v. X", dockets=[1, 2], calendar="cyber",
+            extra_documents=[
+                ExtraDocument(docket=2, url="https://x.com/wrong.pdf",
+                              role="operative_pleading", note=None),
+                ExtraDocument(docket=1, url="https://x.com/right.pdf",
+                              role="disposition", note=None),
+            ],
+        )
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert fetched == ["https://x.com/right.pdf"]
+
+    def test_extras_alone_fill_operative_when_no_cl_or_sibling(
+        self, store, patch_llm, patch_pdf, monkeypatch,
+    ):
+        # Without the extras fold-in, this docket would hit the "no
+        # operative pleading text could be extracted" branch and return
+        # None. With the fold-in, the operator's doc is the operative
+        # pleading and the summary proceeds.
+        _seed_docket_meta(store, 1)
+        monkeypatch.setattr(
+            summary.pdf, "extract_text_from_url",
+            lambda url, allow_ocr=True: "operator-supplied indictment text",
+        )
+        cl = _FakeCL({(1, "date_filed"): [], (1, "-date_filed"): []})
+        case = _Case(
+            case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
+            extra_documents=[ExtraDocument(
+                docket=1, url="https://x.com/i.pdf",
+                role="operative_pleading", note=None,
+            )],
+        )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
 

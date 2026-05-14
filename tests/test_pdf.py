@@ -304,6 +304,95 @@ class TestHave:
         assert pdf._have("not-a-real-binary") is False
 
 
+class TestFetchUrlBytes:
+    """`fetch_url_bytes` is the operator-document analogue of `fetch_pdf_bytes`
+    — same fall-open semantics on every non-200 / network-error path, used
+    by `extract_text_from_url` for `extra_documents` URLs."""
+
+    def test_returns_bytes_on_200(self, monkeypatch):
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            content = b"%PDF-1.4 doj-pr-attachment"
+
+        class _Client:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get(self, url): return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+        out = pdf.fetch_url_bytes("https://www.justice.gov/opa/media/x/dl")
+        assert out == b"%PDF-1.4 doj-pr-attachment"
+
+    def test_returns_none_on_non_200(self, monkeypatch):
+        import httpx
+
+        class _Resp:
+            status_code = 404
+            content = b""
+
+        class _Client:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get(self, url): return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+        assert pdf.fetch_url_bytes("https://x.com/missing.pdf") is None
+
+    def test_returns_none_on_network_error(self, monkeypatch):
+        import httpx
+
+        class _Client:
+            def __init__(self, *a, **k): pass
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def get(self, url):
+                raise httpx.RequestError("dns failure")
+
+        monkeypatch.setattr(httpx, "Client", _Client)
+        assert pdf.fetch_url_bytes("https://nowhere.invalid/x.pdf") is None
+
+
+class TestExtractTextFromUrl:
+    def test_returns_text_when_pypdf_succeeds(self, monkeypatch):
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF bytes")
+        monkeypatch.setattr(pdf, "extract_with_pypdf",
+                            lambda data: "indictment body " * 30)
+        out = pdf.extract_text_from_url("https://example.com/x.pdf")
+        assert out and "indictment body" in out
+
+    def test_returns_none_when_fetch_fails(self, monkeypatch):
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: None)
+        assert pdf.extract_text_from_url("https://x.com/y.pdf") is None
+
+    def test_falls_back_to_ocr_when_pypdf_short(self, monkeypatch):
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
+        monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
+        monkeypatch.setattr(pdf, "ocr_with_tesseract",
+                            lambda data: "ocr indictment " * 20)
+        out = pdf.extract_text_from_url("https://example.com/x.pdf")
+        assert out and "ocr indictment" in out
+
+    def test_returns_short_pypdf_when_ocr_disabled(self, monkeypatch):
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
+        monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "tiny")
+        called = []
+        monkeypatch.setattr(pdf, "ocr_with_tesseract",
+                            lambda data: called.append("nope") or "")
+        out = pdf.extract_text_from_url("https://x.com/y.pdf", allow_ocr=False)
+        assert out == "tiny"
+        assert called == []
+
+    def test_returns_none_when_all_paths_empty(self, monkeypatch):
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
+        monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
+        monkeypatch.setattr(pdf, "ocr_with_tesseract", lambda data: "")
+        assert pdf.extract_text_from_url("https://x.com/y.pdf") is None
+
+
 class TestExtractTextOcrShorter:
     def test_falls_back_to_short_pypdf_text_when_ocr_short(self, monkeypatch):
         # Both pypdf and OCR return below-threshold text; the function

@@ -216,6 +216,54 @@ cases:
     calendar: cybercrime
     dockets: [68534169]
 
+  # `extra_documents` is for documents the public should be able to see
+  # but that CourtListener / PACER are not surfacing — e.g. an unsealed
+  # indictment whose docket entries are still hidden by a data bug, or a
+  # sentencing order that wasn't uploaded to RECAP. Each entry is fetched
+  # at summary-generation time and folded into the operative-pleading or
+  # disposition set as if it had come from CL. The `note` is trusted
+  # operator context shown to the LLM (the document TEXT itself is still
+  # treated as untrusted, the same way CL/PACER text is).
+  #
+  # Worked example below: Xu Zewei, charged in S.D. Tex. 4:23-cr-00523
+  # with the HAFNIUM-era Microsoft Exchange intrusions and extradited
+  # from Italy in 2025. The indictment was filed under seal and ordered
+  # unsealed before extradition, but CourtListener / PACER currently
+  # show docket entries 1-4 as missing rather than unsealed (CL bug
+  # https://github.com/freelawproject/courtlistener/issues/7345). The
+  # only public copy of the unsealed indictment is the one DoJ attached
+  # to its press release; we point `extra_documents` at that URL so the
+  # case still gets a meaningful summary on the index page. The PDF
+  # still carries "SEALED" watermarks on every page because it was
+  # filed under seal — the operator `note` tells the summary LLM that
+  # the seal has since been lifted so it doesn't describe the case as
+  # still sealed.
+  #
+  # Fields:
+  #   docket   integer  — must be one of this case's `dockets` ids
+  #   url      string   — absolute https:// URL to a PDF
+  #   role     string   — "operative_pleading" or "disposition"
+  #   note     string   — trusted operator context (provenance / why
+  #                       the document is being fed in out-of-band)
+  - id: us-v-zewei
+    name: "United States v. Zewei"
+    calendar: cybercrime
+    dockets: [70789744]
+    extra_documents:
+      - docket: 70789744
+        url: https://www.justice.gov/opa/media/1407196/dl
+        role: operative_pleading
+        note: >-
+          This PDF is the unsealed indictment in S.D. Tex. case
+          4:23-cr-00523 (United States v. Xu Zewei). It was filed under
+          seal and so every page bears a "SEALED" watermark, but the
+          seal has since been lifted by court order — the indictment
+          was unsealed in connection with Zewei's extradition from
+          Italy. Sourced from the DoJ press release attachment because
+          CourtListener / PACER currently show docket entries 1-4 as
+          missing rather than unsealed. Treat this PDF as the
+          operative indictment despite the "SEALED" stamps.
+
   # ---- National security ----
   - id: us-v-mcgonigal
     name: "United States v. McGonigal"

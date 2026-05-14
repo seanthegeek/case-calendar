@@ -440,6 +440,129 @@ class TestCasesFromConfig:
         assert cases[0].extract_deadlines is False
         assert cases[1].extract_deadlines is True
 
+    def test_defaults_empty_extra_documents(self):
+        cfg = {"cases": [
+            {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
+        ]}
+        cases = _cases_from_config(cfg)
+        assert cases[0].extra_documents == []
+
+    def test_parses_extra_documents(self):
+        cfg = {"cases": [{
+            "id": "us-v-zewei", "name": "United States v. Zewei",
+            "calendar": "cybercrime", "dockets": [70789744],
+            "extra_documents": [{
+                "docket": 70789744,
+                "url": "https://www.justice.gov/opa/media/1407196/dl",
+                "role": "operative_pleading",
+                "note": "Sourced from DoJ press release attachment; "
+                        "indictment was unsealed by court order despite "
+                        "SEALED watermarks.",
+            }],
+        }]}
+        cases = _cases_from_config(cfg)
+        assert len(cases[0].extra_documents) == 1
+        extra = cases[0].extra_documents[0]
+        assert extra.docket == 70789744
+        assert extra.url == "https://www.justice.gov/opa/media/1407196/dl"
+        assert extra.role == "operative_pleading"
+        assert extra.note.startswith("Sourced from DoJ")
+
+    def test_strips_extra_documents_note_whitespace(self):
+        # YAML literal-block notes often arrive with trailing newlines; the
+        # parser strips them so the LLM prompt isn't dotted with blank
+        # tails that change cache fingerprints on whitespace churn.
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{
+                "docket": 1, "url": "https://example.com/x.pdf",
+                "role": "disposition",
+                "note": "\n  trailing newline note  \n",
+            }],
+        }]}
+        cases = _cases_from_config(cfg)
+        assert cases[0].extra_documents[0].note == "trailing newline note"
+
+    def test_extra_documents_none_or_empty_yields_empty_list(self):
+        for raw in (None, []):
+            cfg = {"cases": [{
+                "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+                "extra_documents": raw,
+            }]}
+            cases = _cases_from_config(cfg)
+            assert cases[0].extra_documents == []
+
+    def test_extra_documents_must_be_list(self):
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": {"docket": 1},
+        }]}
+        with pytest.raises(SystemExit, match="must be a list"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_entry_must_be_mapping(self):
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": ["not-a-dict"],
+        }]}
+        with pytest.raises(SystemExit, match="must be a mapping"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_missing_required_key_raises(self):
+        # `role` missing — operator typo we want to catch loudly.
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{"docket": 1, "url": "https://x.com/y.pdf"}],
+        }]}
+        with pytest.raises(SystemExit, match="missing key"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_docket_must_be_on_case(self):
+        # Specified docket id isn't tracked by this case — typo / wrong
+        # docket. Surface immediately rather than silently no-op'ing.
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{
+                "docket": 999, "url": "https://x.com/y.pdf",
+                "role": "operative_pleading",
+            }],
+        }]}
+        with pytest.raises(SystemExit, match="is not in this case's dockets"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_docket_must_be_int(self):
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{
+                "docket": "1", "url": "https://x.com/y.pdf",
+                "role": "operative_pleading",
+            }],
+        }]}
+        with pytest.raises(SystemExit, match="is not in this case's dockets"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_rejects_unknown_role(self):
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{
+                "docket": 1, "url": "https://x.com/y.pdf",
+                "role": "exhibit",
+            }],
+        }]}
+        with pytest.raises(SystemExit, match="must be one of"):
+            _cases_from_config(cfg)
+
+    def test_extra_documents_note_must_be_string(self):
+        cfg = {"cases": [{
+            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
+            "extra_documents": [{
+                "docket": 1, "url": "https://x.com/y.pdf",
+                "role": "disposition", "note": 12345,
+            }],
+        }]}
+        with pytest.raises(SystemExit, match="note must be a string"):
+            _cases_from_config(cfg)
+
 
 # ---------------------------------------------------------------------------
 # _resolve_gcal / _resolve_m365
