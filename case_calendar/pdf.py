@@ -31,6 +31,45 @@ log = logging.getLogger(__name__)
 # extraction. Don't burn OCR cycles on one-pagers though.
 _MIN_USEFUL_CHARS = 100
 
+# Some PDFs use custom font encodings (subsetted fonts with no /ToUnicode
+# map) that pypdf can't decode — it emits glyph-index tokens like ``/i255``
+# or maps the bytes 1:1 into Latin-1 control codepoints (``ÿ`` etc.). The
+# result is a multi-KB "text" string that's non-empty and has the page
+# header/footer bits in real ASCII, but the body is gibberish. Upstream
+# CL's pipeline runs pypdf the same way, so its ``plain_text`` field can
+# carry the same broken extraction — see the us-v-dubranova first
+# superseding indictment where CL's plain_text was 27KB of `ÿ`-noise and
+# the summary LLM hallucinated a fictitious "CSRERI / Roskomnadzor"
+# organization to fill the gap, when the actual indictment named a
+# real-world group ("CISM") that OCR reads cleanly. The fix: detect
+# garbled output (alpha-letter ratio under ``_MIN_ALPHA_RATIO``) and
+# fall through to the next stage of the extraction chain — local pypdf
+# from plain_text, OCR from pypdf — until we get something clean.
+#
+# Threshold rationale: real English prose runs 70-80% alpha even when
+# punctuation-dense; the most number-heavy legal headers ("Case
+# 2:25-cr-00578-SRM Document 33 Filed 08/21/25 Page 1 of 15 Page ID
+# #:305") still come in over 50% alpha. Garbled extracts reliably land
+# under 10%. 0.4 leaves a comfortable margin on both sides.
+_MIN_ALPHA_RATIO = 0.4
+# The ratio is too noisy on tiny strings; trust short extracts at face
+# value (a real document would fail ``_MIN_USEFUL_CHARS`` anyway).
+_GARBLED_MIN_LEN = 100
+
+
+def looks_garbled(text: str) -> bool:
+    """Detect font-encoding gibberish from upstream PDF text extraction.
+
+    Returns True when the text is long enough to score meaningfully and the
+    alpha-character ratio falls below ``_MIN_ALPHA_RATIO``. Short strings
+    return False — there's not enough data to call it.
+    """
+    nonws = "".join(text.split())
+    if len(nonws) < _GARBLED_MIN_LEN:
+        return False
+    alpha = sum(1 for c in nonws if c.isascii() and c.isalpha())
+    return (alpha / len(nonws)) < _MIN_ALPHA_RATIO
+
 
 def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
     """Try to download the PDF for a recap_document. Returns None if no source.
@@ -153,11 +192,11 @@ def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
     if not pdf_bytes:
         return None
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS:
+    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
         return text
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS:
+        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
             return ocr
     return text or None
 
@@ -166,15 +205,22 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 
     Order of operations:
-      1. Use ``plain_text`` from CL if non-empty.
+      1. Use ``plain_text`` from CL if non-empty AND not garbled.
       2. If the PDF is sealed, return None — never going to be available.
       3. If not is_available, return None — not on RECAP yet; we'll retry
          on next sync once the fingerprint changes.
-      4. Download the PDF, try pypdf, then optionally tesseract OCR.
+      4. Download the PDF, try pypdf (rejecting garbled output), then
+         optionally tesseract OCR (also rejecting garbled output).
     """
-    text = (rd.get("plain_text") or "").strip()
-    if text:
-        return text
+    plain = (rd.get("plain_text") or "").strip()
+    if plain and not looks_garbled(plain):
+        return plain
+    if plain:
+        log.info(
+            "extract_text: CL plain_text looks garbled (len=%d), "
+            "falling through to local extraction",
+            len(plain),
+        )
 
     if rd.get("is_sealed"):
         return None
@@ -183,15 +229,19 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
 
     pdf_bytes = fetch_pdf_bytes(rd)
     if not pdf_bytes:
-        return None
+        # Couldn't fetch a fresh copy — better to return the garbled plain
+        # text than nothing at all so callers can at least see the entry
+        # was attempted; the summary LLM is briefed to refuse synthesis on
+        # nonsense input.
+        return plain or None
 
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS:
+    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
         return text
 
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS:
+        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
             return ocr
 
-    return text or None
+    return text or plain or None

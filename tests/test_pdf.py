@@ -12,11 +12,128 @@ from pathlib import Path
 from case_calendar import pdf
 
 
+class TestLooksGarbled:
+    """Detector for font-encoding gibberish from upstream pypdf extraction.
+
+    Real prose runs ~70-80% alpha; the most number-heavy legal headers
+    still score >50%. Custom-encoded PDFs decoded without a /ToUnicode
+    map land under 10%. 0.4 sits comfortably between the two.
+    """
+
+    def test_real_prose_is_not_garbled(self):
+        text = (
+            "Defendants VICTORIA EDUARDOVNA DUBRANOVA, also known as "
+            "Vika, Tory, and Sovasonya, were members of NoName057(16). "
+            "Defendant LUPIN was the Chief Executive Officer of CISM. "
+            "Defendant BURLAKOV was the Deputy Director of CISM."
+        )
+        assert pdf.looks_garbled(text) is False
+
+    def test_font_encoding_noise_is_garbled(self):
+        # 27KB of `ÿ`-noise with occasional ASCII bits is the actual shape
+        # of CL's plain_text for the us-v-dubranova first superseding
+        # indictment — pypdf mapped the bytes 1:1 into Latin-1 codepoints
+        # because the PDF's fonts had no /ToUnicode map.
+        text = "ÿ ÿ%ÿ$ÿ2 4 & '&1'&('ÿ&'&5'&)'&'ÿ" * 200
+        assert pdf.looks_garbled(text) is True
+
+    def test_pypdf_glyph_indices_are_garbled(self):
+        # Some PDFs produce ``/i255 /1 /2 /11/12/13/14`` glyph-index
+        # tokens instead of decoded text — also a low alpha ratio.
+        text = ("/i255\n/1\n/2\n/3\n/11/12/13/14/15/16\n" * 100)
+        assert pdf.looks_garbled(text) is True
+
+    def test_header_heavy_real_text_is_not_garbled(self):
+        # Worst-case real text: a page that's mostly the document header.
+        # Still scores above 0.4.
+        text = (
+            "Case 2:25-cr-00578-SRM Document 33 Filed 08/21/25 "
+            "Page 1 of 15 Page ID #:305 IN THE UNITED STATES DISTRICT "
+            "COURT FOR THE CENTRAL DISTRICT OF CALIFORNIA "
+            "FIRST SUPERSEDING INDICTMENT 18 USC 371 18 USC 1030"
+        )
+        assert pdf.looks_garbled(text) is False
+
+    def test_short_strings_are_never_garbled(self):
+        # Below the ratio-stability threshold — trust short strings.
+        # Even a string with low alpha ratio shouldn't flag, because
+        # the ratio is too noisy on tiny inputs to be reliable.
+        assert pdf.looks_garbled("###") is False
+        assert pdf.looks_garbled("ÿ" * 50) is False
+
+    def test_empty_string_is_not_garbled(self):
+        # Edge case — caller checks emptiness separately.
+        assert pdf.looks_garbled("") is False
+
+
 class TestExtractText:
     def test_uses_plain_text_first(self, monkeypatch):
-        rd = {"plain_text": "  the body  ", "is_available": True}
+        rd = {"plain_text": "  the body is full of real english words like "
+                            "indictment and defendant and conspiracy  ",
+              "is_available": True}
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"should not be called")
-        assert pdf.extract_text(rd) == "the body"
+        result = pdf.extract_text(rd)
+        assert result and "the body" in result
+
+    def test_garbled_plain_text_falls_through_to_pypdf(self, monkeypatch):
+        # CL's plain_text is gibberish (font-encoding issue). The function
+        # should ignore it and run our own extraction chain, returning the
+        # local pypdf text when it's clean.
+        rd = {
+            "plain_text": "ÿ ÿ%ÿ$ÿ" * 200,
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
+        monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
+        monkeypatch.setattr(
+            pdf, "extract_with_pypdf",
+            lambda data: "real english text from the indictment " * 30,
+        )
+        result = pdf.extract_text(rd)
+        assert result and "real english text" in result
+
+    def test_garbled_plain_text_and_garbled_pypdf_fall_through_to_ocr(
+        self, monkeypatch,
+    ):
+        # The realistic case: CL's plain_text is garbled AND our pypdf is
+        # garbled (same source!). OCR is the only path that recovers
+        # readable text. Matches the us-v-dubranova flow end-to-end.
+        rd = {
+            "plain_text": "ÿ ÿ%ÿ$ÿ" * 200,
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
+        monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
+        monkeypatch.setattr(
+            pdf, "extract_with_pypdf",
+            lambda data: "/i255 /1 /2 /11/12/13 " * 200,  # also garbled
+        )
+        monkeypatch.setattr(
+            pdf, "ocr_with_tesseract",
+            lambda data: "Defendants VICTORIA EDUARDOVNA DUBRANOVA "
+                         "were members of NoName057(16) " * 20,
+        )
+        result = pdf.extract_text(rd)
+        assert result and "NoName057" in result
+        assert "CISM" not in result or "DUBRANOVA" in result  # no garble
+
+    def test_garbled_plain_text_falls_back_to_garbled_text_when_fetch_fails(
+        self, monkeypatch,
+    ):
+        # When we can't fetch a fresh copy, the garbled plain_text is
+        # better than nothing — the LLM is briefed to refuse synthesis on
+        # nonsense input, and the caller at least sees the entry was
+        # attempted rather than silently skipped.
+        rd = {
+            "plain_text": "ÿ ÿ%ÿ$ÿ" * 200,
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
+        monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: None)
+        result = pdf.extract_text(rd)
+        # Falls back to the garbled plain_text rather than None.
+        assert result is not None
+        assert "ÿ" in result
 
     def test_sealed_returns_none_without_fetch(self, monkeypatch):
         rd = {"plain_text": "", "is_sealed": True}
@@ -391,6 +508,22 @@ class TestExtractTextFromUrl:
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
         monkeypatch.setattr(pdf, "ocr_with_tesseract", lambda data: "")
         assert pdf.extract_text_from_url("https://x.com/y.pdf") is None
+
+    def test_garbled_pypdf_falls_through_to_ocr(self, monkeypatch):
+        # Same garbled-text handling as ``extract_text`` — extras_documents
+        # URLs go through the same pypdf → OCR pipeline and should also
+        # bypass font-encoding noise from pypdf when OCR is allowed.
+        monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
+        monkeypatch.setattr(
+            pdf, "extract_with_pypdf",
+            lambda data: "/i255 /1 /2 /11/12/13 " * 200,
+        )
+        monkeypatch.setattr(
+            pdf, "ocr_with_tesseract",
+            lambda data: "real prose from the doj press release " * 20,
+        )
+        out = pdf.extract_text_from_url("https://example.com/x.pdf")
+        assert out and "real prose" in out
 
 
 class TestExtractTextOcrShorter:
