@@ -825,7 +825,7 @@ class TestExtraDocuments:
             extra_documents=[ExtraDocument(
                 docket=1,
                 url="https://www.justice.gov/opa/media/1407196/dl",
-                role="operative_pleading",
+                role="pleading",
                 note="Indictment was filed under seal but the seal has "
                      "since been lifted; treat as operative.",
             )],
@@ -864,7 +864,7 @@ class TestExtraDocuments:
             case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
             extra_documents=[ExtraDocument(
                 docket=1, url="https://example.gov/i.pdf",
-                role="operative_pleading", note="overlap-window operator copy",
+                role="pleading", note="overlap-window operator copy",
             )],
         )
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
@@ -929,7 +929,7 @@ class TestExtraDocuments:
             case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
             extra_documents=[ExtraDocument(
                 docket=1, url="https://broken.example/x.pdf",
-                role="operative_pleading", note=None,
+                role="pleading", note=None,
             )],
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
@@ -965,7 +965,7 @@ class TestExtraDocuments:
             case_id="us-v-x", name="US v. X", dockets=[1, 2], calendar="cyber",
             extra_documents=[
                 ExtraDocument(docket=2, url="https://x.com/wrong.pdf",
-                              role="operative_pleading", note=None),
+                              role="pleading", note=None),
                 ExtraDocument(docket=1, url="https://x.com/right.pdf",
                               role="disposition", note=None),
             ],
@@ -990,7 +990,7 @@ class TestExtraDocuments:
             case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
             extra_documents=[ExtraDocument(
                 docket=1, url="https://x.com/i.pdf",
-                role="operative_pleading", note=None,
+                role="pleading", note=None,
             )],
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)

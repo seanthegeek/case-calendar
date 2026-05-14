@@ -47,7 +47,7 @@ class ExtraDocument:
 
     docket: int           # which docket this document belongs to
     url: str              # PDF URL to fetch
-    role: str             # "operative_pleading" or "disposition"
+    role: str             # "pleading" (indictment / complaint / etc.) or "disposition"
     note: Optional[str] = None  # trusted operator context shown to the LLM
 
 
@@ -68,8 +68,10 @@ class CaseConfig:
     extra_documents: list[ExtraDocument] = field(default_factory=list)
     """Out-of-band documents to fold into the case-summary document set.
     Empty by default. Each entry is scoped to one ``docket`` id on this
-    case; ``role`` is one of {``operative_pleading``, ``disposition``};
-    ``note`` is trusted operator context shown to the LLM."""
+    case; ``role`` is one of {``pleading``, ``disposition``} — ``pleading``
+    is the umbrella that covers indictments, informations, complaints, and
+    petitions (anything the internal :func:`is_operative_pleading` would
+    match); ``note`` is trusted operator context shown to the LLM."""
 
 
 # Federal docket-number type codes that indicate a routine criminal matter

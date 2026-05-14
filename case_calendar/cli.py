@@ -132,7 +132,7 @@ def _extra_documents_from_config(
             f"case {case_id!r}: extra_documents must be a list, got {type(raw).__name__}"
         )
     docket_set = set(dockets)
-    valid_roles = {"operative_pleading", "disposition"}
+    valid_roles = {"pleading", "disposition"}
     out: list[ExtraDocument] = []
     for i, item in enumerate(raw):
         if not isinstance(item, dict):

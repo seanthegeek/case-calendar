@@ -454,7 +454,7 @@ class TestCasesFromConfig:
             "extra_documents": [{
                 "docket": 70789744,
                 "url": "https://www.justice.gov/opa/media/1407196/dl",
-                "role": "operative_pleading",
+                "role": "pleading",
                 "note": "Sourced from DoJ press release attachment; "
                         "indictment was unsealed by court order despite "
                         "SEALED watermarks.",
@@ -465,7 +465,7 @@ class TestCasesFromConfig:
         extra = cases[0].extra_documents[0]
         assert extra.docket == 70789744
         assert extra.url == "https://www.justice.gov/opa/media/1407196/dl"
-        assert extra.role == "operative_pleading"
+        assert extra.role == "pleading"
         assert extra.note.startswith("Sourced from DoJ")
 
     def test_strips_extra_documents_note_whitespace(self):
@@ -524,7 +524,7 @@ class TestCasesFromConfig:
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": 999, "url": "https://x.com/y.pdf",
-                "role": "operative_pleading",
+                "role": "pleading",
             }],
         }]}
         with pytest.raises(SystemExit, match="is not in this case's dockets"):
@@ -535,7 +535,7 @@ class TestCasesFromConfig:
             "id": "x", "name": "X", "calendar": "a", "dockets": [1],
             "extra_documents": [{
                 "docket": "1", "url": "https://x.com/y.pdf",
-                "role": "operative_pleading",
+                "role": "pleading",
             }],
         }]}
         with pytest.raises(SystemExit, match="is not in this case's dockets"):

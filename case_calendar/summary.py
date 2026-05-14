@@ -526,7 +526,7 @@ def _fetch_extra_documents(
             "source_url": extra.url,
             "operator_note": extra.note,
         }
-        if extra.role == "operative_pleading":
+        if extra.role == "pleading":
             operative_extras.append(doc)
         elif extra.role == "disposition":
             disposition_extras.append(doc)
