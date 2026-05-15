@@ -1,0 +1,9 @@
+title: case-calendar
+description: >-
+  Federal court calendar feeds from CourtListener / RECAP, with AI case
+  summaries and real-time webhook updates.
+theme: jekyll-theme-cayman
+show_downloads: false
+
+# GitHub Pages source: enable Pages in repo Settings → Pages and pick
+# "Deploy from a branch" → "main" → "/docs" folder.
