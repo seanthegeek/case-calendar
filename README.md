@@ -21,7 +21,7 @@ Watching a federal docket by hand is a part-time job. PACER charges by
 the page, CourtListener's free tier throttles, and the standard
 workflow — refresh the docket, scan for entries that look like
 scheduling orders or judgments, transcribe dates into a calendar — is
-fragile and slow. One missed minute entry and you don't know your
+fragile and slow. One missed minute entry and you don't know a
 sentencing got moved.
 
 case-calendar automates that loop. Point it at a case and it pulls new
