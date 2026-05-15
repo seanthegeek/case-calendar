@@ -80,7 +80,7 @@ def test_unknown_court_falls_back_to_default_with_warning(caplog):
 
 def test_empty_court_falls_back_silently(caplog):
     # Empty string is a known "unset" sentinel; don't warn on every event
-    # for a docket whose CL response lacked court_id.
+    # for a docket whose CourtListener response lacked court_id.
     with caplog.at_level(logging.WARNING):
         tz = tz_for("")
     assert tz == DEFAULT_TZ
@@ -156,11 +156,11 @@ ALL_BANKRUPTCY_COURTS = frozenset({
 def test_bankruptcy_courts_match_parent_district_tz():
     # 28 U.S.C. § 151: a bankruptcy court is a unit of the district court,
     # sharing the district's geographic boundaries — so its tz must match
-    # the parent district's tz. CL's ID convention is parent_id[:-1] + 'b'
+    # the parent district's tz. CourtListener's ID convention is parent_id[:-1] + 'b'
     # for most courts, with two documented exceptions.
     irregular = {
-        "arb": "azd",         # Arizona — CL has no "azb"
-        "nebraskab": "ned",   # Nebraska — CL spells the id out in full
+        "arb": "azd",         # Arizona — CourtListener has no "azb"
+        "nebraskab": "ned",   # Nebraska — CourtListener spells the id out in full
     }
     for bk_id in ALL_BANKRUPTCY_COURTS:
         district_id = irregular.get(bk_id, bk_id[:-1] + "d")
@@ -175,7 +175,7 @@ def test_bankruptcy_courts_match_parent_district_tz():
 
 def test_coverage_includes_all_active_bankruptcy_courts():
     assert len(ALL_BANKRUPTCY_COURTS) == 94, \
-        f"expected 94 active bankruptcy courts per CL, got {len(ALL_BANKRUPTCY_COURTS)} in fixture"
+        f"expected 94 active bankruptcy courts per CourtListener, got {len(ALL_BANKRUPTCY_COURTS)} in fixture"
     missing = ALL_BANKRUPTCY_COURTS - set(COURT_TIMEZONES)
     assert not missing, f"missing bankruptcy courts: {missing}"
 
@@ -221,7 +221,7 @@ def test_coverage_includes_all_federal_special_tribunals():
 
 
 def test_cavc_replaces_dead_vetapp_id():
-    # CL has no court with id "vetapp" (returns 404) — the actual id for
+    # CourtListener has no court with id "vetapp" (returns 404) — the actual id for
     # the Court of Appeals for Veterans Claims is "cavc". Pin this so a
     # future "cleanup" doesn't accidentally re-introduce the dead alias.
     assert "vetapp" not in COURT_TIMEZONES

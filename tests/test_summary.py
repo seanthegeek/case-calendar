@@ -1,8 +1,8 @@
 """Tests for the per-docket case-summary pipeline (case_calendar/summary.py).
 
-These tests don't hit CL, don't load PDFs, and don't call any real LLM —
+These tests don't hit CourtListener, don't load PDFs, and don't call any real LLM —
 ``pdf.extract_text`` and ``llm.generate_docket_summary`` are monkeypatched,
-and the CL client is replaced with ``_FakeCL`` whose ``_get`` returns
+and the CourtListener client is replaced with ``_FakeCL`` whose ``_get`` returns
 pre-canned ``/docket-entries/`` pages.
 """
 
@@ -56,7 +56,7 @@ class _FakeCL:
 
     Pages are keyed by ``(docket_id, order_by)`` — `find_primary_documents`
     makes two such requests per docket (date_filed and -date_filed). Each
-    page payload is the raw CL response shape: ``{"results": [...], "next": ...}``.
+    page payload is the raw CourtListener response shape: ``{"results": [...], "next": ...}``.
     """
 
     def __init__(self, pages: dict[tuple[int, str], list[dict[str, Any]]]):
@@ -395,7 +395,7 @@ class TestFindPrimaryDocuments:
     def test_local_store_short_circuits_cl_call(self, store):
         # Warm cache: sync has already persisted primary + disposition
         # entries on this docket. find_primary_documents must read them
-        # from the store and never touch CL — otherwise normal syncs burn
+        # from the store and never touch CourtListener — otherwise normal syncs burn
         # duplicate docket-entries calls right after sync wrote the data.
         store.mark_entry(
             1, 10, "2024-01-01T00:00:00Z", "fp-op", date_filed="2024-01-01",
@@ -407,10 +407,10 @@ class TestFindPrimaryDocuments:
             entry_number=37, description="JUDGMENT in a Criminal Case",
             recap_documents=[{"id": 600, "plain_text": "judgment body"}],
         )
-        # CL is wired to raise if called — proves the short-circuit hit.
+        # CourtListener is wired to raise if called — proves the short-circuit hit.
         class _BoomCL:
             def _get(self, *a, **kw):
-                raise AssertionError("CL must not be called when local cache is warm")
+                raise AssertionError("CourtListener must not be called when local cache is warm")
         primary, dispositions = find_primary_documents(_BoomCL(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
@@ -419,7 +419,7 @@ class TestFindPrimaryDocuments:
         assert primary[0]["recap_documents"][0]["plain_text"] == "indictment body"
 
     def test_cold_local_store_falls_back_to_cl(self, store):
-        # No body-bearing entries cached — fall back to CL (first sync,
+        # No body-bearing entries cached — fall back to CourtListener (first sync,
         # or pre-fix data where primary/disp entries were stub-only).
         cl = _FakeCL({
             (1, "date_filed"): [
@@ -445,7 +445,7 @@ class TestFindPrimaryDocuments:
         # `summarize_docket` then bailed with "no primary document text
         # could be extracted" and the summary went stale. The cache hit
         # must only short-circuit when a primary document is found;
-        # otherwise we go to CL to recover the indictment text.
+        # otherwise we go to CourtListener to recover the indictment text.
         store.mark_entry(
             1, 99, "2025-06-15T00:00:00Z", "fp-disp",
             date_filed="2025-06-15", entry_number=37,
@@ -467,7 +467,7 @@ class TestFindPrimaryDocuments:
             ],
         })
         primary, dispositions = find_primary_documents(cl, 1, store=store)
-        # CL fallback gave us the indictment that the local cache lacked.
+        # CourtListener fallback gave us the indictment that the local cache lacked.
         assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
@@ -479,11 +479,11 @@ class TestFindPrimaryDocuments:
         # because it matched the hearing pre-filter. The old short-
         # circuit then declared `dispositions = [motion]` (the broad
         # `is_disposition` matches "injunction" anywhere in the head)
-        # and never fell back to CL, so the summary LLM saw the motion
+        # and never fell back to CourtListener, so the summary LLM saw the motion
         # text as the disposition and wrote "PI taken under submission"
         # forever — even after the court actually granted the
         # injunction. The strict `_is_disposition_document` must reject
-        # the motion so the short-circuit lapses and CL is consulted.
+        # the motion so the short-circuit lapses and CourtListener is consulted.
         store.mark_entry(
             1, 6, "2026-03-09T00:00:00Z", "fp-motion", date_filed="2026-03-09",
             entry_number=6,
@@ -519,8 +519,8 @@ class TestFindPrimaryDocuments:
         # Filter-failed entries land as fingerprint stubs with description
         # IS NULL. They must NOT satisfy the local-cache check — otherwise
         # a docket with only stubs would silently return zero primary/disp and
-        # skip the CL fallback, when CL might actually have a primary
-        # document filed before the watermark.
+        # skip the CourtListener fallback, when CourtListener might actually have a primary
+        # document filed before the cutoff.
         store.mark_entry(
             1, 42, "2024-01-01T00:00:00Z", "fp-stub", date_filed="2024-01-01",
             entry_number=2, description=None,  # filter-failed stub
@@ -532,6 +532,95 @@ class TestFindPrimaryDocuments:
             (1, "-date_filed"): [],
         })
         primary, _ = find_primary_documents(cl, 1, store=store)
+        assert [e["id"] for e in primary] == [10]
+
+    def test_stale_cache_falls_through_to_cl_and_self_heals(self, store):
+        # The us-v-moucka shape: cache has the indictment as a body-bearing
+        # entry, but the stored recap_documents have empty plain_text on
+        # the available main doc (the row was written before plain_text
+        # was a stored field). CourtListener has the full text. The function must:
+        # (1) detect the stale cache, (2) fall through to CourtListener, (3) rewrite
+        # the local store's recap_documents so the next call short-
+        # circuits with the fresh data.
+        store.mark_entry(
+            1, 10, "2024-01-01T00:00:00Z", "fp-stale",
+            date_filed="2024-01-01", entry_number=1,
+            description="INDICTMENT",
+            # Available main doc with NO plain_text — the staleness
+            # signature.
+            recap_documents=[{
+                "id": 500,
+                "document_number": "1",
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "plain_text": None,
+            }],
+        )
+        fresh_indictment = {
+            "id": 10, "description": "INDICTMENT",
+            "date_filed": "2024-01-01", "entry_number": 1,
+            "recap_documents": [{
+                "id": 500,
+                "document_number": "1",
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "plain_text": "Body of indictment with 39k chars of text...",
+            }],
+        }
+        cl = _FakeCL({
+            (1, "date_filed"): [fresh_indictment],
+            (1, "-date_filed"): [fresh_indictment],
+        })
+        primary, _ = find_primary_documents(cl, 1, store=store)
+        # CourtListener fallback returned the indictment with full plain_text.
+        assert [e["id"] for e in primary] == [10]
+        assert (
+            primary[0]["recap_documents"][0]["plain_text"]
+            == "Body of indictment with 39k chars of text..."
+        )
+        # AND the local store was repaired: the cached recap_documents
+        # now has plain_text populated, so the next call short-circuits.
+        refreshed = store.get_entries_with_body(1)
+        moucka = next(e for e in refreshed if e["id"] == 10)
+        assert (
+            moucka["recap_documents"][0]["plain_text"]
+            == "Body of indictment with 39k chars of text..."
+        )
+        # Sanity: a follow-up call with a CourtListener that would raise on any
+        # _get must now succeed entirely from the (repaired) cache.
+        class _BoomCL:
+            def _get(self, *a, **kw):
+                raise AssertionError("repaired cache must short-circuit")
+        primary2, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        assert [e["id"] for e in primary2] == [10]
+
+    def test_sealed_or_unavailable_main_doc_does_not_count_as_stale(self, store):
+        # A cached primary whose available main doc legitimately has no
+        # text (sealed indictment, or not yet uploaded to RECAP) must
+        # NOT trigger the staleness fallback — that's a real "no text on
+        # CourtListener either" condition, not a stale cache.
+        store.mark_entry(
+            1, 10, "2024-01-01T00:00:00Z", "fp-sealed",
+            date_filed="2024-01-01", entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[{
+                "id": 500,
+                "document_number": "1",
+                "attachment_number": None,
+                "is_available": False,  # not on RECAP
+                "is_sealed": False,
+                "plain_text": None,
+            }],
+        )
+        class _BoomCL:
+            def _get(self, *a, **kw):
+                raise AssertionError(
+                    "is_available=False is not a staleness signal — "
+                    "the short-circuit must hold"
+                )
+        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
 
 
@@ -621,7 +710,7 @@ class TestDetectSealing:
     def test_disposition_presence_kills_signal_without_an_api_call(self):
         # When a disposition is in the docket, the dispositive ruling
         # landed publicly. Don't bother walking — just refuse to flag.
-        # Also asserts we make zero CL calls in this short-circuit path.
+        # Also asserts we make zero CourtListener calls in this short-circuit path.
         cl = _FakeCL(self._dubranova_shape())
         result = summary.detect_sealing(
             cl, 72013021,
@@ -993,7 +1082,7 @@ class TestSummarizeDocket:
 
         def _flaky_get(self, url, params=None):
             if params and params.get("docket") == 2:
-                raise RuntimeError("transient CL outage")
+                raise RuntimeError("transient CourtListener outage")
             return original_get(self, url, params)
 
         cl = _FakeCL({
@@ -1123,11 +1212,11 @@ class TestSummarizeDocket:
 
 
 class TestExtraDocuments:
-    """The ``extra_documents`` workaround for CL data gaps (e.g. unsealed
-    indictments whose docket entries are still hidden by CL bug #7345).
+    """The ``extra_documents`` workaround for CourtListener data gaps (e.g. unsealed
+    indictments whose docket entries are still hidden by CourtListener bug #7345).
     Each entry is fetched at summary time and fed to the LLM as part of a
     distinct "EXTRA DOCUMENTS" section, alongside the primary-document
-    and disposition slots that the CL walk fills. The operator's required
+    and disposition slots that the CourtListener walk fills. The operator's required
     ``note`` describes what the document is and why it was added — that
     natural-language description carries the meaning a rigid role
     taxonomy couldn't."""
@@ -1135,7 +1224,7 @@ class TestExtraDocuments:
     def test_feeds_extras_when_cl_has_no_indictment(
         self, store, patch_llm, patch_pdf, monkeypatch,
     ):
-        # The canonical Zewei case: CL has no primary document
+        # The canonical Zewei case: CourtListener has no primary document
         # (entries 1-4 missing), so the only document the summary LLM
         # sees is the operator-provided one — in the extras section,
         # with its note describing what it is.
@@ -1158,7 +1247,7 @@ class TestExtraDocuments:
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
-        # CL-sourced slots are empty; the extras section carries the doc.
+        # CourtListener-sourced slots are empty; the extras section carries the doc.
         assert patch_llm[0]["primary_documents"] == []
         assert patch_llm[0]["disposition_documents"] == []
         extras = patch_llm[0]["extra_documents"]
@@ -1166,18 +1255,18 @@ class TestExtraDocuments:
         doc = extras[0]
         assert doc["source_url"] == "https://www.justice.gov/opa/media/1407196/dl"
         assert doc["operator_note"].startswith("Indictment was filed under seal")
-        assert doc["entry_id"] is None  # not a CL entry
+        assert doc["entry_id"] is None  # not a CourtListener entry
         assert "REDACTED INDICTMENT" in doc["text"]
 
     def test_feeds_extras_alongside_cl_documents(
         self, store, patch_llm, patch_pdf, monkeypatch,
     ):
-        # Overlap window: CL has the primary document AND an operator
-        # also listed an extra. CL doc fills the primary slot; the
+        # Overlap window: CourtListener has the primary document AND an operator
+        # also listed an extra. CourtListener doc fills the primary slot; the
         # extra rides in its own section (the LLM sees both, with the
         # provenance distinction explicit).
         _seed_docket_meta(store, 1)
-        patch_pdf["texts"] = {500: "CL INDICTMENT body"}
+        patch_pdf["texts"] = {500: "CourtListener INDICTMENT body"}
         monkeypatch.setattr(
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: "OPERATOR INDICTMENT body",
@@ -1206,10 +1295,10 @@ class TestExtraDocuments:
         self, store, patch_llm, patch_pdf, monkeypatch, caplog,
     ):
         # URL is down / the PDF won't extract. The summary pipeline still
-        # runs on whatever CL did surface — extra_documents failures are
+        # runs on whatever CourtListener did surface — extra_documents failures are
         # logged but not fatal.
         _seed_docket_meta(store, 1)
-        patch_pdf["texts"] = {500: "CL INDICTMENT body"}
+        patch_pdf["texts"] = {500: "CourtListener INDICTMENT body"}
         monkeypatch.setattr(
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: None,
@@ -1230,7 +1319,7 @@ class TestExtraDocuments:
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
-        # Only the CL doc reaches the LLM; the dropped one isn't appended.
+        # Only the CourtListener doc reaches the LLM; the dropped one isn't appended.
         assert [d["entry_id"] for d in patch_llm[0]["primary_documents"]] == [10]
         assert patch_llm[0]["extra_documents"] == []
 
@@ -1371,7 +1460,7 @@ class TestRefreshStale:
         # Default behavior is to skip non-stale rows. force=True bypasses
         # the stale check so a single sync can pick up a model upgrade or
         # prompt change without a separate `summarize --force` invocation
-        # that would hit CL all over again.
+        # that would hit CourtListener all over again.
         _seed_docket_meta(store, 1)
         store.upsert_case_summary(
             "us-v-doe", 1, summary="old", model="prev/model", source_entry_ids=[],

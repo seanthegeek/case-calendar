@@ -11,7 +11,7 @@ on a server with no display.
 Idempotency: Graph generates the event id server-side, unlike Google
 Calendar where we control the id. We persist the server id on the
 ``hearings`` / ``deadlines`` row as ``m365_event_id`` so subsequent
-syncs patch in place. As a self-healing fallback (e.g. after a DB
+syncs patch in place. As a automatic-recovery fallback (e.g. after a DB
 restore) we also stamp every event with a single-value extended
 property keyed to ``case_id::hearing_key``, so we can recover the
 server id by ``$filter`` query when the cache is stale.
@@ -317,7 +317,7 @@ class M365CalendarSync:
             start_dt = start_dt.replace(tzinfo=timezone.utc)
         if no_time:
             # Date-only fallback: render as a 9–5 court-tz block. Outlook
-            # has no first-class all-day toggle that preserves a non-UTC
+            # has no direct all-day toggle that preserves a non-UTC
             # tz cleanly across DST, and a 24-hour block competes
             # visually with timed rows. The "[time TBD]" / "[time
             # unknown]" prefix on the title carries the real semantics.
@@ -357,7 +357,7 @@ class M365CalendarSync:
             value=_correlation_key(h["case_id"], h["hearing_key"]),
         )
 
-        # `transaction_id` protects against retried POSTs from CL webhook
+        # `transaction_id` protects against retried POSTs from CourtListener webhook
         # storms. Graph ignores it on PATCH; only meaningful on create.
         return Event(
             subject=h["title"],

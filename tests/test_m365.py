@@ -118,7 +118,7 @@ class TestEventBody:
     def test_date_only_event_renders_9_to_5(self):
         s = _make_syncer(client=None)
         body = s._event_body(_hearing(duration_minutes=None))
-        # No first-class all-day toggle in Outlook for a non-UTC tz; we
+        # No direct all-day toggle in Outlook for a non-UTC tz; we
         # render a 9–5 court-tz block with the [time TBD]/[time unknown]
         # title prefix carrying the real semantics.
         assert body.start.date_time == "2026-04-14T09:00:00"
@@ -157,7 +157,7 @@ class TestEventBody:
         assert body.reminder_minutes_before_start is None
 
     def test_extended_property_is_correlation_key(self):
-        # Self-healing fallback: every event we create carries a stable
+        # Automatic-recovery fallback: every event we create carries a stable
         # extended property keyed to case_id::hearing_key. If the local
         # cache is wiped we can $filter for it and recover the server id
         # rather than orphan the event and create a duplicate.

@@ -1,6 +1,6 @@
 """PDF text extraction with fallbacks.
 
-CourtListener's ``plain_text`` is the happy path. When it's empty for an
+CourtListener's ``plain_text`` is the success path. When it's empty for an
 otherwise-available PDF, we try, in order:
 
   1. Pull the PDF from Internet Archive (``filepath_ia``) and run pypdf —
@@ -9,7 +9,7 @@ otherwise-available PDF, we try, in order:
      and ``pdftoppm`` (poppler) installed, OCR each page.
 
 If neither path works we return ``None`` and the caller skips this PDF; the
-entry will be re-fingerprinted next sync, so we'll retry once CL has the
+entry will be re-fingerprinted next sync, so we'll retry once CourtListener has the
 text or the user installs OCR tools.
 """
 
@@ -36,9 +36,9 @@ _MIN_USEFUL_CHARS = 100
 # or maps the bytes 1:1 into Latin-1 control codepoints (``ÿ`` etc.). The
 # result is a multi-KB "text" string that's non-empty and has the page
 # header/footer bits in real ASCII, but the body is gibberish. Upstream
-# CL's pipeline runs pypdf the same way, so its ``plain_text`` field can
+# CourtListener's pipeline runs pypdf the same way, so its ``plain_text`` field can
 # carry the same broken extraction — see the us-v-dubranova first
-# superseding indictment where CL's plain_text was 27KB of `ÿ`-noise and
+# superseding indictment where CourtListener's plain_text was 27KB of `ÿ`-noise and
 # the summary LLM hallucinated a fictitious "CSRERI / Roskomnadzor"
 # organization to fill the gap, when the actual indictment named a
 # real-world group ("CISM") that OCR reads cleanly. The fix: detect
@@ -76,7 +76,7 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
 
     We avoid CourtListener's storage URL (which can require auth or rate
     limits) and prefer the Internet Archive mirror, then fall back to
-    constructing a CL storage URL from ``filepath_local``.
+    constructing a CourtListener storage URL from ``filepath_local``.
     """
     urls: list[str] = []
     ia = rd.get("filepath_ia")
@@ -165,7 +165,7 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
     """Fetch arbitrary bytes from an absolute URL.
 
     Used by the case-summary pipeline for operator-provided documents
-    (``extra_documents`` in config) — sources outside CL/PACER such as DoJ
+    (``extra_documents`` in config) — sources outside CourtListener/PACER such as DoJ
     press release attachments that work around CourtListener data gaps.
     Returns ``None`` on any non-200 / network error so callers can fall
     open the same way they do on a missing recap_document.
@@ -205,7 +205,7 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 
     Order of operations:
-      1. Use ``plain_text`` from CL if non-empty AND not garbled.
+      1. Use ``plain_text`` from CourtListener if non-empty AND not garbled.
       2. If the PDF is sealed, return None — never going to be available.
       3. If not is_available, return None — not on RECAP yet; we'll retry
          on next sync once the fingerprint changes.
@@ -217,7 +217,7 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
         return plain
     if plain:
         log.info(
-            "extract_text: CL plain_text looks garbled (len=%d), "
+            "extract_text: CourtListener plain_text looks garbled (len=%d), "
             "falling through to local extraction",
             len(plain),
         )

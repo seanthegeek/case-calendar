@@ -9,11 +9,11 @@ same fields, so the formatting lives here. Each event gets:
   * case citation: "<docket_number> (<court citation>)"
   * link to the CourtListener docket page
   * direct URLs to each attached document on the source docket entries
-    (IA mirror preferred, CL storage fallback) so subscribers can open the
+    (IA mirror preferred, CourtListener storage fallback) so subscribers can open the
     filing without re-navigating the docket. Sealed / not-yet-uploaded docs
     show their status instead of a URL.
   * the list of source PACER docket entry numbers (what subscribers see in
-    the CL UI — "[65]")
+    the CourtListener UI — "[65]")
   * the list of source CourtListener entry IDs (audit trail; the docket URL
     is one click away for anyone who wants the raw prose)
 """
@@ -144,7 +144,7 @@ def _document_label(d: dict) -> Optional[str]:
 
 
 def _document_url(d: dict) -> Optional[str]:
-    """Prefer IA mirror (public, stable); fall back to CL storage."""
+    """Prefer IA mirror (public, stable); fall back to CourtListener storage."""
     ia = d.get("filepath_ia")
     if ia:
         return ia

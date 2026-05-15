@@ -28,7 +28,7 @@ def store(tmp_path: Path) -> Iterator[Store]:
 
 @pytest.fixture
 def make_entry():
-    """Factory for synthesizing a docket entry dict shaped like the CL API."""
+    """Factory for synthesizing a docket entry dict shaped like the CourtListener API."""
 
     def _make(
         *,
@@ -142,7 +142,7 @@ def fake_cl():
 
 @pytest.fixture(autouse=True)
 def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make sure tests don't accidentally hit the real CL API."""
+    """Make sure tests don't accidentally hit the real CourtListener API."""
     monkeypatch.setenv("COURTLISTENER_TOKEN", "test-token")
     # Strip any real LLM creds the dev shell might have.
     for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",

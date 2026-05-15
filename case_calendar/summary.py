@@ -8,7 +8,7 @@ A separate, opt-in pass from the per-entry extractor. For each docket, we:
   2. Look for any disposition documents (judgment, plea agreement, verdict,
      dismissal, dispositive memo/order) on the newest end of the docket.
   3. Pull PDF text for those entries through the existing pdf.py fallback
-     chain (CL plain_text → IA mirror via pypdf → optional tesseract OCR).
+     chain (CourtListener plain_text → IA mirror via pypdf → optional tesseract OCR).
   4. Feed the docs plus a structured-events scaffold (hearings/deadlines the
      extractor already recorded, with their statuses) to a higher-tier LLM
      (Sonnet by default) and persist the resulting prose to the
@@ -16,7 +16,7 @@ A separate, opt-in pass from the per-entry extractor. For each docket, we:
 
 The pipeline is intentionally independent of the cheap extractor pipeline:
 primary documents rarely match the hearing-relevance regex, so we don't
-have their text in the local entries table. Hitting CL directly here keeps
+have their text in the local entries table. Hitting CourtListener directly here keeps
 the extractor's storage shape unchanged.
 """
 
@@ -46,7 +46,7 @@ log = logging.getLogger(__name__)
 # Prime-document detection
 # ---------------------------------------------------------------------------
 
-# Match the leading word(s) of an entry description. CL descriptions are
+# Match the leading word(s) of an entry description. CourtListener descriptions are
 # typically uppercase or title-case sentences. We anchor at the start to
 # avoid catching mentions inside other entries ("Response to Motion to
 # Dismiss the Indictment" should NOT match the primary-document pattern).
@@ -228,7 +228,7 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
         # Minute entries of MOTION HEARINGS (vs minute entries of
         # sentencings / verdicts, which ARE dispositions). Keys off the
         # "Motion Hearing re: …" / "Motion Hearing held on …" phrasing
-        # that CL clerks use for the procedural recording.
+        # that CourtListener clerks use for the procedural recording.
         motion\s+hearing\s+(?:re:?|held|on)
         # Case-schedule orders that reference upcoming dispositive motions
         # ("Motion for Summary Judgment due 6/10/2026") — these have
@@ -289,7 +289,7 @@ def _list_entries_ordered(
 ) -> list[dict[str, Any]]:
     """Return up to ``page_size * max_pages`` entries on a docket in the given order.
 
-    Uses CL's native order_by so we don't have to scan the whole docket
+    Uses CourtListener's native order_by so we don't have to scan the whole docket
     when we only want a head or tail slice. The first page alone covers
     primary documents on nearly every docket (entries 1-50 oldest-first)
     and dispositions on nearly every concluded case (entries 50 newest-first).
@@ -311,6 +311,47 @@ def _list_entries_ordered(
     return out
 
 
+def _cached_primary_recap_documents_look_stale(
+    primary_entries: Iterable[dict[str, Any]],
+) -> bool:
+    """Detect a stale local-cache row.
+
+    Returns True when ANY cached primary entry has a non-sealed,
+    available MAIN recap_document whose ``plain_text`` is empty in the
+    stored copy. That's the signature of an entry whose row in the local
+    store was written by a sync that predates the
+    `plain_text`-as-stored-field feature (or any future change to the
+    set of fields we keep locally with the same effect): the structural
+    fields are present, but the extracted text body the summary
+    pipeline relies on is absent.
+
+    The us-v-moucka regression that drove this detector had
+    CourtListener holding 39 KB of clean ``plain_text`` for the
+    indictment recap_document while the local store's copy had
+    ``plain_text`` empty. The entry-fingerprint check ignores
+    ``plain_text`` *content* (only `bool` presence — which was the same
+    then and now), so a regular sync couldn't naturally refresh the
+    stored copy.
+
+    Detection is intentionally conservative — sealed and unavailable
+    recap_documents have legitimately empty ``plain_text`` and don't
+    count as staleness signals. Attachments are also skipped
+    (attachments often have empty ``plain_text`` on purpose; the
+    summary cares about the main doc).
+    """
+    for entry in primary_entries:
+        for rd in entry.get("recap_documents") or []:
+            if rd.get("attachment_number"):
+                continue
+            if not rd.get("is_available"):
+                continue
+            if rd.get("is_sealed"):
+                continue
+            if not (rd.get("plain_text") or "").strip():
+                return True
+    return False
+
+
 def find_primary_documents(
     cl: CourtListener, docket_id: int, *,
     store: Optional[Store] = None,
@@ -325,13 +366,19 @@ def find_primary_documents(
     When ``store`` is provided AND the docket has previously been synced
     (i.e. it has body-bearing entries cached), this reads from the local
     `entries` table instead of re-fetching the same docket-entries pages
-    from CL — `sync.process_entry` now persists description + plain_text
-    for primary/disp matches alongside hearing-relevant ones precisely so this
-    short-circuit lands. Falls back to CL for cold dockets (first ever
-    sync on this docket or pre-fix data lacking primary/disp body text).
+    from CourtListener — `sync.process_entry` now persists description + plain_text
+    for primary/disp matches alongside hearing-relevant ones precisely
+    so this short-circuit lands. Falls back to CourtListener for cold dockets
+    (first ever sync on this docket or pre-fix data lacking
+    primary/disp body text), AND when the cached primary recap_documents
+    look stale (see `_cached_primary_recap_documents_look_stale`) —
+    in that case we also rewrite the local store's cached
+    recap_documents with the fresh CourtListener data so the cache is rebuilt from fresh data and
+    subsequent calls short-circuit normally.
     """
     primary: list[dict[str, Any]] = []
     dispositions: list[dict[str, Any]] = []
+    cache_was_stale = False
 
     if store is not None:
         cached = store.get_entries_with_body(docket_id)
@@ -340,29 +387,46 @@ def find_primary_documents(
                 primary.append(entry)
             elif _is_disposition_document(entry):
                 dispositions.append(entry)
-        # Short-circuit only when the cache yielded a primary document.
-        # A primary-document hit is the strong signal that this docket
-        # has been (re)synced under the post-fix code path that persists
-        # primary/disp bodies — at which point we trust the rest of the cache
-        # too. If only dispositions came back, the cache may be holding
-        # post-fix judgment bodies alongside a pre-fix indictment stub
-        # (NULL description) — exactly the us-v-chapman / us-v-mcgonigal
-        # shape — and the summary pipeline needs CL to recover the
-        # primary document text. Falling through to CL in this case
-        # costs at most 3 docket-entries pages; the alternative is
-        # silently skipping the docket with "no primary document text
-        # could be extracted" even though CL has it.
-        if primary:
+        # Short-circuit only when the cache yielded a primary document
+        # AND the cached recap_documents look complete on their main
+        # entries. A primary-document hit is the strong signal that this
+        # docket has been (re)synced under the post-fix code path that
+        # persists primary/disp bodies — at which point we trust the
+        # rest of the cache too. If only dispositions came back, the
+        # cache may be holding post-fix judgment bodies alongside a
+        # pre-fix indictment stub (NULL description) — exactly the
+        # us-v-chapman / us-v-mcgonigal shape — and the summary
+        # pipeline needs CourtListener to recover the primary document text. If
+        # the cached primary recap_documents look stale (empty plain_text
+        # on an available main doc — the us-v-moucka shape), we ALSO
+        # fall through to CourtListener and rewrite the local copy below so the
+        # cache is rebuilt from fresh data.
+        if primary and not _cached_primary_recap_documents_look_stale(primary):
             primary.sort(key=lambda e: e.get("date_filed") or "")
             dispositions.sort(key=lambda e: e.get("date_filed") or "")
             return primary, dispositions
+        if primary:
+            cache_was_stale = True
+            log.info(
+                "summary: docket %s — cached primary recap_documents look "
+                "stale (available main doc has empty plain_text); falling "
+                "through to CourtListener and refreshing the local cache",
+                docket_id,
+            )
+            # Drop the stale cached primaries; we'll rebuild from CourtListener.
+            # Dispositions stay (they were body-bearing entries from a
+            # later sync and the same staleness signature doesn't
+            # generalize — refreshing them is future work if a similar
+            # bug surfaces there).
+            primary = []
 
-    # Cold cache — fall back to CL. Prime documents are almost always at
-    # entry #1 (criminal) or within the first few amended-complaint entries
-    # (civil). Two pages oldest-first covers 99% of cases. For dispositions
-    # we go three pages newest-first: in a heavily-briefed civil case, the
-    # dispositive order (e.g. an order granting a preliminary injunction)
-    # can be followed by months of compliance briefing, status reports, and
+    # Cold cache OR cached primary looked stale — fall back to CourtListener.
+    # Prime documents are almost always at entry #1 (criminal) or within
+    # the first few amended-complaint entries (civil). Two pages
+    # oldest-first covers 99% of cases. For dispositions we go three
+    # pages newest-first: in a heavily-briefed civil case, the dispositive
+    # order (e.g. an order granting a preliminary injunction) can be
+    # followed by months of compliance briefing, status reports, and
     # transcript orders that push it well past the first newest-first page.
     # The extra two requests are cheap; the alternative (missing the
     # disposition) makes the summary state the wrong posture.
@@ -373,7 +437,7 @@ def find_primary_documents(
     # (the disposition-only fallthrough case): we WANT to keep those
     # cached entries — their plain_text was harvested at sync time, so
     # pdf.extract_text short-circuits on them — and just augment with
-    # whatever else CL turns up that the cache didn't see (typically the
+    # whatever else CourtListener turns up that the cache didn't see (typically the
     # missing primary document, sitting as a NULL stub locally).
     seen_ids: set[int] = {
         e["id"] for e in primary + dispositions if e.get("id") is not None
@@ -389,8 +453,22 @@ def find_primary_documents(
     for entry in oldest + newest:
         if is_primary_document(entry):
             _dedup_add(primary, entry)
+            # Rebuild the local cache from fresh data: when we detected stale cached
+            # data above and have just pulled fresh CourtListener data for a
+            # primary entry, rewrite the stored recap_documents so the
+            # next summary call short-circuits normally. The fingerprint
+            # is intentionally not touched — see
+            # `Store.refresh_entry_recap_documents`.
+            if cache_was_stale and store is not None:
+                store.refresh_entry_recap_documents(entry, docket_id=docket_id)
         elif _is_disposition_document(entry):
             _dedup_add(dispositions, entry)
+
+    if cache_was_stale and store is not None:
+        # Commit the cache refreshes — `refresh_entry_recap_documents`
+        # doesn't commit per-call, matching the rest of the Store
+        # methods that share `mark_entry`'s commit-via-caller pattern.
+        store.conn.commit()
 
     primary.sort(key=lambda e: e.get("date_filed") or "")
     dispositions.sort(key=lambda e: e.get("date_filed") or "")
@@ -624,9 +702,9 @@ def _fetch_extra_documents(
     operator-supplied description that tells the LLM what the document is
     and why it was added). Documents that fail to fetch / extract are
     logged and dropped so the rest of the summary pipeline still gets to
-    run on whatever CL did surface. The summary LLM sees these in their
+    run on whatever CourtListener did surface. The summary LLM sees these in their
     own "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section, distinct from the
-    primary-document and disposition slots that the CL-walk fills.
+    primary-document and disposition slots that the CourtListener-walk fills.
     """
     extras = getattr(case, "extra_documents", None) or []
     out: list[dict[str, Any]] = []
@@ -909,7 +987,7 @@ def refresh_stale(
     for the rows that were (re)written so callers can scope the resulting
     emit to the affected calendars.
 
-    This is the agentic path: ``sync.process_entry`` flips ``stale=1`` when
+    This is the automatic path: ``sync.process_entry`` flips ``stale=1`` when
     it sees a primary-document or disposition entry, and ``cmd_sync`` /
     the webhook ``emit_fn`` call this at the end of a sync, before
     ``emit_calendars``, so a freshly-landed judgment shows up in the

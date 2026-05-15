@@ -31,7 +31,7 @@ class TestLooksGarbled:
 
     def test_font_encoding_noise_is_garbled(self):
         # 27KB of `ÿ`-noise with occasional ASCII bits is the actual shape
-        # of CL's plain_text for the us-v-dubranova first superseding
+        # of CourtListener's plain_text for the us-v-dubranova first superseding
         # indictment — pypdf mapped the bytes 1:1 into Latin-1 codepoints
         # because the PDF's fonts had no /ToUnicode map.
         text = "ÿ ÿ%ÿ$ÿ2 4 & '&1'&('ÿ&'&5'&)'&'ÿ" * 200
@@ -76,7 +76,7 @@ class TestExtractText:
         assert result and "the body" in result
 
     def test_garbled_plain_text_falls_through_to_pypdf(self, monkeypatch):
-        # CL's plain_text is gibberish (font-encoding issue). The function
+        # CourtListener's plain_text is gibberish (font-encoding issue). The function
         # should ignore it and run our own extraction chain, returning the
         # local pypdf text when it's clean.
         rd = {
@@ -95,7 +95,7 @@ class TestExtractText:
     def test_garbled_plain_text_and_garbled_pypdf_fall_through_to_ocr(
         self, monkeypatch,
     ):
-        # The realistic case: CL's plain_text is garbled AND our pypdf is
+        # The realistic case: CourtListener's plain_text is garbled AND our pypdf is
         # garbled (same source!). OCR is the only path that recovers
         # readable text. Matches the us-v-dubranova flow end-to-end.
         rd = {
@@ -221,7 +221,7 @@ class TestFetchPdfBytes:
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF-1.4 bytes"
 
     def test_falls_through_to_cl_storage_url(self, monkeypatch):
-        # IA returns 404; CL storage URL returns 200 — second branch in the loop.
+        # IA returns 404; CourtListener storage URL returns 200 — second branch in the loop.
         import httpx
 
         seen: list[str] = []
@@ -302,7 +302,7 @@ class TestExtractWithPypdfHappyPath:
         # Use a known-tiny PDF literal that has selectable text. The smallest
         # syntactically valid PDF with text is hand-crafted; rather than
         # ship one, build it via pypdf's writer + a blank page (no text)
-        # and assert empty-string return — that's a valid happy path branch
+        # and assert empty-string return — that's a valid success path branch
         # too (loops over pages, no extraction errors raised).
         writer = pypdf.PdfWriter()
         writer.add_blank_page(width=100, height=100)

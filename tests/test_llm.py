@@ -1321,7 +1321,7 @@ class TestBuildSummaryUserMessage:
                 "date_filed": None,
                 "text": "REDACTED INDICTMENT body...",
                 "source_url": "https://www.justice.gov/opa/media/1407196/dl",
-                "operator_note": "This is the unsealed indictment. CL "
+                "operator_note": "This is the unsealed indictment. CourtListener "
                                  "entries 1-4 are missing due to bug #7345.",
             }],
             hearings=[], deadlines=[],
@@ -1502,7 +1502,7 @@ class TestSystemPromptAntiInferenceGuards:
     """
 
     def test_cancel_requires_explicit_grounding(self):
-        # The header is the load-bearing phrase: a future edit should
+        # The header is the essential phrase: a future edit should
         # not drop the explicit-grounding rule without replacing it.
         assert "CANCEL / MARK_HELD need EXPLICIT GROUNDING" in llm.SYSTEM_PROMPT
 

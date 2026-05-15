@@ -28,7 +28,7 @@ uv run case-calendar sync
 | `--force-summaries` | Regenerate every AI case summary in the same sync. Use after a model or prompt change so the CourtListener session is reused instead of running `summarize --force` separately. |
 
 A three-tier short-circuit keeps quiet days cheap: the docket-level
-`date_modified` watermark, the per-entry `modified_after` filter, and the
+`date_modified` cutoff, the per-entry `modified_after` filter, and the
 content fingerprint dedup mean an unchanged docket costs roughly one cheap
 CourtListener request and zero LLM calls.
 

@@ -49,7 +49,7 @@ class TestEntries:
 
     def test_get_entries_with_body_returns_only_full_rows(self, store: Store):
         # Body-bearing entries (hearing-relevant + op/disp) are the rows the
-        # summary pipeline reads instead of re-fetching from CL. Stubs
+        # summary pipeline reads instead of re-fetching from CourtListener. Stubs
         # (description IS NULL) must NOT be returned — otherwise summary's
         # local-cache check would think it's warm when it's actually cold.
         store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
@@ -61,7 +61,7 @@ class TestEntries:
                          description=None)  # filter-failed stub
         rows = store.get_entries_with_body(1)
         assert len(rows) == 1
-        # ``id`` is renamed from entry_id so the shape matches what CL's
+        # ``id`` is renamed from entry_id so the shape matches what CourtListener's
         # docket-entries response returns (callers can treat both paths the
         # same way without branching).
         assert rows[0]["id"] == 10
@@ -70,7 +70,7 @@ class TestEntries:
         assert rows[0]["recap_documents"][0]["plain_text"] == "body"
 
     def test_get_entries_with_body_orders_by_date_filed(self, store: Store):
-        # Summary's CL fallback returns primary documents oldest-first and
+        # Summary's CourtListener fallback returns primary documents oldest-first and
         # then sorts them; the local-cache path must produce the same order
         # so swap-ability between the two paths is invariant.
         store.mark_entry(1, 20, "2024-06-01T00:00:00Z", "fp2",
@@ -226,7 +226,7 @@ class TestDockets:
 
     def test_bump_advances_forward(self, store: Store):
         # Forward-only advance: a newer entry's date_modified bumps the
-        # docket's watermark, which is what the index's "updated at"
+        # docket's cutoff, which is what the index's "updated at"
         # display reads from.
         store.set_docket_last_modified(7, "2026-05-01T00:00:00Z")
         store.bump_docket_last_modified(7, "2026-05-08T00:00:00Z")
@@ -234,7 +234,7 @@ class TestDockets:
 
     def test_bump_ignores_older(self, store: Store):
         # Out-of-order webhook delivery (older entry arrives after a
-        # newer one) must not move the watermark backwards.
+        # newer one) must not move the cutoff backwards.
         store.set_docket_last_modified(7, "2026-05-08T00:00:00Z")
         store.bump_docket_last_modified(7, "2026-05-01T00:00:00Z")
         assert store.docket_last_modified(7) == "2026-05-08T00:00:00Z"
@@ -260,7 +260,7 @@ class TestDockets:
         assert store.known_docket_ids() == {100, 200}
 
     def test_date_last_filing_persists_via_upsert(self, store: Store):
-        # date_last_filing is captured from CL on the polling path; ensure
+        # date_last_filing is captured from CourtListener on the polling path; ensure
         # it round-trips through upsert_docket_meta + get_docket_meta.
         store.upsert_docket_meta(7, {
             "court_id": "mad", "docket_number": "1:25",
@@ -298,9 +298,9 @@ class TestDockets:
         assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_ignores_older(self, store: Store):
-        # An entry whose date_filed is older than what CL already gave us
+        # An entry whose date_filed is older than what CourtListener already gave us
         # (e.g. a late-arriving webhook for an old entry) must not move
-        # the watermark backwards.
+        # the cutoff backwards.
         store.upsert_docket_meta(7, {
             "court_id": "mad", "docket_number": "1:25",
             "case_name": "X", "absolute_url": "/d/7/",
@@ -317,7 +317,7 @@ class TestDockets:
 
     def test_bump_last_filing_empty_string_noop(self, store: Store):
         # The opportunistic bump in process_entry passes whatever the
-        # entry's date_filed was; CL sometimes omits the field, and an
+        # entry's date_filed was; CourtListener sometimes omits the field, and an
         # empty-string bump must not insert a row or clobber an existing
         # value.
         store.upsert_docket_meta(7, {
@@ -623,7 +623,7 @@ class TestConcurrencyPragmas:
     """The polling sync and the webhook-serving process share the same
     SQLite file. Without WAL + a busy_timeout, the second writer raises
     SQLITE_BUSY immediately on any commit overlap — a webhook landing
-    mid-sync would bubble up as HTTP 500 (CL retries with the same
+    mid-sync would bubble up as HTTP 500 (CourtListener retries with the same
     Idempotency-Key, but transient errors show up in the log), and a
     sync that loses a race aborts the whole invocation.
     """

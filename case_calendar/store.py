@@ -2,12 +2,12 @@
 
 Keeps:
 
-* ``dockets`` — per-docket high-water mark for the docket-level short-circuit
+* ``dockets`` — per-docket last-modified cutoff for the docket-level short-circuit
   plus cached metadata (court_id, case_name, docket_number, absolute_url) for
   description rendering at emit time.
 * ``courts`` — citation_string + name lookup per court_id, fetched once.
 * ``entries`` — every docket entry we've already processed, with a content
-  fingerprint. Used for dedup and the docket-level high-water mark.
+  fingerprint. Used for dedup and the docket-level last-modified cutoff.
 * ``hearings`` — the canonical "logical" hearings per case. Each hearing has a
   stable ``hearing_key`` (chosen by the LLM) so reschedules and dial-in info
   updates land on the same row.
@@ -31,11 +31,65 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
 
+
+def compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Build the subset of each recap_document we store locally.
+
+    CourtListener returns roughly thirty fields per recap_document. We
+    only keep the nine the calendar renderer and the summary pipeline
+    actually read: identity (id, document_number, attachment_number,
+    description), status flags (is_available, is_sealed), URLs
+    (filepath_ia, filepath_local), and the extracted text body
+    (plain_text). Everything else is CourtListener bookkeeping we'd
+    never look at again. The result rides into the ``entries.recap_documents``
+    JSON column.
+
+    Ordered main-doc-first, then attachments by number, so calendar
+    descriptions list documents in PACER's natural order.
+
+    Lives in `store.py` (rather than `sync.py` where it was originally
+    written) so the summary path can call it too — see
+    `Store.refresh_entry_recap_documents` and the matching
+    "Automatically rebuild stale cached recap_documents" design
+    decision in AGENTS.md.
+    """
+    out: list[dict[str, Any]] = []
+    for rd in entry.get("recap_documents") or []:
+        out.append({
+            "id": rd.get("id"),
+            "document_number": rd.get("document_number"),
+            "attachment_number": rd.get("attachment_number"),
+            "description": (rd.get("description") or "").strip() or None,
+            "is_available": bool(rd.get("is_available")),
+            "is_sealed": bool(rd.get("is_sealed")),
+            "filepath_ia": rd.get("filepath_ia") or None,
+            "filepath_local": rd.get("filepath_local") or None,
+            "plain_text": (rd.get("plain_text") or "").strip() or None,
+        })
+
+    def _key(d: dict[str, Any]) -> tuple[int, int]:
+        # Sort attachment_number=None / 0 (the main doc) before numbered
+        # attachments. document_number normally matches across rows on the
+        # same entry, but treat it as the primary sort just in case.
+        try:
+            dn = int(d.get("document_number") or 0)
+        except (TypeError, ValueError):
+            dn = 0
+        try:
+            an = int(d.get("attachment_number") or 0)
+        except (TypeError, ValueError):
+            an = 0
+        return (dn, an)
+
+    out.sort(key=_key)
+    return out
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS dockets (
     docket_id INTEGER PRIMARY KEY,
     date_modified TEXT,
-    date_last_filing TEXT,        -- CL's "most recent document filing date" on the docket; the value the index page reads to surface "Last filing"
+    date_last_filing TEXT,        -- CourtListener's "most recent document filing date" on the docket; the value the index page reads to surface "Last filing"
     last_synced_at TEXT NOT NULL,
     court_id TEXT,
     docket_number TEXT,
@@ -111,7 +165,7 @@ CREATE TABLE IF NOT EXISTS case_summaries (
     docket_id INTEGER NOT NULL,
     summary TEXT NOT NULL,
     model TEXT,
-    source_entry_ids TEXT,         -- JSON list of CL entry IDs fed to the LLM
+    source_entry_ids TEXT,         -- JSON list of CourtListener entry IDs fed to the LLM
     stale INTEGER NOT NULL DEFAULT 0,  -- 1 when sync saw a new primary document or disposition that may invalidate the prose
     stale_since TEXT,              -- ISO timestamp of the most recent stale-flagging entry; used by the webhook debounce so a burst of PACER uploads coalesces into one regeneration
     generated_at TEXT NOT NULL,
@@ -180,7 +234,7 @@ class Store:
         # long-running `serve` process safely share the same DB file. Without
         # these the second writer raises SQLITE_BUSY *immediately* on any
         # commit overlap: a webhook delivery that lands mid-sync would
-        # bubble up as HTTP 500 (CL retries via Idempotency-Key, no data
+        # bubble up as HTTP 500 (CourtListener retries via Idempotency-Key, no data
         # loss but transient errors in the webhook log), and a sync that
         # collides with a webhook would abort the whole invocation. WAL
         # lets readers and one writer coexist; busy_timeout makes the
@@ -315,18 +369,18 @@ class Store:
     def bump_docket_last_modified(self, docket_id: int, candidate: str) -> None:
         """Advance ``dockets.date_modified`` only if ``candidate`` is newer.
 
-        ``date_modified`` is the docket-level short-circuit watermark
-        (``sync_case`` skips a docket whose CL ``date_modified`` hasn't
+        ``date_modified`` is the docket-level short-circuit cutoff
+        (``sync_case`` skips a docket whose CourtListener ``date_modified`` hasn't
         moved past this value). The polling path sets it to the parent
         docket's authoritative value at end-of-loop; the webhook path
         never sees the parent docket per delivery, so without this bump
-        the watermark would stay frozen at the last poll time and
+        the cutoff would stay frozen at the last poll time and
         webhook-only deployments would never short-circuit.
 
         Done as a conditional UPDATE so out-of-order webhook deliveries
         can't move the value backwards. The index page's "Last filing"
         column reads from a separate column (``date_last_filing``); this
-        is the short-circuit watermark, not the user-visible date.
+        is the short-circuit cutoff, not the user-visible date.
         """
         self.conn.execute(
             """
@@ -344,7 +398,7 @@ class Store:
     def upsert_docket_meta(self, docket_id: int, meta: dict[str, Any]) -> None:
         """Cache the human-readable docket metadata we display in event bodies.
 
-        ``date_last_filing`` (CL's "most recent document filing date") is
+        ``date_last_filing`` (CourtListener's "most recent document filing date") is
         persisted here when present so the index page can render an
         unambiguous "Last filing" date that doesn't bump on OCR / metadata
         churn the way ``date_modified`` does. None on the input leaves any
@@ -379,12 +433,12 @@ class Store:
     def bump_docket_last_filing(self, docket_id: int, candidate: str) -> None:
         """Advance ``dockets.date_last_filing`` only if ``candidate`` is newer.
 
-        CL stamps the docket-level ``date_last_filing`` server-side, but
+        CourtListener stamps the docket-level ``date_last_filing`` server-side, but
         webhook deliveries don't refetch the parent docket on every event,
         so without this the value would lag the entries we just processed.
         Each ``process_entry`` call passes the entry's own ``date_filed``
         through here; conditional update is forward-only so out-of-order
-        webhook deliveries can't move the watermark backwards.
+        webhook deliveries can't move the cutoff backwards.
         """
         if not candidate:
             return
@@ -505,6 +559,42 @@ class Store:
             ),
         )
 
+    def refresh_entry_recap_documents(
+        self, entry: dict[str, Any], *, docket_id: int,
+    ) -> bool:
+        """Overwrite an existing entry's stored ``recap_documents`` with a
+        fresh version built from a current CourtListener response. Leaves every
+        other column — fingerprint, description, status timestamps —
+        untouched.
+
+        Used by `summary.find_primary_documents` to repair stale cache rows when the
+        cached recap_documents look out of date — see the matching
+        "Automatically rebuild stale cached recap_documents" Key Design Decision in
+        AGENTS.md. We deliberately do NOT touch the fingerprint here:
+        if we re-stored a fresh fingerprint, the next sync would see
+        stored == computed and skip the normal extract path, which is
+        the path we want to fire when an actual content change lands.
+        This is a side-channel update to the cached data only.
+
+        ``docket_id`` is taken as an explicit kwarg rather than read
+        from the entry dict because CourtListener serializes the docket as a URL
+        string in the entry payload, not the integer the local store
+        keys on.
+
+        Returns True when a row existed and was updated; False otherwise
+        (no-op when the entry isn't already in the local store).
+        """
+        entry_id = entry.get("id")
+        if not entry_id:
+            return False
+        new_recap_documents = compact_recap_documents(entry)
+        cur = self.conn.execute(
+            "UPDATE entries SET recap_documents=? "
+            "WHERE docket_id=? AND entry_id=?",
+            (json.dumps(new_recap_documents), docket_id, entry_id),
+        )
+        return cur.rowcount > 0
+
     def get_entry_by_number(
         self, docket_id: int, entry_number: int
     ) -> Optional[dict[str, Any]]:
@@ -512,7 +602,7 @@ class Store:
 
         Returns the stored description / short_description so callers can
         resolve cross-references like "ORDER granting 65 Motion ..." without
-        a CL round-trip. Older entries (pre-migration) won't have description
+        a CourtListener round-trip. Older entries (pre-migration) won't have description
         stored — we return whatever is there.
         """
         row = self.conn.execute(
@@ -527,7 +617,7 @@ class Store:
 
         Used by the summary pipeline to find primary documents and
         dispositions locally instead of re-fetching docket-entries pages
-        from CL right after sync wrote them down. Filter-failed stubs
+        from CourtListener right after sync wrote them down. Filter-failed stubs
         (description IS NULL) are excluded. ``recap_documents`` is
         deserialized from the JSON column on the way out.
         """
@@ -545,7 +635,7 @@ class Store:
         for r in rows:
             d = dict(r)
             d["recap_documents"] = json.loads(d.get("recap_documents") or "[]")
-            # Shape matches what CL returns to find_primary_documents
+            # Shape matches what CourtListener returns to find_primary_documents
             # ("id" key for entry_id), so callers can treat both paths
             # interchangeably.
             d["id"] = d.pop("entry_id")
@@ -585,7 +675,7 @@ class Store:
         """Return ``entry_id -> entry_number`` for known entries.
 
         Used by emit-time description rendering to surface PACER docket
-        positions (the "[65]" subscribers see in the CL UI) alongside the
+        positions (the "[65]" subscribers see in the CourtListener UI) alongside the
         opaque CourtListener entry IDs. Entries with NULL entry_number
         (rare — pre-migration rows) and unknown ids are omitted.
         """
@@ -645,10 +735,10 @@ class Store:
 
         ``date_filed`` = MIN(entries.date_filed) — the first filed entry on
         any of the case's dockets is the closest stand-in for the case's
-        filing date (we don't store the docket-level date_filed CL exposes,
+        filing date (we don't store the docket-level date_filed CourtListener exposes,
         so this is the cheap derived value).
 
-        ``last_filing_date`` = MAX(dockets.date_last_filing) — CL's
+        ``last_filing_date`` = MAX(dockets.date_last_filing) — CourtListener's
         authoritative "most recent document filing date" rolled up across
         a multi-docket case. Distinct from ``dockets.date_modified``, which
         bumps on OCR / metadata churn and would mislabel non-filing updates
@@ -1054,8 +1144,8 @@ class Store:
 
     # Tables that carry a docket_id FK. Order matters for delete_docket: the
     # `dockets` row must be removed last so a mid-DELETE crash leaves the
-    # parent row pointing at no children rather than an orphan child fan-out
-    # pointing at no parent.
+    # parent row pointing at no children rather than child rows pointing at
+    # a parent that has already been deleted.
     _DOCKET_CHILD_TABLES = ("entries", "hearings", "deadlines", "case_summaries")
     _DOCKET_TABLES = _DOCKET_CHILD_TABLES + ("dockets",)
 

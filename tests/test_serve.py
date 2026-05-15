@@ -183,7 +183,7 @@ class TestDocketAlert:
     def test_processing_bumps_docket_short_circuit_watermark(
         self, base_url, store,
     ):
-        # dockets.date_modified is the polling short-circuit watermark:
+        # dockets.date_modified is the polling short-circuit cutoff:
         # if a webhook never advances it, a follow-up poll would still
         # short-circuit the docket as "unchanged since last poll" even
         # though new entries arrived via webhook.
@@ -346,7 +346,7 @@ class TestAutoEmit:
         self, store: Store, case, monkeypatch,
     ):
         # The store is already updated by the time emit runs — a render
-        # error mustn't make CL retry the delivery (which would dup-process).
+        # error mustn't make CourtListener retry the delivery (which would dup-process).
         monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
             "type": "ADD", "hearing_key": "sentencing-x",
             "hearing_type": "sentencing", "title": "Sentencing",
@@ -462,7 +462,7 @@ class TestRequestErrors:
     def test_docket_id_as_digit_string_is_coerced(
         self, store: Store, case, monkeypatch,
     ):
-        # CL sometimes ships the docket field as a string; the handler
+        # CourtListener sometimes ships the docket field as a string; the handler
         # coerces it to int so the lookup still hits docket_to_case.
         monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
             {"type": "IGNORE", "reason": "stub"},
@@ -487,7 +487,7 @@ class TestRequestErrors:
         self, store: Store, case, monkeypatch,
     ):
         # If processing one entry crashes, the handler logs and moves to the
-        # next entry — never bubbles a 500 to CL (which would retry).
+        # next entry — never bubbles a 500 to CourtListener (which would retry).
         from case_calendar import sync as sync_mod
 
         original = sync_mod.CaseSyncer.process_entry
@@ -514,7 +514,7 @@ class TestRequestErrors:
             server.shutdown()
             server.server_close()
         # First entry raised; second went through. The 200 ack is the
-        # contract — we don't want CL re-delivering the whole batch.
+        # contract — we don't want CourtListener re-delivering the whole batch.
         assert status == 200
         assert resp["handled"]["entries_processed"] == 1
 
@@ -524,7 +524,7 @@ class TestServerWide500Handler:
         self, store: Store, case, monkeypatch,
     ):
         # An unexpected error inside process_locked (e.g. lock acquisition
-        # or store write) becomes a 500 — CL retries, and the next attempt
+        # or store write) becomes a 500 — CourtListener retries, and the next attempt
         # benefits from idempotency-key dedup if applicable.
         monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [])
 

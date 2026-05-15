@@ -17,7 +17,7 @@ from case_calendar.courtlistener import CourtListener
 
 @pytest.fixture
 def make_client():
-    """Return a function that builds a CL client with a programmable transport."""
+    """Return a function that builds a CourtListener client with a programmable transport."""
 
     def _make(handler):
         transport = httpx.MockTransport(handler)
@@ -117,7 +117,7 @@ class TestRetryLogic:
             cl._get("https://x/y")
 
     def test_429_with_long_retry_after_sleeps_through(self, monkeypatch, make_client):
-        # CL's daily 300/day bucket can return Retry-After of nearly 24h.
+        # CourtListener's daily 300/day bucket can return Retry-After of nearly 24h.
         # We honor it rather than aborting — manual restart-per-cycle was
         # painful enough that we'd rather sleep and resume automatically.
         slept = []

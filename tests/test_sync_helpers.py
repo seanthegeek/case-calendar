@@ -1,7 +1,7 @@
 """Pure-function unit tests for sync.py."""
 
+from case_calendar.store import compact_recap_documents
 from case_calendar.sync import (
-    _compact_recap_documents,
     _deadline_local_to_utc,
     _default_duration,
     _docket_implies_deadlines,
@@ -32,7 +32,7 @@ class TestIsFetchable:
         })
 
     def test_extracted_text_is_fetchable_even_if_not_marked_available(self):
-        # If CL already gave us the text, that's all we need.
+        # If CourtListener already gave us the text, that's all we need.
         assert _is_fetchable({
             "is_available": False, "plain_text": "the document body",
             "filepath_local": None, "filepath_ia": "",
@@ -82,7 +82,7 @@ class TestNeedsPdf:
         assert _needs_pdf(_entry(""))
 
     def test_entered_footer_does_not_satisfy_hint(self):
-        # CL appends "[Entered: MM/DD/YYYY HH:MM AM/PM]" to almost every entry;
+        # CourtListener appends "[Entered: MM/DD/YYYY HH:MM AM/PM]" to almost every entry;
         # without stripping it, the time-of-day match fools _needs_pdf into
         # skipping the PDF that holds the actual hearing time.
         assert _needs_pdf(_entry(
@@ -402,7 +402,7 @@ class TestDeadlineLocalToUtc:
         assert _deadline_local_to_utc("", None, "America/New_York") is None
 
 
-# --- _compact_recap_documents ---
+# --- compact_recap_documents ---
 
 
 class TestCompactRecapDocuments:
@@ -412,7 +412,7 @@ class TestCompactRecapDocuments:
             {"id": 100, "document_number": 65, "attachment_number": None},
             {"id": 101, "document_number": 65, "attachment_number": 1},
         ]}
-        out = _compact_recap_documents(entry)
+        out = compact_recap_documents(entry)
         assert [d["id"] for d in out] == [100, 101, 102]
 
     def test_handles_non_integer_position_fields(self):
@@ -422,9 +422,9 @@ class TestCompactRecapDocuments:
             {"id": 1, "document_number": "x", "attachment_number": None},
             {"id": 2, "document_number": "y", "attachment_number": "z"},
         ]}
-        out = _compact_recap_documents(entry)
+        out = compact_recap_documents(entry)
         assert len(out) == 2
 
     def test_empty_input_empty_output(self):
-        assert _compact_recap_documents({"recap_documents": []}) == []
-        assert _compact_recap_documents({}) == []
+        assert compact_recap_documents({"recap_documents": []}) == []
+        assert compact_recap_documents({}) == []

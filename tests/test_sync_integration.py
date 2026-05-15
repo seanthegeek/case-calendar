@@ -86,7 +86,7 @@ def _default_stub_verify(monkeypatch):
     monkeypatch.setattr(llm_mod, "verify_hearing", fake)
 
 
-# --- happy path: schedule, then reschedule, then mark held ---
+# --- success path: schedule, then reschedule, then mark held ---
 
 
 class TestDateLessAddIsDropped:
@@ -325,7 +325,7 @@ class TestDocketMetaCaching:
 
 
 class TestLastFilingDateCapture:
-    """The index page's "Last filing" date is sourced from CL's
+    """The index page's "Last filing" date is sourced from CourtListener's
     ``date_last_filing`` (not ``date_modified``, which bumps on OCR /
     metadata churn). Verify both capture paths: full polling sync, and
     the webhook ``process_entry`` opportunistic bump.
@@ -348,7 +348,7 @@ class TestLastFilingDateCapture:
         self, store: Store, case, monkeypatch,
     ):
         # Pre-seed the docket meta with an older date_last_filing — this
-        # simulates the polling pass having captured CL's value, and now
+        # simulates the polling pass having captured CourtListener's value, and now
         # a webhook delivers an entry filed AFTER that capture.
         store.upsert_docket_meta(100, {
             "court_id": "mad", "docket_number": "1:25-cr-00001-X",
@@ -370,7 +370,7 @@ class TestLastFilingDateCapture:
         # still need to populate date_last_filing on those — otherwise
         # the column stays NULL for every docket that hasn't moved since
         # the migration landed, and the index shows empty dates.
-        # Pre-seed the watermark so the short-circuit fires.
+        # Pre-seed the cutoff so the short-circuit fires.
         store.set_docket_last_modified(100, "2026-05-01T00:00:00-07:00")
         make_llm_stub(monkeypatch, by_entry={})
         cl = FakeCL(
@@ -388,9 +388,9 @@ class TestLastFilingDateCapture:
     def test_webhook_does_not_move_last_filing_backwards(
         self, store: Store, case, monkeypatch,
     ):
-        # Out-of-order delivery: an older entry arriving after CL's
+        # Out-of-order delivery: an older entry arriving after CourtListener's
         # date_last_filing has already advanced must not regress the
-        # watermark.
+        # cutoff.
         store.upsert_docket_meta(100, {
             "court_id": "mad", "docket_number": "1:25-cr-00001-X",
             "case_name": "X", "absolute_url": "/d/100/",
@@ -979,7 +979,7 @@ class TestPastScheduledHearings:
     def test_mark_held_flips_past_row_when_llm_cites_evidence(
         self, store: Store, case, monkeypatch,
     ):
-        # The expected happy path: LLM sees a minute entry for the
+        # The expected success path: LLM sees a minute entry for the
         # hearing's date and returns MARK_HELD. Past-dated row updates.
         self._seed_past_scheduled(store, key="past-conf")
         stub_verify(monkeypatch, by_key={
@@ -2036,12 +2036,12 @@ class TestEnsureCourtErrorPath:
     def test_court_fetch_failure_logged_and_swallowed(
         self, store, case, monkeypatch,
     ):
-        # The court fetch can fail (CL outage, unknown court id). When it
+        # The court fetch can fail (CourtListener outage, unknown court id). When it
         # does we log a warning but continue — the citation stays missing
         # rather than crashing the whole sync.
         class _RaisingCL(FakeCL):
             def get_court(self, court_id):
-                raise RuntimeError("CL down")
+                raise RuntimeError("CourtListener down")
 
         cl = _RaisingCL(dockets={100: _docket()})
         make_llm_stub(monkeypatch, by_entry={})  # no actions emitted
@@ -2139,7 +2139,7 @@ class TestApplyDeadlineActionEdgeCases:
 
 class TestSummaryStaleMarkOnPrimaryOrDisposition:
     """A primary-document or disposition entry must flip the docket's
-    case_summaries.stale flag — that's how the agentic summary refresh knows
+    case_summaries.stale flag — that's how the automatic summary refresh knows
     a regeneration is needed before the next emit."""
 
     def test_primary_document_marks_stale(self, store, case, monkeypatch):
@@ -2177,7 +2177,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
     ):
         # Primary documents don't match the hearing-relevance regex, so
         # historically their body was discarded — leaving the summary
-        # pipeline to re-fetch the same data from CL. Now sync persists the
+        # pipeline to re-fetch the same data from CourtListener. Now sync persists the
         # description AND the compact recap_documents (including plain_text)
         # so summary can read locally. Without this, refresh_stale on a
         # freshly synced docket would burn a duplicate /docket-entries/

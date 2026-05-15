@@ -410,7 +410,7 @@ def emit_calendars(
                     h["court_citation"] = store.get_court_citation(court_id)
             # PACER docket-position numbers ("[65]") for the source entries —
             # surfaced in the description so subscribers can find the cited
-            # entry in the CL UI without copy-pasting the opaque CL entry id.
+            # entry in the CourtListener UI without copy-pasting the opaque CourtListener entry id.
             # Some entries (paperless minute orders) lack a position number;
             # those are silently dropped.
             source_ids = h.get("source_entry_ids") or []
@@ -419,7 +419,7 @@ def emit_calendars(
                 h["docket_entry_numbers"] = [
                     num_map[i] for i in source_ids if i in num_map
                 ]
-                # Per-entry document URLs (IA mirror or CL storage). Order
+                # Per-entry document URLs (IA mirror or CourtListener storage). Order
                 # by source-entry chronology, with each entry's main doc
                 # ahead of its attachments. The compact JSON we persist is
                 # already sorted within each entry, so just flatten.
@@ -959,7 +959,7 @@ def cmd_prune(args: argparse.Namespace) -> int:
 
     Two-phase by default: print the plan (which dockets, how many rows per
     table) and exit. Re-run with ``--apply`` to actually delete. The destructive
-    step is irreversible — the AGENTS.md backup-before-DDL rule extends in
+    step is irreversible — the AGENTS.md backup-before-schema-change rule extends in
     spirit to bulk DML against a real store; back the DB up first.
     """
     cfg = _load_config(args.config)
@@ -1080,7 +1080,7 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="regenerate every case summary as part of the sync (use after "
              "a model upgrade or prompt change — avoids a separate "
-             "`summarize --force` run that would hit CL again)",
+             "`summarize --force` run that would hit CourtListener again)",
     )
     p_sync.set_defaults(func=cmd_sync)
 

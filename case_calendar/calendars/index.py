@@ -621,7 +621,7 @@ def _render_case(case: dict[str, Any]) -> str:
         label = " ".join(label_parts) or _esc(d.get("docket_id"))
         if d.get("absolute_url"):
             url = d["absolute_url"]
-            # CL absolute_url is a path like /docket/12345/foo/; promote to
+            # CourtListener absolute_url is a path like /docket/12345/foo/; promote to
             # a full URL when needed so the link works regardless of where
             # the index.html is hosted.
             if url.startswith("/"):

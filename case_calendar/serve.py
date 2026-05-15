@@ -6,12 +6,12 @@ docket entry (with ``recap_documents`` inline) — the same shape as the
 ``/docket-entries/`` API. So a webhook-driven setup never burns daily quota
 on polling that finds nothing new.
 
-Auth model (per CL docs): no signing secret. The only protection is the
+Auth model (per CourtListener docs): no signing secret. The only protection is the
 randomness of the URL itself, plus a path secret we add for belt-and-braces.
 The URL must be HTTPS and the path component must be unguessable.
 
 Each delivery includes an ``Idempotency-Key`` header. We store seen keys in
-SQLite so retries from CL are no-ops. The entry-fingerprint dedup in
+SQLite so retries from CourtListener are no-ops. The entry-fingerprint dedup in
 ``process_entry`` is a second line of defense.
 
 Run with::
@@ -21,7 +21,7 @@ Run with::
 Then put the receiver behind whatever public TLS terminator you like
 (Caddy, Cloudflare Tunnel, fly.io, etc.) and register the resulting URL —
 ``https://<host>/webhooks/case-calendar/<CASE_CALENDAR_WEBHOOK_SECRET>`` —
-in the CL dashboard with event type ``DOCKET_ALERT``.
+in the CourtListener dashboard with event type ``DOCKET_ALERT``.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 # ICS / gcal subscribers see the update without a manual ``emit`` run.
 EmitFn = Callable[[set[str]], None]
 
-# CL uses small integer event-type codes (per their docs).
+# CourtListener uses small integer event-type codes (per their docs).
 EVENT_DOCKET_ALERT = 1
 EVENT_SEARCH_ALERT = 2
 EVENT_RECAP_FETCH = 3
@@ -170,7 +170,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _dispatch_with_idempotency(
         self, idem_key: str, event_type: Optional[int], data: dict[str, Any]
     ) -> dict[str, Any]:
-        # CL retries non-2xx responses; this dedup check makes that safe.
+        # CourtListener retries non-2xx responses; this dedup check makes that safe.
         if idem_key and self.server.store.webhook_seen(idem_key):
             log.info("duplicate webhook %s; acking", idem_key)
             return {"status": "duplicate"}
@@ -195,7 +195,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
     def _handle_docket_alert(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Process every entry in the payload.
 
-        Per CL docs, payload.results contains entries shaped like the
+        Per CourtListener docs, payload.results contains entries shaped like the
         Docket Entry API — including ``recap_documents`` inline. ``docket``
         is an integer ID rather than a URL.
         """
@@ -217,7 +217,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             case = self.server.docket_to_case.get(docket_id)
             if not case:
                 # Webhooks may fire for dockets we don't track — e.g. if the
-                # user has a docket alert in CL that isn't in config.yaml.
+                # user has a docket alert in CourtListener that isn't in config.yaml.
                 # Ack and move on.
                 skipped_unknown_dockets += 1
                 continue
@@ -242,7 +242,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
         # Re-render affected calendars so subscribers see the update without
         # a manual emit. Failures here log but don't fail the webhook ack —
-        # CL would just retry, and the store is already up to date.
+        # CourtListener would just retry, and the store is already up to date.
         emitted: list[str] = []
         if affected_calendars and self.server.emit_fn is not None:
             try:
@@ -276,7 +276,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             self._respond(400, {"error": "bad Content-Length"})
             return None
         if length > 5_000_000:
-            # CL payloads are kilobytes; anything huge is suspicious.
+            # CourtListener payloads are kilobytes; anything huge is suspicious.
             self._respond(413, {"error": "payload too large"})
             return None
         return self.rfile.read(length)

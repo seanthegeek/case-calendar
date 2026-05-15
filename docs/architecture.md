@@ -49,7 +49,7 @@ CourtListener docket
 Two delivery modes feed the pipeline:
 
 - **Polling.** `case-calendar sync` walks every docket in `config.yaml`,
-  pulls anything newer than the store's high-water mark, runs it through
+  pulls anything newer than the store's last-modified cutoff, runs it through
   the pipeline, and re-emits affected calendars. Designed to run on a
   cron.
 - **Webhooks.** `case-calendar serve` listens for CourtListener
@@ -134,7 +134,7 @@ levels:
 1. **Per-docket** — if the docket's `date_modified` hasn't advanced since
    the last sync, skip everything. No entries API call, no LLM.
 2. **Per-entry** — `iter_entries(modified_after=cutoff)` filters
-   server-side to entries newer than the local high-water mark.
+   server-side to entries newer than the local last-modified cutoff.
 3. **Per-fingerprint** — even if an entry comes back, dedup against
    `(docket_id, entry_id, content_fingerprint)` skips re-LLM-ing entries
    whose substantive content didn't change.
@@ -195,7 +195,7 @@ enabled on the case.
 
 The SQLite store has five operational tables:
 
-- **`dockets`** — id, last `date_modified` (the short-circuit watermark),
+- **`dockets`** — id, last `date_modified` (the short-circuit cutoff),
   last filing date, cached court metadata.
 - **`entries`** — dedup of already-processed entries, keyed by
   `(docket_id, entry_id)` with a content fingerprint. Description and
@@ -270,7 +270,7 @@ the architectural conventions every module follows, and the testing
 philosophy — lives in
 [AGENTS.md](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)
 at the repo root. That file is the project's contract with any
-**agentic AI programmer** working in the codebase: Claude Code, GitHub
+**AI coding assistant** working in the codebase: Claude Code, GitHub
 Copilot, Cursor, Codex, Aider, or any other tool that has a
 "follow this project's conventions" surface. The reason rules live in
 AGENTS.md (rather than in each agent's private memory) is portability —

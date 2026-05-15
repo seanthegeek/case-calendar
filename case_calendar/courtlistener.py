@@ -55,7 +55,7 @@ class CourtListener:
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
         """GET with retry on 429 (Retry-After) and 5xx (exponential backoff).
 
-        Honors any Retry-After value, even multi-hour ones — CL's free tier
+        Honors any Retry-After value, even multi-hour ones — CourtListener's free tier
         caps at 300/day and the daily bucket can legitimately ask for a wait
         of nearly 24h once exhausted. Sleeping through that lets the script
         resume on its own rather than requiring a manual restart per cycle.
@@ -138,7 +138,7 @@ class CourtListener:
     ) -> Iterator[dict]:
         """Iterate docket entries oldest first.
 
-        We page the CL API newest-first (so incremental syncs stop cheaply
+        We page the CourtListener API newest-first (so incremental syncs stop cheaply
         once they cross ``modified_after``) but buffer the result and yield
         oldest-first. Per-entry processing depends on referenced motions
         already being in the local store before the orders that cite them

@@ -624,7 +624,7 @@ class TestResolveM365:
 
 # ---------------------------------------------------------------------------
 # Command handlers (cmd_sync / cmd_emit / cmd_serve / cmd_setup / cmd_summarize
-# / cmd_show / main). The handlers wire together CL, syncer, summary, etc; we
+# / cmd_show / main). The handlers wire together CourtListener, syncer, summary, etc; we
 # monkeypatch the dependencies so no network or LLM is hit.
 # ---------------------------------------------------------------------------
 
@@ -819,8 +819,8 @@ class TestCmdSync:
         self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
     ):
         # `sync --force-summaries` bundles the equivalent of
-        # `summarize --force` into the same CL session — avoids a second
-        # run that would hit CL's docket-entries endpoint all over again.
+        # `summarize --force` into the same CourtListener session — avoids a second
+        # run that would hit CourtListener's docket-entries endpoint all over again.
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True}
         cfg_file.write_text(yaml.safe_dump(cfg))

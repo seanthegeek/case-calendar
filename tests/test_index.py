@@ -339,7 +339,7 @@ class TestRenderIndex:
         assert "'Copy failed'" in html
 
     def test_docket_absolute_url_promoted_to_full_cl_url(self, calendars):
-        # CL gives us absolute_url as a path. The index renders into pages
+        # CourtListener gives us absolute_url as a path. The index renders into pages
         # that may be served from any host, so the link has to be fully
         # qualified or it 404s under Caddy.
         html = render_index(calendars=calendars)

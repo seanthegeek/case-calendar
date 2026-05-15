@@ -4,7 +4,7 @@ Usage:
     uv run python scripts/reprocess_entries.py 445337354 448991171
 
 Reads the stored entry text from the local SQLite store, builds a synthetic
-entry dict (no CL API call required for paperless entries), clears the
+entry dict (no CourtListener API call required for paperless entries), clears the
 fingerprint so the dedup check doesn't short-circuit, and runs the entry
 through ``CaseSyncer.process_entry`` so the LLM can re-extract using the
 current prompt + related-entries context.
@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("entry_ids", nargs="+", type=int,
-                        help="CL entry_id values (NOT entry_number) to reprocess")
+                        help="CourtListener entry_id values (NOT entry_number) to reprocess")
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--db", default="data/case-calendar.sqlite")
     args = parser.parse_args(argv)

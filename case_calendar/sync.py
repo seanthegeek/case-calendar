@@ -24,7 +24,7 @@ from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
 from .courts import tz_for
 from .extractor import is_extractable
-from .store import Store
+from .store import Store, compact_recap_documents
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class ExtraDocument:
     """A document the operator points the case-summary pipeline at directly.
 
     The case-summary pipeline normally finds primary documents + dispositions
-    on each docket by walking CourtListener. When CL / PACER is missing a
+    on each docket by walking CourtListener. When CourtListener / PACER is missing a
     document the public should be able to see — e.g. an indictment that was
     ordered unsealed but where entries 1-4 still show as missing in the API
     (see CourtListener bug #7345) — the operator lists the out-of-band URL
@@ -100,47 +100,6 @@ def _docket_implies_deadlines(docket_number: str | None) -> Optional[bool]:
     return not bool(_CRIMINAL_DOCKET_TYPES.search(docket_number))
 
 
-def _compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """Compact projection of an entry's recap_documents for storage.
-
-    Keeps the fields we need at emit time (status flags + URLs + position
-    info) plus ``plain_text`` so the summary pipeline can read text without
-    re-fetching the entry from CL — drops other CL bookkeeping we don't
-    render. Ordered main-doc-first, then attachments by number, so calendar
-    descriptions list documents in PACER's natural order.
-    """
-    out: list[dict[str, Any]] = []
-    for rd in entry.get("recap_documents") or []:
-        out.append({
-            "id": rd.get("id"),
-            "document_number": rd.get("document_number"),
-            "attachment_number": rd.get("attachment_number"),
-            "description": (rd.get("description") or "").strip() or None,
-            "is_available": bool(rd.get("is_available")),
-            "is_sealed": bool(rd.get("is_sealed")),
-            "filepath_ia": rd.get("filepath_ia") or None,
-            "filepath_local": rd.get("filepath_local") or None,
-            "plain_text": (rd.get("plain_text") or "").strip() or None,
-        })
-
-    def _key(d: dict[str, Any]) -> tuple[int, int]:
-        # Sort attachment_number=None / 0 (the main doc) before numbered
-        # attachments. document_number normally matches across rows on the
-        # same entry, but treat it as the primary sort just in case.
-        try:
-            dn = int(d.get("document_number") or 0)
-        except (TypeError, ValueError):
-            dn = 0
-        try:
-            an = int(d.get("attachment_number") or 0)
-        except (TypeError, ValueError):
-            an = 0
-        return (dn, an)
-
-    out.sort(key=_key)
-    return out
-
-
 def fingerprint_entry(entry: dict[str, Any]) -> str:
     """Hash that changes when meaningful entry state changes.
 
@@ -169,7 +128,7 @@ _DETAIL_HINTS = re.compile(
     re.IGNORECASE,
 )
 
-# CL appends a clerk-side timestamp like "[Entered: 05/06/2026 01:51 PM]" or
+# CourtListener appends a clerk-side timestamp like "[Entered: 05/06/2026 01:51 PM]" or
 # "(Entered: 05/06/2026)" to most docket-entry descriptions. The HH:MM there
 # is when the clerk filed it, NEVER the hearing time. Without stripping it,
 # _DETAIL_HINTS matches on every such entry and we skip the PDF that does
@@ -200,7 +159,7 @@ _ORDER_GRANTS_SCHEDULING_MOTION = re.compile(
 # reference to another docket entry we may have already seen; the bare
 # number is the docket-position number (entries.entry_number). We only
 # resolve refs we've already stored, so this is purely a context boost
-# at the LLM call — no extra CL traffic.
+# at the LLM call — no extra CourtListener traffic.
 _DOCKET_REF = re.compile(
     r"\b(?:granting|denying|grants|denies|granted|denied|ruling\s+on|"
     r"see|re|response\s+to)\s+(?:in\s+part\s+)?(?:\[)?(\d{1,4})(?:\])?\b",
@@ -247,7 +206,7 @@ def _is_fetchable(rd: dict[str, Any]) -> bool:
     """
     if rd.get("is_sealed"):
         return False
-    # CL-extracted plain_text is itself a fetchable source.
+    # CourtListener-extracted plain_text is itself a fetchable source.
     if (rd.get("plain_text") or "").strip():
         return True
     if not rd.get("is_available"):
@@ -447,12 +406,12 @@ class CaseSyncer:
         return (existing_court, current_court)
 
     def ensure_docket_cached(self, docket_id: int) -> dict[str, Any]:
-        """Return cached docket meta, fetching from CL exactly once if missing.
+        """Return cached docket meta, fetching from CourtListener exactly once if missing.
 
         Webhook payloads don't include parent-docket metadata, so the first
         time we see a docket via webhook we have to do one /dockets/ GET to
         learn its court_id (and therefore its timezone). After that everything
-        is cached and incoming webhooks make zero CL calls.
+        is cached and incoming webhooks make zero CourtListener calls.
         """
         meta = self.store.get_docket_meta(docket_id)
         if meta and meta.get("court_id"):
@@ -503,7 +462,7 @@ class CaseSyncer:
         #       and emit-time description rendering; or
         #   (b) primary-document or disposition — needed so the summary
         #       pipeline can find these entries locally instead of
-        #       re-fetching the same docket-entries pages from CL right
+        #       re-fetching the same docket-entries pages from CourtListener right
         #       after sync wrote them down.
         # Everything else (notices, briefs, attorney appearances, etc.) gets
         # a fingerprint-only stub: dedup keeps working, but no dead-weight
@@ -522,10 +481,10 @@ class CaseSyncer:
             entry_number=entry.get("entry_number"),
             description=entry.get("description") if store_full else None,
             short_description=entry.get("short_description") if store_full else None,
-            recap_documents=_compact_recap_documents(entry) if store_full else None,
+            recap_documents=compact_recap_documents(entry) if store_full else None,
         )
         # Advance the docket's date_modified to this entry's value if newer.
-        # date_modified is the docket-level short-circuit watermark — the
+        # date_modified is the docket-level short-circuit cutoff — the
         # polling path sets it from the parent docket at end-of-loop, but
         # the webhook path never sees the parent docket per delivery, so
         # without this conditional bump webhook-only deployments would
@@ -534,10 +493,10 @@ class CaseSyncer:
         if entry_dm:
             self.store.bump_docket_last_modified(docket_id, entry_dm)
         # Same idea for the index page's "Last filing" date: webhook
-        # deliveries don't refetch the parent docket, so CL's
+        # deliveries don't refetch the parent docket, so CourtListener's
         # ``date_last_filing`` would lag the entry we just processed.
         # Use the entry's own ``date_filed`` as a forward-only stand-in;
-        # the next docket fetch overwrites it with CL's authoritative
+        # the next docket fetch overwrites it with CourtListener's authoritative
         # value via ``upsert_docket_meta``.
         entry_df = entry.get("date_filed") or ""
         if entry_df:
@@ -796,7 +755,7 @@ class CaseSyncer:
             return False
 
         # Audit text lands in `audit_notes`, NOT `notes`. The split is
-        # load-bearing: the verify-pass LLM is fed `notes` as docket
+        # essential: the verify-pass LLM is fed `notes` as docket
         # context but NEVER `audit_notes`, so it cannot read its own
         # prior conclusions and self-confirm. The McGonigal trial
         # regression — a row marked 'cancelled' by an earlier pass whose
@@ -1235,7 +1194,7 @@ class CaseSyncer:
 
     def _maybe_fetch_pdfs(self, entry: dict[str, Any]) -> list[str]:
         """Pull PDF text for the LLM. Called only when an entry's fingerprint
-        flips, i.e. on first sight or when CL has changed something. PDFs are
+        flips, i.e. on first sight or when CourtListener has changed something. PDFs are
         immutable once attached and we don't cache the extracted text — the
         rare fingerprint flip pays one extra round-trip."""
         if not _needs_pdf(entry):
@@ -1336,7 +1295,7 @@ class CaseSyncer:
         # docket_id is sticky after first ADD — sibling-docket entries can
         # touch a hearing (CANCEL, MARK_HELD, etc.) but the hearing's
         # canonical home docket (which feeds the description's case citation
-        # and CL link) shouldn't drift to whichever docket touched it last.
+        # and CourtListener link) shouldn't drift to whichever docket touched it last.
         sticky_docket_id = existing.get("docket_id") if existing else docket_id
 
         if atype == "CANCEL":

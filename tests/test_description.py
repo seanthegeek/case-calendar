@@ -63,9 +63,9 @@ def test_absolute_url_kept_intact_when_already_full():
 
 
 def test_docket_entry_numbers_render_above_cl_ids():
-    # Subscribers see PACER positions ("[65]") in the CL UI; surfacing them
+    # Subscribers see PACER positions ("[65]") in the CourtListener UI; surfacing them
     # in the description spares a lookup. The line lives directly above the
-    # CL entry IDs so the audit trail reads docket-first, ID-second.
+    # CourtListener entry IDs so the audit trail reads docket-first, ID-second.
     out = build(
         notes=None, dial_in=None, docket_number="1:25-cr-1",
         court_citation="D. Mass.", docket_absolute_url="/d/1/",

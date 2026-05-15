@@ -177,7 +177,7 @@ COURT_TIMEZONES: dict[str, str] = {
     "alnb": CT, "almb": CT, "alsb": CT,
     # Alaska
     "akb": AKT,
-    # Arizona (MST, no DST) — CL id is "arb", not "azb".
+    # Arizona (MST, no DST) — CourtListener id is "arb", not "azb".
     "arb": ARIZ,
     # Arkansas (CT)
     "areb": CT, "arwb": CT,
@@ -227,7 +227,7 @@ COURT_TIMEZONES: dict[str, str] = {
     "moeb": CT, "mowb": CT,
     # Montana (MT)
     "mtb": MT,
-    # Nebraska (CT) — CL id is "nebraskab", not "neb".
+    # Nebraska (CT) — CourtListener id is "nebraskab", not "neb".
     "nebraskab": CT,
     # Nevada (PT)
     "nvb": PT,
@@ -299,15 +299,15 @@ COURT_TIMEZONES: dict[str, str] = {
     "bapme": ET,   # BAP sitting in D. Maine
 
     # ---- Specialty federal courts and administrative tribunals ----
-    # CL jurisdiction=FS (Federal Special). All are headquartered in
+    # CourtListener jurisdiction=FS (Federal Special). All are headquartered in
     # Washington, DC or the nearby Falls Church / Alexandria, VA cluster
-    # (ET). Sourced from CL's /courts/?jurisdiction=FS listing fetched
+    # (ET). Sourced from CourtListener's /courts/?jurisdiction=FS listing fetched
     # 2026-05-14.
     "tax": ET,        # US Tax Court (Washington, DC)
     "uscfc": ET,      # US Court of Federal Claims (Washington, DC)
     "cit": ET,        # US Court of International Trade (NYC)
     "cavc": ET,       # US Court of Appeals for Veterans Claims (DC).
-                      # Note: CL's id is `cavc`, NOT `vetapp` (404 in CL).
+                      # Note: CourtListener's id is `cavc`, NOT `vetapp` (404 in CourtListener).
     "fisc": ET,       # Foreign Intelligence Surveillance Court (DC)
     "fiscr": ET,      # FISC of Review (DC)
     "asbca": ET,      # Armed Services Board of Contract Appeals (Falls Church, VA)
@@ -316,11 +316,11 @@ COURT_TIMEZONES: dict[str, str] = {
     "jpml": ET,       # Judicial Panel on Multidistrict Litigation (Washington, DC)
     "mspb": ET,       # Merit Systems Protection Board (Washington, DC)
     "olc": ET,        # DOJ Office of Legal Counsel (Washington, DC) — not
-                      # a court but CL lists it under FS for opinion publishing
+                      # a court but CourtListener lists it under FS for opinion publishing
     "ttab": ET,       # USPTO Trademark Trial and Appeal Board (Alexandria, VA)
 
     # ---- Military appellate ----
-    # CL jurisdiction=MA. All ET — the Courts of Criminal Appeals sit at
+    # CourtListener jurisdiction=MA. All ET — the Courts of Criminal Appeals sit at
     # their respective service installations in the DC / MD / VA
     # cluster, and the Court of Appeals for the Armed Forces (USCAAF)
     # sits in Washington, DC.
