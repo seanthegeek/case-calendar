@@ -91,6 +91,10 @@ Per [Google's "Add other calendars" help page](https://support.google.com/calend
 3. Choose **From URL**.
 4. Paste the `.ics` URL and click **Add calendar**.
 
+Shortcut: the **Add by URL** form is also reachable directly at
+[calendar.google.com/calendar/u/0/r/settings/addbyurl](https://calendar.google.com/calendar/u/0/r/settings/addbyurl)
+— skip the sidebar entirely.
+
 The new calendar appears under **Other calendars**. It is read-only
 and syncs to every device signed in to the same Google account once
 it is added on the web. Google does not publish a refresh interval
