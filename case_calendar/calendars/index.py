@@ -768,6 +768,7 @@ def render_index(
         'information.</p>'
         '<p>Criminal defendants are presumed innocent unless and until '
         'convicted in a court of law.</p>'
+        '<p>Powered by <a href="https://docs.casecalendar.net/">case-calendar</a>.</p>'
         '</footer>\n'
         f'<script>{_RUNTIME_JS}</script>\n'
         '</body>\n'

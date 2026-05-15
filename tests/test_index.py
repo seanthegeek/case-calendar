@@ -440,6 +440,13 @@ class TestRenderIndex:
         }])
         assert "No cases configured" in html
 
+    def test_footer_includes_powered_by_attribution(self, calendars):
+        html = render_index(calendars=calendars)
+        assert (
+            '<p>Powered by <a href="https://docs.casecalendar.net/">'
+            'case-calendar</a>.</p>'
+        ) in html
+
 
 class TestBuildCalendarModels:
     def test_assembles_from_store(self, store):
