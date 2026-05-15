@@ -17,12 +17,12 @@ in the repo. This page is the concise version.
 
 ```text
 CourtListener docket
-        │
-        ▼
+          │
+          ▼
 ┌───────────────────┐
 │ regex pre-filter  │  cheap. drops 80%+ of entries before any LLM call.
 └─────────┬─────────┘
-          │ hearings, deadlines, briefing schedules, etc.
+          │
           ▼
 ┌───────────────────┐
 │ LLM extractor     │  small/fast tier (Claude Haiku, gpt-5.4-nano, Gemini Flash Lite).
