@@ -45,7 +45,9 @@ jobs:
             --cov-branch \
             --cov-report=term-missing \
             --cov-report=xml \
-            --cov-fail-under=90
+            --cov-fail-under=90 \
+            --junitxml=junit.xml \
+            -o junit_family=legacy
 
       - name: Upload coverage reports to Codecov
         # Codecov requires a token even for public repos (drive-by uploads
@@ -58,3 +60,13 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           fail_ci_if_error: false
+
+      - name: Upload test results to Codecov
+        # Feeds Codecov Test Analytics (flaky-test detection, per-test
+        # history). Runs even on test failure so failed cases still get
+        # reported. Uses the same CODECOV_TOKEN as the coverage upload.
+        if: ${{ !cancelled() }}
+        uses: codecov/test-results-action@v1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./junit.xml
