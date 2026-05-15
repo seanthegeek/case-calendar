@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-case-calendar — a CLI / webhook service that pulls federal court hearing dates AND filing deadlines from CourtListener / RECAP and emits them to ICS feeds (subscribable from Proton, Apple, etc.) and optionally pushes them to Google Calendar and/or Microsoft 365 / Outlook. Built for tracking cases where docket-watching by hand is too much: cybercrime prosecutions (e.g. DPRK IT-worker fraud), multi-docket tech litigation (e.g. Anthropic v. DOW), and similar. Designed to run unattended — `case-calendar serve` accepts CourtListener webhooks, processes each delivery, and re-renders affected calendars on the spot, so subscribers see updates within seconds of a filing without any manual command run.
+case-calendar — a CLI / webhook service that pulls federal court hearing dates AND filing deadlines from CourtListener / RECAP and emits them to ICS feeds (subscribable from Proton, Apple, etc.) and optionally pushes them to Google Calendar and/or Microsoft 365 / Outlook. Built for tracking cases where docket-watching by hand is too much: cybercrime prosecutions (e.g. DPRK IT-worker fraud), multi-docket tech litigation (e.g. Anthropic v. DOW), and similar. Designed to run unattended — `case-calendar serve` accepts CourtListener webhooks, processes each delivery, and re-renders the affected ICS file on the spot. The end-to-end "when does a subscriber actually see this?" latency is bounded by signals outside our control on either side — see the [Limitations](docs/index.md#limitations) page; the project's own internal stage (webhook arrival → ICS file written) is the only step that runs in seconds.
 
 ## Conventions
 

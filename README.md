@@ -27,9 +27,11 @@ sentencing got moved.
 case-calendar automates that loop. Point it at a case and it pulls new
 docket entries, identifies the ones that schedule hearings or set
 filing deadlines, extracts the dates, and writes them into an ICS file
-your calendar app subscribes to. Subscribers see updates within seconds
-of an entry hitting the docket. The output is durable enough to track
-30+ cases on a single calendar without losing fidelity on any one.
+your calendar app subscribes to. The ICS file updates within seconds
+of a new entry reaching CourtListener via the real-time webhook path;
+how soon CourtListener itself sees an entry, and how soon your
+calendar app then re-fetches the ICS file, are both outside this
+project's control (see [Limitations](#limitations) below).
 
 It was built for the cases where docket-watching by hand is too much:
 
@@ -74,7 +76,7 @@ It was built for the cases where docket-watching by hand is too much:
 CourtListener docket entries
         │
         ▼
-  regex pre-filter          (drops 80%+ of entries cheaply)
+  regex pre-filter          (drops most non-hearing entries cheaply)
         │
         ▼
   LLM extractor              (small/fast tier — Haiku, Flash Lite, etc.)

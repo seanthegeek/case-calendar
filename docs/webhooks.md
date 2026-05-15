@@ -4,13 +4,16 @@ title: Real-time webhooks
 
 By default case-calendar polls CourtListener on a cron. That works, but
 CourtListener throttles the free tier (300 requests per day) and a polling
-schedule means subscribers see an update minutes or hours after the entry
-actually hit the docket.
+schedule means the ICS file is only refreshed at each cron tick —
+minutes or hours after CourtListener has the entry, depending on how
+often the cron runs.
 
 Webhooks flip the model. CourtListener calls your receiver the moment a new
 entry lands on a docket you've subscribed to. The receiver processes the
 entry, updates the SQLite store, and re-renders just the affected calendar
-in seconds — no polling, no quota burn.
+in seconds — no polling, no quota burn. (How soon a subscriber's
+calendar app then re-reads the ICS file is its own refresh schedule —
+see [Limitations](index.md#limitations) for the end-to-end chain.)
 
 [← Back to docs](index.md)
 
@@ -126,8 +129,11 @@ alerts". (You can script this with the
 [Docket Alerts API](https://www.courtlistener.com/help/api/rest/recap/#docket-alerts-endpoint),
 but the UI is usually faster for a small case list.)
 
-That's it. New entries on any of those dockets now flow into your calendar
-in seconds.
+That's it. New entries on any of those dockets now flow into the ICS
+file within seconds of CourtListener calling your receiver. When your
+calendar app then re-reads the ICS feed is on its own refresh schedule
+— see the [Limitations](index.md#limitations) section on the docs
+landing page for the delivery chain end to end.
 
 ## How the receiver authenticates and dedupes
 

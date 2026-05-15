@@ -20,7 +20,7 @@ CourtListener docket
           │
           ▼
 ┌───────────────────┐
-│ regex pre-filter  │  cheap. drops 80%+ of entries before any LLM call.
+│ regex pre-filter  │  cheap. drops most non-hearing entries before any LLM call.
 └─────────┬─────────┘
           │
           ▼
@@ -146,10 +146,10 @@ docket and zero LLM calls.
 ### What's in the fingerprint
 
 The third short-circuit is the interesting one. case-calendar can't trust
-"have we seen this `entry_id` before?" alone, because RECAP entries
+"has this `entry_id` been seen before?" alone, because RECAP entries
 evolve after they first appear — a sealed PDF gets unsealed, or a
-previously-missing PDF finally gets uploaded to RECAP. We want to
-*re-process* those entries, but ignore cosmetic churn that didn't change
+previously-missing PDF finally gets uploaded to RECAP. Those entries
+need *re-processing*, but cosmetic churn that didn't change
 anything meaningful.
 
 The fingerprint is a SHA-1 of just the entry state that matters:

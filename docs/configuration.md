@@ -119,9 +119,10 @@ summaries are off, leave it out.
 case-calendar decides whether to track filing deadlines based on the docket
 number prefix:
 
-- **Civil dockets** (`:cv-`), **appellate**, and **specialty** courts → on
+- **Civil** (e.g. `-cv-`), **appellate**, and **specialty** courts → on
   (response / reply / brief deadlines matter).
-- **Routine criminal dockets** (`:cr-`, `:cm-`, `:po-`, `:mj-cr-`) → off
+- **Routine criminal dockets** matching the substrings `-cr-`, `-cm-`,
+  `-cmc-`, `-po-`, or `-mj-cr-` in the federal docket number → off
   (criminal practice is hearing-driven, not briefing-driven).
 
 For a serious criminal case where the filing cadence *is* what you're
