@@ -37,12 +37,16 @@ knowing before you rely on it:
   The real-time [webhook receiver](webhooks.md) narrows the
   CourtListener-to-you portion of the chain to seconds, but it
   cannot show you something CourtListener hasn't seen yet.
-- **Calendar-client refresh delays.** Subscribed ICS feeds refresh
-  on the calendar app's own schedule — Apple Calendar and Google
-  Calendar typically poll on the order of hours, not seconds.
-  Direct push to [Google Calendar / Microsoft 365](calendars.md)
-  sidesteps this for the events themselves; the ICS file and the
-  index page always lead.
+- **Calendar-client refresh delays.** Subscribed ICS feeds
+  refresh on the calendar app's own schedule, not yours. Apple
+  Calendar defaults to roughly hourly and is user-configurable (5
+  minutes to weekly). Google Calendar runs every 8–24 hours, or
+  longer, on an undocumented schedule, with no user setting and
+  no manual refresh button. Proton Calendar runs every 4–16
+  hours per its own documentation. Direct push to [Google
+  Calendar / Microsoft 365](calendars.md) sidesteps this lag for
+  the events themselves; the ICS file and the index page always
+  lead.
 - **Extraction errors.** The cheap regex pre-filter and the
   small/fast LLM the extractor uses can miss an atypical clerk
   notation, misread a date from a garbled PDF, or fail to
