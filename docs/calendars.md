@@ -17,13 +17,17 @@ calendar app understands.
 
 Subscribing to it depends on the app:
 
-- **Apple Calendar (macOS / iOS):** Settings → Accounts → Add Account →
-  Other → CalDAV / Subscribed Calendar → paste the URL.
-- **Proton Calendar:** Settings → Calendars → Add subscribed calendar.
-- **Thunderbird:** File → New → Calendar → On the Network → iCalendar URL.
-- **Google Calendar (read-only subscription, not push):** "Other calendars"
-  → "Add by URL".
-- **Outlook desktop / web:** "Add calendar" → "Subscribe from web".
+- **Apple Calendar (macOS):** File → New Calendar Subscription → paste the URL.
+- **Apple Calendar (iPhone / iPad):** Calendars → Add Calendar → Add Subscription Calendar.
+- **Google Calendar (web only):** "Other calendars" → "+" → "From URL".
+- **Outlook on the web / new Outlook for Windows:** "Add calendar" → "Subscribe from web".
+- **Proton Calendar:** Settings → Calendars → Other calendars → Add calendar from URL.
+- **Fastmail:** Settings → Calendars → Subscriptions → paste URL.
+- **Thunderbird:** File → New → Calendar → On the Network → paste URL.
+
+See [Subscribing to a feed](subscribing.md) for the full step-by-step
+instructions (from each vendor's official documentation) and the
+typical refresh intervals for each app.
 
 The ICS file is self-contained. Once you've hosted it somewhere reachable
 (see [public index page](public-page.md) for the Caddy template), any

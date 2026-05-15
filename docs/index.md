@@ -70,6 +70,7 @@ These pages are short on purpose. Read the one you need, skip the rest.
 | [Configuration](configuration.md) | The `config.yaml` file — every option, with examples. |
 | [CLI reference](cli.md) | Every `case-calendar` subcommand and flag. |
 | [Calendar backends](calendars.md) | ICS files, Google Calendar push, Microsoft 365 / Outlook push, attendee invites, and reminders. |
+| [Subscribing to a feed](subscribing.md) | Step-by-step subscribe-by-URL instructions for Apple, Google, Outlook, Proton, Fastmail, and Thunderbird. |
 | [Real-time webhooks](webhooks.md) | Skip the polling quota — have CourtListener push updates to you the moment they land. |
 | [AI case summaries](case-summaries.md) | The optional 2-4 sentence prose summary rendered on the index page, how it stays current, and how to fill CourtListener gaps. |
 | [Public index page](public-page.md) | Generate a static `index.html` that lists every calendar, with subscribe buttons and case details — ready to put behind any HTTP server. |
