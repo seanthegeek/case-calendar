@@ -1564,3 +1564,70 @@ class TestSummaryPromptInsufficientDocumentsRefusal:
         # target.
         assert "overrides the" in llm.SUMMARY_SYSTEM_PROMPT
         assert "length guidance" in llm.SUMMARY_SYSTEM_PROMPT
+
+
+class TestSummaryPromptAbsenceOfActivityGuard:
+    """Regression guards for the SUMMARY_SYSTEM_PROMPT block added after
+    the us-v-dubranova (2:25-cr-00578, C.D. Cal.) regression — where the
+    summary closed with 'No hearings or deadlines have been recorded on
+    this docket, and the case remains pending.' on a docket that had
+    been sealed after RECAP captured its initial state. The visible
+    scaffold was empty not because the case was dormant but because
+    later activity was no longer publicly visible; the model converted
+    'missing from RECAP' into a positive claim about case posture.
+    """
+
+    def test_block_header_present(self):
+        # The header wraps across a line in the prompt, so collapse
+        # whitespace before matching.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "do NOT assert the ABSENCE of scheduling, activity, or "
+            "disposition"
+        ) in normalized
+
+    def test_explicitly_forbids_the_dubranova_phrasings(self):
+        # The exact closer the Dubranova summary produced — pin it so a
+        # future "shorten the rule" edit can't drop the canonical
+        # forbidden form.
+        assert (
+            '"no hearings or deadlines have been recorded on this docket"'
+            in llm.SUMMARY_SYSTEM_PROMPT
+        )
+        assert '"no hearings have been recorded"' in llm.SUMMARY_SYSTEM_PROMPT
+        assert '"no deadlines are set"' in llm.SUMMARY_SYSTEM_PROMPT
+        # The "remains pending" closer is the other half of the failure
+        # mode — it sounds neutral but encodes an inference from absence
+        # of disposition.
+        assert '"the case remains pending"' in llm.SUMMARY_SYSTEM_PROMPT
+        assert '"no disposition has been entered"' in llm.SUMMARY_SYSTEM_PROMPT
+        assert '"the docket shows no recent activity"' in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_sealed_docket_rationale_is_present(self):
+        # The rule must call out sealing as the failure mode it's
+        # guarding against, so a future editor doesn't read the rule as
+        # blanket caution and weaken it for non-sealed cases.
+        assert "sealed" in llm.SUMMARY_SYSTEM_PROMPT
+        # And specifically the post-RECAP-capture re-seal flavor that
+        # produced the Dubranova regression — initial-sealing alone is
+        # routine and would be a misleading rationale.
+        assert "re-sealed after" in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_remains_pending_removed_from_legal_terminology_list(self):
+        # The old list licensed "remains pending" / "case remains
+        # pending" as legal terminology when no disposition has
+        # occurred — that license is what produced the failure mode.
+        # The terminology block at the top of the prompt must no longer
+        # recommend it, even though the new CRITICAL block lower down
+        # mentions it as a forbidden phrasing.
+        prompt = llm.SUMMARY_SYSTEM_PROMPT
+        terminology_block = prompt.split("CRITICAL — do NOT confuse")[0]
+        assert '"remains pending"' not in terminology_block
+        assert '"case remains pending"' not in terminology_block
+
+    def test_silence_is_acceptable_explicit(self):
+        # The rule must explicitly tell the model that omitting a
+        # closing posture sentence is fine — otherwise it will pad with
+        # something close to "remains pending" out of length pressure.
+        assert "Silence on procedural posture is acceptable" in llm.SUMMARY_SYSTEM_PROMPT

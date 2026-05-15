@@ -1435,10 +1435,8 @@ OUTPUT — return PLAIN PROSE, no JSON, no markdown, no bullet points.
       order of dismissal; cite whether with or without prejudice if known)
     - "remains a fugitive" (when the defendant is charged but has not
       appeared and no apparent arrest is reflected in the docket)
-    - "remains pending" (when no disposition has occurred)
   For civil: "judgment entered for [party]", "summary judgment granted to
-  [party] on [claim]", "settled and dismissed", "voluntarily dismissed",
-  "case remains pending".
+  [party] on [claim]", "settled and dismissed", "voluntarily dismissed".
 
 CRITICAL — do NOT confuse closely-related dispositions:
 - A plea agreement filed by the parties is not the same as a judgment after
@@ -1509,6 +1507,35 @@ reason:
 This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
+
+CRITICAL — do NOT assert the ABSENCE of scheduling, activity, or
+disposition. The structured-events scaffold and the disposition set
+reflect ONLY what is visible in the public docket entries fetched from
+CourtListener. A docket that has been sealed (in whole or in part) at
+any point — initial sealing is routine in criminal cases pre-arrest,
+partial re-sealing can recur, and dockets sometimes get re-sealed after
+RECAP captured an initial public snapshot — can have ongoing scheduling
+and filings you simply cannot see. Treating "the scaffold is empty" as
+"no hearings have been recorded" silently turns missing-from-RECAP into
+a positive claim about case posture. Don't do this. Forbidden phrasings
+— every one of them characterizes what is NOT in evidence as if it were
+a state worth describing:
+- BAD: "no hearings have been recorded"
+- BAD: "no deadlines are set"
+- BAD: "no hearings or deadlines have been recorded on this docket"
+- BAD: "the case remains pending" (as a closing positive claim — cases
+       ARE often pending, but say so by describing what IS happening,
+       such as briefing underway or a scheduled hearing with a date,
+       not by asserting the absence of a disposition document)
+- BAD: "no disposition has been entered"
+- BAD: "the docket shows no recent activity"
+State what IS in evidence — the charges, any disposition you can
+document from the disposition set, the parties' status as the
+documents reflect them — and stop. A docket whose scaffold is empty
+and whose primary document is the indictment may simply have nothing
+publicly visible worth describing in calendar terms; describe the case
+as charged and stop there. Silence on procedural posture is acceptable;
+positive assertions about absence are not.
 
 CRITICAL — include the sentence imposed on concluded criminal cases.
 When a judgment / sentencing-judgment document is provided, the final
