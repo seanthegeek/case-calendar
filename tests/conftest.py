@@ -79,7 +79,7 @@ def make_recap_doc():
     return _make
 
 
-class FakeCL:
+class FakeCourtListener:
     """Stand-in for CourtListener that records calls and returns canned data.
 
     Pass `dockets={id: {...}}`, `entries={id: [entry, ...]}`,
@@ -137,7 +137,7 @@ class FakeCL:
 
 @pytest.fixture
 def fake_cl():
-    return FakeCL
+    return FakeCourtListener
 
 
 @pytest.fixture(autouse=True)

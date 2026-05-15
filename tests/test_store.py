@@ -718,6 +718,70 @@ class TestEntryDocumentsMalformedJson:
         assert out == {}  # bad row skipped
 
 
+class TestRefreshEntryRecapDocuments:
+    """The self-heal write path. `summary.find_primary_documents` calls
+    this when it detects a stale cached recap_documents row (the
+    us-v-moucka shape — locally-stored plain_text empty even though
+    CourtListener has 39 KB of text). The method overwrites only the
+    `recap_documents` column, leaving fingerprint and the rest alone so
+    a real future content change still trips the normal sync path.
+    """
+
+    def test_returns_false_when_entry_has_no_id(self, store: Store):
+        # The CourtListener-shaped entry dict normally carries `id`;
+        # defensive callers may hand in a partial dict. The method must
+        # no-op rather than corrupt or raise.
+        assert store.refresh_entry_recap_documents({}, docket_id=1) is False
+
+    def test_returns_false_when_row_missing(self, store: Store):
+        # No row in the local store yet — nothing to refresh. Doesn't
+        # write a new row (refresh is for repairing existing data, not
+        # inserting; sync owns inserts).
+        result = store.refresh_entry_recap_documents(
+            {"id": 999, "recap_documents": []}, docket_id=1,
+        )
+        assert result is False
+        assert store.get_entry_by_number(1, 65) is None  # nothing inserted
+
+    def test_overwrites_recap_documents_without_touching_fingerprint(self, store: Store):
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "original-fingerprint",
+            entry_number=65, description="INDICTMENT",
+            recap_documents=[{
+                "id": 500,
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "plain_text": None,  # stale — the bug shape
+            }],
+        )
+        # Hand the method a fresh CourtListener-shaped entry whose main
+        # recap_document carries full plain_text.
+        fresh_entry = {
+            "id": 100,
+            "recap_documents": [{
+                "id": 500,
+                "document_number": "1",
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "plain_text": "Body of the indictment with charges.",
+            }],
+        }
+        assert store.refresh_entry_recap_documents(fresh_entry, docket_id=1) is True
+        # plain_text now populated.
+        refreshed = store.get_entries_with_body(1)
+        rd = refreshed[0]["recap_documents"][0]
+        assert rd["plain_text"] == "Body of the indictment with charges."
+        # Fingerprint and description left alone — sync still owns those.
+        fp_row = store.conn.execute(
+            "SELECT fingerprint, description FROM entries "
+            "WHERE docket_id=1 AND entry_id=100"
+        ).fetchone()
+        assert fp_row["fingerprint"] == "original-fingerprint"
+        assert fp_row["description"] == "INDICTMENT"
+
+
 class TestGcalAndM365Setters:
     def test_set_gcal_id(self, store: Store):
         store.upsert_hearing(_hearing())

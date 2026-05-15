@@ -2,7 +2,7 @@
 
 These tests don't hit CourtListener, don't load PDFs, and don't call any real LLM —
 ``pdf.extract_text`` and ``llm.generate_docket_summary`` are monkeypatched,
-and the CourtListener client is replaced with ``_FakeCL`` whose ``_get`` returns
+and the CourtListener client is replaced with ``_FakeCourtListener`` whose ``_get`` returns
 pre-canned ``/docket-entries/`` pages.
 """
 
@@ -51,7 +51,7 @@ class _FakeResp:
         return self._payload
 
 
-class _FakeCL:
+class _FakeCourtListener:
     """Records GETs and replays canned ``/docket-entries/`` pages.
 
     Pages are keyed by ``(docket_id, order_by)`` — `find_primary_documents`
@@ -358,7 +358,7 @@ class TestDispositionDocumentDetection:
 
 class TestFindPrimaryDocuments:
     def test_returns_primary_and_disposition_lists(self):
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
                 {"id": 11, "description": "Motion to Dismiss", "date_filed": "2024-02-01"},
@@ -374,7 +374,7 @@ class TestFindPrimaryDocuments:
     def test_dedups_overlap_between_oldest_and_newest_pages(self):
         # Same entry appearing in both order_bys is folded to one row.
         same = {"id": 10, "description": "COMPLAINT", "date_filed": "2024-01-01"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [same],
             (1, "-date_filed"): [same],
         })
@@ -382,7 +382,7 @@ class TestFindPrimaryDocuments:
         assert [e["id"] for e in primary] == [10]
 
     def test_sorts_oldest_first_within_each_group(self):
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 20, "description": "SUPERSEDING INDICTMENT", "date_filed": "2024-06-01"},
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
@@ -421,7 +421,7 @@ class TestFindPrimaryDocuments:
     def test_cold_local_store_falls_back_to_cl(self, store):
         # No body-bearing entries cached — fall back to CourtListener (first sync,
         # or pre-fix data where primary/disp entries were stub-only).
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
             ],
@@ -452,7 +452,7 @@ class TestFindPrimaryDocuments:
             description="JUDGMENT in a Criminal Case",
             recap_documents=[{"id": 600, "plain_text": "judgment body"}],
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT",
                  "date_filed": "2024-01-01", "entry_number": 1,
@@ -494,7 +494,7 @@ class TestFindPrimaryDocuments:
             ),
             recap_documents=[{"id": 600}],
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 1, "description": "COMPLAINT for Declaratory and "
                  "Injunctive Relief", "date_filed": "2026-03-09",
@@ -525,7 +525,7 @@ class TestFindPrimaryDocuments:
             1, 42, "2024-01-01T00:00:00Z", "fp-stub", date_filed="2024-01-01",
             entry_number=2, description=None,  # filter-failed stub
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {"id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01"},
             ],
@@ -569,7 +569,7 @@ class TestFindPrimaryDocuments:
                 "plain_text": "Body of indictment with 39k chars of text...",
             }],
         }
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [fresh_indictment],
             (1, "-date_filed"): [fresh_indictment],
         })
@@ -619,6 +619,70 @@ class TestFindPrimaryDocuments:
                 raise AssertionError(
                     "is_available=False is not a staleness signal — "
                     "the short-circuit must hold"
+                )
+        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        assert [e["id"] for e in primary] == [10]
+
+    def test_sealed_main_doc_does_not_count_as_stale(self, store):
+        # is_sealed=True on the main doc is a legitimate "no text"
+        # state, not a stale cache. The short-circuit must hold without
+        # a CourtListener round-trip.
+        store.mark_entry(
+            1, 10, "2024-01-01T00:00:00Z", "fp-sealed-main",
+            date_filed="2024-01-01", entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[{
+                "id": 500,
+                "document_number": "1",
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": True,
+                "plain_text": None,
+            }],
+        )
+        class _BoomCL:
+            def _get(self, *a, **kw):
+                raise AssertionError(
+                    "is_sealed=True is not a staleness signal — "
+                    "the short-circuit must hold"
+                )
+        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        assert [e["id"] for e in primary] == [10]
+
+    def test_attachment_with_empty_plain_text_does_not_count_as_stale(self, store):
+        # The staleness detector skips attachments — they often have
+        # empty plain_text on purpose (exhibits pypdf can't read,
+        # signature pages, etc.). A cached primary whose MAIN doc has
+        # full plain_text but whose attachment has empty plain_text
+        # must NOT trigger the fallback.
+        store.mark_entry(
+            1, 10, "2024-01-01T00:00:00Z", "fp-attach",
+            date_filed="2024-01-01", entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": "Body of the indictment with charges.",
+                },
+                {
+                    "id": 501,
+                    "document_number": "1",
+                    "attachment_number": 1,  # attachment — must be skipped
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": None,
+                },
+            ],
+        )
+        class _BoomCL:
+            def _get(self, *a, **kw):
+                raise AssertionError(
+                    "an attachment's empty plain_text is not a staleness "
+                    "signal — the short-circuit must hold"
                 )
         primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
@@ -687,7 +751,7 @@ class TestDetectSealing:
         }
 
     def test_dubranova_shape_returns_advisory(self):
-        cl = _FakeCL(self._dubranova_shape())
+        cl = _FakeCourtListener(self._dubranova_shape())
         result = summary.detect_sealing(cl, 72013021, dispositions=[])
         assert result is not None
         assert result["sealing_entry_number"] == 44
@@ -704,14 +768,14 @@ class TestDetectSealing:
             "description": "ORDER by Magistrate Judge granting 78 MOTION to Unseal Indictment",
             "recap_documents": [{"is_available": True}],
         })
-        cl = _FakeCL(pages)
+        cl = _FakeCourtListener(pages)
         assert summary.detect_sealing(cl, 72013021, dispositions=[]) is None
 
     def test_disposition_presence_kills_signal_without_an_api_call(self):
         # When a disposition is in the docket, the dispositive ruling
         # landed publicly. Don't bother walking — just refuse to flag.
         # Also asserts we make zero CourtListener calls in this short-circuit path.
-        cl = _FakeCL(self._dubranova_shape())
+        cl = _FakeCourtListener(self._dubranova_shape())
         result = summary.detect_sealing(
             cl, 72013021,
             dispositions=[{"id": 99, "description": "JUDGMENT"}],
@@ -732,11 +796,11 @@ class TestDetectSealing:
                 "description": f"Status Conference {i+1}",
                 "recap_documents": [{"is_available": True}],
             })
-        cl = _FakeCL(pages)
+        cl = _FakeCourtListener(pages)
         assert summary.detect_sealing(cl, 72013021, dispositions=[]) is None
 
     def test_no_sealing_order_returns_none(self):
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {
                     "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
@@ -757,7 +821,7 @@ class TestDetectSealing:
         # A "Seal Plea Agreement" order is narrow scope; combined with
         # plenty of publicly-available post-sealing activity, this should
         # NOT flag the docket as currently sealed.
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {
                     "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
@@ -798,7 +862,7 @@ class TestDetectSealing:
         # earlier seal followed by a broader later one), the advisory
         # should reference the LATER one — that's the one currently in
         # effect on the visible public docket.
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [
                 {
                     "id": 1, "entry_number": 5, "date_filed": "2024-01-01",
@@ -823,7 +887,7 @@ class TestDetectSealing:
             "ORDER by Judge X granting 42 MOTION to Seal Indictment "
             + "and Related Documents " * 30
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
                 "description": long_desc,
@@ -836,6 +900,49 @@ class TestDetectSealing:
         # Truncated to <= 240 chars + the ellipsis.
         assert len(result["sealing_description"]) <= 243
         assert result["sealing_description"].endswith("...")
+
+    def test_overlapping_oldest_and_newest_pages_dedup(self):
+        # On a tiny docket, the oldest-first and newest-first walks
+        # return the same entries. The dedup-on-id guard inside
+        # detect_sealing keeps us from counting the same row twice in
+        # the post-seal available count.
+        seal_order = {
+            "id": 44, "entry_number": 44, "date_filed": "2025-08-21",
+            "description": "ORDER granting 43 EX PARTE APPLICATION to Seal Indictment",
+            "recap_documents": [{"is_available": False}],
+        }
+        cl = _FakeCourtListener({
+            (1, "date_filed"): [seal_order],
+            (1, "-date_filed"): [seal_order],  # same row, returned by both walks
+        })
+        result = summary.detect_sealing(cl, 1, dispositions=[])
+        assert result is not None
+        assert result["sealing_entry_number"] == 44
+
+    def test_earlier_sealing_order_does_not_displace_an_already_later_one(self):
+        # The latest-sealing-order picker iterates in walk order and
+        # updates `sealing_order` only when the candidate has a strictly
+        # later date. Cover the case where the first match is already
+        # the latest and subsequent matches don't displace it (the
+        # if-branch goes False).
+        cl = _FakeCourtListener({
+            (1, "date_filed"): [
+                {
+                    "id": 1, "entry_number": 20, "date_filed": "2024-06-01",
+                    "description": "ORDER granting Motion to Seal Indictment",
+                    "recap_documents": [{"is_available": False}],
+                },
+                {
+                    "id": 2, "entry_number": 5, "date_filed": "2024-01-01",
+                    "description": "ORDER granting Motion to Seal Exhibit A",
+                    "recap_documents": [{"is_available": False}],
+                },
+            ],
+            (1, "-date_filed"): [],
+        })
+        result = summary.detect_sealing(cl, 1, dispositions=[])
+        assert result is not None
+        assert result["sealing_entry_number"] == 20  # later date wins
 
 
 # ---------------------------------------------------------------------------
@@ -887,7 +994,7 @@ class TestSummarizeDocket:
     def test_writes_summary_when_primary_text_available(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body text..."}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10,
                 "description": "INDICTMENT",
@@ -919,7 +1026,7 @@ class TestSummarizeDocket:
         _seed_docket_meta(store, 1)
         # Primary document present but PDF text is empty for every doc.
         patch_pdf["texts"] = {}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -951,7 +1058,7 @@ class TestSummarizeDocket:
 
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body text..."}  # text passes _attach_text
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -988,7 +1095,7 @@ class TestSummarizeDocket:
         # underlying parsing failure separately.
         short_text = "UNITED STATES OF AMERICA v. DOE\nPage 1 of 12"
         patch_pdf["texts"] = {500: short_text}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "entry_number": 7,
@@ -1022,7 +1129,7 @@ class TestSummarizeDocket:
         # threshold so the short-doc warning doesn't fire.
         long_text = "INDICTMENT body. " * 200  # ~3400 chars
         patch_pdf["texts"] = {500: long_text}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1041,6 +1148,48 @@ class TestSummarizeDocket:
         ]
         assert suspect == [], suspect
 
+    def test_logs_sealing_advisory_when_detect_sealing_fires(
+        self, store, patch_llm, patch_pdf, caplog,
+    ):
+        # Wire a docket that matches the Phase-2 sealing-detected shape:
+        # a granted sealing order entry, no unsealing order, no
+        # disposition, no significant post-seal public activity. The
+        # summarize_docket call must surface a `sealing advisory` info
+        # log line so operators can spot which dockets the LLM saw the
+        # advisory on.
+        import logging
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text..."}
+        cl = _FakeCourtListener({
+            (1, "date_filed"): [
+                {
+                    "id": 10, "description": "INDICTMENT",
+                    "date_filed": "2025-08-21", "entry_number": 33,
+                    "recap_documents": [{"id": 500}],
+                },
+                {
+                    "id": 11, "entry_number": 44, "date_filed": "2025-08-21",
+                    "description": "ORDER granting 43 EX PARTE APPLICATION to Seal Indictment",
+                    "recap_documents": [{"is_available": False}],
+                },
+            ],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert row is not None
+        advisory_logs = [
+            r.message for r in caplog.records
+            if "sealing advisory" in r.message and "entry #44" in r.message
+        ]
+        assert advisory_logs, [r.message for r in caplog.records]
+        # The advisory rode through to the LLM call as well.
+        assert patch_llm[0]["sealing_advisory"] is not None
+        assert patch_llm[0]["sealing_advisory"]["sealing_entry_number"] == 44
+
     def test_borrows_from_sibling_when_primary_docket_has_no_primary_document(
         self, store, patch_llm, patch_pdf,
     ):
@@ -1049,7 +1198,7 @@ class TestSummarizeDocket:
         _seed_docket_meta(store, 1, docket_number="24-1234", court_id="ca9")
         _seed_docket_meta(store, 2, docket_number="1:24-cr-100", court_id="dcd")
         patch_pdf["texts"] = {500: "INDICTMENT body text..."}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [],
             (1, "-date_filed"): [],
             (2, "date_filed"): [{
@@ -1078,14 +1227,14 @@ class TestSummarizeDocket:
         patch_pdf["texts"] = {600: "INDICTMENT body..."}
 
         # Sibling 2 raises on its docket-entries call; sibling 3 succeeds.
-        original_get = _FakeCL._get
+        original_get = _FakeCourtListener._get
 
         def _flaky_get(self, url, params=None):
             if params and params.get("docket") == 2:
                 raise RuntimeError("transient CourtListener outage")
             return original_get(self, url, params)
 
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [],
             (1, "-date_filed"): [],
             (3, "date_filed"): [{
@@ -1095,7 +1244,7 @@ class TestSummarizeDocket:
             }],
             (3, "-date_filed"): [],
         })
-        cl._get = _flaky_get.__get__(cl, _FakeCL)
+        cl._get = _flaky_get.__get__(cl, _FakeCourtListener)
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1, 2, 3], calendar="cyber")
 
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
@@ -1106,7 +1255,7 @@ class TestSummarizeDocket:
     ):
         _seed_docket_meta(store, 1, docket_number="24-1", court_id="ca9")
         _seed_docket_meta(store, 2, docket_number="24-2", court_id="ca9")
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [],
             (1, "-date_filed"): [],
             (2, "date_filed"): [],
@@ -1120,7 +1269,7 @@ class TestSummarizeDocket:
     def test_attaches_dispositions_when_present(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body", 600: "JUDGMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1149,7 +1298,7 @@ class TestSummarizeDocket:
             "Sentencing held. Court imposes sentence: 92 months imprisonment, "
             "3 years Supervised Release; $200 Special Assessment."
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1178,7 +1327,7 @@ class TestSummarizeDocket:
         # in would produce a vacuous summary. Confirm the asymmetry.
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {}  # no PDF text extracts
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1196,7 +1345,7 @@ class TestSummarizeDocket:
         # Main doc (id=500, no attachment_number) extracts to empty;
         # attachment (id=501) has text. The helper should fall through.
         patch_pdf["texts"] = {501: "INDICTMENT body via attachment"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [
@@ -1234,7 +1383,7 @@ class TestExtraDocuments:
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: "REDACTED INDICTMENT body from DoJ PR PDF...",
         )
-        cl = _FakeCL({(1, "date_filed"): [], (1, "-date_filed"): []})
+        cl = _FakeCourtListener({(1, "date_filed"): [], (1, "-date_filed"): []})
         case = _Case(
             case_id="us-v-zewei", name="US v. Zewei",
             dockets=[1], calendar="cyber",
@@ -1271,7 +1420,7 @@ class TestExtraDocuments:
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: "OPERATOR INDICTMENT body",
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1303,7 +1452,7 @@ class TestExtraDocuments:
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: None,
         )
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1339,7 +1488,7 @@ class TestExtraDocuments:
             return "OPERATOR doc text"
 
         monkeypatch.setattr(summary.pdf, "extract_text_from_url", _fake_fetch)
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1371,7 +1520,7 @@ class TestExtraDocuments:
             summary.pdf, "extract_text_from_url",
             lambda url, allow_ocr=True: "operator-supplied indictment text",
         )
-        cl = _FakeCL({(1, "date_filed"): [], (1, "-date_filed"): []})
+        cl = _FakeCourtListener({(1, "date_filed"): [], (1, "-date_filed"): []})
         case = _Case(
             case_id="us-v-x", name="US v. X", dockets=[1], calendar="cyber",
             extra_documents=[ExtraDocument(
@@ -1398,7 +1547,7 @@ class TestRefreshStale:
             "us-v-doe", 1, summary="existing", model="prev/model",
             source_entry_ids=[],
         )
-        cl = _FakeCL({})  # never queried
+        cl = _FakeCourtListener({})  # never queried
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
 
         written = refresh_stale(cl=cl, store=store, cases=[case])
@@ -1409,7 +1558,7 @@ class TestRefreshStale:
     def test_regenerates_when_missing(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1427,7 +1576,7 @@ class TestRefreshStale:
         )
         store.mark_summary_stale("us-v-doe", 1)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1442,7 +1591,7 @@ class TestRefreshStale:
         _seed_docket_meta(store, 1)
         _seed_docket_meta(store, 2)
         patch_pdf["texts"] = {500: "INDICTMENT"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1468,7 +1617,7 @@ class TestRefreshStale:
         # Row is fresh — is_summary_stale would return False.
         assert not store.is_summary_stale("us-v-doe", 1)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1483,7 +1632,7 @@ class TestRefreshStale:
     def test_uses_aggregation_note_override(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1505,7 +1654,7 @@ class TestSummarizeCase:
             "us-v-doe", 1, summary="old", model="prev/model", source_entry_ids=[],
         )
         patch_pdf["texts"] = {500: "INDICTMENT body"}
-        cl = _FakeCL({
+        cl = _FakeCourtListener({
             (1, "date_filed"): [{
                 "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
                 "recap_documents": [{"id": 500}],
@@ -1526,7 +1675,7 @@ class TestSummarizeCase:
             "us-v-doe", 1, summary="existing", model="prev/model",
             source_entry_ids=[],
         )
-        cl = _FakeCL({})
+        cl = _FakeCourtListener({})
         case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
         rows = summarize_case(cl=cl, store=store, case=case)
         assert rows == []

@@ -1,6 +1,6 @@
 """Integration tests for the sync pipeline.
 
-These exercise CaseSyncer end-to-end against the FakeCL fixture and a
+These exercise CaseSyncer end-to-end against the FakeCourtListener fixture and a
 controllable LLM stub. The goal is to cover the pieces unit tests can't
 easily reach: how actions translate into hearing rows, the docket-level
 short-circuit, the entry-fingerprint dedup, and reschedule/cancel flows.
@@ -14,7 +14,7 @@ from case_calendar import llm as llm_mod
 from case_calendar.store import Store
 from case_calendar.sync import CaseConfig, CaseSyncer
 
-from .conftest import FakeCL
+from .conftest import FakeCourtListener
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ class TestDateLessAddIsDropped:
         # Defensive guard: if the LLM returns ADD with no date (e.g. on a
         # motion-for-hearing or plea agreement), drop it. Otherwise we'd
         # store a date-less ghost row that never reaches the calendar.
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket()},
             entries={100: [_entry(1, "MOTION for Hearing by USA")]},
         )
@@ -113,7 +113,7 @@ class TestDateLessAddIsDropped:
 
 class TestScheduleRescheduleFlow:
     def test_schedule_creates_hearing(self, store: Store, case, monkeypatch):
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket()},
             entries={100: [_entry(1, "Sentencing set for 4/14/2026 03:00 PM")]},
         )
@@ -146,7 +146,7 @@ class TestScheduleRescheduleFlow:
                  "title": "Sentencing",
                  "local_date": "2026-04-14", "local_time": "11:00"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         # Original scheduling first ...
         syncer.process_entry(case, 100,
@@ -168,7 +168,7 @@ class TestScheduleRescheduleFlow:
                  "local_date": "2026-04-14", "local_time": "15:00"}],
             2: [{"type": "MARK_HELD", "hearing_key": "sentencing-x"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Sentencing set for 4/14/2026 03:00 PM"))
@@ -186,7 +186,7 @@ class TestScheduleRescheduleFlow:
             2: [{"type": "CANCEL", "hearing_key": "sentencing-x",
                  "notes": "vacated"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Sentencing set for 4/14/2026 03:00 PM"))
@@ -208,7 +208,7 @@ class TestScheduleRescheduleFlow:
                  "title": "Status Conference",
                  "dial_in": "Zoom: meet.example/abc"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Status Conference set for 3/2/2026 at 10:30 AM"))
@@ -233,7 +233,7 @@ class TestShortCircuits:
             return [{"type": "IGNORE"}]
         monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket()},
             entries={100: [
                 _entry(1, "RESPONDENT BRIEF filed by Peter B. Hegseth"),
@@ -248,7 +248,7 @@ class TestShortCircuits:
     def test_unchanged_docket_short_circuits_on_resync(
         self, store: Store, case, monkeypatch
     ):
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket()},
             entries={100: [_entry(1, "Sentencing set for 4/14/2026 03:00 PM")]},
         )
@@ -278,7 +278,7 @@ class TestShortCircuits:
         monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
         e = _entry(1, "Notice of Hearing")
-        cl = FakeCL(dockets={100: _docket()}, entries={100: [e]})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [e]})
         syncer = CaseSyncer(cl, store)
         syncer.sync_case(case)
         first = called[0]
@@ -294,7 +294,7 @@ class TestShortCircuits:
 class TestDocketMetaCaching:
     def test_court_fetched_once(self, store: Store, case, monkeypatch):
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket()},
             entries={100: [_entry(1, "x")]},
             courts={"mad": {"citation_string": "D. Mass.",
@@ -316,7 +316,7 @@ class TestDocketMetaCaching:
 
     def test_docket_meta_persisted(self, store: Store, case, monkeypatch):
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(dockets={100: _docket()}, entries={100: [_entry(1, "x")]})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [_entry(1, "x")]})
         syncer = CaseSyncer(cl, store)
         syncer.sync_case(case)
         meta = store.get_docket_meta(100)
@@ -335,7 +335,7 @@ class TestLastFilingDateCapture:
         self, store: Store, case, monkeypatch,
     ):
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket(date_last_filing="2026-05-08")},
             entries={100: [_entry(1, "x")]},
         )
@@ -357,7 +357,7 @@ class TestLastFilingDateCapture:
         })
         store.upsert_court("mad", "D. Mass.", "mad", "District of Massachusetts")
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(dockets={100: _docket(date_last_filing="2026-05-01")})
+        cl = FakeCourtListener(dockets={100: _docket(date_last_filing="2026-05-01")})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-05-10"))
         assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-10"
@@ -373,7 +373,7 @@ class TestLastFilingDateCapture:
         # Pre-seed the cutoff so the short-circuit fires.
         store.set_docket_last_modified(100, "2026-05-01T00:00:00-07:00")
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(
+        cl = FakeCourtListener(
             dockets={100: _docket(
                 date_modified="2026-05-01T00:00:00-07:00",
                 date_last_filing="2026-04-28",
@@ -398,7 +398,7 @@ class TestLastFilingDateCapture:
         })
         store.upsert_court("mad", "D. Mass.", "mad", "District of Massachusetts")
         make_llm_stub(monkeypatch, by_entry={})
-        cl = FakeCL(dockets={100: _docket(date_last_filing="2026-05-08")})
+        cl = FakeCourtListener(dockets={100: _docket(date_last_filing="2026-05-08")})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-04-01"))
         assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-08"
@@ -428,7 +428,7 @@ class TestStickyTimezone:
             "docket_number": "3:26-cv-1996", "case_name": "X",
             "absolute_url": "/d/300/", "date_modified": "2026-05-02T00:00:00-07:00",
         }
-        cl = FakeCL(dockets={200: cadc_docket, 300: cand_docket})
+        cl = FakeCourtListener(dockets={200: cadc_docket, 300: cand_docket})
 
         case_multi = CaseConfig(case_id="x", name="X", dockets=[200, 300], calendar="t")
 
@@ -478,7 +478,7 @@ class TestCrossCourtContextFilter:
             "docket_number": "26-2011", "case_name": "X",
             "absolute_url": "/d/300/", "date_modified": "2026-05-02T00:00:00-07:00",
         }
-        cl = FakeCL(dockets={200: cadc_docket, 300: ca9_docket})
+        cl = FakeCourtListener(dockets={200: cadc_docket, 300: ca9_docket})
         case_multi = CaseConfig(case_id="x", name="X",
                                 dockets=[200, 300], calendar="t",
                                 extract_deadlines=True)
@@ -534,7 +534,7 @@ class TestCrossCourtContextFilter:
         b = {"id": 401, "court_id": "dcd", "docket_number": "1:24-cr-261-B",
              "case_name": "X", "absolute_url": "/d/401/",
              "date_modified": "2026-01-02T00:00:00-05:00"}
-        cl = FakeCL(dockets={400: a, 401: b})
+        cl = FakeCourtListener(dockets={400: a, 401: b})
         case_multi = CaseConfig(case_id="x", name="X",
                                 dockets=[400, 401], calendar="t")
 
@@ -587,7 +587,7 @@ class TestCrossCourtActionGuard:
         case_multi = CaseConfig(case_id="x", name="X",
                                 dockets=[200, 300], calendar="t",
                                 extract_deadlines=True)
-        cl = FakeCL(dockets={200: cadc, 300: ca9})
+        cl = FakeCourtListener(dockets={200: cadc, 300: ca9})
         return cl, case_multi
 
     def test_cross_court_deadline_action_rejected(
@@ -672,7 +672,7 @@ class TestCrossCourtActionGuard:
         store.upsert_docket_meta(401, b)
         case_multi = CaseConfig(case_id="x", name="X",
                                 dockets=[400, 401], calendar="t")
-        cl = FakeCL(dockets={400: a, 401: b})
+        cl = FakeCourtListener(dockets={400: a, 401: b})
         store.upsert_hearing({
             "case_id": "x", "hearing_key": "status-conf",
             "title": "Status Conference",
@@ -720,7 +720,7 @@ class TestCrossCourtActionGuard:
             7: [{"type": "MARK_HELD", "hearing_key": "h1",
                  "local_date": "2026-05-01"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case_local, 100, _entry(
             7, "Minute entry: hearing held",
@@ -739,7 +739,7 @@ class TestProcessEntryDirect:
                  "local_date": "2026-04-14", "local_time": "15:00",
                  "duration_minutes": 90}],
         })
-        cl = FakeCL(dockets={100: _docket()})  # no entries pre-loaded
+        cl = FakeCourtListener(dockets={100: _docket()})  # no entries pre-loaded
         syncer = CaseSyncer(cl, store)
         e = _entry(1, "Sentencing set for 4/14/2026 03:00 PM")
         was_processed = syncer.process_entry(case, 100, e)
@@ -752,7 +752,7 @@ class TestProcessEntryDirect:
                  "local_date": "2026-04-14", "local_time": "15:00",
                  "hearing_type": "sentencing"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         e = _entry(1, "Sentencing set for 4/14/2026 03:00 PM")
         assert syncer.process_entry(case, 100, e) is True
@@ -774,7 +774,7 @@ class TestRecapDocumentsPersisted:
                  "local_date": "2026-04-14", "local_time": "15:00",
                  "duration_minutes": 90}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         e = _entry(1, "Sentencing set for 4/14/2026 03:00 PM")
         e["recap_documents"] = [
@@ -797,7 +797,7 @@ class TestRecapDocumentsPersisted:
             1: [{"type": "UPDATE_DETAILS", "hearing_key": "sentencing-x",
                  "reason": "no change"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
 
         first = _entry(1, "ORDER Setting Sentencing for 4/14/2026 03:00 PM")
@@ -843,7 +843,7 @@ class TestCancelOnUnknownKey:
                  "local_date": "2023-07-18",
                  "notes": "adjourned by court"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "ENDORSEMENT: status conference "
@@ -861,7 +861,7 @@ class TestCancelOnUnknownKey:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "CANCEL", "hearing_key": "status-conf-x-7"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "ENDORSEMENT: hearing adjourned"))
@@ -883,7 +883,7 @@ class TestMarkHeldOnUnknownKey:
                  "local_date": "2023-03-06",
                  "significance": "major"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Minute Entry: CIPA Hearing "
@@ -913,7 +913,7 @@ class TestMarkHeldDateValidation:
             2: [{"type": "MARK_HELD", "hearing_key": "status-conf-x",
                  "local_date": "2023-03-04"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Status Conference set for 3/8/2023 12:30 PM"))
@@ -937,7 +937,7 @@ class TestMarkHeldDateValidation:
             2: [{"type": "MARK_HELD", "hearing_key": "sentencing-x",
                  "local_date": "2026-04-15"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100,
                              _entry(1, "Sentencing set for 4/14/2026 3 PM"))
@@ -986,7 +986,7 @@ class TestPastScheduledHearings:
             "past-conf": {"type": "MARK_HELD",
                           "reason": "minute entry 'Status Conference held on 1/1/2024'"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         assert store.get_hearings("us-v-x")[0]["status"] == "held"
@@ -1006,7 +1006,7 @@ class TestPastScheduledHearings:
                           "trial may have been vacated by plea",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         h = store.get_hearings("us-v-x")[0]
@@ -1021,7 +1021,7 @@ class TestPastScheduledHearings:
         stub_verify(monkeypatch, by_key={
             "trial-x": {"type": "CANCEL", "reason": "trial vacated by plea agreement"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
@@ -1041,7 +1041,7 @@ class TestPastScheduledHearings:
         # change with deliberate intent.
         self._seed_past_scheduled(store, key="x")
         stub_verify(monkeypatch)  # default CONFIRM → no-op
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert "auto_held" not in stats
         # CONFIRM is a no-op so past row stays as 'scheduled'.
@@ -1076,7 +1076,7 @@ class TestPastScheduledHearings:
             raise AssertionError("verify_hearing called for a future cancelled row")
 
         monkeypatch.setattr(llm_mod, "verify_hearing", boom)
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert store.get_hearings("us-v-x")[0]["status"] == "cancelled"
 
@@ -1123,7 +1123,7 @@ class TestPastCancelledHearings:
                           "actively briefed past 6/12/2024.",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
@@ -1144,7 +1144,7 @@ class TestPastCancelledHearings:
                 "reason": "Plea agreement filed before trial date; trial vacated by plea.",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         h = store.get_hearings("us-v-x")[0]
@@ -1164,7 +1164,7 @@ class TestPastCancelledHearings:
                 "reason": "verdict form filed; trial demonstrably happened",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "held"
@@ -1179,7 +1179,7 @@ class TestPastCancelledHearings:
         stub_verify(monkeypatch, by_key={
             "ambiguous": {"type": "UNCLEAR", "reason": "silent docket"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         h = store.get_hearings("us-v-x")[0]
@@ -1212,7 +1212,7 @@ class TestVerifyScheduledHearings:
     def test_confirm_is_no_op(self, store, case, monkeypatch):
         before = self._seed_future_hearing(store)
         stub_verify(monkeypatch)  # default CONFIRM
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         h = store.get_hearings("us-v-x")[0]
@@ -1224,7 +1224,7 @@ class TestVerifyScheduledHearings:
         stub_verify(monkeypatch, by_key={
             "future-trial": {"type": "UNCLEAR", "reason": "ambiguous"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
@@ -1234,7 +1234,7 @@ class TestVerifyScheduledHearings:
         stub_verify(monkeypatch, by_key={
             "future-trial": {"type": "CANCEL", "reason": "trial vacated by plea"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
@@ -1253,7 +1253,7 @@ class TestVerifyScheduledHearings:
                 "reason": "no docket entry mentions this date",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
@@ -1270,7 +1270,7 @@ class TestVerifyScheduledHearings:
                 "reason": "rescheduled per latest order",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         h = store.get_hearings("us-v-x")[0]
@@ -1288,7 +1288,7 @@ class TestVerifyScheduledHearings:
             "future-trial": {"type": "MARK_HELD",
                              "reason": "minute entry shows held"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 1
         assert store.get_hearings("us-v-x")[0]["status"] == "held"
@@ -1318,7 +1318,7 @@ class TestVerifyScheduledHearings:
             called.append(hearing.get("hearing_key"))
             return {"type": "CONFIRM"}
         monkeypatch.setattr(llm_mod, "verify_hearing", fake)
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert called == []  # no future-scheduled rows present
 
@@ -1350,7 +1350,7 @@ class TestDeadlineExtraction:
                  "local_time": None,
                  "significance": "major"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100,
@@ -1374,7 +1374,7 @@ class TestDeadlineExtraction:
                  "local_time": "12:00",
                  "significance": "minor"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100, _entry(1, "ORDER: status report due by noon June 1"),
@@ -1397,7 +1397,7 @@ class TestDeadlineExtraction:
                  "title": "Reply ISO MTD",
                  "local_date": "2026-06-14"}],  # extension granted
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100, _entry(1, "ORDER: reply due by 5/31/2026"),
@@ -1419,7 +1419,7 @@ class TestDeadlineExtraction:
                  "local_date": "2026-05-31"}],
             2: [{"type": "MARK_FILED", "deadline_key": "reply-mtd"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100, _entry(1, "ORDER: reply due by 5/31/2026"),
@@ -1448,7 +1448,7 @@ class TestDeadlineExtraction:
                  "local_date": "2026-04-15",
                  "notes": "schedule replaced wholesale"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100,
@@ -1474,7 +1474,7 @@ class TestDeadlineExtraction:
             "source_entry_ids": [99],
         })
         stub_verify(monkeypatch)  # default CONFIRM for any future hearings
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["auto_passed"] == 1
         assert store.get_deadlines("us-v-x")[0]["status"] == "passed"
@@ -1497,7 +1497,7 @@ class TestDeadlineExtraction:
             return [{"type": "IGNORE", "reason": "stub"}]
         monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
-        cl = FakeCL(dockets={100: _docket()})  # docket_number "1:25-cr-..."
+        cl = FakeCourtListener(dockets={100: _docket()})  # docket_number "1:25-cr-..."
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case_default, 100,
@@ -1522,7 +1522,7 @@ class TestDeadlineExtraction:
         monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
         civil_docket = dict(_docket(), docket_number="1:25-cv-04567-AB")
-        cl = FakeCL(dockets={100: civil_docket})
+        cl = FakeCourtListener(dockets={100: civil_docket})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case_default, 100,
@@ -1549,7 +1549,7 @@ class TestDeadlineExtraction:
             return [{"type": "IGNORE", "reason": "stub"}]
         monkeypatch.setattr(llm_mod, "extract_actions", fake)
 
-        cl = FakeCL(dockets={100: _docket()})  # criminal docket_number
+        cl = FakeCourtListener(dockets={100: _docket()})  # criminal docket_number
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case_override, 100,
@@ -1595,7 +1595,7 @@ class TestConditionalDeadline:
                  "notes": verbatim,
                  "significance": "major"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         CaseSyncer(cl, store).process_entry(
             case, 100,
             # "shall file" + "scheduling order" + "stipulation" so the
@@ -1627,7 +1627,7 @@ class TestConditionalDeadline:
                  "local_date": None,
                  "significance": "major"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         CaseSyncer(cl, store).process_entry(
             case, 100,
             _entry(1, "MOTION requesting a briefing schedule "
@@ -1653,7 +1653,7 @@ class TestConditionalDeadline:
                  "notes": "Within 21 days after resolution of related case.",
                  "significance": "major"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         CaseSyncer(cl, store).process_entry(
             case, 100,
             _entry(1, "ORDER on stipulation staying appellate "
@@ -1681,7 +1681,7 @@ class TestConditionalDeadline:
                  "title": "Appellants' Motion for Appropriate Relief",
                  "local_date": "2026-08-15"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(
             case, 100,
@@ -1753,7 +1753,7 @@ class TestDedupeConcurrentHearings:
             raise AssertionError("resolve_duplicate_hearings called when no clusters")
         monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
         stub_verify(monkeypatch)
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
 
@@ -1767,7 +1767,7 @@ class TestDedupeConcurrentHearings:
             "target_key": "msj-hearing",
             "reason": "Same slot — order called the SJ hearing a Motion Hearing.",
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         # One row got cancelled.
         assert stats["deduped"] == 1
@@ -1793,7 +1793,7 @@ class TestDedupeConcurrentHearings:
             "type": "KEEP_BOTH",
             "reason": "Order explicitly schedules both back-to-back",
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
@@ -1805,7 +1805,7 @@ class TestDedupeConcurrentHearings:
         self._seed_concurrent_pair(store)
         stub_verify(monkeypatch)
         stub_dedupe(monkeypatch, action={"type": "UNCLEAR", "reason": "ambiguous"})
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
@@ -1822,7 +1822,7 @@ class TestDedupeConcurrentHearings:
             "target_key": "completely-different-key",
             "reason": "...",
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
@@ -1842,7 +1842,7 @@ class TestDedupeConcurrentHearings:
             raise AssertionError("dedupe LLM called for past hearings")
 
         monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
 
@@ -1895,7 +1895,7 @@ class TestVerifyPendingDeadlines:
         before = self._seed_future_deadline(store)
         stub_verify(monkeypatch)
         stub_verify_deadline(monkeypatch)  # default CONFIRM
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats.get("deadlines_verified", 0) == 0
         d = store.get_deadlines("us-v-x")[0]
@@ -1908,7 +1908,7 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(monkeypatch, by_key={
             "reply-mtd": {"type": "CANCEL", "reason": "case dismissed"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
@@ -1924,7 +1924,7 @@ class TestVerifyPendingDeadlines:
             "reply-mtd": {"type": "DELETE_HALLUCINATION",
                           "reason": "no scheduling order found"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
@@ -1937,7 +1937,7 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(monkeypatch, by_key={
             "reply-mtd": {"type": "MARK_FILED", "reason": "reply on docket"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 1
         assert store.get_deadlines("us-v-x")[0]["status"] == "met"
@@ -1952,7 +1952,7 @@ class TestVerifyPendingDeadlines:
                 "reason": "extension granted",
             },
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
@@ -1967,7 +1967,7 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(monkeypatch, by_key={
             "reply-mtd": {"type": "RESCHEDULE", "reason": "no date provided"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         # No change, no count.
         assert stats["deadlines_verified"] == 0
@@ -1979,7 +1979,7 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(monkeypatch, by_key={
             "reply-mtd": {"type": "BOGUS", "reason": "model made it up"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 0
         assert store.get_deadlines("us-v-x")[0]["due_at_utc"] == before
@@ -2015,7 +2015,7 @@ class TestVerifyEdgeCases:
         stub_verify(monkeypatch, by_key={
             "future-trial": {"type": "RESCHEDULE", "reason": "no date"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         # The action is dropped — counter stays 0 and starts_at_utc unchanged.
         assert stats["verified"] == 0
@@ -2026,7 +2026,7 @@ class TestVerifyEdgeCases:
         stub_verify(monkeypatch, by_key={
             "future-trial": {"type": "MYSTERY", "reason": "?"},
         })
-        cl = FakeCL(dockets={100: _docket()}, entries={100: []})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["verified"] == 0
         assert store.get_hearings("us-v-x")[0]["starts_at_utc"] == before
@@ -2039,7 +2039,7 @@ class TestEnsureCourtErrorPath:
         # The court fetch can fail (CourtListener outage, unknown court id). When it
         # does we log a warning but continue — the citation stays missing
         # rather than crashing the whole sync.
-        class _RaisingCL(FakeCL):
+        class _RaisingCL(FakeCourtListener):
             def get_court(self, court_id):
                 raise RuntimeError("CourtListener down")
 
@@ -2065,7 +2065,7 @@ class TestApplyHearingActionEdgeCases:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "CANCEL", "hearing_key": "never-seen"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "ORDER vacating prior"))
         assert store.get_hearings("us-v-x") == []
@@ -2076,7 +2076,7 @@ class TestApplyHearingActionEdgeCases:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "MARK_HELD", "hearing_key": "never-seen"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "MINUTE ORDER held"))
         assert store.get_hearings("us-v-x") == []
@@ -2097,7 +2097,7 @@ class TestApplyDeadlineActionEdgeCases:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "ADD_DEADLINE", "local_date": "2026-05-24"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "ORDER: response due"))
         assert store.get_deadlines("us-v-x") == []
@@ -2109,7 +2109,7 @@ class TestApplyDeadlineActionEdgeCases:
             1: [{"type": "ADD_DEADLINE",
                  "deadline_key": "reply", "title": "Reply"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "ORDER: reply due TBD"))
         assert store.get_deadlines("us-v-x") == []
@@ -2120,7 +2120,7 @@ class TestApplyDeadlineActionEdgeCases:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "CANCEL_DEADLINE", "deadline_key": "never-seen"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "ORDER vacating schedule"))
         assert store.get_deadlines("us-v-x") == []
@@ -2131,7 +2131,7 @@ class TestApplyDeadlineActionEdgeCases:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "MARK_FILED", "deadline_key": "never-seen"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "REPLY brief filed"))
         assert store.get_deadlines("us-v-x") == []
@@ -2154,7 +2154,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "IGNORE", "reason": "stub"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         # "INDICTMENT" head matches summary.is_primary_document.
         syncer.process_entry(case, 100, _entry(1, "INDICTMENT as to defendant"))
@@ -2167,7 +2167,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         make_llm_stub(monkeypatch, by_entry={
             1: [{"type": "IGNORE", "reason": "stub"}],
         })
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
         assert store.is_summary_stale("us-v-x", 100) is True
@@ -2183,7 +2183,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         # freshly synced docket would burn a duplicate /docket-entries/
         # round-trip.
         make_llm_stub(monkeypatch, by_entry={1: []})
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         entry = _entry(1, "INDICTMENT as to defendant")
         entry["recap_documents"] = [{
@@ -2204,7 +2204,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         # The description still has to land so the summary pipeline can
         # use the new description-fallback path.
         make_llm_stub(monkeypatch, by_entry={1: []})
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(
             1, "Electronic Clerk's Notes: Sentencing held. Court imposes "
@@ -2221,7 +2221,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         # hearing/deadline filter nor op/disp must continue to land as
         # fingerprint stubs — storing their body is dead weight.
         make_llm_stub(monkeypatch, by_entry={1: []})
-        cl = FakeCL(dockets={100: _docket()})
+        cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "NOTICE of attorney appearance"))
         # No body-bearing entries on the docket: stub still works for dedup

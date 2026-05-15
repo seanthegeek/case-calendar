@@ -20,7 +20,7 @@ from case_calendar.serve import WebhookServer
 from case_calendar.store import Store
 from case_calendar.sync import CaseConfig
 
-from .conftest import FakeCL
+from .conftest import FakeCourtListener
 
 
 @pytest.fixture
@@ -31,8 +31,8 @@ def case():
     )
 
 
-def _make_cl() -> FakeCL:
-    return FakeCL(
+def _make_cl() -> FakeCourtListener:
+    return FakeCourtListener(
         dockets={100: {
             "id": 100, "court_id": "mad",
             "docket_number": "1:25-cr-00001-X",
@@ -60,8 +60,8 @@ def _start_server(*, store, case, cl, emit_fn=None):
 
 
 @pytest.fixture
-def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCL]]:
-    """Spin up a webhook server with a controllable FakeCL backing it."""
+def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCourtListener]]:
+    """Spin up a webhook server with a controllable FakeCourtListener backing it."""
     monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
         "type": "ADD", "hearing_key": "sentencing-x",
         "hearing_type": "sentencing", "title": "Sentencing",
