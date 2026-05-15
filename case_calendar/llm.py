@@ -1537,6 +1537,53 @@ publicly visible worth describing in calendar terms; describe the case
 as charged and stop there. Silence on procedural posture is acceptable;
 positive assertions about absence are not.
 
+CRITICAL — work around partial or low-quality source documents
+SILENTLY. The subscriber reads a finished case summary, not a report on
+what the LLM could and couldn't extract from the source documents. If
+a primary document text is sparse but yields some signal (page headers
+plus a caption, partial first page, etc.) and the structured-events
+scaffold or disposition documents fill in the gaps, use whatever
+signals you have to write a normal subscriber-facing summary. Do NOT
+narrate the document quality issue to the reader. Document-quality
+issues are operator-side concerns logged separately — they are not
+subscriber-facing content. Examples of FORBIDDEN meta-commentary:
+- BAD: "The primary document text consists only of page-header
+       citations with no substantive charge allegations visible, but..."
+- BAD: "While the indictment PDF could not be extracted, the
+       structured events show..."
+- BAD: "Based on the available minute entries, [defendant] is charged
+       with..."
+- BAD: "Per the limited disposition documents available..."
+This rule does NOT relax the refuse-rather-than-fabricate rule below.
+The boundary stays: if you can confidently state what the case is
+about — parties + charges or claims — produce a normal summary. If you
+cannot (primary document text fully empty, fully garbled, or sealed
+without an operator-supplied fallback, AND the structured-events
+scaffold has no hearings or dispositions to compensate), emit the
+canonical refusal sentence verbatim and stop. There is NO middle
+ground that narrates the workaround.
+
+CRITICAL — when a DOCKET VISIBILITY ADVISORY block appears at the top
+of the user message, the summary MUST surface the sealing constraint
+to subscribers. This is the inverse of the absence-of-activity rule
+above: programmatic detection has flagged that the docket has a
+granted sealing order on the public record, no subsequent unsealing
+order, no public disposition, and limited post-sealing public activity
+— in other words, the empty structured-events scaffold here genuinely
+reflects a docket that is currently NOT fully publicly visible, and
+subscribers need to know. The advisory carries the sealing order's
+entry number, filing date, and verbatim description; quote those
+facts in the prose. Phrasing must be factual and documents-only — the
+advisory itself is trusted operator-supplied metadata (like the
+AGGREGATION NOTE), but you must NOT speculate about what is happening
+behind the seal or characterize the strength of the case from the
+sealing alone. Add a one-clause hedge so subscribers know to verify
+the docket directly. Example shape: "The court granted an ex parte
+application to seal the indictment and related documents on August 21,
+2025 (entry 44); some subsequent docket activity may not be publicly
+visible." Then stop — do not append "case remains pending" or any
+other absence-of-activity claim (the rule above still applies).
+
 CRITICAL — include the sentence imposed on concluded criminal cases.
 When a judgment / sentencing-judgment document is provided, the final
 sentence is the most important fact about the case. Include it:
@@ -1640,6 +1687,7 @@ def _build_summary_user_message(
     disposition_char_budget: int,
     extra_documents: Optional[list[dict[str, Any]]] = None,
     extra_char_budget: int = 40_000,
+    sealing_advisory: Optional[dict[str, Any]] = None,
 ) -> str:
     parts = [
         f"CASE: {case_name}",
@@ -1647,6 +1695,22 @@ def _build_summary_user_message(
     ]
     if aggregation_note:
         parts.append(f"AGGREGATION NOTE (from operator): {aggregation_note}")
+    if sealing_advisory:
+        parts.append("")
+        parts.append(
+            "DOCKET VISIBILITY ADVISORY (programmatic detection — trusted "
+            "operator-supplied signal, not document text): The public docket "
+            f"carries an order at entry #{sealing_advisory.get('sealing_entry_number')} "
+            f"(filed {sealing_advisory.get('sealing_date_filed')}) granting "
+            "a motion or application to seal — verbatim docket description: "
+            f"{sealing_advisory.get('sealing_description')!r}. No subsequent "
+            "public unsealing order is visible, no disposition document is "
+            "publicly available, and post-sealing publicly-available activity "
+            "is limited (observed available post-seal entry count: "
+            f"{sealing_advisory.get('available_post_seal_entries', 0)}). "
+            "Subsequent docket activity may not be publicly visible — see "
+            "the matching CRITICAL rule below for how to surface this."
+        )
     parts.append("")
     parts.append("STRUCTURED EVENTS RECORDED FOR THIS DOCKET:")
     parts.append("  Hearings:")
@@ -1745,6 +1809,7 @@ def generate_docket_summary(
     hearings: list[dict[str, Any]],
     deadlines: list[dict[str, Any]],
     extra_documents: Optional[list[dict[str, Any]]] = None,
+    sealing_advisory: Optional[dict[str, Any]] = None,
     provider: Optional[str] = None,
     model: Optional[str] = None,
     max_tokens: int = 800,
@@ -1794,6 +1859,7 @@ def generate_docket_summary(
         extra_documents=extra_documents,
         hearings=hearings,
         deadlines=deadlines,
+        sealing_advisory=sealing_advisory,
         primary_char_budget=primary_char_budget,
         disposition_char_budget=disposition_char_budget,
         extra_char_budget=extra_char_budget,

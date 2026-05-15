@@ -398,6 +398,134 @@ def find_primary_documents(
 
 
 # ---------------------------------------------------------------------------
+# Sealing detection
+# ---------------------------------------------------------------------------
+
+# An "order granting [a motion/application] to seal" entry, on the docket's
+# own description line. PACER vocabulary varies on the verb ("granting",
+# "grants", "granted") and on whether it's a motion or an application, but
+# the shape is always ORDER + grant-tense + ... + to seal.
+_SEAL_ORDER_RE = re.compile(
+    r"\border\b[^.]*\bgrant(?:s|ed|ing)\b[^.]*\bto\s+seal\b",
+    re.IGNORECASE,
+)
+# The matching unsealing-order pattern — its presence after the sealing
+# order is the canonical "seal has been lifted" signal.
+_UNSEAL_ORDER_RE = re.compile(
+    r"\border\b[^.]*\bgrant(?:s|ed|ing)\b[^.]*\bto\s+unseal\b",
+    re.IGNORECASE,
+)
+
+
+def detect_sealing(
+    cl: CourtListener, docket_id: int, *,
+    dispositions: list[dict[str, Any]],
+    available_post_seal_threshold: int = 3,
+) -> Optional[dict[str, Any]]:
+    """Detect whether this docket carries a granted sealing order with no
+    contradicting public signals — i.e., is currently sealed-in-effect.
+
+    Returns a sealing-advisory dict the summary pipeline forwards to the LLM,
+    or ``None`` when there's no clear sealing signal (the common case for
+    routine criminal cases where the indictment was sealed at filing and
+    then unsealed at arrest — those have either an explicit unsealing order
+    or substantial post-sealing public activity, both of which suppress
+    the advisory).
+
+    Heuristic:
+      1. Find the LATEST entry whose description matches "ORDER granting
+         ... to seal" on this docket.
+      2. If a subsequent "ORDER granting ... to unseal" exists, the seal
+         has been lifted — return None.
+      3. If any disposition document exists post-sealing, the case is
+         publicly disposed (an unavailable disposition wouldn't have been
+         classified as one by ``find_primary_documents``) — return None.
+      4. Count post-sealing entries with at least one publicly-available
+         recap_document. If that count exceeds the threshold (default 3),
+         the seal has been effectively lifted even without an explicit
+         order — return None.
+      5. Otherwise, surface the sealing advisory.
+
+    The walk is small (1 page oldest-first + 1 page newest-first, 100
+    entries total) — sealing orders are filed near the top of the docket
+    and unsealing orders show up reliably in newest-first when present.
+    """
+    # Step 3 (cheap, no API call): disposition presence by itself is
+    # decisive. A disposition document being publicly available means the
+    # dispositive ruling landed in the open, which is incompatible with
+    # the docket being currently sealed-in-effect.
+    if dispositions:
+        return None
+
+    oldest = _list_entries_ordered(cl, docket_id, order_by="date_filed", max_pages=1)
+    newest = _list_entries_ordered(cl, docket_id, order_by="-date_filed", max_pages=1)
+    # Dedup on id (the two walks overlap on small dockets).
+    seen: set[int] = set()
+    entries: list[dict[str, Any]] = []
+    for e in oldest + newest:
+        eid = e.get("id")
+        if eid is None or eid in seen:
+            continue
+        seen.add(eid)
+        entries.append(e)
+
+    # Step 1: find the LATEST granted sealing order (by date_filed). A
+    # narrow seal followed by a broad seal both match, but the broad one
+    # — typically later — is the operative one for our advisory.
+    sealing_order: Optional[dict[str, Any]] = None
+    for e in entries:
+        desc = e.get("description") or ""
+        if not _SEAL_ORDER_RE.search(desc):
+            continue
+        if sealing_order is None:
+            sealing_order = e
+            continue
+        current = sealing_order.get("date_filed") or ""
+        candidate = e.get("date_filed") or ""
+        if candidate > current:
+            sealing_order = e
+    if sealing_order is None:
+        return None
+
+    sealing_date = sealing_order.get("date_filed") or ""
+
+    # Step 2: subsequent unsealing order kills the signal.
+    for e in entries:
+        if (e.get("date_filed") or "") <= sealing_date:
+            continue
+        if _UNSEAL_ORDER_RE.search(e.get("description") or ""):
+            return None
+
+    # Step 4: substantial post-sealing public availability also kills the
+    # signal (the seal may exist on paper but be functionally lifted).
+    available_post_seal = 0
+    for e in entries:
+        if (e.get("date_filed") or "") <= sealing_date:
+            continue
+        for rd in (e.get("recap_documents") or []):
+            if rd.get("is_available"):
+                available_post_seal += 1
+                break
+        if available_post_seal > available_post_seal_threshold:
+            return None
+
+    # Truncate the description; PACER descriptions can run several
+    # hundred chars (multi-defendant cases name every defendant). The LLM
+    # only needs the order's identity, not the full caption list.
+    raw_desc = sealing_order.get("description") or ""
+    short_desc = raw_desc.strip()
+    if len(short_desc) > 240:
+        short_desc = short_desc[:237].rstrip() + "..."
+
+    return {
+        "sealing_entry_number": sealing_order.get("entry_number"),
+        "sealing_date_filed": sealing_date,
+        "sealing_description": short_desc,
+        "available_post_seal_entries": available_post_seal,
+    }
+
+
+# ---------------------------------------------------------------------------
 # PDF text extraction
 # ---------------------------------------------------------------------------
 
@@ -627,6 +755,47 @@ def summarize_docket(
         dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
     )
 
+    # Flag suspiciously-short primary documents so the operator can
+    # investigate — an indictment / complaint whose extracted text is
+    # only a couple of KB is almost certainly a parser failure (image-
+    # only PDF without an embedded text layer; pypdf returning only the
+    # page headers and caption from a full document that the extractor
+    # couldn't decode; a sealed-but-listed entry whose body never
+    # landed in RECAP). Federal indictments and complaints rarely run
+    # under several KB even on single-count cases — the boilerplate
+    # caption, jurisdictional allegations, and per-count language add
+    # up. The us-v-moucka regression that drove this log was exactly
+    # that shape: a full multi-count indictment whose extracted text
+    # came out to ~4 KB of user_chars total (caption + page headers
+    # only), which is why the corresponding summary opened with
+    # "The primary document text consists only of page-header citations".
+    # The summary LLM is told to work around partial inputs silently in
+    # the subscriber-facing prose (see the matching `CRITICAL — work
+    # around partial or low-quality source documents SILENTLY` rule in
+    # `SUMMARY_SYSTEM_PROMPT`), so without this log a subscriber-visible
+    # "generic" summary on a docket with a broken PDF extraction would
+    # leave no trace for the operator. With the log, a sweep of the
+    # warning stream surfaces broken extractions before subscribers
+    # notice the diluted summary. The 1500-char threshold is the
+    # empirical floor below which we've seen parser failures rather
+    # than genuinely short documents — adjust if real-world data
+    # shows the threshold is wrong.
+    PRIMARY_DOC_SUSPICIOUSLY_SHORT_CHARS = 1500
+    for doc in primary_documents:
+        text = doc.get("text") or ""
+        if 0 < len(text) < PRIMARY_DOC_SUSPICIOUSLY_SHORT_CHARS:
+            log.warning(
+                "summary: docket %s — primary document at entry #%s "
+                "(filed %s) extracted to only %d chars; PDF parsing "
+                "may have failed (image-only PDF, pypdf returning only "
+                "page headers, or similar). The summary LLM is told to "
+                "work around this silently, so a confusing or generic "
+                "subscriber-facing summary on this case is the signal "
+                "to investigate the source PDF.",
+                docket_id, doc.get("entry_number"), doc.get("date_filed"),
+                len(text),
+            )
+
     # Fetch any operator-supplied extra_documents for this docket. These
     # don't slot into primary/disposition — they ride into the LLM
     # prompt as their own block, each carrying the operator's note
@@ -658,6 +827,17 @@ def summarize_docket(
     hearings = _hearings_for_docket(store, case.case_id, docket_id)
     deadlines = _deadlines_for_docket(store, case.case_id, docket_id)
 
+    sealing_advisory = detect_sealing(cl, docket_id, dispositions=dispositions)
+    if sealing_advisory is not None:
+        log.info(
+            "summary: docket %s — sealing advisory: order at entry #%s "
+            "(filed %s), %d post-seal available entries observed",
+            docket_id,
+            sealing_advisory.get("sealing_entry_number"),
+            sealing_advisory.get("sealing_date_filed"),
+            sealing_advisory.get("available_post_seal_entries"),
+        )
+
     summary_text, model_id = llm.generate_docket_summary(
         case_name=case.name,
         aggregation_note=aggregation_note,
@@ -667,6 +847,7 @@ def summarize_docket(
         extra_documents=extra_documents,
         hearings=hearings,
         deadlines=deadlines,
+        sealing_advisory=sealing_advisory,
         provider=provider,
         model=model,
     )

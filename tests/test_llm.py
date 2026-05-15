@@ -1209,6 +1209,46 @@ class TestBuildSummaryUserMessage:
         # disposition_documents empty -> "(none)"
         assert "(none)" in msg
 
+    def test_sealing_advisory_block_emitted_when_present(self):
+        msg = llm._build_summary_user_message(
+            case_name="US v. Dubranova", aggregation_note=None,
+            docket={"docket_number": "2:25-cr-578", "court_citation": "C.D. Cal."},
+            primary_documents=[], disposition_documents=[],
+            hearings=[], deadlines=[],
+            primary_char_budget=100, disposition_char_budget=100,
+            sealing_advisory={
+                "sealing_entry_number": 44,
+                "sealing_date_filed": "2025-08-21",
+                "sealing_description": "ORDER granting 43 EX PARTE APPLICATION to Seal Indictment and Related Documents",
+                "available_post_seal_entries": 1,
+            },
+        )
+        assert "DOCKET VISIBILITY ADVISORY" in msg
+        assert "entry #44" in msg
+        assert "2025-08-21" in msg
+        assert "ORDER granting 43 EX PARTE APPLICATION to Seal" in msg
+        # The block must call out that it's trusted operator-supplied
+        # metadata, not document text — same convention as AGGREGATION
+        # NOTE so the system prompt's "untrusted text" rule doesn't
+        # apply to it.
+        assert "trusted" in msg.lower()
+        # The observed available-post-seal count rides along so the
+        # model knows how marginal the signal is (1 post-seal available
+        # entry is very different from 3 — both pass the threshold but
+        # one is more borderline).
+        assert "post-seal entry count: 1" in msg
+
+    def test_sealing_advisory_block_omitted_when_absent(self):
+        # Default (no advisory passed) — block must not appear.
+        msg = llm._build_summary_user_message(
+            case_name="X", aggregation_note=None,
+            docket={"docket_number": "x", "court_id": "x"},
+            primary_documents=[], disposition_documents=[],
+            hearings=[], deadlines=[],
+            primary_char_budget=100, disposition_char_budget=100,
+        )
+        assert "DOCKET VISIBILITY ADVISORY" not in msg
+
     def test_conditional_deadline_surfaces_notes_verbatim(self):
         # Conditional deadlines (no fixed date — court order triggered by
         # an unknown future event) ride into the summary scaffold with
@@ -1631,3 +1671,129 @@ class TestSummaryPromptAbsenceOfActivityGuard:
         # closing posture sentence is fine — otherwise it will pad with
         # something close to "remains pending" out of length pressure.
         assert "Silence on procedural posture is acceptable" in llm.SUMMARY_SYSTEM_PROMPT
+
+
+class TestSummaryPromptVisibilityAdvisoryGuard:
+    """Phase 2 prompt invariant: when a DOCKET VISIBILITY ADVISORY block
+    appears in the user message (programmatic sealing detection from
+    summary.detect_sealing), the summary MUST surface the sealing
+    constraint to subscribers. This is the inverse of the
+    absence-of-activity rule — Phase 1 forbids the model from inventing
+    "the case is dormant" on an empty scaffold; Phase 2 tells the model
+    that when WE'VE confirmed the scaffold is empty BECAUSE of sealing,
+    it should say so.
+    """
+
+    def test_advisory_handling_rule_is_present(self):
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "when a DOCKET VISIBILITY ADVISORY block appears at the top "
+            "of the user message"
+        ) in normalized
+        # And the rule must tell the model to SURFACE the constraint —
+        # not just acknowledge it internally.
+        assert "the summary MUST surface the sealing constraint" in normalized
+
+    def test_advisory_is_trusted_metadata_like_aggregation_note(self):
+        # The advisory carries an entry number, date, and verbatim
+        # docket description from our programmatic detector. The prompt
+        # must mark it as trusted operator-supplied metadata so the
+        # "untrusted text" rule above doesn't kick in and tell the model
+        # to ignore it.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "the advisory itself is trusted operator-supplied metadata"
+        ) in normalized
+        # Cross-reference to AGGREGATION NOTE — the existing trusted-
+        # metadata exemplar — so future editors keep the two consistent.
+        assert "AGGREGATION NOTE" in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_advisory_forbids_speculation_about_what_is_sealed(self):
+        # The advisory hints that activity is hidden; the model must
+        # not invent what that activity might be. Same logic as the
+        # documents-only rule at the AGENTS.md level.
+        assert "must NOT speculate about what is happening" in llm.SUMMARY_SYSTEM_PROMPT
+        assert "behind the seal" in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_advisory_phrasing_example_is_present(self):
+        # A worked example with concrete date + entry number — same
+        # style as the other CRITICAL rules. Pinning the example so a
+        # future editor doesn't drop it; without it, the rule reads as
+        # abstract guidance. The example wraps across a line in the
+        # prompt, so collapse whitespace before matching.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "August 21, 2025 (entry 44)" in normalized
+        # And the explicit "subsequent docket activity may not be
+        # publicly visible" hedge — the exact subscriber-facing language
+        # we want the model to produce.
+        assert "subsequent docket activity may not be publicly visible" in normalized
+
+    def test_advisory_rule_does_not_relax_absence_rule(self):
+        # The advisory is a license to mention sealing; it is NOT a
+        # license to also append "remains pending" or "no further
+        # activity has been recorded". The absence-of-activity rule
+        # still binds.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            'do not append "case remains pending" or any other '
+            "absence-of-activity claim"
+        ) in normalized
+        assert "the rule above still applies" in normalized
+
+
+class TestSummaryPromptDocumentNarrationGuard:
+    """Phase 3 prompt invariant: when the primary document text is
+    sparse / low-quality (us-v-moucka shape — pypdf returned only page
+    headers from the indictment), the model must work around it
+    silently and produce a normal subscriber-facing summary. The
+    canonical failure mode it's blocking is meta-commentary like
+    'The primary document text consists only of page-header citations
+    with no substantive charge allegations visible, but...' — the
+    subscriber reads a finished case summary, not a report on what the
+    LLM could and couldn't extract.
+    """
+
+    def test_silent_workaround_rule_present(self):
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "work around partial or low-quality source documents SILENTLY"
+        ) in normalized
+
+    def test_canonical_forbidden_meta_commentary_pinned(self):
+        # The exact opening clause us-v-moucka produced — pin it so a
+        # future "shorten the rule" edit can't drop the canonical
+        # forbidden form. Re-flowed across two lines in the prompt.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"The primary document text consists only of page-header '
+            "citations with no substantive charge allegations visible, "
+            'but..."'
+        ) in normalized
+        # And a representative variant — the LLM might phrase it as
+        # "based on minute entries" or "per the limited disposition
+        # documents available" instead of the moucka shape.
+        assert (
+            '"Based on the available minute entries, [defendant] is '
+            "charged with...\""
+        ) in normalized
+
+    def test_rule_explicitly_does_not_relax_refusal_rule(self):
+        # The model has THREE options in principle for a low-quality
+        # input: narrate the workaround (now forbidden), refuse via
+        # SUMMARY_INSUFFICIENT_DOCUMENTS, or produce a clean summary
+        # from whatever signals exist. The rule must explicitly tell
+        # the model the third path is preferred when feasible AND that
+        # narration is NOT a fallback to refusal — otherwise the model
+        # might read "no meta-commentary" as "refuse if anything is
+        # partial". Both sentences wrap across lines, so normalize
+        # whitespace before matching.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "This rule does NOT relax the refuse-rather-than-fabricate rule below" in normalized
+        assert "There is NO middle ground that narrates the workaround" in normalized

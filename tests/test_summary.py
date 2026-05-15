@@ -536,6 +536,220 @@ class TestFindPrimaryDocuments:
 
 
 # ---------------------------------------------------------------------------
+# detect_sealing
+# ---------------------------------------------------------------------------
+
+
+class TestDetectSealing:
+    """Phase 2 sealing-detection heuristic. Used by ``summarize_docket`` to
+    surface a DOCKET VISIBILITY ADVISORY to the LLM when the docket has a
+    granted sealing order with no contradicting public signals.
+
+    The motivating case is us-v-dubranova (2:25-cr-00578, C.D. Cal.): the
+    indictment was unsealed for RECAP capture, then the court granted an
+    ex parte application to seal the indictment and related documents,
+    and the docket has been quiet on the public side ever since. Routine
+    seal-then-unseal criminal cases — where the indictment was sealed at
+    filing and then unsealed at arrest — produce a sealing order entry
+    too, so the heuristic has to discriminate between the two without
+    false-positives. The four kill signals are: subsequent unsealing
+    order, any disposition document, or substantial post-sealing
+    publicly-available activity.
+    """
+
+    def _dubranova_shape(self) -> dict:
+        """A docket whose visible entries match the Dubranova pattern:
+        a granted sealing order on the indictment, no unsealing order,
+        no disposition, and almost no available post-seal entries."""
+        return {
+            (72013021, "date_filed"): [
+                {
+                    "id": 1, "entry_number": 33, "date_filed": "2025-08-21",
+                    "description": "FIRST SUPERSEDING INDICTMENT filed as to ...",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 2, "entry_number": 43, "date_filed": "2025-08-21",
+                    "description": "EX PARTE APPLICATION to Seal Indictment and Related Documents Filed by Plaintiff USA",
+                    "recap_documents": [{"is_available": False}],
+                },
+                {
+                    "id": 3, "entry_number": 44, "date_filed": "2025-08-21",
+                    "description": "ORDER by Magistrate Judge Steve Kim granting 43 EX PARTE APPLICATION to Seal Indictment and Related Documents",
+                    "recap_documents": [{"is_available": False}],
+                },
+                {
+                    "id": 4, "entry_number": 45, "date_filed": "2025-08-21",
+                    "description": "CASE SUMMARY filed by AUSA as to Defendant Dubranova",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 5, "entry_number": 54, "date_filed": "2025-08-21",
+                    "description": "NOTICE OF REQUEST FOR DETENTION as to Dubranova",
+                    "recap_documents": [{"is_available": False}],
+                },
+                {
+                    "id": 6, "entry_number": 32, "date_filed": "2025-08-28",
+                    "description": "SEALED DOCUMENT - UNDER SEAL DOCUMENT",
+                    "recap_documents": [{"is_available": False}],
+                },
+            ],
+            (72013021, "-date_filed"): [],
+        }
+
+    def test_dubranova_shape_returns_advisory(self):
+        cl = _FakeCL(self._dubranova_shape())
+        result = summary.detect_sealing(cl, 72013021, dispositions=[])
+        assert result is not None
+        assert result["sealing_entry_number"] == 44
+        assert result["sealing_date_filed"] == "2025-08-21"
+        assert "granting 43 EX PARTE APPLICATION to Seal" in result["sealing_description"]
+
+    def test_unsealing_order_kills_signal(self):
+        pages = self._dubranova_shape()
+        # Add an unsealing order DATED AFTER the sealing order. The dates
+        # in the Dubranova shape are all 2025-08-21; bump the unsealing
+        # entry to 2025-09-15 so the post-seal check fires correctly.
+        pages[(72013021, "date_filed")].append({
+            "id": 99, "entry_number": 80, "date_filed": "2025-09-15",
+            "description": "ORDER by Magistrate Judge granting 78 MOTION to Unseal Indictment",
+            "recap_documents": [{"is_available": True}],
+        })
+        cl = _FakeCL(pages)
+        assert summary.detect_sealing(cl, 72013021, dispositions=[]) is None
+
+    def test_disposition_presence_kills_signal_without_an_api_call(self):
+        # When a disposition is in the docket, the dispositive ruling
+        # landed publicly. Don't bother walking — just refuse to flag.
+        # Also asserts we make zero CL calls in this short-circuit path.
+        cl = _FakeCL(self._dubranova_shape())
+        result = summary.detect_sealing(
+            cl, 72013021,
+            dispositions=[{"id": 99, "description": "JUDGMENT"}],
+        )
+        assert result is None
+        assert cl.calls == []
+
+    def test_substantial_post_seal_public_activity_kills_signal(self):
+        pages = self._dubranova_shape()
+        # Add 4 publicly-available entries dated AFTER the sealing order
+        # — that's above the default threshold of 3, so the seal is
+        # functionally lifted even without an explicit unsealing entry.
+        for i, day in enumerate(("2025-09-01", "2025-09-15", "2025-10-01", "2025-10-15")):
+            pages[(72013021, "date_filed")].append({
+                "id": 100 + i,
+                "entry_number": 60 + i,
+                "date_filed": day,
+                "description": f"Status Conference {i+1}",
+                "recap_documents": [{"is_available": True}],
+            })
+        cl = _FakeCL(pages)
+        assert summary.detect_sealing(cl, 72013021, dispositions=[]) is None
+
+    def test_no_sealing_order_returns_none(self):
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {
+                    "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
+                    "description": "INDICTMENT",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 2, "entry_number": 2, "date_filed": "2024-02-01",
+                    "description": "MINUTE ENTRY for arraignment",
+                    "recap_documents": [{"is_available": True}],
+                },
+            ],
+            (1, "-date_filed"): [],
+        })
+        assert summary.detect_sealing(cl, 1, dispositions=[]) is None
+
+    def test_narrow_sealing_order_with_high_public_activity_does_not_trigger(self):
+        # A "Seal Plea Agreement" order is narrow scope; combined with
+        # plenty of publicly-available post-sealing activity, this should
+        # NOT flag the docket as currently sealed.
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {
+                    "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
+                    "description": "INDICTMENT", "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 2, "entry_number": 30, "date_filed": "2024-05-01",
+                    "description": "ORDER granting Motion to Seal Plea Agreement",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 3, "entry_number": 31, "date_filed": "2024-06-01",
+                    "description": "Sentencing hearing held",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 4, "entry_number": 32, "date_filed": "2024-06-02",
+                    "description": "Status Conference",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 5, "entry_number": 33, "date_filed": "2024-06-15",
+                    "description": "Notice of Appeal",
+                    "recap_documents": [{"is_available": True}],
+                },
+                {
+                    "id": 6, "entry_number": 34, "date_filed": "2024-07-01",
+                    "description": "Minute Entry",
+                    "recap_documents": [{"is_available": True}],
+                },
+            ],
+            (1, "-date_filed"): [],
+        })
+        assert summary.detect_sealing(cl, 1, dispositions=[]) is None
+
+    def test_latest_sealing_order_is_the_operative_one(self):
+        # If a docket has two granted sealing orders (e.g., a narrow
+        # earlier seal followed by a broader later one), the advisory
+        # should reference the LATER one — that's the one currently in
+        # effect on the visible public docket.
+        cl = _FakeCL({
+            (1, "date_filed"): [
+                {
+                    "id": 1, "entry_number": 5, "date_filed": "2024-01-01",
+                    "description": "ORDER granting Motion to Seal Exhibit A",
+                    "recap_documents": [{"is_available": False}],
+                },
+                {
+                    "id": 2, "entry_number": 20, "date_filed": "2024-06-01",
+                    "description": "ORDER granting Motion to Seal Case",
+                    "recap_documents": [{"is_available": False}],
+                },
+            ],
+            (1, "-date_filed"): [],
+        })
+        result = summary.detect_sealing(cl, 1, dispositions=[])
+        assert result is not None
+        assert result["sealing_entry_number"] == 20
+        assert result["sealing_date_filed"] == "2024-06-01"
+
+    def test_description_is_truncated(self):
+        long_desc = (
+            "ORDER by Judge X granting 42 MOTION to Seal Indictment "
+            + "and Related Documents " * 30
+        )
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 1, "entry_number": 1, "date_filed": "2024-01-01",
+                "description": long_desc,
+                "recap_documents": [{"is_available": False}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        result = summary.detect_sealing(cl, 1, dispositions=[])
+        assert result is not None
+        # Truncated to <= 240 chars + the ellipsis.
+        assert len(result["sealing_description"]) <= 243
+        assert result["sealing_description"].endswith("...")
+
+
+# ---------------------------------------------------------------------------
 # _attach_text / _entry_doc_text behavior, indirectly via summarize_docket
 # ---------------------------------------------------------------------------
 
@@ -670,6 +884,73 @@ class TestSummarizeDocket:
             "insufficient-documents fallback" in r.message and "docket 1" in r.message
             for r in caplog.records
         ), [r.message for r in caplog.records]
+
+    def test_warns_when_primary_document_text_is_suspiciously_short(
+        self, store, patch_llm, patch_pdf, caplog,
+    ):
+        import logging
+        _seed_docket_meta(store, 1)
+        # Primary document extracts to text under the threshold — the
+        # us-v-moucka shape, where pypdf returned only the page headers
+        # and caption from a full multi-count indictment. The summary
+        # still gets generated (the LLM has the prompt rule that says
+        # work around partial inputs silently), but a WARNING fires so
+        # the operator can find the docket and investigate the
+        # underlying parsing failure separately.
+        short_text = "UNITED STATES OF AMERICA v. DOE\nPage 1 of 12"
+        patch_pdf["texts"] = {500: short_text}
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "entry_number": 7,
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        # Summary was still produced — the LLM works around partial
+        # inputs (the stubbed `patch_llm` returns a clean summary).
+        assert row is not None
+        # And the warning fired with the specific docket / entry
+        # references the operator needs to find it.
+        warning_messages = [r.message for r in caplog.records if r.levelno == logging.WARNING]
+        matched = [
+            m for m in warning_messages
+            if "docket 1" in m and "entry #7" in m and "extracted to only" in m
+        ]
+        assert matched, warning_messages
+
+    def test_no_warning_when_primary_document_text_is_full_length(
+        self, store, patch_llm, patch_pdf, caplog,
+    ):
+        import logging
+        _seed_docket_meta(store, 1)
+        # A realistic indictment runs many KB. Pad past the 1500-char
+        # threshold so the short-doc warning doesn't fire.
+        long_text = "INDICTMENT body. " * 200  # ~3400 chars
+        patch_pdf["texts"] = {500: long_text}
+        cl = _FakeCL({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        # No "extracted to only N chars" warnings on a normal-length doc.
+        suspect = [
+            r.message for r in caplog.records
+            if "extracted to only" in r.message
+        ]
+        assert suspect == [], suspect
 
     def test_borrows_from_sibling_when_primary_docket_has_no_primary_document(
         self, store, patch_llm, patch_pdf,
