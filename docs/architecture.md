@@ -263,10 +263,48 @@ more than a missing one.
   order on the circuit docket must not trigger cancellations on the
   district docket's hearings.
 
-For the full set of these — and *why* each one is structured the way it
-is — see
+## AGENTS.md and the runtime prompts
+
+The full set of those guardrails — plus the reasoning behind each one,
+the architectural conventions every module follows, and the testing
+philosophy — lives in
 [AGENTS.md](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)
-in the repo.
+at the repo root. That file is the project's contract with any
+**agentic AI programmer** working in the codebase: Claude Code, GitHub
+Copilot, Cursor, Codex, Aider, or any other tool that has a
+"follow this project's conventions" surface. The reason rules live in
+AGENTS.md (rather than in each agent's private memory) is portability —
+every collaborator, human or otherwise, picks them up the same way, and
+the rules survive when one agent's session ends or a different agent
+joins the project. The same file is `@`-included from `CLAUDE.md` so
+Claude Code reads it on every invocation; other agents read it the same
+way under their own conventions.
+
+The data-quality guardrails described above were the *source material*
+for the LLM prompts the project uses at runtime. Same rules, encoded in
+two places: once as English for the human and agent contributors who
+write the code, and once as English for the model that's about to
+classify a real docket entry or read a real indictment. When a rule
+gets sharpened (e.g., the no-fabrication refusal, or the
+"trial-date-is-not-evidence-of-a-trial" invariant), it gets sharpened
+in both places.
+
+The runtime prompts all live in
+[`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py):
+
+- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L23) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
+- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L83) — per-entry hearing extraction (and, with the addendum below, deadlines).
+- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L373) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
+- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L831) — the end-of-sync hearing verify pass.
+- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1068) — the parallel verify pass for filing deadlines.
+- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1205) — same-docket same-slot duplicate resolver.
+- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1398) — the higher-tier case-summary prompt.
+
+Reading any of those alongside the corresponding entry in
+[`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)
+is the fastest way to see how a particular guardrail moves from "rule
+for the human / agent writing this code" to "rule the model follows
+when processing a docket".
 
 ## See also
 
