@@ -47,10 +47,14 @@ jobs:
             --cov-report=xml \
             --cov-fail-under=90
 
-      - name: Upload coverage to Codecov
-        # Public repo → no token required. fail_ci_if_error=false keeps a
-        # transient Codecov outage from breaking the build.
-        uses: codecov/codecov-action@v4
+      - name: Upload coverage reports to Codecov
+        # Codecov requires a token even for public repos (drive-by uploads
+        # from forked PRs are otherwise rejected). Add the CODECOV_TOKEN
+        # secret in Settings → Secrets and variables → Actions; grab the
+        # value from codecov.io's repo settings. fail_ci_if_error=false
+        # keeps a transient Codecov outage from breaking the build.
+        uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           fail_ci_if_error: false
