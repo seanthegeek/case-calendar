@@ -1,5 +1,9 @@
 # case-calendar
 
+[![CI](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/seanthegeek/case-calendar/branch/main/graph/badge.svg)](https://codecov.io/gh/seanthegeek/case-calendar)
+[![License](https://img.shields.io/github/license/seanthegeek/case-calendar)](LICENSE)
+
 Subscribable calendar feeds for federal court hearings and filing
 deadlines — sourced from CourtListener / RECAP, optionally annotated
 with AI case summaries, optionally pushed to Google Calendar or

@@ -2,6 +2,10 @@
 title: case-calendar documentation
 ---
 
+[![CI](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/seanthegeek/case-calendar/branch/main/graph/badge.svg)](https://codecov.io/gh/seanthegeek/case-calendar)
+[![License](https://img.shields.io/github/license/seanthegeek/case-calendar)](https://github.com/seanthegeek/case-calendar/blob/main/LICENSE)
+
 case-calendar turns federal court dockets into calendar feeds. Point it at a
 case on [CourtListener](https://www.courtlistener.com/), and it writes the
 hearing dates and filing deadlines into an ICS file you can subscribe to from

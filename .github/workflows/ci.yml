@@ -44,4 +44,13 @@ jobs:
             --cov=case_calendar \
             --cov-branch \
             --cov-report=term-missing \
+            --cov-report=xml \
             --cov-fail-under=90
+
+      - name: Upload coverage to Codecov
+        # Public repo → no token required. fail_ci_if_error=false keeps a
+        # transient Codecov outage from breaking the build.
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
