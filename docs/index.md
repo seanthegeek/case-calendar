@@ -13,10 +13,48 @@ any calendar app — Apple, Google, Proton, Outlook, Thunderbird — and
 optionally pushes the same events directly into Google Calendar or Microsoft
 365.
 
-If you're a litigator tracking a single high-stakes case, a journalist
-covering several at once, or a researcher watching a docket of public
-interest, the goal is the same: never have to ask "wait, when is that hearing
-again?" because your calendar already knows.
+If you're a journalist covering several cases at once, a researcher
+watching a docket of public interest, or anyone tracking more cases
+than you can comfortably refresh by hand, the goal is the same:
+not having to ask "Wait, when is that hearing again?" because your
+calendar already knows.
+
+## Limitations
+
+case-calendar is a supplement to docket-watching, not a replacement
+for it. Three constraints are inherent to the design and worth
+knowing before you rely on it:
+
+- **PACER → RECAP → CourtListener latency.** Entries reach this
+  pipeline only after they appear in PACER *and* someone running
+  the [RECAP browser extension](https://free.law/recap/) pulls the
+  affected docket page, which is what feeds the entry into
+  CourtListener. On a high-traffic docket with reporters and
+  researchers refreshing it, that lag is usually minutes. On a
+  docket no one else is watching, it can be **months**, if not longer — the
+  filing exists in PACER, but until someone with RECAP visits, it
+  is invisible to CourtListener and therefore invisible here.
+  The real-time [webhook receiver](webhooks.md) narrows the
+  CourtListener-to-you portion of the chain to seconds, but it
+  cannot show you something CourtListener hasn't seen yet.
+- **Calendar-client refresh delays.** Subscribed ICS feeds refresh
+  on the calendar app's own schedule — Apple Calendar and Google
+  Calendar typically poll on the order of hours, not seconds.
+  Direct push to [Google Calendar / Microsoft 365](calendars.md)
+  sidesteps this for the events themselves; the ICS file and the
+  index page always lead.
+- **Extraction errors.** The cheap regex pre-filter and the
+  small/fast LLM the extractor uses can miss an atypical clerk
+  notation, misread a date from a garbled PDF, or fail to
+  recognize a reschedule the first time it sees one. The
+  end-of-sync verify pass catches many of these, not all. Audit
+  against the source docket before relying on a date for anything
+  consequential.
+
+For these reasons case-calendar is not a substitute for the
+calendaring software a practicing attorney uses to manage filing
+deadlines on their own cases. Treat it as a convenience layer on
+top of the public docket, not the authoritative record.
 
 ## How the docs are organized
 

@@ -102,6 +102,44 @@ cross-court sibling isolation, the no-fabrication rule, etc. — see
 [`docs/architecture.md`](docs/architecture.md) for the concise overview
 or [`AGENTS.md`](AGENTS.md) for the exhaustive reference.
 
+## Limitations
+
+case-calendar is a supplement to docket-watching, not a replacement
+for it. Three constraints are inherent to the design and worth
+knowing before you rely on it:
+
+- **PACER → RECAP → CourtListener latency.** Entries reach this
+  pipeline only after they appear in PACER *and* someone running
+  the [RECAP browser extension](https://free.law/recap/) pulls the
+  affected docket page, which is what feeds the entry into
+  CourtListener. On a high-traffic docket with reporters and
+  researchers refreshing it, that lag is usually minutes. On a
+  docket no one else is watching, it can be **months**, if not
+  longer — the filing exists in PACER, but until someone with
+  RECAP visits, it is invisible to CourtListener and therefore
+  invisible here. The
+  real-time [webhook receiver](docs/webhooks.md) narrows the
+  CourtListener-to-you portion of the chain to seconds, but it
+  cannot show you something CourtListener hasn't seen yet.
+- **Calendar-client refresh delays.** Subscribed ICS feeds refresh
+  on the calendar app's own schedule — Apple Calendar and Google
+  Calendar typically poll on the order of hours, not seconds.
+  Direct push to [Google Calendar / Microsoft 365](docs/calendars.md)
+  sidesteps this for the events themselves; the ICS file and the
+  index page always lead.
+- **Extraction errors.** The cheap regex pre-filter and the
+  small/fast LLM the extractor uses can miss an atypical clerk
+  notation, misread a date from a garbled PDF, or fail to
+  recognize a reschedule the first time it sees one. The
+  end-of-sync verify pass catches many of these, not all. Audit
+  against the source docket before relying on a date for anything
+  consequential.
+
+For these reasons case-calendar is not a substitute for the
+calendaring software a practicing attorney uses to manage filing
+deadlines on their own cases. Treat it as a convenience layer on
+top of the public docket, not the authoritative record.
+
 ## Quick start
 
 ```bash
@@ -145,12 +183,9 @@ case-calendar is open-source software under the
 not affiliated with the Administrative Office of the U.S. Courts, the
 Free Law Project, or CourtListener.
 
-Calendar entries are best-effort summaries of public docket
-information. They are not legal advice, and they are not a substitute
-for reading the docket itself. Bugs in the extractor or the
-verify-pass LLM can produce wrong dates; the AI summary feature is
-explicitly labeled as such on the rendered page and may contain
-mistakes.
+Calendar entries are not legal advice and are not a substitute for
+reading the docket itself. See [Limitations](#limitations) above for
+the specific failure modes worth knowing about.
 
 ## Contributing
 

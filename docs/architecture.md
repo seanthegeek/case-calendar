@@ -259,7 +259,7 @@ more than a missing one.
 - **Cross-court siblings are isolated.** A case can span multiple
   dockets across different courts (district + circuit appeal, parallel
   filings under different statutes). The per-entry LLM context only
-  shows it siblings *in the same court* — a "stay appellate proceedings"
+  shows its siblings *in the same court* — a "stay appellate proceedings"
   order on the circuit docket must not trigger cancellations on the
   district docket's hearings.
 

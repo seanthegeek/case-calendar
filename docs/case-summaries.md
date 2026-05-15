@@ -172,13 +172,13 @@ CourtListener and PACER sometimes don't surface documents the public
 should be able to see. Two real failure modes the project has hit:
 
 - **Sealed-then-unsealed entries** that the clerk hasn't yet unhidden or
-   re-uploaded. The indictment is technically public (the seal was
-   lifted in connection with extradition), but it still shows as
-   was missing in PACER.
-- **CourtListener metadata bugs.** A PDF is in CourtListeners's storage bucket
-  but the v4 API reports `is_available: false` because the file was uploaded
-  under an older `pacer_case_id` than the docket's current one.
-  ([CourtListener bug #7345](https://github.com/freelawproject/courtlistener/issues/7345)).
+  re-uploaded. The indictment is technically public (the seal was
+  lifted in connection with extradition), but it is still missing
+  from PACER.
+- **CourtListener metadata bugs.** A PDF is in CourtListener's storage
+  bucket but the v4 API reports `is_available: false` because the file
+  was uploaded under an older `pacer_case_id` than the docket's current
+  one ([CourtListener bug #7345](https://github.com/freelawproject/courtlistener/issues/7345)).
 
 For those cases, point case-calendar at the document directly. Each entry
 needs three fields:
