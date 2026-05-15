@@ -5,7 +5,7 @@ deadlines — sourced from CourtListener / RECAP, optionally annotated
 with AI case summaries, optionally pushed to Google Calendar or
 Microsoft 365.
 
-📚 **Documentation:** [https://seanthegeek.github.io/case-calendar/](https://seanthegeek.github.io/case-calendar/)
+📚 **Documentation:** [https://seanthegeek.github.io/case-calendar/](https://seanthegeek.github.io/case-calendar/)<br>
 (or browse the [`docs/`](docs/index.md) folder in this repo).
 🌐 **Live example:** [https://casecalendar.net/](https://casecalendar.net/)
 — a deployed instance with real cases, real ICS feeds, and the AI case
