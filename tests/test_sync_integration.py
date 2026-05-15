@@ -759,6 +759,45 @@ class TestProcessEntryDirect:
         # Second call with identical entry should be a no-op.
         assert syncer.process_entry(case, 100, e) is False
 
+    def test_action_without_hearing_key_logs_and_drops(
+        self, store: Store, case, monkeypatch, caplog,
+    ):
+        # Defensive guard: an LLM returning a hearing-shaped action with
+        # no hearing_key would crash the store layer at the PRIMARY KEY
+        # boundary if we tried to insert it. The handler logs and drops
+        # instead. (The LLM prompt forbids this shape but the cheap
+        # extractor is occasionally creative.)
+        import logging
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD", "title": "Sentencing",
+                 "hearing_type": "sentencing",
+                 "local_date": "2026-04-14", "local_time": "15:00",
+                 # missing "hearing_key"
+            }],
+        })
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        with caplog.at_level(logging.WARNING, logger="case_calendar.sync"):
+            syncer.process_entry(
+                case, 100,
+                _entry(1, "Sentencing set for 4/14/2026 03:00 PM"),
+            )
+        assert store.get_hearings("us-v-x") == []
+        assert any(
+            "action without hearing_key" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_ensure_court_noop_on_empty_court_id(self, store: Store, case):
+        # The `_ensure_court` guard short-circuits on missing court_id —
+        # CourtListener is never called and nothing is written.
+        class _BoomCourtListener:
+            def get_court(self, _):
+                raise AssertionError("get_court must not run on empty court_id")
+        syncer = CaseSyncer(_BoomCourtListener(), store)
+        syncer._ensure_court("")  # no-op
+        syncer._ensure_court(None)  # no-op
+
 
 class TestRecapDocumentsPersisted:
     """The compact recap_documents JSON we render at emit time is owned by
@@ -1219,6 +1258,26 @@ class TestVerifyScheduledHearings:
         assert h["status"] == "scheduled"
         assert h["starts_at_utc"] == before
 
+    def test_malformed_source_entry_ids_json_does_not_crash_verify(
+        self, store, case, monkeypatch,
+    ):
+        # source_entry_ids is stored as JSON; if a row's column is
+        # corrupted (manual SQL edit, an aborted migration, etc.) the
+        # verify sweep must recover with an empty list rather than
+        # crash the whole sync.
+        self._seed_future_hearing(store, key="resilient")
+        store.conn.execute(
+            "UPDATE hearings SET source_entry_ids=? WHERE hearing_key=?",
+            ("not-json", "resilient"),
+        )
+        store.conn.commit()
+        stub_verify(monkeypatch)  # default CONFIRM
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        # Should not raise.
+        CaseSyncer(cl, store).sync_case(case)
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "scheduled"
+
     def test_unclear_is_no_op(self, store, case, monkeypatch):
         self._seed_future_hearing(store)
         stub_verify(monkeypatch, by_key={
@@ -1434,6 +1493,110 @@ class TestDeadlineExtraction:
         )
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "met"
+
+    def test_cancel_deadline_on_existing_row_flips_status(
+        self, store, case, monkeypatch,
+    ):
+        # ADD then CANCEL on the same key — the existing row is merged
+        # in place rather than inserted fresh. Covers the `if existing:`
+        # branch of the CANCEL_DEADLINE handler.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "reply-mtd",
+                 "title": "Reply ISO MTD",
+                 "local_date": "2026-05-31"}],
+            2: [{"type": "CANCEL_DEADLINE",
+                 "deadline_key": "reply-mtd",
+                 "notes": "briefing schedule vacated"}],
+        })
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER: reply due by 5/31/2026"))
+        syncer.process_entry(case, 100, _entry(2, "ORDER vacating briefing schedule"))
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        assert rows[0]["status"] == "cancelled"
+        assert rows[0]["notes"] == "briefing schedule vacated"
+        # Both source entries are preserved in the merged row.
+        assert set(rows[0]["source_entry_ids"]) == {1, 2}
+
+    def test_cancel_deadline_unknown_key_no_local_date_drops_with_warning(
+        self, store, case, monkeypatch, caplog,
+    ):
+        # CANCEL_DEADLINE on a key we don't recognize AND no `local_date`
+        # to anchor a fresh row → drop and log. Without `local_date` we
+        # can't even insert an audit row.
+        import logging
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "CANCEL_DEADLINE",
+                 "deadline_key": "ghost-key",
+                 "notes": "something cancelled"}],
+        })
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        with caplog.at_level(logging.WARNING, logger="case_calendar.sync"):
+            syncer.process_entry(
+                case, 100,
+                _entry(1, "ORDER vacating briefing schedule"),
+            )
+        assert store.get_deadlines("us-v-x") == []
+        assert any(
+            "CANCEL_DEADLINE on unknown key with no local_date" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_mark_filed_unknown_key_logs_and_does_not_insert(
+        self, store, case, monkeypatch, caplog,
+    ):
+        # MARK_FILED on a key we never saw an ADD for is a benign log —
+        # the deadline was filtered out or predates our store. Don't
+        # create a fictional "met" row.
+        import logging
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "MARK_FILED", "deadline_key": "ghost-key"}],
+        })
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        with caplog.at_level(logging.INFO, logger="case_calendar.sync"):
+            syncer.process_entry(
+                case, 100,
+                _entry(1, "RESPONSE brief filed (briefing schedule complete)"),
+            )
+        assert store.get_deadlines("us-v-x") == []
+        assert any(
+            "MARK_FILED on unknown key" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_reschedule_deadline_without_local_date_keeps_existing_date(
+        self, store, case, monkeypatch,
+    ):
+        # RESCHEDULE_DEADLINE without a `local_date` is rare (the model
+        # normally only emits a reschedule when it has a new date), but
+        # the code path tolerates it: the existing row's due_at_utc
+        # rides through unchanged while other fields like notes can
+        # still be updated. Covers the fall-through branch where the
+        # date-setting `if/elif` chain doesn't fire.
+        make_llm_stub(monkeypatch, by_entry={
+            1: [{"type": "ADD_DEADLINE",
+                 "deadline_key": "response-mtd",
+                 "title": "Response ISO MTD",
+                 "local_date": "2026-05-31"}],
+            2: [{"type": "RESCHEDULE_DEADLINE",
+                 "deadline_key": "response-mtd",
+                 # No local_date — but updated notes.
+                 "notes": "extension administratively docketed"}],
+        })
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(case, 100, _entry(1, "ORDER: response due by 5/31/2026"))
+        syncer.process_entry(case, 100, _entry(2, "STIPULATION AND ORDER on briefing"))
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        # Date is unchanged from the ADD.
+        assert rows[0]["due_at_utc"] == "2026-05-31T21:00:00+00:00"
+        # Notes did get updated.
+        assert rows[0]["notes"] == "extension administratively docketed"
 
     def test_cancel_deadline_with_unknown_key_inserts_cancelled_row(
         self, store, case, monkeypatch,
@@ -1901,6 +2064,55 @@ class TestVerifyPendingDeadlines:
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "pending"
         assert d["due_at_utc"] == before
+
+    def test_malformed_source_entry_ids_json_does_not_crash_verify(
+        self, store, case, monkeypatch,
+    ):
+        # Same recovery as the hearings verify sweep: a deadline row
+        # with corrupted source_entry_ids JSON must fall back to an
+        # empty list rather than crash the sync.
+        self._seed_future_deadline(store, key="resilient")
+        store.conn.execute(
+            "UPDATE deadlines SET source_entry_ids=? WHERE deadline_key=?",
+            ("not-json", "resilient"),
+        )
+        store.conn.commit()
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch)  # default CONFIRM
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        # Should not raise.
+        CaseSyncer(cl, store).sync_case(case)
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "pending"
+
+    def test_skips_deadline_with_no_docket_id(
+        self, store, case, monkeypatch,
+    ):
+        # Defensive: deadlines without a docket_id can't be verified —
+        # the sweep needs the docket's court to resolve timezones — so
+        # the row is silently skipped instead of crashing the sweep.
+        from datetime import datetime, timedelta, timezone
+        future_iso = (
+            datetime.now(timezone.utc) + timedelta(days=14)
+        ).isoformat()
+        store.upsert_deadline({
+            "case_id": "us-v-x",
+            "deadline_key": "orphan",
+            "title": "Orphan deadline",
+            "due_at_utc": future_iso,
+            "timezone": "America/New_York",
+            "status": "pending",
+            "significance": "major",
+            "docket_id": None,  # the missing-docket case
+            "source_entry_ids": [99],
+        })
+        stub_verify(monkeypatch)
+        stub_verify_deadline(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        # Sweep runs without crashing.
+        CaseSyncer(cl, store).sync_case(case)
+        d = next(d for d in store.get_deadlines("us-v-x") if d["deadline_key"] == "orphan")
+        assert d["status"] == "pending"
 
     def test_cancel_flips_to_cancelled(self, store, case, monkeypatch):
         self._seed_future_deadline(store)

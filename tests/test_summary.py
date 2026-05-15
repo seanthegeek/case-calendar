@@ -1646,6 +1646,28 @@ class TestRefreshStale:
         )
         assert patch_llm[0]["aggregation_note"] == "Parallel district + appellate."
 
+    def test_skipped_docket_not_added_to_written_set(
+        self, store, patch_llm, patch_pdf,
+    ):
+        # When `summarize_docket` returns None (no extractable primary
+        # document text), the row stays out of the `written` map so the
+        # caller's emit logic doesn't think the index needs re-rendering
+        # for that docket. Covers the `if row:` falsy branch.
+        _seed_docket_meta(store, 1)
+        # Empty PDF text → summarize_docket returns None.
+        patch_pdf["texts"] = {}
+        cl = _FakeCourtListener({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        written = refresh_stale(cl=cl, store=store, cases=[case])
+        # Nothing summarized → empty written map (or no entry for this case).
+        assert "us-v-doe" not in written or written["us-v-doe"] == set()
+
 
 class TestSummarizeCase:
     def test_force_overwrites_existing_summary(self, store, patch_llm, patch_pdf):
@@ -1680,3 +1702,23 @@ class TestSummarizeCase:
         rows = summarize_case(cl=cl, store=store, case=case)
         assert rows == []
         assert patch_llm == []
+
+    def test_skipped_docket_not_in_returned_rows(self, store, patch_llm, patch_pdf):
+        # `summarize_docket` returns None when no primary document text
+        # could be extracted. `summarize_case` must skip that docket
+        # rather than append None to the result list. Covers the
+        # `if row:` falsy branch.
+        _seed_docket_meta(store, 1)
+        # Empty PDF text → summarize_docket returns None.
+        patch_pdf["texts"] = {}
+        cl = _FakeCourtListener({
+            (1, "date_filed"): [{
+                "id": 10, "description": "INDICTMENT", "date_filed": "2024-01-01",
+                "recap_documents": [{"id": 500}],
+            }],
+            (1, "-date_filed"): [],
+        })
+        case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+        rows = summarize_case(cl=cl, store=store, case=case, force=True)
+        # No row added because summarize_docket returned None.
+        assert rows == []

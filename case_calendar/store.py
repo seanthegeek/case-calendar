@@ -908,7 +908,15 @@ class Store:
     @staticmethod
     def _row_to_hearing(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+        # source_entry_ids is JSON; a corrupted column (manual SQL edit,
+        # aborted migration, partial write) shouldn't crash every caller
+        # that reads the row. Fall back to an empty list and keep going —
+        # the verify sweeps and any downstream LLM context just lose one
+        # row's provenance, not the whole sync.
+        try:
+            d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["source_entry_ids"] = []
         return d
 
     # --- deadlines ---
@@ -995,7 +1003,11 @@ class Store:
     @staticmethod
     def _row_to_deadline(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+        # Same corruption-tolerant fallback as `_row_to_hearing`.
+        try:
+            d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
+        except (json.JSONDecodeError, TypeError):
+            d["source_entry_ids"] = []
         return d
 
     # --- case summaries ---

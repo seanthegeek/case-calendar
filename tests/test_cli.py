@@ -1551,6 +1551,28 @@ class TestCmdWebhookUrl:
         assert "cannot reach" in err
         assert "nodename" in err
 
+    def test_check_non_200_no_exception_path(self, monkeypatch, capsys):
+        # urlopen returns a Response object with status != 200 WITHOUT
+        # raising an HTTPError — possible on a custom proxy that
+        # rewrites status codes, or a misconfigured Caddy returning a
+        # bare 301 from the receiver path. The status-check branch
+        # after the try/except surfaces the failure too.
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+
+        class _Resp:
+            status = 301
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return b'redirect to login'
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=10: _Resp())
+        args = SimpleNamespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        err = capsys.readouterr().err
+        assert "HTTP 301" in err
+        assert "redirect to login" in err
+
     def test_check_200_empty_body_is_failure(self, monkeypatch, capsys):
         # This is the Cloudflare-intercept signature we ran into in
         # production — 200 with an empty body. The check has to flag it,

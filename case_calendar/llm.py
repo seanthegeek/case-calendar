@@ -1787,8 +1787,10 @@ def _append_doc_block(
             f"--- OPERATOR-PROVIDED DOCUMENT (sourced outside CourtListener): "
             f"{doc['source_url']} ---"
         )
-        if doc.get("operator_note"):
-            parts.append(f"NOTE FROM OPERATOR: {doc['operator_note']}")
+        # `operator_note` is required and non-empty on every extra_documents
+        # entry — config-load raises SystemExit if either is missing
+        # (see `cli._extra_documents_from_config`). No guard needed here.
+        parts.append(f"NOTE FROM OPERATOR: {doc['operator_note']}")
     else:
         parts.append(
             f"--- entry #{doc.get('entry_number')} "

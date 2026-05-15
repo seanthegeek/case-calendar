@@ -1119,6 +1119,56 @@ class TestAuditNotesMigration:
         assert d["audit_notes"] == "[verify-pass] Extended per docket."
         s.close()
 
+    def test_inline_audit_marker_in_paragraph_body_is_left_alone(self, tmp_path):
+        # The SQL pre-filter (`notes LIKE '%[verify-pass]%'`) catches
+        # any row whose notes contain the literal marker, but the
+        # _split_audit_segments helper only moves paragraphs that
+        # *lead* with the marker. A docket note that mentions
+        # `[verify-pass]` mid-sentence — say, a clerk quoting it back
+        # in their own prose — should be left untouched. The migration
+        # `continue`s when nothing is extracted, leaving the row as-is.
+        path = tmp_path / "inline.sqlite"
+        c = sqlite3.connect(path)
+        c.executescript("""
+            CREATE TABLE hearings (
+                case_id TEXT NOT NULL, hearing_key TEXT NOT NULL,
+                title TEXT NOT NULL, starts_at_utc TEXT,
+                duration_minutes INTEGER, timezone TEXT NOT NULL,
+                location TEXT, judge TEXT, notes TEXT, dial_in TEXT,
+                status TEXT NOT NULL, gcal_event_id TEXT,
+                source_entry_ids TEXT NOT NULL, last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, hearing_key)
+            );
+            CREATE TABLE deadlines (
+                case_id TEXT NOT NULL, deadline_key TEXT NOT NULL,
+                title TEXT NOT NULL, due_at_utc TEXT,
+                timezone TEXT NOT NULL, notes TEXT,
+                status TEXT NOT NULL, gcal_event_id TEXT,
+                source_entry_ids TEXT NOT NULL, last_updated TEXT NOT NULL,
+                PRIMARY KEY (case_id, deadline_key)
+            );
+        """)
+        c.execute(
+            "INSERT INTO hearings VALUES "
+            "('us-v-x', 'trial', 'Trial', '2024-06-12T14:00:00+00:00', "
+            "240, 'America/New_York', NULL, NULL, "
+            "'Trial commences after [verify-pass]-style audit completes.', "
+            "NULL, 'scheduled', NULL, '[1]', '2026-01-01T00:00:00+00:00')"
+        )
+        c.commit()
+        c.close()
+
+        s = Store(path)
+        h = s.get_hearing("us-v-x", "trial")
+        # The marker stays in the notes — it's not at the start of a
+        # paragraph so it's not a real audit segment.
+        assert h["notes"] == (
+            "Trial commences after [verify-pass]-style audit completes."
+        )
+        # And audit_notes is empty (nothing got extracted).
+        assert (h.get("audit_notes") or "") == ""
+        s.close()
+
     def test_migration_is_idempotent(self, tmp_path):
         # Running open twice mustn't double-split: by the second open the
         # audit text already lives in audit_notes, so notes contains no

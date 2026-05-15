@@ -328,6 +328,57 @@ class TestExtractWithPypdfHappyPath:
         monkeypatch.setattr(builtins, "__import__", _no_pypdf)
         assert pdf.extract_with_pypdf(b"%PDF") == ""
 
+    def test_pypdf_reader_construction_failure_returns_empty(self, monkeypatch):
+        # If pypdf raises when constructing PdfReader (corrupt file, an
+        # exotic format), the outer try/except in extract_with_pypdf
+        # logs and returns empty string rather than crashing the whole
+        # summary call. The bug shape: a PDF that's valid enough to
+        # download but malformed enough to break pypdf.
+        import pypdf
+
+        class _BoomReader:
+            def __init__(self, *a, **k):
+                raise pypdf.errors.PdfReadError("Stream has ended unexpectedly")
+
+        monkeypatch.setattr(pdf, "PdfReader", _BoomReader, raising=False)
+        # Also patch the import inside the function — pypdf.PdfReader is
+        # imported lazily, so we need to intercept the import too.
+        import sys
+        fake_module = type(sys)("pypdf")
+        fake_module.PdfReader = _BoomReader
+        fake_module.errors = pypdf.errors
+        monkeypatch.setitem(sys.modules, "pypdf", fake_module)
+        assert pdf.extract_with_pypdf(b"%PDF-1.4 garbage") == ""
+
+    def test_per_page_extract_text_exception_is_caught(self, monkeypatch):
+        # The inner per-page try/except keeps a single broken page from
+        # blowing up the whole extraction. Real-world shape: an
+        # encrypted-content-stream page in an otherwise-readable
+        # multi-page PDF. The good pages still contribute text; the bad
+        # one contributes empty.
+        import sys
+        import pypdf
+
+        class _BadPage:
+            def extract_text(self):
+                raise RuntimeError("encrypted content stream")
+
+        class _GoodPage:
+            def extract_text(self):
+                return "Good page body."
+
+        class _Reader:
+            def __init__(self, *a, **k):
+                self.pages = [_BadPage(), _GoodPage()]
+
+        fake_module = type(sys)("pypdf")
+        fake_module.PdfReader = _Reader
+        fake_module.errors = pypdf.errors
+        monkeypatch.setitem(sys.modules, "pypdf", fake_module)
+        out = pdf.extract_with_pypdf(b"%PDF-1.4")
+        # Bad page contributed nothing; good page's text survived.
+        assert out == "Good page body."
+
 
 class TestOcrWithTesseract:
     def test_returns_empty_when_tools_missing(self, monkeypatch):
