@@ -2,5 +2,5 @@ title: case-calendar
 description: >-
   Federal court calendar feeds from CourtListener / RECAP, with AI case
   summaries and real-time webhook updates.
-remote_theme: carlosperate/jekyll-theme-rtd@v1.4.0
+theme: jekyll-theme-cayman
 show_downloads: false
