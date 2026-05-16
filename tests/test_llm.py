@@ -1797,3 +1797,234 @@ class TestSummaryPromptDocumentNarrationGuard:
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert "This rule does NOT relax the refuse-rather-than-fabricate rule below" in normalized
         assert "There is NO middle ground that narrates the workaround" in normalized
+
+
+class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
+    """Regression guards for the SUMMARY_SYSTEM_PROMPT rule added after
+    the us-v-knoot (3:24-cr-00151, M.D. Tenn.) regression — the summary
+    closed with "$15,100 in restitution ... with a forfeiture money
+    judgment of $15,100 also entered against him." That phrasing is
+    technically a faithful reading of the docket (entry 136's
+    sentencing minute entry sets $15,100 restitution; entry 139's
+    Order of Forfeiture (Money Judgment) sets a $15,100 forfeiture),
+    but a lay subscriber reads it as two separate $15,100 obligations
+    summing to $30,200 — when the forfeiture and restitution actually
+    cover the SAME $15,100 of proceeds, with the forfeiture going to
+    the government and the restitution to the victim. The rule tells
+    the model to OMIT the forfeiture money judgment when its amount
+    matches restitution: it adds noise without adding information for
+    lay subscribers when the dollar figure is already stated as
+    restitution.
+    """
+
+    def test_omission_rule_header_present(self):
+        # The directive must be active ("OMIT") — a defensive rule
+        # alone would still let the model word the relationship
+        # explicitly, which the user prefers to avoid.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "when a forfeiture money judgment against the same "
+            "defendant equals the restitution amount, OMIT the "
+            "forfeiture money judgment from the summary"
+        ) in normalized
+
+    def test_omission_is_deliberate_not_silent(self):
+        # The model must understand this is a prompted omission, not
+        # a license to silently drop financial obligations elsewhere.
+        # Without this clarification it could over-generalize the rule
+        # into the multi-payee territory the next rule explicitly
+        # forbids.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "This is a DELIBERATE, prompted omission, NOT a silent drop"
+        ) in normalized
+
+    def test_canonical_forbidden_phrasing_pinned(self):
+        # The exact us-v-knoot closer — pin it so a future
+        # "shorten the rule" edit can't drop the canonical forbidden
+        # form. It wraps across multiple lines in the prompt.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"$15,100 in restitution ... with a forfeiture money '
+            'judgment of $15,100 also entered against him"'
+        ) in normalized
+        # And the $30,200 sum-trap is what makes the phrasing wrong;
+        # call it out by name so a future editor doesn't lose the
+        # reason the rule exists.
+        assert "$30,200" in llm.SUMMARY_SYSTEM_PROMPT
+
+    def test_explicit_mention_forms_also_forbidden(self):
+        # The previous iteration of the rule made the relationship
+        # explicit ("in the same amount" / "for the same $15,100").
+        # The new rule forbids those forms too — the user judged them
+        # technically accurate but still redundant noise for lay
+        # subscribers. Pin both forms as NOT acceptable.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"$15,100 in restitution and a forfeiture money judgment '
+            'in the same amount"'
+        ) in normalized
+        assert (
+            "the court entered a forfeiture money judgment for the "
+            "same $15,100"
+        ) in normalized
+        # And both must appear in the NOT-acceptable list, not the
+        # acceptable one. The simplest pin: the "still redundant" or
+        # "same problem" framing follows each one.
+        assert "still redundant noise" in normalized
+        assert "same problem" in normalized
+
+    def test_acceptable_shape_pinned(self):
+        # The single acceptable shape — restitution stated, forfeiture
+        # money judgment omitted entirely, summary continues to
+        # non-financial details or stops. The "full stop, no mention"
+        # framing is the operative signal for the model.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"$15,100 in restitution, and a $100 special assessment" '
+            "— full stop, no mention of the forfeiture money judgment"
+        ) in normalized
+
+    def test_same_defendant_guardrail_present(self):
+        # Co-defendants in a multi-defendant case can independently
+        # receive matching financial orders (e.g. each ordered $15,100
+        # in restitution). Those are TWO independent obligations from
+        # two different defendants — dropping one would erase that
+        # defendant's debt entirely. The rule must explicitly require
+        # the orders run against the SAME defendant.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "The forfeiture money judgment and the restitution are "
+            "entered against the SAME defendant"
+        ) in normalized
+        # And a worked counter-example so the model has a concrete
+        # picture of what NOT to collapse.
+        assert (
+            "If two co-defendants in the same case each receive "
+            "matching financial orders, those are TWO independent "
+            "obligations"
+        ) in normalized
+
+    def test_money_judgment_vs_identified_property_guardrail_present(self):
+        # The omission rule applies only to forfeiture MONEY JUDGMENTS
+        # (in personam orders to disgorge a dollar amount), not to
+        # forfeiture of identified property (specific named assets).
+        # Identified-property forfeiture takes things, not money, and
+        # stays in the summary on its own merits.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "The forfeiture is a MONEY JUDGMENT (an in personam order "
+            "to disgorge a proceeds amount in dollars), NOT forfeiture "
+            "of identified property"
+        ) in normalized
+        # And worked examples of identified property so the model
+        # recognizes the carve-out.
+        assert "houses, cars, bank accounts, cryptocurrency wallets" in normalized
+        # And the mixed-judgment case (money judgment + identified
+        # property in one order) must be explicit — only the money
+        # judgment portion drops.
+        assert (
+            "drops only the money-judgment portion under this rule"
+        ) in normalized
+
+    def test_total_restitution_match_guardrail_present(self):
+        # Guardrail #3 — the forfeiture money judgment must equal the
+        # TOTAL restitution across all payees, not match a per-victim
+        # figure. A $15,100 forfeiture against $15,100×2 restitution
+        # (totaling $30,200) does NOT match — the forfeiture stays.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "The forfeiture money judgment equals the TOTAL "
+            "restitution amount across all victims/payees"
+        ) in normalized
+        # And the worked counter-example.
+        assert (
+            "$15,100 each to two victims summing to $30,200"
+        ) in normalized
+        assert (
+            "the forfeiture stays in the summary"
+        ) in normalized
+
+    def test_outside_conditions_default_is_independent_line_items(self):
+        # When ANY guardrail fails, the default behavior is to treat
+        # each financial order as its own line item — the rule must
+        # state this default explicitly so the model doesn't fall back
+        # to its own heuristic.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "Outside of all three conditions, restitution and "
+            "forfeiture are their own line items"
+        ) in normalized
+
+    def test_equal_amount_multiple_payees_rule_present(self):
+        # Guardrail #2 is defensive — it tells the model NOT to
+        # collapse two restitution orders against the same defendant
+        # at matching amounts. A defensive rule alone leaves the
+        # failure-mode door open: the model can obey #2 by silently
+        # dropping one of the payees rather than reporting both. The
+        # positive rule forces the model to state the TOTAL and
+        # itemize, so a "$15,100 in restitution" reading is unavailable
+        # when the court actually ordered "$15,100 each to two
+        # victims, totaling $30,200."
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "EQUAL-AMOUNT MULTIPLE PAYEES — every payee is its own order"
+        ) in normalized
+        # The "halve or quarter" framing — the core trap the rule is
+        # closing.
+        assert (
+            "would silently halve (or quarter, etc.) the defendant's "
+            "stated liability"
+        ) in normalized
+
+    def test_equal_amount_multiple_payees_acceptable_shapes_present(self):
+        # The model needs at least one explicit good-form example to
+        # anchor on. Pin the canonical "$30,200 in restitution, $15,100
+        # each to Acme Corp. and Beta Inc." example so a future
+        # "shorten the rule" pass doesn't drop the worked shape.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"$30,200 in restitution, $15,100 each to Acme Corp. '
+            'and Beta Inc."'
+        ) in normalized
+
+    def test_equal_amount_multiple_payees_forbidden_shape_pinned(self):
+        # The canonical wrong form — single-payee summary when the
+        # judgment ordered multiple. Pin it so a future editor doesn't
+        # drop the warning.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            '"$15,100 in restitution" stated once when the judgment '
+            "names multiple same-amount payees"
+        ) in normalized
+
+    def test_equal_amount_multiple_payees_extends_to_forfeiture_and_schedules(self):
+        # The rule must apply equally to forfeiture orders and to
+        # judgments that itemize via an attached schedule — the
+        # vocabulary varies but the substance is the same.
+        import re
+        normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert (
+            "same rule applies to multiple equal-amount forfeiture "
+            "orders"
+        ) in normalized
+        # "as set forth in the attached schedule" — the canonical
+        # phrasing courts use to fold per-victim itemizations into a
+        # schedule rather than the judgment body proper. The model
+        # must recognize this form as N orders.
+        assert (
+            '"restitution to victims as set forth in the attached '
+            'schedule"'
+        ) in normalized

@@ -1598,6 +1598,76 @@ judgment document was unavailable and you have only a notice of
 sentencing, say "was sentenced on [date]" without speculating about the
 terms.
 
+CRITICAL — when a forfeiture money judgment against the same
+defendant equals the restitution amount, OMIT the forfeiture money
+judgment from the summary. Subscribers reading the summary haven't
+read the docket; the forfeiture-money-judgment terminology adds
+noise without adding information for lay readers when its amount
+duplicates a restitution figure already stated. The forfeiture
+order still exists on the docket — we're choosing not to surface it
+to lay subscribers when it's redundant with restitution. This is a
+DELIBERATE, prompted omission, NOT a silent drop. Report just the
+restitution and let it stand. Acceptable shape: "$15,100 in
+restitution, and a $100 special assessment" — full stop, no
+mention of the forfeiture money judgment. NOT acceptable:
+- "$15,100 in restitution ... with a forfeiture money judgment of
+  $15,100 also entered against him" — reads as $30,200 to lay
+  subscribers (the canonical us-v-knoot regression);
+- "$15,100 in restitution and a forfeiture money judgment in the
+  same amount" — technically accurate but still redundant noise for
+  the audience this summary is written for;
+- "$15,100 in restitution; the court entered a forfeiture money
+  judgment for the same $15,100" — same problem.
+
+GUARDRAILS — the omission rule applies ONLY when ALL of these hold:
+1. The forfeiture money judgment and the restitution are entered
+   against the SAME defendant. If two co-defendants in the same
+   case each receive matching financial orders, those are TWO
+   independent obligations from two different defendants — describe
+   both separately, named by defendant, even though the dollar
+   amounts match.
+2. The forfeiture is a MONEY JUDGMENT (an in personam order to
+   disgorge a proceeds amount in dollars), NOT forfeiture of
+   identified property (specific named assets — houses, cars, bank
+   accounts, cryptocurrency wallets, jewelry). Forfeiture of
+   identified property is a separate kind of order that takes
+   things, not money, and STAYS in the summary on its own merits.
+   A judgment that contains BOTH a forfeiture money judgment AND
+   forfeiture of identified property drops only the money-judgment
+   portion under this rule; the identified-property forfeiture is
+   reported as written.
+3. The forfeiture money judgment equals the TOTAL restitution
+   amount across all victims/payees. If restitution sums to a
+   different total — e.g. $15,100 each to two victims summing to
+   $30,200, paired with a $15,100 forfeiture money judgment — the
+   amounts do not match and the forfeiture stays in the summary.
+Outside of all three conditions, restitution and forfeiture are
+their own line items, each described separately as written.
+
+EQUAL-AMOUNT MULTIPLE PAYEES — every payee is its own order. When a
+single defendant is ordered to pay the SAME amount of restitution to
+TWO OR MORE victims (e.g. "$15,100 each to Acme Corp. and Beta Inc.,
+totaling $30,200"), that is N independent obligations, not one.
+Reporting it as "$15,100 in restitution" once would silently halve
+(or quarter, etc.) the defendant's stated liability — every victim
+the court named would still be owed money, but the summary would
+read as if only one were. Report the TOTAL amount across all payees
+AND either name the payees individually or state how many there are.
+Acceptable shapes:
+- "$30,200 in restitution, $15,100 each to Acme Corp. and Beta Inc."
+- "a total of $30,200 in restitution, distributed equally among
+  two victims at $15,100 each."
+- "$60,400 in restitution to four victims at $15,100 each."
+NOT acceptable: "$15,100 in restitution" stated once when the
+judgment names multiple same-amount payees — that erases the other
+victims' orders. The same rule applies to multiple equal-amount
+forfeiture orders or any other order type the court itemizes by
+recipient. Courts vary in how they word these orders — some list the
+victims line by line in the judgment, others fold them into a
+schedule attached to the judgment, others state "restitution to
+victims as set forth in the attached schedule" — but a per-victim
+itemization in any form is N orders, not one.
+
 For multi-defendant cases, name each appearing defendant explicitly with
 their individual status. Fugitives are named explicitly ("X remains a
 fugitive abroad"). Severed defendants are noted.
