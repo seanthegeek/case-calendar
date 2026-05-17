@@ -160,6 +160,8 @@ software a practicing attorney uses to manage filing deadlines on
 their own cases. Treat it as a convenience layer on top of the
 public docket, not the authoritative record.
 
+If you find an issue with event extraction, case summarization, or some other bug, please [report it](https://github.com/seanthegeek/case-calendar/issues/new/choose).
+
 ## Quick start
 
 ```bash
