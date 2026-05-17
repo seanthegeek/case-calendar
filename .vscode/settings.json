@@ -157,5 +157,8 @@
         "Zewei",
         "Zhenxing",
         "zoneinfo"
-    ]
+    ],
+    "markdownlint.config": {
+        "MD024": false
+    }
 }
