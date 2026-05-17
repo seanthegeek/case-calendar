@@ -117,6 +117,38 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 - msgraph-sdk + azure-identity (Microsoft 365 / Outlook calendar — official Microsoft libs only, lazy-imported, async client wrapped in `asyncio.run`)
 - python-dotenv, pyyaml
 
+## Python Code Style
+
+- Formatter/linter: **Ruff**
+- Type annotations use `TypedDict` for structured results
+- Supports all currently supported Python versions
+- Modern type annotations across the entire project
+  - Always use the the latest version of pywright for static type checking
+- Testing framework: **pytest**
+- Every bit of code should have a test
+- Build backend: **hatchling**
+- Module-level loggers: `logger = logging.getLogger(__name__)` — one logger per module, named for the module
+- Project-defined errors subclass `RuntimeError`, not bare `Exception`, so callers can catch project failures specifically without sweeping in unrelated bugs
+
+## Markdown Style
+
+- All markdown must pass VSCode's default markdownlint config
+  - VScode projects must be configured with `"markdownlint.config": {"MD024": false}` to allow for proper changelog headings
+
+## GitHub releases
+
+- Releases are made by version tag not branch
+- Version tags should be prefixed with `v`, unless prior tags are not
+- Release titles must always exclude the `v` prefix
+- For Python projects, wheels and srcbuilds should always be attached
+  - Use existing build files **if** they match the release version
+
+## Documentation
+
+The project must be well documented. If existing documentation exists, hollow that convention.
+
+For new projects, do **NOT** use a monolithic readme. Instead, use the readme to provide an overview of the project, and leave specific details in friendly, bite-sized markdown-formatted pages in a `docs` directory.
+
 ## Development
 
 ```bash
