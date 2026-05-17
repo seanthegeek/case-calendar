@@ -26,31 +26,44 @@ from .conftest import FakeCourtListener
 @pytest.fixture
 def case():
     return CaseConfig(
-        case_id="us-v-x", name="United States v. X",
-        dockets=[100], calendar="cyber",
+        case_id="us-v-x",
+        name="United States v. X",
+        dockets=[100],
+        calendar="cyber",
     )
 
 
 def _make_cl() -> FakeCourtListener:
     return FakeCourtListener(
-        dockets={100: {
-            "id": 100, "court_id": "mad",
-            "docket_number": "1:25-cr-00001-X",
-            "case_name": "US v. X",
-            "absolute_url": "/docket/100/x/",
-            "date_modified": "2026-05-08T11:00:00-07:00",
-        }},
-        courts={"mad": {"citation_string": "D. Mass.",
-                        "short_name": "Massachusetts",
-                        "full_name": "District of Massachusetts"}},
+        dockets={
+            100: {
+                "id": 100,
+                "court_id": "mad",
+                "docket_number": "1:25-cr-00001-X",
+                "case_name": "US v. X",
+                "absolute_url": "/docket/100/x/",
+                "date_modified": "2026-05-08T11:00:00-07:00",
+            }
+        },
+        courts={
+            "mad": {
+                "citation_string": "D. Mass.",
+                "short_name": "Massachusetts",
+                "full_name": "District of Massachusetts",
+            }
+        },
     )
 
 
 def _start_server(*, store, case, cl, emit_fn=None):
     secret = "test-secret-please-make-it-long-enough"
     server = WebhookServer(
-        ("127.0.0.1", 0), secret=secret,
-        cases=[case], store=store, cl=cl, emit_fn=emit_fn,
+        ("127.0.0.1", 0),
+        secret=secret,
+        cases=[case],
+        store=store,
+        cl=cl,
+        emit_fn=emit_fn,
     )
     port = server.server_address[1]
     t = threading.Thread(target=server.serve_forever, daemon=True)
@@ -60,14 +73,26 @@ def _start_server(*, store, case, cl, emit_fn=None):
 
 
 @pytest.fixture
-def base_url(store: Store, case, monkeypatch) -> Iterator[tuple[str, str, FakeCourtListener]]:
+def base_url(
+    store: Store, case, monkeypatch
+) -> Iterator[tuple[str, str, FakeCourtListener]]:
     """Spin up a webhook server with a controllable FakeCourtListener backing it."""
-    monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
-        "type": "ADD", "hearing_key": "sentencing-x",
-        "hearing_type": "sentencing", "title": "Sentencing",
-        "local_date": "2026-04-14", "local_time": "15:00",
-        "duration_minutes": 90, "location": "Courtroom 4",
-    }])
+    monkeypatch.setattr(
+        llm_mod,
+        "extract_actions",
+        lambda **kw: [
+            {
+                "type": "ADD",
+                "hearing_key": "sentencing-x",
+                "hearing_type": "sentencing",
+                "title": "Sentencing",
+                "local_date": "2026-04-14",
+                "local_time": "15:00",
+                "duration_minutes": 90,
+                "location": "Courtroom 4",
+            }
+        ],
+    )
 
     cl = _make_cl()
     server, url, secret = _start_server(store=store, case=case, cl=cl)
@@ -96,20 +121,25 @@ def _post(url: str, body: dict, headers: dict | None = None) -> tuple[int, dict]
 
 def _docket_alert(entries: list[dict]) -> dict:
     return {
-        "webhook": {"version": 2, "event_type": 1,
-                    "date_created": "2026-05-08T20:00:00Z",
-                    "deprecation_date": None},
+        "webhook": {
+            "version": 2,
+            "event_type": 1,
+            "date_created": "2026-05-08T20:00:00Z",
+            "deprecation_date": None,
+        },
         "payload": {"results": entries},
     }
 
 
-def _sample_entry(eid=1, docket=100,
-                  desc="Sentencing set for 4/14/2026 03:00 PM"):
+def _sample_entry(eid=1, docket=100, desc="Sentencing set for 4/14/2026 03:00 PM"):
     return {
-        "id": eid, "docket": docket, "entry_number": eid,
+        "id": eid,
+        "docket": docket,
+        "entry_number": eid,
         "date_filed": "2026-01-07",
         "date_modified": "2026-01-07T08:00:00-07:00",
-        "description": desc, "short_description": "",
+        "description": desc,
+        "short_description": "",
         "recap_documents": [],
     }
 
@@ -133,9 +163,7 @@ class TestRoutes:
 
     def test_gated_health_ok(self, base_url):
         url, secret, _ = base_url
-        r = urllib.request.urlopen(
-            f"{url}/webhooks/case-calendar/{secret}/health"
-        )
+        r = urllib.request.urlopen(f"{url}/webhooks/case-calendar/{secret}/health")
         assert r.status == 200
         body = json.loads(r.read())
         assert body == {
@@ -147,9 +175,7 @@ class TestRoutes:
     def test_gated_health_wrong_secret_403(self, base_url):
         url, _, _ = base_url
         try:
-            urllib.request.urlopen(
-                f"{url}/webhooks/case-calendar/wrong-secret/health"
-            )
+            urllib.request.urlopen(f"{url}/webhooks/case-calendar/wrong-secret/health")
             assert False, "expected 403"
         except urllib.error.HTTPError as e:
             assert e.code == 403
@@ -157,9 +183,7 @@ class TestRoutes:
     def test_gated_health_unknown_suffix_404(self, base_url):
         url, secret, _ = base_url
         try:
-            urllib.request.urlopen(
-                f"{url}/webhooks/case-calendar/{secret}/nope"
-            )
+            urllib.request.urlopen(f"{url}/webhooks/case-calendar/{secret}/nope")
             assert False, "expected 404"
         except urllib.error.HTTPError as e:
             assert e.code == 404
@@ -181,7 +205,9 @@ class TestDocketAlert:
         assert rows[0]["hearing_key"] == "sentencing-x"
 
     def test_processing_bumps_docket_short_circuit_watermark(
-        self, base_url, store,
+        self,
+        base_url,
+        store,
     ):
         # dockets.date_modified is the polling short-circuit cutoff:
         # if a webhook never advances it, a follow-up poll would still
@@ -193,12 +219,12 @@ class TestDocketAlert:
             _docket_alert([_sample_entry()]),
             headers={"Idempotency-Key": "k-bump"},
         )
-        assert (
-            store.docket_last_modified(100) == "2026-01-07T08:00:00-07:00"
-        )
+        assert store.docket_last_modified(100) == "2026-01-07T08:00:00-07:00"
 
     def test_processing_bumps_date_last_filing_from_entry(
-        self, base_url, store,
+        self,
+        base_url,
+        store,
     ):
         # The index page's "Last filing" column reads from
         # dockets.date_last_filing. Webhook deliveries don't refetch the
@@ -216,10 +242,16 @@ class TestDocketAlert:
     def test_idempotency_replay_is_noop(self, base_url, store):
         url, secret, _ = base_url
         body = _docket_alert([_sample_entry()])
-        _post(f"{url}/webhooks/case-calendar/{secret}", body,
-              headers={"Idempotency-Key": "k-dup"})
-        status, resp = _post(f"{url}/webhooks/case-calendar/{secret}", body,
-                             headers={"Idempotency-Key": "k-dup"})
+        _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
+            headers={"Idempotency-Key": "k-dup"},
+        )
+        status, resp = _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
+            headers={"Idempotency-Key": "k-dup"},
+        )
         assert status == 200
         assert resp["status"] == "duplicate"
         # Still exactly one hearing.
@@ -228,12 +260,18 @@ class TestDocketAlert:
     def test_fingerprint_dedup_when_idempotency_changes(self, base_url, store):
         url, secret, _ = base_url
         body = _docket_alert([_sample_entry()])
-        _post(f"{url}/webhooks/case-calendar/{secret}", body,
-              headers={"Idempotency-Key": "k-1"})
+        _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
+            headers={"Idempotency-Key": "k-1"},
+        )
         # Fresh idempotency key, same entry — should be a no-op via the
         # entry-fingerprint dedup in process_entry.
-        status, resp = _post(f"{url}/webhooks/case-calendar/{secret}", body,
-                             headers={"Idempotency-Key": "k-2"})
+        status, resp = _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
+            headers={"Idempotency-Key": "k-2"},
+        )
         assert status == 200
         assert resp["status"] == "ok"
         assert resp["handled"]["hearing_relevant"] == 0
@@ -243,8 +281,11 @@ class TestDocketAlert:
         url, secret, _ = base_url
         # A docket not in our config.
         body = _docket_alert([_sample_entry(eid=42, docket=99999)])
-        status, resp = _post(f"{url}/webhooks/case-calendar/{secret}", body,
-                             headers={"Idempotency-Key": "k-unknown"})
+        status, resp = _post(
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
+            headers={"Idempotency-Key": "k-unknown"},
+        )
         assert status == 200
         assert resp["handled"]["skipped_unknown_dockets"] == 1
         assert resp["handled"]["hearing_relevant"] == 0
@@ -255,8 +296,10 @@ class TestDocketAlert:
         req = urllib.request.Request(
             f"{url}/webhooks/case-calendar/{secret}",
             data=data,
-            headers={"Content-Type": "application/json",
-                     "Content-Length": str(len(data))},
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": str(len(data)),
+            },
         )
         try:
             urllib.request.urlopen(req)
@@ -270,7 +313,8 @@ class TestNonDocketEvents:
         url, secret, _ = base_url
         body = {"webhook": {"event_type": 2}, "payload": {}}
         status, resp = _post(
-            f"{url}/webhooks/case-calendar/{secret}", body,
+            f"{url}/webhooks/case-calendar/{secret}",
+            body,
             headers={"Idempotency-Key": "k-search"},
         )
         assert status == 200
@@ -285,18 +329,33 @@ class TestAutoEmit:
     emit`` run."""
 
     def test_emit_fn_called_with_affected_calendar(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
-        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
-            "type": "ADD", "hearing_key": "sentencing-x",
-            "hearing_type": "sentencing", "title": "Sentencing",
-            "local_date": "2026-04-14", "local_time": "15:00",
-            "duration_minutes": 90, "location": "Courtroom 4",
-        }])
+        monkeypatch.setattr(
+            llm_mod,
+            "extract_actions",
+            lambda **kw: [
+                {
+                    "type": "ADD",
+                    "hearing_key": "sentencing-x",
+                    "hearing_type": "sentencing",
+                    "title": "Sentencing",
+                    "local_date": "2026-04-14",
+                    "local_time": "15:00",
+                    "duration_minutes": 90,
+                    "location": "Courtroom 4",
+                }
+            ],
+        )
         emitted: list[set[str]] = []
         cl = _make_cl()
         server, url, secret = _start_server(
-            store=store, case=case, cl=cl,
+            store=store,
+            case=case,
+            cl=cl,
             emit_fn=lambda cals: emitted.append(set(cals)),
         )
         try:
@@ -313,17 +372,26 @@ class TestAutoEmit:
         assert emitted == [{"cyber"}]
 
     def test_emit_fn_skipped_when_nothing_relevant(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # An entry that the regex pre-filter rejects shouldn't trigger an
         # emit — the calendar didn't change.
-        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
-            {"type": "IGNORE", "reason": "stub"},
-        ])
+        monkeypatch.setattr(
+            llm_mod,
+            "extract_actions",
+            lambda **kw: [
+                {"type": "IGNORE", "reason": "stub"},
+            ],
+        )
         emitted: list[set[str]] = []
         cl = _make_cl()
         server, url, secret = _start_server(
-            store=store, case=case, cl=cl,
+            store=store,
+            case=case,
+            cl=cl,
             emit_fn=lambda cals: emitted.append(set(cals)),
         )
         try:
@@ -343,20 +411,37 @@ class TestAutoEmit:
         assert emitted == []
 
     def test_emit_failure_does_not_fail_webhook(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # The store is already updated by the time emit runs — a render
         # error mustn't make CourtListener retry the delivery (which would dup-process).
-        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [{
-            "type": "ADD", "hearing_key": "sentencing-x",
-            "hearing_type": "sentencing", "title": "Sentencing",
-            "local_date": "2026-04-14", "local_time": "15:00",
-        }])
+        monkeypatch.setattr(
+            llm_mod,
+            "extract_actions",
+            lambda **kw: [
+                {
+                    "type": "ADD",
+                    "hearing_key": "sentencing-x",
+                    "hearing_type": "sentencing",
+                    "title": "Sentencing",
+                    "local_date": "2026-04-14",
+                    "local_time": "15:00",
+                }
+            ],
+        )
+
         def boom(_cals):
             raise RuntimeError("disk full")
+
         cl = _make_cl()
         server, url, secret = _start_server(
-            store=store, case=case, cl=cl, emit_fn=boom,
+            store=store,
+            case=case,
+            cl=cl,
+            emit_fn=boom,
         )
         try:
             status, resp = _post(
@@ -409,8 +494,10 @@ class TestRequestErrors:
         req = urllib.request.Request(
             f"{url}/webhooks/case-calendar/{secret}",
             data=b"{}",
-            headers={"Content-Type": "application/json",
-                     "Content-Length": "not-a-number"},
+            headers={
+                "Content-Type": "application/json",
+                "Content-Length": "not-a-number",
+            },
         )
         try:
             urllib.request.urlopen(req)
@@ -438,7 +525,10 @@ class TestRequestErrors:
         assert "413" in status_line
 
     def test_entry_with_non_integer_docket_id_skipped(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # A payload whose entry's docket field isn't coercible to int is
         # logged and skipped rather than crashing the handler.
@@ -460,13 +550,20 @@ class TestRequestErrors:
         assert resp["handled"]["entries_processed"] == 0
 
     def test_docket_id_as_digit_string_is_coerced(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # CourtListener sometimes ships the docket field as a string; the handler
         # coerces it to int so the lookup still hits docket_to_case.
-        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
-            {"type": "IGNORE", "reason": "stub"},
-        ])
+        monkeypatch.setattr(
+            llm_mod,
+            "extract_actions",
+            lambda **kw: [
+                {"type": "IGNORE", "reason": "stub"},
+            ],
+        )
         cl = _make_cl()
         server, url, secret = _start_server(store=store, case=case, cl=cl)
         try:
@@ -484,7 +581,10 @@ class TestRequestErrors:
         assert resp["handled"]["entries_processed"] == 1
 
     def test_process_entry_exception_continues(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # If processing one entry crashes, the handler logs and moves to the
         # next entry — never bubbles a 500 to CourtListener (which would retry).
@@ -498,9 +598,13 @@ class TestRequestErrors:
             return original(self, case_, docket_id, entry, **kw)
 
         monkeypatch.setattr(sync_mod.CaseSyncer, "process_entry", _flaky)
-        monkeypatch.setattr(llm_mod, "extract_actions", lambda **kw: [
-            {"type": "IGNORE", "reason": "stub"},
-        ])
+        monkeypatch.setattr(
+            llm_mod,
+            "extract_actions",
+            lambda **kw: [
+                {"type": "IGNORE", "reason": "stub"},
+            ],
+        )
 
         cl = _make_cl()
         server, url, secret = _start_server(store=store, case=case, cl=cl)
@@ -521,7 +625,10 @@ class TestRequestErrors:
 
 class TestServerWide500Handler:
     def test_process_locked_exception_returns_500(
-        self, store: Store, case, monkeypatch,
+        self,
+        store: Store,
+        case,
+        monkeypatch,
     ):
         # An unexpected error inside process_locked (e.g. lock acquisition
         # or store write) becomes a 500 — CourtListener retries, and the next attempt
@@ -539,11 +646,13 @@ class TestServerWide500Handler:
         server, url, secret = _start_server(store=store, case=case, cl=cl)
         try:
             try:
-                urllib.request.urlopen(urllib.request.Request(
-                    f"{url}/webhooks/case-calendar/{secret}",
-                    data=json.dumps(_docket_alert([_sample_entry()])).encode(),
-                    headers={"Content-Type": "application/json"},
-                ))
+                urllib.request.urlopen(
+                    urllib.request.Request(
+                        f"{url}/webhooks/case-calendar/{secret}",
+                        data=json.dumps(_docket_alert([_sample_entry()])).encode(),
+                        headers={"Content-Type": "application/json"},
+                    )
+                )
                 assert False, "expected 500"
             except urllib.error.HTTPError as e:
                 assert e.code == 500
@@ -554,7 +663,10 @@ class TestServerWide500Handler:
 
 class TestServeFunction:
     def test_keyboard_interrupt_shuts_down_cleanly(
-        self, store: Store, case, tmp_path,
+        self,
+        store: Store,
+        case,
+        tmp_path,
     ):
         # The serve() top-level function traps KeyboardInterrupt so an
         # operator's Ctrl-C is treated as a normal shutdown. Exercise that
@@ -570,7 +682,10 @@ class TestServeFunction:
         ):
             # No exception escapes; server_close is called in the finally.
             serve(
-                host="127.0.0.1", port=0,
+                host="127.0.0.1",
+                port=0,
                 secret="test-secret-please-make-it-long-enough",
-                cases=[case], store=store, cl=cl,
+                cases=[case],
+                store=store,
+                cl=cl,
             )

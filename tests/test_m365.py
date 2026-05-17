@@ -84,13 +84,11 @@ class TestCorrelationKey:
         assert len(a) == 40  # sha1 hex
 
     def test_different_per_input(self):
-        assert (
-            _correlation_key("us-v-x", "sentencing-x")
-            != _correlation_key("us-v-y", "sentencing-x")
+        assert _correlation_key("us-v-x", "sentencing-x") != _correlation_key(
+            "us-v-y", "sentencing-x"
         )
-        assert (
-            _correlation_key("us-v-x", "sentencing-x")
-            != _correlation_key("us-v-x", "trial-x")
+        assert _correlation_key("us-v-x", "sentencing-x") != _correlation_key(
+            "us-v-x", "trial-x"
         )
 
 
@@ -146,19 +144,27 @@ class TestEventBody:
         # per-event override array. Take the most-immediate popup since it's
         # the most useful pre-event nudge.
         s = _make_syncer(client=None)
-        body = s._event_body(_hearing(reminders=[
-            {"method": "popup", "minutes": 1440},
-            {"method": "popup", "minutes": 30},
-            {"method": "email", "minutes": 60},  # email reminders dropped
-        ]))
+        body = s._event_body(
+            _hearing(
+                reminders=[
+                    {"method": "popup", "minutes": 1440},
+                    {"method": "popup", "minutes": 30},
+                    {"method": "email", "minutes": 60},  # email reminders dropped
+                ]
+            )
+        )
         assert body.is_reminder_on is True
         assert body.reminder_minutes_before_start == 30
 
     def test_no_reminder_when_no_popup_configured(self):
         s = _make_syncer(client=None)
-        body = s._event_body(_hearing(reminders=[
-            {"method": "email", "minutes": 60},  # email-only → no popup
-        ]))
+        body = s._event_body(
+            _hearing(
+                reminders=[
+                    {"method": "email", "minutes": 60},  # email-only → no popup
+                ]
+            )
+        )
         assert body.is_reminder_on is False
         assert body.reminder_minutes_before_start is None
 
@@ -228,7 +234,9 @@ class TestUpsertFlow:
 
         fake_client.me.events.post.assert_awaited_once()
         store.set_m365_id_for_hearing.assert_called_once_with(
-            "us-v-x", "sentencing-x", "AAMkSERVERID-NEW",
+            "us-v-x",
+            "sentencing-x",
+            "AAMkSERVERID-NEW",
         )
 
     def test_cached_id_patches_directly(self, fake_client):
@@ -272,7 +280,9 @@ class TestUpsertFlow:
 
         recovered_item.patch.assert_awaited_once()
         store.set_m365_id_for_hearing.assert_called_once_with(
-            "us-v-x", "sentencing-x", "AAMkRECOVERED",
+            "us-v-x",
+            "sentencing-x",
+            "AAMkRECOVERED",
         )
 
     def test_cancelled_row_deletes_existing_event(self, fake_client):
@@ -289,7 +299,9 @@ class TestUpsertFlow:
 
         fake_client.me.events.by_event_id.assert_called_with("WILL-BE-DELETED")
         store.set_m365_id_for_hearing.assert_called_once_with(
-            "us-v-x", "sentencing-x", None,
+            "us-v-x",
+            "sentencing-x",
+            None,
         )
 
     def test_cancelled_row_with_no_cached_id_noops(self, fake_client):
@@ -539,6 +551,8 @@ class TestKindRouting:
         s.sync(hearings=[h], store=store)
 
         store.set_m365_id_for_deadline.assert_called_once_with(
-            "us-v-x", "reply-mtd", "AAMk-DEADLINE",
+            "us-v-x",
+            "reply-mtd",
+            "AAMk-DEADLINE",
         )
         store.set_m365_id_for_hearing.assert_not_called()

@@ -55,9 +55,9 @@ def _ics_links(
         base = public_base_url.rstrip("/")
         # Strip any scheme prefix to derive the webcal:// equivalent.
         if base.startswith("https://"):
-            host_path = base[len("https://"):]
+            host_path = base[len("https://") :]
         elif base.startswith("http://"):
-            host_path = base[len("http://"):]
+            host_path = base[len("http://") :]
         else:
             host_path = base
         return {
@@ -489,7 +489,7 @@ def _render_subscribe(links: dict[str, Optional[str]]) -> str:
             parts.append(
                 f'<a href="{_esc(links["webcal"])}" '
                 f'title="One-click subscribe in Apple Calendar / Outlook">'
-                f'Subscribe</a>'
+                f"Subscribe</a>"
             )
         # The button carries the https URL on data-url so the click
         # handler doesn't have to know which calendar it belongs to;
@@ -498,7 +498,7 @@ def _render_subscribe(links: dict[str, Optional[str]]) -> str:
             f'<button type="button" class="copy-feed" '
             f'data-url="{_esc(links["https"])}" '
             f'title="Copy this URL into Google Calendar / Proton / etc.">'
-            f'Copy feed URL</button>'
+            f"Copy feed URL</button>"
         )
     else:
         parts.append(
@@ -510,7 +510,8 @@ def _render_subscribe(links: dict[str, Optional[str]]) -> str:
 
 
 def _render_summaries(
-    case: dict[str, Any], dockets: list[dict[str, Any]],
+    case: dict[str, Any],
+    dockets: list[dict[str, Any]],
 ) -> str:
     """Render the AI-generated per-docket summary block for one case.
 
@@ -544,8 +545,7 @@ def _render_summaries(
         if multi:
             label = docket_label_by_id.get(s.get("docket_id")) or ""
             label_html = (
-                f'<span class="docket-label">{_esc(label)}</span> — '
-                if label else ""
+                f'<span class="docket-label">{_esc(label)}</span> — ' if label else ""
             )
             paragraphs.append(f"<p>{label_html}{_esc(body)}</p>")
         else:
@@ -632,8 +632,7 @@ def _render_case(case: dict[str, Any]) -> str:
         else:
             dockets_html.append(f"<li>{label}</li>")
     dockets_block = (
-        f'<ul class="dockets">{"".join(dockets_html)}</ul>'
-        if dockets_html else ""
+        f'<ul class="dockets">{"".join(dockets_html)}</ul>' if dockets_html else ""
     )
     summary_block = _render_summaries(case, dockets)
     dates_bits = []
@@ -641,17 +640,8 @@ def _render_case(case: dict[str, Any]) -> str:
         dates_bits.append(f"<span><b>Filed</b> {_esc(date_filed)}</span>")
     if last_filing:
         dates_bits.append(f"<span><b>Last filing</b> {_esc(last_filing)}</span>")
-    dates_block = (
-        f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
-    )
-    return (
-        f'<li {data}>'
-        f'<h3>{name}</h3>'
-        f'{dockets_block}'
-        f'{summary_block}'
-        f'{dates_block}'
-        f'</li>'
-    )
+    dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
+    return f"<li {data}><h3>{name}</h3>{dockets_block}{summary_block}{dates_block}</li>"
 
 
 def _render_calendar(calendar: dict[str, Any]) -> str:
@@ -676,34 +666,38 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
     visible_default = 3
     hidden = max(0, len(cases) - visible_default)
     show_more = (
-        f'<button class="show-more" type="button" aria-expanded="false">'
-        f'Show all ({hidden} more)</button>'
-    ) if hidden else ""
+        (
+            f'<button class="show-more" type="button" aria-expanded="false">'
+            f"Show all ({hidden} more)</button>"
+        )
+        if hidden
+        else ""
+    )
     return (
         f'<section class="calendar" data-cal="{_esc(calendar["id"])}" '
         f'data-expanded="false">'
-        f'<header>'
-        f'<h2>{_esc(calendar.get("name") or calendar["id"])}</h2>'
-        f'{subscribe}'
-        f'</header>'
+        f"<header>"
+        f"<h2>{_esc(calendar.get('name') or calendar['id'])}</h2>"
+        f"{subscribe}"
+        f"</header>"
         f'<div class="controls">'
-        f'<label>Sort by '
+        f"<label>Sort by "
         f'<select class="sort">'
         f'<option value="last-filing" selected>Last filing</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'
-        f'</select>'
-        f'</label>'
-        f'<label>Direction '
+        f"</select>"
+        f"</label>"
+        f"<label>Direction "
         f'<select class="dir">'
         f'<option value="desc" selected>Descending</option>'
         f'<option value="asc">Ascending</option>'
-        f'</select>'
-        f'</label>'
-        f'</div>'
+        f"</select>"
+        f"</label>"
+        f"</div>"
         f'<ol class="cases">{case_rows}</ol>'
-        f'{show_more}'
-        f'</section>'
+        f"{show_more}"
+        f"</section>"
     )
 
 
@@ -716,7 +710,7 @@ DEFAULT_SITE_DESCRIPTION = (
 def render_index(
     *,
     calendars: Iterable[dict[str, Any]],
-    site_title: str = "case-calendar",
+    site_title: str = "Case Calendar",
     site_description: str = DEFAULT_SITE_DESCRIPTION,
     generated_at: Optional[datetime] = None,
 ) -> str:
@@ -730,9 +724,9 @@ def render_index(
     sections = "".join(_render_calendar(c) for c in calendars)
     gen_iso = generated_at.replace(microsecond=0).isoformat()
     return (
-        '<!doctype html>\n'
+        "<!doctype html>\n"
         '<html lang="en">\n'
-        '<head>\n'
+        "<head>\n"
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
         # The color-scheme meta + matching :root declaration tell Darkreader
@@ -744,35 +738,35 @@ def render_index(
         # change but the site's purpose doesn't, so this stays stable across
         # rebuilds and deployments.
         f'<meta name="description" content="{_esc(site_description)}">\n'
-        f'<title>{_esc(site_title)}</title>\n'
-        f'<style>{_STYLES}</style>\n'
-        f'<script>{_PREPAINT_JS}</script>\n'
-        '</head>\n'
-        '<body>\n'
-        '<header>\n'
-        f'<h1>{_esc(site_title)}</h1>\n'
+        f"<title>{_esc(site_title)}</title>\n"
+        f"<style>{_STYLES}</style>\n"
+        f"<script>{_PREPAINT_JS}</script>\n"
+        "</head>\n"
+        "<body>\n"
+        "<header>\n"
+        f"<h1>{_esc(site_title)}</h1>\n"
         f'<span class="meta">Generated {_esc(gen_iso)} '
         f'<button id="theme-toggle" type="button">Dark mode</button></span>\n'
-        '</header>\n'
+        "</header>\n"
         '<div class="search-bar">\n'
         '<input type="search" id="case-search" '
         'placeholder="Search cases, dockets, courts, or summary text…" '
         'aria-label="Search cases" autocomplete="off">\n'
         '<span class="status" id="search-status" aria-live="polite"></span>\n'
-        '</div>\n'
-        f'<main>{sections}</main>\n'
-        '<footer>'
-        '<p>Hearings and deadlines come from CourtListener / RECAP.</p>'
-        '<p>Case descriptions and calendar entries are generated by AI from public court filings '
-        'and may contain mistakes — consult the linked dockets for authoritative '
-        'information.</p>'
-        '<p>Criminal defendants are presumed innocent unless and until '
-        'convicted in a court of law.</p>'
-        '<p>Powered by <a href="https://docs.casecalendar.net/">case-calendar</a>.</p>'
-        '</footer>\n'
-        f'<script>{_RUNTIME_JS}</script>\n'
-        '</body>\n'
-        '</html>\n'
+        "</div>\n"
+        f"<main>{sections}</main>\n"
+        "<footer>"
+        "<p>Hearings and deadlines come from CourtListener / RECAP.</p>"
+        "<p>Case descriptions and calendar entries are generated by AI from public court filings "
+        "and may contain mistakes — consult the linked dockets for authoritative "
+        "information.</p>"
+        "<p>Criminal defendants are presumed innocent unless and until "
+        "convicted in a court of law.</p>"
+        '<p>Powered by <a href="https://docs.casecalendar.net/">Case Calendar</a>.</p>'
+        "</footer>\n"
+        f"<script>{_RUNTIME_JS}</script>\n"
+        "</body>\n"
+        "</html>\n"
     )
 
 
@@ -780,7 +774,7 @@ def write_index(
     index_path: str | Path,
     *,
     calendars: Iterable[dict[str, Any]],
-    site_title: str = "case-calendar",
+    site_title: str = "Case Calendar",
     site_description: str = DEFAULT_SITE_DESCRIPTION,
 ) -> None:
     """Render and write the index page to ``index_path``."""
@@ -824,13 +818,15 @@ def build_calendar_models(
                 court_citation = None
                 if meta.get("court_id"):
                     court_citation = store.get_court_citation(meta["court_id"])
-                dockets_meta.append({
-                    "docket_id": did,
-                    "docket_number": meta.get("docket_number"),
-                    "court_id": meta.get("court_id"),
-                    "court_citation": court_citation,
-                    "absolute_url": meta.get("absolute_url"),
-                })
+                dockets_meta.append(
+                    {
+                        "docket_id": did,
+                        "docket_number": meta.get("docket_number"),
+                        "court_id": meta.get("court_id"),
+                        "court_citation": court_citation,
+                        "absolute_url": meta.get("absolute_url"),
+                    }
+                )
             agg = store.get_case_aggregates(docket_ids)
             # Per-docket AI summaries — opt-in feature. The list is empty when
             # the operator hasn't run `case-calendar summarize` for this case,
@@ -840,18 +836,22 @@ def build_calendar_models(
             # so multi-docket cases read in the order the operator listed.
             order = {did: i for i, did in enumerate(docket_ids)}
             summaries.sort(key=lambda s: order.get(s.get("docket_id"), 1_000_000))
-            case_rows.append({
-                "id": c.get("id"),
-                "name": c.get("name"),
-                "dockets": dockets_meta,
-                "summaries": summaries,
-                "date_filed": agg["date_filed"],
-                "last_filing_date": agg["last_filing_date"],
-            })
-        out.append({
-            "id": cal_id,
-            "name": cal_cfg.get("name", cal_id),
-            "links": _ics_links(cal_cfg.get("ics_path"), public_base_url),
-            "cases": case_rows,
-        })
+            case_rows.append(
+                {
+                    "id": c.get("id"),
+                    "name": c.get("name"),
+                    "dockets": dockets_meta,
+                    "summaries": summaries,
+                    "date_filed": agg["date_filed"],
+                    "last_filing_date": agg["last_filing_date"],
+                }
+            )
+        out.append(
+            {
+                "id": cal_id,
+                "name": cal_cfg.get("name", cal_id),
+                "links": _ics_links(cal_cfg.get("ics_path"), public_base_url),
+                "cases": case_rows,
+            }
+        )
     return out

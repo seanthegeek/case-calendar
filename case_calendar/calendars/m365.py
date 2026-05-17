@@ -85,15 +85,14 @@ class M365CalendarSync:
         self.token_path = Path(token_path).expanduser()
         self.credential = self._build_credential()
         self.client = GraphServiceClient(
-            credentials=self.credential, scopes=GRAPH_SCOPES,
+            credentials=self.credential,
+            scopes=GRAPH_SCOPES,
         )
 
     def _build_credential(self):
         cache_opts = self._TokenCachePersistenceOptions(name=TOKEN_CACHE_NAME)
         if self.token_path.exists():
-            record = self._AuthenticationRecord.deserialize(
-                self.token_path.read_text()
-            )
+            record = self._AuthenticationRecord.deserialize(self.token_path.read_text())
             # Daemon path: silent refresh only. If the cache is stale the
             # caller gets a clean error instead of a hung browser prompt.
             return self._InteractiveBrowserCredential(
@@ -131,12 +130,20 @@ class M365CalendarSync:
         skip the lookup. ``calendar_id`` routes to a specific calendar;
         omit to push to the user's default calendar.
         """
-        asyncio.run(self._sync_async(
-            hearings=list(hearings), store=store, calendar_id=calendar_id,
-        ))
+        asyncio.run(
+            self._sync_async(
+                hearings=list(hearings),
+                store=store,
+                calendar_id=calendar_id,
+            )
+        )
 
     async def _sync_async(
-        self, *, hearings: list[dict], store, calendar_id: Optional[str],
+        self,
+        *,
+        hearings: list[dict],
+        store,
+        calendar_id: Optional[str],
     ) -> None:
         for h in hearings:
             if h.get("significance") == "minor":
@@ -157,7 +164,10 @@ class M365CalendarSync:
     # --- per-event helpers ---
 
     async def _upsert(
-        self, h: dict, calendar_id: Optional[str], store,
+        self,
+        h: dict,
+        calendar_id: Optional[str],
+        store,
     ) -> None:
         body = self._event_body(h)
         events_rb = self._events_rb(calendar_id)
@@ -182,7 +192,9 @@ class M365CalendarSync:
         if recovered:
             await events_rb.by_event_id(recovered).patch(body)
             self._cache_id(store, h, recovered)
-            log.info("recovered+patched %s on %s", recovered, calendar_id or "(default)")
+            log.info(
+                "recovered+patched %s on %s", recovered, calendar_id or "(default)"
+            )
             return
 
         created = await events_rb.post(body)
@@ -193,11 +205,15 @@ class M365CalendarSync:
         log.info("created %s on %s", new_id, calendar_id or "(default)")
 
     async def _delete_if_present(
-        self, h: dict, calendar_id: Optional[str], store,
+        self,
+        h: dict,
+        calendar_id: Optional[str],
+        store,
     ) -> None:
         events_rb = self._events_rb(calendar_id)
         target_id = h.get("m365_event_id") or await self._find_by_correlation(
-            h, calendar_id,
+            h,
+            calendar_id,
         )
         if not target_id:
             return  # never created, nothing to cancel
@@ -214,7 +230,9 @@ class M365CalendarSync:
         self._cache_id(store, h, None)
 
     async def _find_by_correlation(
-        self, h: dict, calendar_id: Optional[str],
+        self,
+        h: dict,
+        calendar_id: Optional[str],
     ) -> Optional[str]:
         """Look up the Graph event id by our ``CaseCalendarKey`` extended
         property. Returns None when no event has the property set —
@@ -239,12 +257,14 @@ class M365CalendarSync:
         events_rb = self._events_rb(calendar_id)
         if calendar_id:
             cal_qp = CalEventsRB.EventsRequestBuilderGetQueryParameters(
-                filter=filter_expr, top=1,
+                filter=filter_expr,
+                top=1,
             )
             config: Any = RequestConfiguration(query_parameters=cal_qp)
         else:
             me_qp = MeEventsRB.EventsRequestBuilderGetQueryParameters(
-                filter=filter_expr, top=1,
+                filter=filter_expr,
+                top=1,
             )
             config = RequestConfiguration(query_parameters=me_qp)
         try:
@@ -278,7 +298,9 @@ class M365CalendarSync:
         key = h["hearing_key"]
         if key.startswith("deadline:"):
             store.set_m365_id_for_deadline(
-                h["case_id"], key[len("deadline:"):], m365_id,
+                h["case_id"],
+                key[len("deadline:") :],
+                m365_id,
             )
         else:
             store.set_m365_id_for_hearing(h["case_id"], key, m365_id)
@@ -336,10 +358,12 @@ class M365CalendarSync:
 
         attendees = []
         for addr in h.get("notify_emails") or []:
-            attendees.append(Attendee(
-                email_address=EmailAddress(address=addr),
-                type=AttendeeType.Required,
-            ))
+            attendees.append(
+                Attendee(
+                    email_address=EmailAddress(address=addr),
+                    type=AttendeeType.Required,
+                )
+            )
 
         # Shortest popup-reminder minutes wins (Graph supports a single
         # `reminderMinutesBeforeStart`, unlike Google's per-event override
@@ -347,7 +371,8 @@ class M365CalendarSync:
         # so they're dropped here — subscribers configure their own
         # client-side reminders or use the popup.
         popup_mins = [
-            r["minutes"] for r in (h.get("reminders") or [])
+            r["minutes"]
+            for r in (h.get("reminders") or [])
             if r.get("method") == "popup" and r.get("minutes") is not None
         ]
         is_reminder_on = bool(popup_mins)
@@ -378,6 +403,7 @@ def _location(text: Optional[str]):
     if not text:
         return None
     from msgraph.generated.models.location import Location
+
     return Location(display_name=text)
 
 

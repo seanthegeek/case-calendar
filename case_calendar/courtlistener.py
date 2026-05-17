@@ -79,7 +79,9 @@ class CourtListener:
                 base_wait = float(r.headers.get("Retry-After", delay))
                 wait = base_wait + _RETRY_AFTER_BUFFER_SECONDS
                 rate_headers = {
-                    k: v for k, v in r.headers.items() if k.lower().startswith(("x-ratelimit", "retry-after"))
+                    k: v
+                    for k, v in r.headers.items()
+                    if k.lower().startswith(("x-ratelimit", "retry-after"))
                 }
                 body_excerpt = r.text[:500]
                 log.warning(
@@ -93,7 +95,8 @@ class CourtListener:
                     body_excerpt,
                 )
                 self._no_request_before = max(
-                    self._no_request_before, time.monotonic() + wait,
+                    self._no_request_before,
+                    time.monotonic() + wait,
                 )
                 time.sleep(wait)
                 delay = min(delay * 2, 60)

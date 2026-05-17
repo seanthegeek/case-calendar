@@ -2,7 +2,7 @@
 title: Subscribing to a feed
 ---
 
-Every case-calendar calendar publishes an `.ics` URL — the universal
+Every Case Calendar calendar publishes an `.ics` URL — the universal
 iCalendar subscription format ([RFC 5545](https://www.rfc-editor.org/rfc/rfc5545)).
 Once that URL is reachable on the public web (see [the public index
 page](public-page.md) for one Caddy template), any modern calendar app
@@ -154,7 +154,7 @@ Per [Mozilla's "Creating new calendars" help page](https://support.mozilla.org/e
    (or click the **≡** menu → **New → Calendar…**, or right-click in
    the calendar list).
 2. Choose **On the Network** and click **Next**.
-3. Leave the username field empty (case-calendar feeds are public —
+3. Leave the username field empty (Case Calendar feeds are public —
    no credentials required). If the dialog has a "This location
    doesn't require credentials" checkbox, tick it.
 4. Paste the `.ics` URL into the **Location** field.

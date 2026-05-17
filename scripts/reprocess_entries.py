@@ -36,8 +36,12 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("entry_ids", nargs="+", type=int,
-                        help="CourtListener entry_id values (NOT entry_number) to reprocess")
+    parser.add_argument(
+        "entry_ids",
+        nargs="+",
+        type=int,
+        help="CourtListener entry_id values (NOT entry_number) to reprocess",
+    )
     parser.add_argument("-c", "--config", default="config.yaml")
     parser.add_argument("--db", default="data/case-calendar.sqlite")
     args = parser.parse_args(argv)
@@ -65,8 +69,10 @@ def main(argv: list[str] | None = None) -> int:
             None,
         )
         if not case:
-            print(f"entry_id={entry_id} on docket {row['docket_id']} matches no "
-                  "case in config.yaml; skipping")
+            print(
+                f"entry_id={entry_id} on docket {row['docket_id']} matches no "
+                "case in config.yaml; skipping"
+            )
             continue
 
         # Synthetic entry dict: paperless entries have no recap_documents,
@@ -92,8 +98,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         store.conn.commit()
 
-        print(f"\n--- reprocessing entry_id={entry_id} "
-              f"(docket {row['docket_id']}, case {case.case_id}) ---")
+        print(
+            f"\n--- reprocessing entry_id={entry_id} "
+            f"(docket {row['docket_id']}, case {case.case_id}) ---"
+        )
         syncer.process_entry(case, row["docket_id"], synthetic)
         store.conn.commit()
 

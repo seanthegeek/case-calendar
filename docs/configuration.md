@@ -2,7 +2,7 @@
 title: Configuration
 ---
 
-case-calendar reads one YAML file (default `config.yaml`) that lists your
+Case Calendar reads one YAML file (default `config.yaml`) that lists your
 cases, the calendars they group into, and the optional features you want
 turned on. There's an annotated `config.example.yaml` in the repo root you
 can copy and edit.
@@ -116,7 +116,7 @@ summaries are off, leave it out.
 
 ### Deadline tracking auto-detect
 
-case-calendar decides whether to track filing deadlines based on the docket
+Case Calendar decides whether to track filing deadlines based on the docket
 number prefix:
 
 - **Civil** (e.g. `-cv-`), **appellate**, and **specialty** courts → on
@@ -140,7 +140,7 @@ force it on:
 
 ## Validation
 
-case-calendar validates the config at startup. Bad values (a missing required
+Case Calendar validates the config at startup. Bad values (a missing required
 field, a docket id that isn't an integer, an `extra_documents` entry whose
 `docket` isn't in this case's `dockets` list) fail fast with a clear error
 rather than silently being skipped.

@@ -90,8 +90,13 @@ class TestRenderSummaries:
     def test_single_summary_no_docket_label(self):
         html = _render_summaries(
             {"summaries": [{"docket_id": 1, "summary": "It is a case."}]},
-            dockets=[{"docket_id": 1, "docket_number": "1:24-cv-1",
-                       "court_citation": "S.D.N.Y."}],
+            dockets=[
+                {
+                    "docket_id": 1,
+                    "docket_number": "1:24-cv-1",
+                    "court_citation": "S.D.N.Y.",
+                }
+            ],
         )
         # Single summary -> no docket-label span (multi==False).
         assert '<div class="summary">' in html
@@ -100,15 +105,23 @@ class TestRenderSummaries:
 
     def test_multiple_summaries_get_docket_labels(self):
         html = _render_summaries(
-            {"summaries": [
-                {"docket_id": 1, "summary": "Trial court matter."},
-                {"docket_id": 2, "summary": "On appeal."},
-            ]},
+            {
+                "summaries": [
+                    {"docket_id": 1, "summary": "Trial court matter."},
+                    {"docket_id": 2, "summary": "On appeal."},
+                ]
+            },
             dockets=[
-                {"docket_id": 1, "docket_number": "1:24-cv-1",
-                 "court_citation": "S.D.N.Y."},
-                {"docket_id": 2, "docket_number": "24-1234",
-                 "court_citation": "2d Cir."},
+                {
+                    "docket_id": 1,
+                    "docket_number": "1:24-cv-1",
+                    "court_citation": "S.D.N.Y.",
+                },
+                {
+                    "docket_id": 2,
+                    "docket_number": "24-1234",
+                    "court_citation": "2d Cir.",
+                },
             ],
         )
         assert 'class="docket-label"' in html
@@ -117,10 +130,12 @@ class TestRenderSummaries:
 
     def test_empty_summary_strings_are_skipped(self):
         html = _render_summaries(
-            {"summaries": [
-                {"docket_id": 1, "summary": ""},
-                {"docket_id": 2, "summary": "   "},
-            ]},
+            {
+                "summaries": [
+                    {"docket_id": 1, "summary": ""},
+                    {"docket_id": 2, "summary": "   "},
+                ]
+            },
             dockets=[],
         )
         # Both empty/whitespace summaries skipped -> nothing rendered.
@@ -138,12 +153,20 @@ class TestRenderSummaries:
 class TestRenderCaseEdges:
     def test_docket_without_absolute_url_renders_plain_label(self):
         # No absolute_url -> the docket label is plain text, not a link.
-        html = _render_case({
-            "name": "US v. X",
-            "dockets": [{"docket_id": 42, "docket_number": "1:24-cr-42",
-                          "court_citation": "S.D.N.Y."}],
-            "date_filed": None, "last_filing_date": None,
-        })
+        html = _render_case(
+            {
+                "name": "US v. X",
+                "dockets": [
+                    {
+                        "docket_id": 42,
+                        "docket_number": "1:24-cr-42",
+                        "court_citation": "S.D.N.Y.",
+                    }
+                ],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
         # Label appears as a bare <li>, not wrapped in <a>.
         assert "1:24-cr-42" in html
         assert "<a href" not in html
@@ -151,10 +174,14 @@ class TestRenderCaseEdges:
     def test_docket_with_only_id_renders_id_as_label(self):
         # No docket_number, no court_citation -> the label falls back to the
         # docket_id as a stringified value (no link either).
-        html = _render_case({
-            "name": "X", "dockets": [{"docket_id": 999}],
-            "date_filed": None, "last_filing_date": None,
-        })
+        html = _render_case(
+            {
+                "name": "X",
+                "dockets": [{"docket_id": 999}],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
         assert "999" in html
 
     def test_last_filing_renders_as_last_filing_label(self):
@@ -162,12 +189,14 @@ class TestRenderCaseEdges:
         # from docket.date_modified, which conflates filings with OCR /
         # metadata churn. The renderer now reads ``last_filing_date`` and
         # labels it "Last filing".
-        html = _render_case({
-            "name": "US v. X",
-            "dockets": [{"docket_id": 1, "docket_number": "1:24-cr-1"}],
-            "date_filed": "2025-01-15",
-            "last_filing_date": "2026-05-10",
-        })
+        html = _render_case(
+            {
+                "name": "US v. X",
+                "dockets": [{"docket_id": 1, "docket_number": "1:24-cr-1"}],
+                "date_filed": "2025-01-15",
+                "last_filing_date": "2026-05-10",
+            }
+        )
         assert "<b>Last filing</b> 2026-05-10" in html
         assert "Last activity" not in html
         assert 'data-last-filing="2026-05-10"' in html
@@ -175,34 +204,42 @@ class TestRenderCaseEdges:
     def test_no_last_filing_skips_label(self):
         # Cases with no captured date_last_filing yet still render — the
         # date row simply omits the "Last filing" span.
-        html = _render_case({
-            "name": "US v. Y",
-            "dockets": [],
-            "date_filed": None,
-            "last_filing_date": None,
-        })
+        html = _render_case(
+            {
+                "name": "US v. Y",
+                "dockets": [],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
         assert "Last filing" not in html
 
 
 class TestCaseSearchText:
     def test_includes_name_dockets_courts_summaries_lowercased(self):
-        text = _case_search_text({
-            "name": "US v. Wang",
-            "dockets": [
-                {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y."},
-                {"docket_number": "24-1234", "court_citation": "2d Cir."},
-            ],
-            "summaries": [
-                {"docket_id": 1, "summary": "Indicted on wire fraud."},
-                {"docket_id": 2, "summary": "Appeal pending."},
-            ],
-        })
+        text = _case_search_text(
+            {
+                "name": "US v. Wang",
+                "dockets": [
+                    {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y."},
+                    {"docket_number": "24-1234", "court_citation": "2d Cir."},
+                ],
+                "summaries": [
+                    {"docket_id": 1, "summary": "Indicted on wire fraud."},
+                    {"docket_id": 2, "summary": "Appeal pending."},
+                ],
+            }
+        )
         # Lowercased so the JS comparator can do a single-pass indexOf.
         assert text == text.lower()
         for needle in [
-            "us v. wang", "1:24-cr-12345", "s.d.n.y.",
-            "24-1234", "2d cir.",
-            "indicted on wire fraud.", "appeal pending.",
+            "us v. wang",
+            "1:24-cr-12345",
+            "s.d.n.y.",
+            "24-1234",
+            "2d cir.",
+            "indicted on wire fraud.",
+            "appeal pending.",
         ]:
             assert needle in text, needle
 
@@ -210,45 +247,56 @@ class TestCaseSearchText:
         # Missing name, no dockets, blank/whitespace summary -> empty string,
         # which the JS treats as "no match for any non-empty query".
         assert _case_search_text({}) == ""
-        assert _case_search_text({
-            "name": "", "dockets": [], "summaries": [{"summary": "   "}],
-        }) == ""
+        assert (
+            _case_search_text(
+                {
+                    "name": "",
+                    "dockets": [],
+                    "summaries": [{"summary": "   "}],
+                }
+            )
+            == ""
+        )
 
 
 class TestRenderIndex:
     @pytest.fixture
     def calendars(self):
-        return [{
-            "id": "cyber",
-            "name": "Cybercrime cases",
-            "links": {
-                "webcal": "webcal://x/cyber.ics",
-                "https": "https://x/cyber.ics",
-                "relative": "cyber.ics",
-            },
-            "cases": [
-                {
-                    "id": "us-v-x",
-                    "name": "US v. X",
-                    "dockets": [{
-                        "docket_id": 1,
-                        "docket_number": "1:24-cr-12345",
-                        "court_id": "nysd",
-                        "court_citation": "S.D.N.Y.",
-                        "absolute_url": "/docket/1/x/",
-                    }],
-                    "date_filed": "2025-01-15",
-                    "last_filing_date": "2026-05-10",
+        return [
+            {
+                "id": "cyber",
+                "name": "Cybercrime cases",
+                "links": {
+                    "webcal": "webcal://x/cyber.ics",
+                    "https": "https://x/cyber.ics",
+                    "relative": "cyber.ics",
                 },
-                {
-                    "id": "us-v-y",
-                    "name": "US v. <evil>",  # XSS canary
-                    "dockets": [],
-                    "date_filed": None,
-                    "last_filing_date": None,
-                },
-            ],
-        }]
+                "cases": [
+                    {
+                        "id": "us-v-x",
+                        "name": "US v. X",
+                        "dockets": [
+                            {
+                                "docket_id": 1,
+                                "docket_number": "1:24-cr-12345",
+                                "court_id": "nysd",
+                                "court_citation": "S.D.N.Y.",
+                                "absolute_url": "/docket/1/x/",
+                            }
+                        ],
+                        "date_filed": "2025-01-15",
+                        "last_filing_date": "2026-05-10",
+                    },
+                    {
+                        "id": "us-v-y",
+                        "name": "US v. <evil>",  # XSS canary
+                        "dockets": [],
+                        "date_filed": None,
+                        "last_filing_date": None,
+                    },
+                ],
+            }
+        ]
 
     def test_produces_valid_html_skeleton(self, calendars):
         html = render_index(
@@ -266,7 +314,7 @@ class TestRenderIndex:
         html = render_index(calendars=calendars)
         assert (
             '<meta name="description" content="Subscribable calendar feeds '
-            'for federal court hearings and filing deadlines, sourced from '
+            "for federal court hearings and filing deadlines, sourced from "
             'CourtListener and RECAP.">'
         ) in html
         html = render_index(
@@ -274,8 +322,7 @@ class TestRenderIndex:
             site_description='Custom "feed" description',
         )
         assert (
-            '<meta name="description" '
-            'content="Custom &quot;feed&quot; description">'
+            '<meta name="description" content="Custom &quot;feed&quot; description">'
         ) in html
 
     def test_declares_color_scheme_for_darkreader(self, calendars):
@@ -314,11 +361,16 @@ class TestRenderIndex:
         # both None — copying a bare relative filename like "cyber.ics"
         # would be useless to subscribers, so the renderer falls back to
         # a plain Download link instead of the copy button.
-        html = render_index(calendars=[{
-            "id": "c", "name": "C",
-            "links": {"webcal": None, "https": None, "relative": "c.ics"},
-            "cases": [],
-        }])
+        html = render_index(
+            calendars=[
+                {
+                    "id": "c",
+                    "name": "C",
+                    "links": {"webcal": None, "https": None, "relative": "c.ics"},
+                    "cases": [],
+                }
+            ]
+        )
         assert 'href="c.ics" download' in html
         # The JS still ships its querySelectorAll('button.copy-feed') line
         # — it's harmless when no button matches — so the assertion guards
@@ -388,63 +440,92 @@ class TestRenderIndex:
         # Each case row needs a lowercased haystack the JS can substring-
         # match against. Includes name + docket number + court citation +
         # summary prose.
-        html = render_index(calendars=[{
-            "id": "c", "name": "C",
-            "links": {"webcal": None, "https": None, "relative": "c.ics"},
-            "cases": [{
-                "id": "us-v-wang",
-                "name": "US v. Wang",
-                "dockets": [{
-                    "docket_id": 1,
-                    "docket_number": "1:24-cr-12345",
-                    "court_citation": "S.D.N.Y.",
-                }],
-                "summaries": [
-                    {"docket_id": 1, "summary": "Indicted on wire fraud."},
-                ],
-                "date_filed": None, "last_filing_date": None,
-            }],
-        }])
+        html = render_index(
+            calendars=[
+                {
+                    "id": "c",
+                    "name": "C",
+                    "links": {"webcal": None, "https": None, "relative": "c.ics"},
+                    "cases": [
+                        {
+                            "id": "us-v-wang",
+                            "name": "US v. Wang",
+                            "dockets": [
+                                {
+                                    "docket_id": 1,
+                                    "docket_number": "1:24-cr-12345",
+                                    "court_citation": "S.D.N.Y.",
+                                }
+                            ],
+                            "summaries": [
+                                {"docket_id": 1, "summary": "Indicted on wire fraud."},
+                            ],
+                            "date_filed": None,
+                            "last_filing_date": None,
+                        }
+                    ],
+                }
+            ]
+        )
         assert "data-search=" in html
         # All four search-relevant fields must be present in the haystack
         # so subscribers can find a case by any of them.
-        for needle in ["us v. wang", "1:24-cr-12345", "s.d.n.y.",
-                       "indicted on wire fraud."]:
+        for needle in [
+            "us v. wang",
+            "1:24-cr-12345",
+            "s.d.n.y.",
+            "indicted on wire fraud.",
+        ]:
             assert needle in html, needle
 
     def test_data_search_attribute_is_xss_safe(self):
         # Summary text is user-ish (LLM output); a quote or angle bracket
         # in there must not break out of the attribute.
-        html = render_index(calendars=[{
-            "id": "c", "name": "C",
-            "links": {"webcal": None, "https": None, "relative": "c.ics"},
-            "cases": [{
-                "id": "x", "name": 'US v. "X"',
-                "dockets": [],
-                "summaries": [{"docket_id": 1, "summary": '<script>alert(1)</script>'}],
-                "date_filed": None, "last_filing_date": None,
-            }],
-        }])
+        html = render_index(
+            calendars=[
+                {
+                    "id": "c",
+                    "name": "C",
+                    "links": {"webcal": None, "https": None, "relative": "c.ics"},
+                    "cases": [
+                        {
+                            "id": "x",
+                            "name": 'US v. "X"',
+                            "dockets": [],
+                            "summaries": [
+                                {"docket_id": 1, "summary": "<script>alert(1)</script>"}
+                            ],
+                            "date_filed": None,
+                            "last_filing_date": None,
+                        }
+                    ],
+                }
+            ]
+        )
         # Raw script tag must not survive into the data-search attribute.
         assert "<script>alert(1)</script>" not in html
         # Quotes in the name must be entity-encoded inside the attribute.
         assert 'data-search="' in html
-        assert 'us v. &quot;x&quot;' in html
+        assert "us v. &quot;x&quot;" in html
 
     def test_empty_calendar_renders_placeholder(self):
-        html = render_index(calendars=[{
-            "id": "empty",
-            "name": "Empty",
-            "links": {"webcal": None, "https": None, "relative": None},
-            "cases": [],
-        }])
+        html = render_index(
+            calendars=[
+                {
+                    "id": "empty",
+                    "name": "Empty",
+                    "links": {"webcal": None, "https": None, "relative": None},
+                    "cases": [],
+                }
+            ]
+        )
         assert "No cases configured" in html
 
     def test_footer_includes_powered_by_attribution(self, calendars):
         html = render_index(calendars=calendars)
         assert (
             '<p>Powered by <a href="https://docs.casecalendar.net/">'
-            'case-calendar</a>.</p>'
+            "Case Calendar</a>.</p>"
         ) in html
 
 
@@ -452,28 +533,43 @@ class TestBuildCalendarModels:
     def test_assembles_from_store(self, store):
         # Seed the store with docket metadata + an entry that has date_filed,
         # so build_calendar_models has aggregates to surface.
-        store.upsert_docket_meta(100, {
-            "court_id": "nysd",
-            "docket_number": "1:24-cr-12345",
-            "case_name": "US v. X",
-            "absolute_url": "/docket/100/x/",
-            "date_last_filing": "2026-05-10",
-        })
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": "nysd",
+                "docket_number": "1:24-cr-12345",
+                "case_name": "US v. X",
+                "absolute_url": "/docket/100/x/",
+                "date_last_filing": "2026-05-10",
+            },
+        )
         store.set_docket_last_modified(100, "2026-05-10T12:00:00Z")
         store.upsert_court("nysd", "S.D.N.Y.", "nysd", "Southern District of NY")
-        store.mark_entry(100, 1, "2025-01-15T08:00:00Z", "fp",
-                         date_filed="2025-01-15", entry_number=1)
+        store.mark_entry(
+            100,
+            1,
+            "2025-01-15T08:00:00Z",
+            "fp",
+            date_filed="2025-01-15",
+            entry_number=1,
+        )
         cfg = {
             "calendars": {
                 "cyber": {"name": "Cybercrime", "ics_path": "out/cyber.ics"},
             },
             "cases": [
-                {"id": "us-v-x", "name": "US v. X",
-                 "calendar": "cyber", "dockets": [100]},
+                {
+                    "id": "us-v-x",
+                    "name": "US v. X",
+                    "calendar": "cyber",
+                    "dockets": [100],
+                },
             ],
         }
         models = build_calendar_models(
-            cfg, store, public_base_url="https://calendars.example.com",
+            cfg,
+            store,
+            public_base_url="https://calendars.example.com",
         )
         assert len(models) == 1
         cal = models[0]
@@ -491,11 +587,14 @@ class TestBuildCalendarModels:
         # is None and the docket metadata is empty. The renderer still
         # has to cope.
         cfg = {
-            "calendars": {"cyber": {"name": "Cybercrime",
-                                    "ics_path": "out/cyber.ics"}},
+            "calendars": {"cyber": {"name": "Cybercrime", "ics_path": "out/cyber.ics"}},
             "cases": [
-                {"id": "us-v-x", "name": "US v. X",
-                 "calendar": "cyber", "dockets": [999]},
+                {
+                    "id": "us-v-x",
+                    "name": "US v. X",
+                    "calendar": "cyber",
+                    "dockets": [999],
+                },
             ],
         }
         models = build_calendar_models(cfg, store)
@@ -508,10 +607,16 @@ class TestBuildCalendarModels:
 class TestWriteIndex:
     def test_writes_file_and_creates_parent_dir(self, tmp_path):
         target = tmp_path / "site" / "index.html"
-        write_index(target, calendars=[{
-            "id": "x", "name": "X",
-            "links": {"webcal": None, "https": None, "relative": None},
-            "cases": [],
-        }])
+        write_index(
+            target,
+            calendars=[
+                {
+                    "id": "x",
+                    "name": "X",
+                    "links": {"webcal": None, "https": None, "relative": None},
+                    "cases": [],
+                }
+            ],
+        )
         assert target.exists()
         assert target.read_text(encoding="utf-8").startswith("<!doctype html>")

@@ -55,17 +55,19 @@ def compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """
     out: list[dict[str, Any]] = []
     for rd in entry.get("recap_documents") or []:
-        out.append({
-            "id": rd.get("id"),
-            "document_number": rd.get("document_number"),
-            "attachment_number": rd.get("attachment_number"),
-            "description": (rd.get("description") or "").strip() or None,
-            "is_available": bool(rd.get("is_available")),
-            "is_sealed": bool(rd.get("is_sealed")),
-            "filepath_ia": rd.get("filepath_ia") or None,
-            "filepath_local": rd.get("filepath_local") or None,
-            "plain_text": (rd.get("plain_text") or "").strip() or None,
-        })
+        out.append(
+            {
+                "id": rd.get("id"),
+                "document_number": rd.get("document_number"),
+                "attachment_number": rd.get("attachment_number"),
+                "description": (rd.get("description") or "").strip() or None,
+                "is_available": bool(rd.get("is_available")),
+                "is_sealed": bool(rd.get("is_sealed")),
+                "filepath_ia": rd.get("filepath_ia") or None,
+                "filepath_local": rd.get("filepath_local") or None,
+                "plain_text": (rd.get("plain_text") or "").strip() or None,
+            }
+        )
 
     def _key(d: dict[str, Any]) -> tuple[int, int]:
         # Sort attachment_number=None / 0 (the main doc) before numbered
@@ -305,7 +307,10 @@ class Store:
     def _migrate_audit_segments(self) -> None:
         """Split existing [verify-pass] / [dedupe] paragraphs out of `notes`
         into `audit_notes`. Called by :meth:`_migrate`; safe to re-run."""
-        for table, key_col in (("hearings", "hearing_key"), ("deadlines", "deadline_key")):
+        for table, key_col in (
+            ("hearings", "hearing_key"),
+            ("deadlines", "deadline_key"),
+        ):
             rows = self.conn.execute(
                 f"SELECT case_id, {key_col}, notes, audit_notes FROM {table} "
                 f"WHERE notes IS NOT NULL "
@@ -318,9 +323,7 @@ class Store:
                 # Merge any pre-existing audit_notes with the newly-extracted
                 # paragraphs (extracted ones come last, preserving chronology).
                 existing_audit = (row["audit_notes"] or "").strip()
-                new_audit = "\n\n".join(
-                    p for p in (existing_audit, extracted) if p
-                )
+                new_audit = "\n\n".join(p for p in (existing_audit, extracted) if p)
                 self.conn.execute(
                     f"UPDATE {table} SET notes=?, audit_notes=? "
                     f"WHERE case_id=? AND {key_col}=?",
@@ -560,7 +563,10 @@ class Store:
         )
 
     def refresh_entry_recap_documents(
-        self, entry: dict[str, Any], *, docket_id: int,
+        self,
+        entry: dict[str, Any],
+        *,
+        docket_id: int,
     ) -> bool:
         """Overwrite an existing entry's stored ``recap_documents`` with a
         fresh version built from a current CourtListener response. Leaves every
@@ -589,8 +595,7 @@ class Store:
             return False
         new_recap_documents = compact_recap_documents(entry)
         cur = self.conn.execute(
-            "UPDATE entries SET recap_documents=? "
-            "WHERE docket_id=? AND entry_id=?",
+            "UPDATE entries SET recap_documents=? WHERE docket_id=? AND entry_id=?",
             (json.dumps(new_recap_documents), docket_id, entry_id),
         )
         return cur.rowcount > 0
@@ -669,9 +674,7 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
-    def get_entry_numbers(
-        self, entry_ids: Iterable[int]
-    ) -> dict[int, int]:
+    def get_entry_numbers(self, entry_ids: Iterable[int]) -> dict[int, int]:
         """Return ``entry_id -> entry_number`` for known entries.
 
         Used by emit-time description rendering to surface PACER docket
@@ -775,7 +778,9 @@ class Store:
         return [self._row_to_hearing(r) for r in rows]
 
     def get_hearings_in_court(
-        self, case_id: str, court_id: str,
+        self,
+        case_id: str,
+        court_id: str,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -789,7 +794,8 @@ class Store:
         return [self._row_to_hearing(r) for r in rows]
 
     def find_concurrent_hearing_clusters(
-        self, case_id: str,
+        self,
+        case_id: str,
     ) -> list[list[dict[str, Any]]]:
         """Future scheduled hearings sharing (docket_id, starts_at_utc).
 
@@ -883,7 +889,10 @@ class Store:
         )
 
     def set_m365_id_for_hearing(
-        self, case_id: str, hearing_key: str, m365_event_id: Optional[str],
+        self,
+        case_id: str,
+        hearing_key: str,
+        m365_event_id: Optional[str],
     ) -> None:
         """Cache (or clear) the Graph-assigned event id for a hearing.
 
@@ -894,8 +903,7 @@ class Store:
         """
         with self.tx():
             self.conn.execute(
-                "UPDATE hearings SET m365_event_id=? "
-                "WHERE case_id=? AND hearing_key=?",
+                "UPDATE hearings SET m365_event_id=? WHERE case_id=? AND hearing_key=?",
                 (m365_event_id, case_id, hearing_key),
             )
 
@@ -928,7 +936,9 @@ class Store:
         return [self._row_to_deadline(r) for r in rows]
 
     def get_deadlines_in_court(
-        self, case_id: str, court_id: str,
+        self,
+        case_id: str,
+        court_id: str,
     ) -> list[dict[str, Any]]:
         rows = self.conn.execute(
             """
@@ -989,7 +999,10 @@ class Store:
         )
 
     def set_m365_id_for_deadline(
-        self, case_id: str, deadline_key: str, m365_event_id: Optional[str],
+        self,
+        case_id: str,
+        deadline_key: str,
+        m365_event_id: Optional[str],
     ) -> None:
         """Cache (or clear) the Graph-assigned event id for a deadline.
         Mirror of :meth:`set_m365_id_for_hearing`."""
@@ -1069,7 +1082,9 @@ class Store:
             )
 
     def get_summary_stale_since(
-        self, case_id: str, docket_id: int,
+        self,
+        case_id: str,
+        docket_id: int,
     ) -> Optional[str]:
         """Return the ISO timestamp of the most recent stale-flagging event,
         or None if the row isn't stale (or doesn't exist).
@@ -1145,7 +1160,9 @@ class Store:
         ).fetchone()
         return row is not None
 
-    def mark_webhook_seen(self, idempotency_key: str, event_type: Optional[int]) -> None:
+    def mark_webhook_seen(
+        self, idempotency_key: str, event_type: Optional[int]
+    ) -> None:
         self.conn.execute(
             "INSERT OR IGNORE INTO webhook_events (idempotency_key, event_type, received_at) "
             "VALUES (?, ?, ?)",

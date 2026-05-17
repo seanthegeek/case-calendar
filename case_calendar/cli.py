@@ -37,7 +37,7 @@ from .sync import CaseConfig, CaseSyncer, ExtraDocument
 _DEADLINE_STATUS_MAP = {
     "pending": "scheduled",
     "passed": "held",
-    "met": "cancelled",       # filtered out by renderers
+    "met": "cancelled",  # filtered out by renderers
     "cancelled": "cancelled",
     "unknown": "scheduled",
 }
@@ -102,6 +102,7 @@ def _compose_title(
     parts.append(f"{case_name}: {raw_title}")
     return " ".join(parts)
 
+
 log = logging.getLogger(__name__)
 
 
@@ -114,7 +115,9 @@ def _load_config(path: str) -> dict[str, Any]:
 
 
 def _extra_documents_from_config(
-    case_id: str, dockets: list[int], raw: Any,
+    case_id: str,
+    dockets: list[int],
+    raw: Any,
 ) -> list[ExtraDocument]:
     """Parse the per-case ``extra_documents`` list out of the YAML.
 
@@ -166,9 +169,13 @@ def _extra_documents_from_config(
                 f"case {case_id!r}: extra_documents[{i}].note must be a non-empty "
                 f"string describing the document and why it was added"
             )
-        out.append(ExtraDocument(
-            docket=docket_id, url=str(item["url"]), note=note,
-        ))
+        out.append(
+            ExtraDocument(
+                docket=docket_id,
+                url=str(item["url"]),
+                note=note,
+            )
+        )
     return out
 
 
@@ -176,20 +183,26 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
     cases: list[CaseConfig] = []
     for c in cfg["cases"]:
         dockets = list(c["dockets"])
-        cases.append(CaseConfig(
-            case_id=c["id"],
-            name=c["name"],
-            dockets=dockets,
-            calendar=c["calendar"],
-            extract_deadlines=bool(c.get("extract_deadlines", False)),
-            extra_documents=_extra_documents_from_config(
-                c["id"], dockets, c.get("extra_documents"),
-            ),
-        ))
+        cases.append(
+            CaseConfig(
+                case_id=c["id"],
+                name=c["name"],
+                dockets=dockets,
+                calendar=c["calendar"],
+                extract_deadlines=bool(c.get("extract_deadlines", False)),
+                extra_documents=_extra_documents_from_config(
+                    c["id"],
+                    dockets,
+                    c.get("extra_documents"),
+                ),
+            )
+        )
     return cases
 
 
-def _print_emit_results(cfg: dict[str, Any], results: dict[str, dict[str, Any]]) -> None:
+def _print_emit_results(
+    cfg: dict[str, Any], results: dict[str, dict[str, Any]]
+) -> None:
     """Print the per-backend summary for the operator running the CLI.
 
     The index write is logged inside :func:`emit_calendars` itself
@@ -223,7 +236,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         known = store.known_docket_ids()
         cases = [c for c in cases if any(d not in known for d in c.dockets)]
         if not cases:
-            print("no new cases — every configured case's dockets are already in the store")
+            print(
+                "no new cases — every configured case's dockets are already in the store"
+            )
             store.close()
             return 0
 
@@ -246,9 +261,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
             # render new document URLs on the next emit; without this
             # condition those links never appear because the LLM returns
             # zero actions for a doc-availability flip.
-            if stats.get("actions") or stats.get("verified") \
-                    or stats.get("auto_passed") \
-                    or stats.get("entries_processed"):
+            if (
+                stats.get("actions")
+                or stats.get("verified")
+                or stats.get("auto_passed")
+                or stats.get("entries_processed")
+            ):
                 affected_calendars.add(case.calendar)
 
         # Agentic summary refresh: process_entry flipped stale=1 on the
@@ -260,9 +278,12 @@ def cmd_sync(args: argparse.Namespace) -> int:
         if (cfg.get("case_summaries") or {}).get("enabled"):
             summary_cfg = cfg["case_summaries"]
             from . import summary as summary_mod
+
             raw_cases = {c["id"]: c for c in cfg["cases"]}
             written = summary_mod.refresh_stale(
-                cl=cl, store=store, cases=cases,
+                cl=cl,
+                store=store,
+                cases=cases,
                 case_overrides=raw_cases,
                 only_case_ids={c.case_id for c in cases},
                 provider=summary_cfg.get("provider"),
@@ -283,7 +304,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
     # sync.
     if not args.no_emit:
         results = emit_calendars(
-            cfg, store,
+            cfg,
+            store,
             only_calendars=affected_calendars,
         )
         _print_emit_results(cfg, results)
@@ -302,9 +324,9 @@ def _resolve_gcal(cfg: dict[str, Any], *, setup: bool) -> tuple[str, Path] | Non
     credentials_path = cfg.get("google_credentials_path")
     if not credentials_path:
         return None
-    token_path = Path(cfg.get(
-        "google_token_path", "tokens/google-token.json"
-    )).expanduser()
+    token_path = Path(
+        cfg.get("google_token_path", "tokens/google-token.json")
+    ).expanduser()
     if not token_path.exists() and not setup:
         log.info(
             "gcal push skipped: no token cache at %s. Run "
@@ -322,14 +344,11 @@ def _resolve_m365(cfg: dict[str, Any], *, setup: bool) -> tuple[str, Path] | Non
     client id is resolvable AND (token cache present OR setup=True).
     """
     client_id = (
-        cfg.get("m365_client_id")
-        or os.environ.get("M365_CLIENT_ID", "").strip()
+        cfg.get("m365_client_id") or os.environ.get("M365_CLIENT_ID", "").strip()
     )
     if not client_id:
         return None
-    token_path = Path(cfg.get(
-        "m365_token_path", "tokens/m365-token.json"
-    )).expanduser()
+    token_path = Path(cfg.get("m365_token_path", "tokens/m365-token.json")).expanduser()
     if not token_path.exists() and not setup:
         log.info(
             "m365 push skipped: no token cache at %s. Run "
@@ -373,10 +392,10 @@ def emit_calendars(
             continue
         cal_cfg = cfg["calendars"].get(case.calendar) or {}
         case_cfg = case_overrides.get(case.case_id) or {}
-        notify_emails = list(case_cfg.get("notify_emails")
-                             or cal_cfg.get("notify_emails") or [])
-        reminders = list(case_cfg.get("reminders")
-                         or cal_cfg.get("reminders") or [])
+        notify_emails = list(
+            case_cfg.get("notify_emails") or cal_cfg.get("notify_emails") or []
+        )
+        reminders = list(case_cfg.get("reminders") or cal_cfg.get("reminders") or [])
 
         # Hearings + deadlines flow through the same renderer. Title is
         # composed up-front via _compose_title so the renderer doesn't need
@@ -483,9 +502,8 @@ def emit_calendars(
         # `m365_calendar_id` selects a specific Outlook calendar; omit it
         # to use the user's default. The auth client is shared across
         # calendars in one emit pass.
-        m365_enabled = (
-            cal_cfg.get("m365_calendar_id") is not None
-            or cal_cfg.get("m365_use_default_calendar")
+        m365_enabled = cal_cfg.get("m365_calendar_id") is not None or cal_cfg.get(
+            "m365_use_default_calendar"
         )
         if m365_enabled and m365_resolved is not None:
             if m365 is None:
@@ -512,10 +530,11 @@ def emit_calendars(
     index_path = cfg.get("index_path")
     if index_path:
         models = build_calendar_models(
-            cfg, store,
+            cfg,
+            store,
             public_base_url=cfg.get("public_base_url"),
         )
-        site_title = cfg.get("site_title", "case-calendar")
+        site_title = cfg.get("site_title", "Case Calendar")
         site_description = cfg.get("site_description")
         kwargs: dict[str, Any] = {"site_title": site_title}
         if site_description:
@@ -588,9 +607,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
             return
         try:
             from . import summary as summary_mod
+
             scoped_ids = {c.case_id for c in cases if c.calendar in cals}
             written = summary_mod.refresh_stale(
-                cl=cl, store=store, cases=cases,
+                cl=cl,
+                store=store,
+                cases=cases,
                 case_overrides=raw_cases,
                 only_case_ids=scoped_ids,
                 provider=summary_cfg.get("provider"),
@@ -602,7 +624,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             written_cals = {c.calendar for c in cases if c.case_id in written}
             log.info(
                 "debounced summary refresh: regenerated %d row(s); re-emitting %s",
-                sum(len(v) for v in written.values()), written_cals,
+                sum(len(v) for v in written.values()),
+                written_cals,
             )
             emit_calendars(cfg, store, only_calendars=written_cals)
         except Exception:
@@ -640,7 +663,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             t.start()
         log.info(
             "debounce armed: summary refresh in %.0fs for calendars=%s",
-            debounce_seconds, only_calendars,
+            debounce_seconds,
+            only_calendars,
         )
 
     def emit_fn(only_calendars: set[str]) -> None:
@@ -652,7 +676,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         # still carry the previous summary text; that's fine, the
         # timer-fired re-emit overwrites the index a few minutes later.
         results = emit_calendars(
-            cfg, store,
+            cfg,
+            store,
             only_calendars=only_calendars,
         )
         # Debounce-arm the summary refresh. If this delivery didn't touch
@@ -664,21 +689,30 @@ def cmd_serve(args: argparse.Namespace) -> int:
             if r["ics_path"]:
                 log.info(
                     "[%s] wrote %d events -> %s",
-                    cal_id, r["events"], r["ics_path"],
+                    cal_id,
+                    r["events"],
+                    r["ics_path"],
                 )
             if r["gcal_pushed"]:
                 gcal_id = cfg["calendars"][cal_id]["google_calendar_id"]
                 log.info(
                     "[%s] pushed %d events to gcal %s",
-                    cal_id, r["events"], gcal_id,
+                    cal_id,
+                    r["events"],
+                    gcal_id,
                 )
             if r["m365_pushed"]:
-                m365_id = cfg["calendars"][cal_id].get(
-                    "m365_calendar_id",
-                ) or "(default)"
+                m365_id = (
+                    cfg["calendars"][cal_id].get(
+                        "m365_calendar_id",
+                    )
+                    or "(default)"
+                )
                 log.info(
                     "[%s] pushed %d events to M365 %s",
-                    cal_id, r["events"], m365_id,
+                    cal_id,
+                    r["events"],
+                    m365_id,
                 )
 
     with CourtListener() as cl:
@@ -714,9 +748,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
             return 2
         from .calendars.gcal import GoogleCalendarSync
 
-        token_path = Path(cfg.get(
-            "google_token_path", "tokens/google-token.json"
-        )).expanduser()
+        token_path = Path(
+            cfg.get("google_token_path", "tokens/google-token.json")
+        ).expanduser()
         GoogleCalendarSync(
             credentials_path=cfg["google_credentials_path"],
             token_path=token_path,
@@ -726,8 +760,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     # m365
     client_id = (
-        cfg.get("m365_client_id")
-        or os.environ.get("M365_CLIENT_ID", "").strip()
+        cfg.get("m365_client_id") or os.environ.get("M365_CLIENT_ID", "").strip()
     )
     if not client_id:
         print(
@@ -739,9 +772,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 2
     from .calendars.m365 import M365CalendarSync
 
-    token_path = Path(cfg.get(
-        "m365_token_path", "tokens/m365-token.json"
-    )).expanduser()
+    token_path = Path(cfg.get("m365_token_path", "tokens/m365-token.json")).expanduser()
     M365CalendarSync(client_id=client_id, token_path=token_path)
     print(f"m365 auth record staged at {token_path}")
     return 0
@@ -795,10 +826,14 @@ def cmd_summarize(args: argparse.Namespace) -> int:
             aggregation_note = raw.get("aggregation_note")
             print(f"=== summarizing {case.case_id} — {case.name} ===")
             written = summarize_case(
-                cl=cl, store=store, case=case,
+                cl=cl,
+                store=store,
+                case=case,
                 aggregation_note=aggregation_note,
-                provider=provider, model=model,
-                allow_ocr=allow_ocr, force=args.force,
+                provider=provider,
+                model=model,
+                allow_ocr=allow_ocr,
+                force=args.force,
             )
             for row in written:
                 print(
@@ -811,7 +846,9 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     # Re-emit so the new summaries land in the index.html immediately.
     if not args.no_emit and affected_calendars:
         results = emit_calendars(
-            cfg, store, only_calendars=affected_calendars,
+            cfg,
+            store,
+            only_calendars=affected_calendars,
         )
         _print_emit_results(cfg, results)
     store.close()
@@ -987,9 +1024,15 @@ def cmd_prune(args: argparse.Namespace) -> int:
                 "FROM dockets WHERE docket_id=?",
                 (did,),
             ).fetchone()
-            meta = dict(meta_row) if meta_row else {
-                "court_id": None, "docket_number": None, "case_name": None,
-            }
+            meta = (
+                dict(meta_row)
+                if meta_row
+                else {
+                    "court_id": None,
+                    "docket_number": None,
+                    "case_name": None,
+                }
+            )
             plan.append((did, counts, meta))
             label = (
                 f"{meta['docket_number'] or '?'} "
@@ -1067,8 +1110,8 @@ def main(argv: list[str] | None = None) -> int:
         "--only-new",
         action="store_true",
         help="only sync cases whose dockets aren't yet in the store — "
-             "useful after adding new cases to config.yaml without needing "
-             "to remember their ids",
+        "useful after adding new cases to config.yaml without needing "
+        "to remember their ids",
     )
     p_sync.add_argument(
         "--no-emit",
@@ -1079,15 +1122,15 @@ def main(argv: list[str] | None = None) -> int:
         "--force-summaries",
         action="store_true",
         help="regenerate every case summary as part of the sync (use after "
-             "a model upgrade or prompt change — avoids a separate "
-             "`summarize --force` run that would hit CourtListener again)",
+        "a model upgrade or prompt change — avoids a separate "
+        "`summarize --force` run that would hit CourtListener again)",
     )
     p_sync.set_defaults(func=cmd_sync)
 
     p_emit = sub.add_parser(
         "emit",
         help="emit calendars from current store (auto-pushes to any "
-             "configured gcal / M365 backend with a staged token)",
+        "configured gcal / M365 backend with a staged token)",
     )
     p_emit.set_defaults(func=cmd_emit)
 
@@ -1095,14 +1138,18 @@ def main(argv: list[str] | None = None) -> int:
         "serve",
         help="run the CourtListener webhook receiver (real-time alternative to sync)",
     )
-    p_serve.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
-    p_serve.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
+    p_serve.add_argument(
+        "--host", default="127.0.0.1", help="bind host (default 127.0.0.1)"
+    )
+    p_serve.add_argument(
+        "--port", type=int, default=8000, help="bind port (default 8000)"
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_setup = sub.add_parser(
         "setup",
         help="one-time OAuth setup for Google Calendar or Microsoft 365 / "
-             "Outlook push (opens a browser to stage the token cache)",
+        "Outlook push (opens a browser to stage the token cache)",
     )
     p_setup.add_argument(
         "backend",
@@ -1114,18 +1161,21 @@ def main(argv: list[str] | None = None) -> int:
     p_summarize = sub.add_parser(
         "summarize",
         help="generate per-docket AI case summaries for the index page "
-             "(opt-in; gated on case_summaries.enabled in the config)",
+        "(opt-in; gated on case_summaries.enabled in the config)",
     )
     p_summarize.add_argument(
-        "--case", help="only summarize this case_id",
+        "--case",
+        help="only summarize this case_id",
     )
     p_summarize.add_argument(
-        "--force", action="store_true",
+        "--force",
+        action="store_true",
         help="regenerate summaries even when a row already exists "
-             "(use after a model upgrade or prompt change)",
+        "(use after a model upgrade or prompt change)",
     )
     p_summarize.add_argument(
-        "--no-emit", action="store_true",
+        "--no-emit",
+        action="store_true",
         help="skip auto-emitting index.html after writing summaries",
     )
     p_summarize.set_defaults(func=cmd_summarize)
@@ -1137,34 +1187,34 @@ def main(argv: list[str] | None = None) -> int:
     p_prune = sub.add_parser(
         "prune",
         help="delete store rows tied to docket_ids no longer in the config "
-             "(dry-run by default; pass --apply to actually delete)",
+        "(dry-run by default; pass --apply to actually delete)",
     )
     p_prune.add_argument(
         "--apply",
         action="store_true",
         help="actually delete the orphan rows. Default is dry-run, which "
-             "prints the deletion plan without modifying the store. Back up "
-             "the SQLite store before applying.",
+        "prints the deletion plan without modifying the store. Back up "
+        "the SQLite store before applying.",
     )
     p_prune.set_defaults(func=cmd_prune)
 
     p_webhook_url = sub.add_parser(
         "webhook-url",
         help="print the CourtListener webhook URL ready to paste into the "
-             "webhook dashboard (uses CASE_CALENDAR_WEBHOOK_SECRET from .env)",
+        "webhook dashboard (uses CASE_CALENDAR_WEBHOOK_SECRET from .env)",
     )
     p_webhook_url.add_argument(
         "--host",
         help="public host where the serve receiver is reachable, e.g. "
-             "webhook.example.com (https:// is assumed) or "
-             "http://localhost:8000 for a local curl test",
+        "webhook.example.com (https:// is assumed) or "
+        "http://localhost:8000 for a local curl test",
     )
     p_webhook_url.add_argument(
         "--check",
         action="store_true",
         help="after printing the URL, hit the secret-gated health "
-             "endpoint to verify the receiver is reachable and the "
-             "secret matches (requires --host)",
+        "endpoint to verify the receiver is reachable and the "
+        "secret matches (requires --host)",
     )
     p_webhook_url.set_defaults(func=cmd_webhook_url)
 

@@ -108,7 +108,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         # secret is the one this receiver expects. Used by `webhook-url
         # --check`.
         if self.path.startswith(WEBHOOK_PATH_PREFIX):
-            suffix = self.path[len(WEBHOOK_PATH_PREFIX):].rstrip("/")
+            suffix = self.path[len(WEBHOOK_PATH_PREFIX) :].rstrip("/")
             secret, _, tail = suffix.partition("/")
             if secret != self.server.secret:
                 log.warning(
@@ -121,14 +121,17 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 self._respond(404, {"error": "not found"})
                 return
             cases = {c.case_id for c in self.server.docket_to_case.values()}
-            self._respond(200, {
-                "status": "ok",
-                "service": "case-calendar",
-                "tracking": {
-                    "dockets": len(self.server.docket_to_case),
-                    "cases": len(cases),
+            self._respond(
+                200,
+                {
+                    "status": "ok",
+                    "service": "case-calendar",
+                    "tracking": {
+                        "dockets": len(self.server.docket_to_case),
+                        "cases": len(cases),
+                    },
                 },
-            })
+            )
             return
         self._respond(404, {"error": "not found"})
 
@@ -136,7 +139,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
         if not self.path.startswith(WEBHOOK_PATH_PREFIX):
             self._respond(404, {"error": "unknown path"})
             return
-        supplied = self.path[len(WEBHOOK_PATH_PREFIX):].rstrip("/")
+        supplied = self.path[len(WEBHOOK_PATH_PREFIX) :].rstrip("/")
         if supplied != self.server.secret:
             log.warning("webhook secret mismatch from %s", self.client_address[0])
             self._respond(403, {"error": "forbidden"})
@@ -185,7 +188,9 @@ class WebhookHandler(BaseHTTPRequestHandler):
 
     # --- handlers ---
 
-    def _dispatch(self, event_type: Optional[int], data: dict[str, Any]) -> dict[str, Any]:
+    def _dispatch(
+        self, event_type: Optional[int], data: dict[str, Any]
+    ) -> dict[str, Any]:
         if event_type == EVENT_DOCKET_ALERT:
             return self._handle_docket_alert(data.get("payload") or {})
         # Other event types are accepted-but-ignored for now.
@@ -223,13 +228,12 @@ class WebhookHandler(BaseHTTPRequestHandler):
                 continue
 
             try:
-                was_processed = self.server.syncer.process_entry(
-                    case, docket_id, entry
-                )
+                was_processed = self.server.syncer.process_entry(case, docket_id, entry)
             except Exception:
                 log.exception(
                     "process_entry failed for docket=%s entry=%s",
-                    docket_id, entry.get("id"),
+                    docket_id,
+                    entry.get("id"),
                 )
                 continue
             processed += 1
@@ -301,17 +305,24 @@ def serve(
     emit_fn: Optional[EmitFn] = None,
 ) -> None:
     server = WebhookServer(
-        (host, port), secret=secret, cases=cases, store=store, cl=cl,
+        (host, port),
+        secret=secret,
+        cases=cases,
+        store=store,
+        cl=cl,
         emit_fn=emit_fn,
     )
     log.info(
-        "case-calendar webhook server listening on %s:%d "
+        "Case Calendar webhook server listening on %s:%d "
         "(POST %s<secret> for DOCKET_ALERT)",
-        host, port, WEBHOOK_PATH_PREFIX,
+        host,
+        port,
+        WEBHOOK_PATH_PREFIX,
     )
     log.info(
         "tracking %d dockets across %d cases",
-        len(server.docket_to_case), len(cases),
+        len(server.docket_to_case),
+        len(cases),
     )
     try:
         server.serve_forever()

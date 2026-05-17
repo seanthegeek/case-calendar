@@ -7,7 +7,7 @@ tells you *what each case is about* in a couple of sentences is more useful —
 especially when you're tracking 30 cases and can't remember which Wang is
 which.
 
-When enabled, case-calendar generates a 2-4 sentence prose summary for each
+When enabled, Case Calendar generates a 2-4 sentence prose summary for each
 docket and renders it on the [public index page](public-page.md) next to
 the case row. Summaries are opt-in, off by default, and only run on dockets
 where the source documents actually support a confident answer (the LLM is
@@ -34,7 +34,7 @@ The summary pipeline pulls three sets of source documents for each docket:
 
 Those documents — plus a structured scaffold of the hearings and deadlines
 the extractor already recorded — go into a single LLM call. The model returns
-prose; case-calendar persists it to the `case_summaries` table.
+prose; Case Calendar persists it to the `case_summaries` table.
 
 The page-rendered output looks like:
 
@@ -180,7 +180,7 @@ should be able to see. Two real failure modes the project has hit:
   was uploaded under an older `pacer_case_id` than the docket's current
   one ([CourtListener bug #7345](https://github.com/freelawproject/courtlistener/issues/7345)).
 
-For those cases, point case-calendar at the document directly. Each entry
+For those cases, point Case Calendar at the document directly. Each entry
 needs three fields:
 
 ```yaml
@@ -202,7 +202,7 @@ needs three fields:
 | `url` | Absolute `https://` URL to a PDF. Anywhere — DoJ press releases, archived storage URLs, court websites. |
 | `note` | Required. Tells the summary LLM what the document is and why it was added. The note rides into the prompt as trusted operator metadata; the document text itself is still treated as untrusted (the same way CourtListener / PACER text is). |
 
-case-calendar fetches the bytes through the same pypdf → OCR fallback chain
+Case Calendar fetches the bytes through the same pypdf → OCR fallback chain
 as it does for CourtListener documents, then feeds them to the LLM as their
 own labeled section. Each entry's LLM block is headed
 `OPERATOR-PROVIDED DOCUMENT (sourced outside CourtListener)` with the

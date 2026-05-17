@@ -147,7 +147,7 @@ uv run case-calendar webhook-url --host webhook.example.com
 | Flag | Purpose |
 | --- | --- |
 | `--host <host>` | Public host where the receiver is reachable. `https://` is assumed unless you pass an explicit `http://` URL. |
-| `--check` | After printing the URL, probe the receiver's secret-gated health endpoint to verify the host is reachable, case-calendar is the service answering, and the secret in `.env` matches the one the running receiver expects. |
+| `--check` | After printing the URL, probe the receiver's secret-gated health endpoint to verify the host is reachable, Case Calendar is the service answering, and the secret in `.env` matches the one the running receiver expects. |
 
 `--check` is the single command that catches the common deployment
 failure modes: a Cloudflare access policy intercepting the path, a stale

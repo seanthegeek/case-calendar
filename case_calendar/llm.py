@@ -592,7 +592,9 @@ def build_user_message(
     if referenced_entries:
         ref_lines = []
         for ref in referenced_entries:
-            text = (ref.get("description") or ref.get("short_description") or "").strip()
+            text = (
+                ref.get("description") or ref.get("short_description") or ""
+            ).strip()
             if not text:
                 continue
             # Cap each ref so a verbose motion can't crowd out the main entry.
@@ -616,13 +618,13 @@ KNOWN HEARINGS:
 {known_block}{deadlines_block}
 
 NEW DOCKET ENTRY:
-  entry_id    : {entry.get('id')}
-  entry_number: {entry.get('entry_number')}
+  entry_id    : {entry.get("id")}
+  entry_number: {entry.get("entry_number")}
   docket_id   : {docket_id}
-  date_filed  : {entry.get('date_filed')}
-  short_desc  : {entry.get('short_description') or ''}
+  date_filed  : {entry.get("date_filed")}
+  short_desc  : {entry.get("short_description") or ""}
   description :
-{(entry.get('description') or '').strip()}
+{(entry.get("description") or "").strip()}
 
   recap_documents:
 {rdoc_block}{pdf_block}{refs_block}
@@ -657,7 +659,11 @@ def _detect_provider() -> Optional[str]:
 
 
 def _call_anthropic(
-    system: str, user: str, max_tokens: int, *, model: Optional[str] = None,
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    model: Optional[str] = None,
 ) -> str:
     import anthropic
 
@@ -682,8 +688,12 @@ def _call_anthropic(
 
 
 def _call_openai(
-    system: str, user: str, max_tokens: int, *,
-    model: Optional[str] = None, json_mode: bool = True,
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    model: Optional[str] = None,
+    json_mode: bool = True,
 ) -> str:
     import openai
 
@@ -707,8 +717,12 @@ def _call_openai(
 
 
 def _call_gemini(
-    system: str, user: str, max_tokens: int, *,
-    model: Optional[str] = None, json_mode: bool = True,
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    model: Optional[str] = None,
+    json_mode: bool = True,
 ) -> str:
     from google import genai
     from google.genai import types as gtypes
@@ -801,7 +815,8 @@ def extract_actions(
     )
     logger.debug(
         "llm input entry=%s known_hearings=%d known_deadlines=%s user=%s",
-        entry.get("id"), len(known_hearings),
+        entry.get("id"),
+        len(known_hearings),
         len(known_deadlines or []) if extract_deadlines else "off",
         user,
     )
@@ -820,7 +835,8 @@ def extract_actions(
     actions = _parse_actions(raw)
     logger.info(
         "llm extract entry=%s known_hearings=%d known_deadlines=%s -> %s",
-        entry.get("id"), len(known_hearings),
+        entry.get("id"),
+        len(known_hearings),
         len(known_deadlines or []) if extract_deadlines else "off",
         [a.get("type") for a in actions],
     )
@@ -1023,7 +1039,9 @@ def verify_hearing(
     )
     logger.debug(
         "llm verify hearing_key=%r recent_entries=%d user=%s",
-        hearing.get("hearing_key"), len(recent_entries), user,
+        hearing.get("hearing_key"),
+        len(recent_entries),
+        user,
     )
 
     try:
@@ -1043,8 +1061,11 @@ def verify_hearing(
     try:
         obj = json.loads(raw)
     except json.JSONDecodeError:
-        logger.warning("verify hearing_key=%r returned non-JSON: %s",
-                       hearing.get("hearing_key"), raw[:300])
+        logger.warning(
+            "verify hearing_key=%r returned non-JSON: %s",
+            hearing.get("hearing_key"),
+            raw[:300],
+        )
         return {"type": "UNCLEAR", "reason": "non-JSON response"}
 
     # Sometimes the model wraps the action in {"actions":[...]} despite the
@@ -1059,7 +1080,8 @@ def verify_hearing(
 
     logger.info(
         "llm verify key=%r -> %s (%s)",
-        hearing.get("hearing_key"), obj.get("type"),
+        hearing.get("hearing_key"),
+        obj.get("type"),
         (obj.get("reason") or "")[:120],
     )
     return obj
@@ -1182,7 +1204,8 @@ def verify_deadline(
     except json.JSONDecodeError:
         logger.warning(
             "verify_deadline key=%r returned non-JSON: %s",
-            deadline.get("deadline_key"), raw[:300],
+            deadline.get("deadline_key"),
+            raw[:300],
         )
         return {"type": "UNCLEAR", "reason": "non-JSON response"}
 
@@ -1196,7 +1219,8 @@ def verify_deadline(
 
     logger.info(
         "llm verify_deadline key=%r -> %s (%s)",
-        deadline.get("deadline_key"), obj.get("type"),
+        deadline.get("deadline_key"),
+        obj.get("type"),
         (obj.get("reason") or "")[:120],
     )
     return obj
@@ -1261,17 +1285,19 @@ def _build_dedupe_hearing_user_message(
         f"CANDIDATE HEARINGS ({len(cluster)} sharing the same slot):",
     ]
     for h in cluster:
-        parts.extend([
-            "  ---",
-            f"  hearing_key: {h.get('hearing_key')!r}",
-            f"  title: {h.get('title')!r}",
-            f"  starts_at_utc: {h.get('starts_at_utc')}",
-            f"  duration_minutes: {h.get('duration_minutes')}",
-            f"  significance: {h.get('significance')}",
-            f"  docket_id: {h.get('docket_id')}",
-            f"  source_entry_ids: {h.get('source_entry_ids')}",
-            f"  notes: {h.get('notes')!r}",
-        ])
+        parts.extend(
+            [
+                "  ---",
+                f"  hearing_key: {h.get('hearing_key')!r}",
+                f"  title: {h.get('title')!r}",
+                f"  starts_at_utc: {h.get('starts_at_utc')}",
+                f"  duration_minutes: {h.get('duration_minutes')}",
+                f"  significance: {h.get('significance')}",
+                f"  docket_id: {h.get('docket_id')}",
+                f"  source_entry_ids: {h.get('source_entry_ids')}",
+                f"  notes: {h.get('notes')!r}",
+            ]
+        )
     parts.append("")
     parts.append("RECENT DOCKET ENTRIES (newest last):")
     if not recent_entries:
@@ -1337,7 +1363,8 @@ def resolve_duplicate_hearings(
     except json.JSONDecodeError:
         logger.warning(
             "resolve_duplicate_hearings keys=%s returned non-JSON: %s",
-            [h.get("hearing_key") for h in cluster], raw[:300],
+            [h.get("hearing_key") for h in cluster],
+            raw[:300],
         )
         return {"type": "UNCLEAR", "reason": "non-JSON response"}
 
@@ -1352,7 +1379,8 @@ def resolve_duplicate_hearings(
     logger.info(
         "llm resolve_duplicate_hearings keys=%s -> %s (%s)",
         [h.get("hearing_key") for h in cluster],
-        obj.get("type"), (obj.get("reason") or "")[:120],
+        obj.get("type"),
+        (obj.get("reason") or "")[:120],
     )
     return obj
 
@@ -1840,7 +1868,10 @@ def _build_summary_user_message(
 
 
 def _append_doc_block(
-    parts: list[str], doc: dict[str, Any], *, char_budget: int,
+    parts: list[str],
+    doc: dict[str, Any],
+    *,
+    char_budget: int,
 ) -> None:
     """Render one document block onto the user message.
 
@@ -1939,24 +1970,38 @@ def generate_docket_summary(
 
     logger.info(
         "case-summary llm provider=%s model=%s docket=%s primary=%d disposition=%d hearings=%d deadlines=%d user_chars=%d",
-        chosen_provider, chosen_model, docket.get("docket_id"),
-        len(primary_documents), len(disposition_documents),
-        len(hearings), len(deadlines), len(user),
+        chosen_provider,
+        chosen_model,
+        docket.get("docket_id"),
+        len(primary_documents),
+        len(disposition_documents),
+        len(hearings),
+        len(deadlines),
+        len(user),
     )
 
     if chosen_provider == "anthropic":
         text = _call_anthropic(
-            SUMMARY_SYSTEM_PROMPT, user, max_tokens, model=chosen_model,
+            SUMMARY_SYSTEM_PROMPT,
+            user,
+            max_tokens,
+            model=chosen_model,
         )
     elif chosen_provider == "openai":
         text = _call_openai(
-            SUMMARY_SYSTEM_PROMPT, user, max_tokens,
-            model=chosen_model, json_mode=False,
+            SUMMARY_SYSTEM_PROMPT,
+            user,
+            max_tokens,
+            model=chosen_model,
+            json_mode=False,
         )
     else:
         text = _call_gemini(
-            SUMMARY_SYSTEM_PROMPT, user, max_tokens,
-            model=chosen_model, json_mode=False,
+            SUMMARY_SYSTEM_PROMPT,
+            user,
+            max_tokens,
+            model=chosen_model,
+            json_mode=False,
         )
 
     summary = text.strip()

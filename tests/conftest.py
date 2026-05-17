@@ -125,11 +125,14 @@ class FakeCourtListener(CourtListener):
 
     def get_court(self, court_id: str) -> dict:
         self.calls.append(("court", court_id))
-        return self._courts.get(court_id, {
-            "citation_string": court_id.upper(),
-            "short_name": court_id,
-            "full_name": court_id,
-        })
+        return self._courts.get(
+            court_id,
+            {
+                "citation_string": court_id.upper(),
+                "short_name": court_id,
+                "full_name": court_id,
+            },
+        )
 
     def get_recap_document(self, doc_id: int) -> dict:
         self.calls.append(("recap", doc_id))
@@ -162,6 +165,12 @@ def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make sure tests don't accidentally hit the real CourtListener API."""
     monkeypatch.setenv("COURTLISTENER_TOKEN", "test-token")
     # Strip any real LLM creds the dev shell might have.
-    for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY",
-              "GOOGLE_API_KEY", "LLM_PROVIDER", "LLM_MODEL"):
+    for k in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "LLM_PROVIDER",
+        "LLM_MODEL",
+    ):
         monkeypatch.delenv(k, raising=False)

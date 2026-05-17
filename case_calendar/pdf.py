@@ -136,7 +136,15 @@ def ocr_with_tesseract(pdf_bytes: bytes) -> str:
         # Render each page to a 300-DPI grayscale PNG.
         try:
             subprocess.run(
-                ["pdftoppm", "-r", "300", "-gray", "-png", str(pdf_path), str(tmp_path / "page")],
+                [
+                    "pdftoppm",
+                    "-r",
+                    "300",
+                    "-gray",
+                    "-png",
+                    str(pdf_path),
+                    str(tmp_path / "page"),
+                ],
                 check=True,
                 capture_output=True,
                 timeout=300,

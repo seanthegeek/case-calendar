@@ -70,9 +70,7 @@ class GoogleCalendarSync:
     def _build_service(self):
         creds: Credentials | None = None
         if self.token_path.exists():
-            creds = Credentials.from_authorized_user_file(
-                str(self.token_path), SCOPES
-            )
+            creds = Credentials.from_authorized_user_file(str(self.token_path), SCOPES)
         if creds and creds.valid:
             return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
@@ -120,7 +118,9 @@ class GoogleCalendarSync:
         body = self._event_body(eid, h)
         try:
             self.service.events().patch(
-                calendarId=calendar_id, eventId=eid, body=body,
+                calendarId=calendar_id,
+                eventId=eid,
+                body=body,
                 sendUpdates=send_updates,
             ).execute()
             log.info("patched %s on %s", eid, calendar_id)
@@ -129,7 +129,8 @@ class GoogleCalendarSync:
                 # Create with the same id so future patches are idempotent.
                 body["id"] = eid
                 self.service.events().insert(
-                    calendarId=calendar_id, body=body,
+                    calendarId=calendar_id,
+                    body=body,
                     sendUpdates=send_updates,
                 ).execute()
                 log.info("created %s on %s", eid, calendar_id)
@@ -147,7 +148,8 @@ class GoogleCalendarSync:
         eid = _gcal_id(h["case_id"], h["hearing_key"])
         try:
             self.service.events().patch(
-                calendarId=calendar_id, eventId=eid,
+                calendarId=calendar_id,
+                eventId=eid,
                 body={"status": "cancelled"},
                 sendUpdates=send_updates,
             ).execute()
@@ -211,7 +213,9 @@ class GoogleCalendarSync:
                 "timeZone": tz,
             }
             body["end"] = {
-                "dateTime": end_dt.astimezone(ZoneInfo(tz)).strftime("%Y-%m-%dT%H:%M:%S"),
+                "dateTime": end_dt.astimezone(ZoneInfo(tz)).strftime(
+                    "%Y-%m-%dT%H:%M:%S"
+                ),
                 "timeZone": tz,
             }
         else:
@@ -223,8 +227,8 @@ class GoogleCalendarSync:
                 .isoformat()
             )
             next_day = (
-                datetime.fromisoformat(d) + timedelta(days=1)
-            ).date().isoformat()
+                (datetime.fromisoformat(d) + timedelta(days=1)).date().isoformat()
+            )
             body["start"] = {"date": d}
             body["end"] = {"date": next_day}
 

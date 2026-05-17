@@ -284,8 +284,12 @@ def _is_disposition_document(entry: dict[str, Any]) -> bool:
 
 
 def _list_entries_ordered(
-    cl: CourtListener, docket_id: int, *, order_by: str,
-    page_size: int = 50, max_pages: int = 2,
+    cl: CourtListener,
+    docket_id: int,
+    *,
+    order_by: str,
+    page_size: int = 50,
+    max_pages: int = 2,
 ) -> list[dict[str, Any]]:
     """Return up to ``page_size * max_pages`` entries on a docket in the given order.
 
@@ -353,7 +357,9 @@ def _cached_primary_recap_documents_look_stale(
 
 
 def find_primary_documents(
-    cl: CourtListener, docket_id: int, *,
+    cl: CourtListener,
+    docket_id: int,
+    *,
     store: Optional[Store] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Find the primary document(s) and disposition documents on a docket.
@@ -496,7 +502,9 @@ _UNSEAL_ORDER_RE = re.compile(
 
 
 def detect_sealing(
-    cl: CourtListener, docket_id: int, *,
+    cl: CourtListener,
+    docket_id: int,
+    *,
     dispositions: list[dict[str, Any]],
     available_post_seal_threshold: int = 3,
 ) -> Optional[dict[str, Any]]:
@@ -580,7 +588,7 @@ def detect_sealing(
     for e in entries:
         if (e.get("date_filed") or "") <= sealing_date:
             continue
-        for rd in (e.get("recap_documents") or []):
+        for rd in e.get("recap_documents") or []:
             if rd.get("is_available"):
                 available_post_seal += 1
                 break
@@ -640,7 +648,9 @@ def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
 
 
 def _attach_text(
-    entries: Iterable[dict[str, Any]], *, allow_ocr: bool = True,
+    entries: Iterable[dict[str, Any]],
+    *,
+    allow_ocr: bool = True,
     allow_description_fallback: bool = False,
 ) -> list[dict[str, Any]]:
     """Pull document text for each entry; drop entries with no extractable text.
@@ -662,13 +672,15 @@ def _attach_text(
                 _entry_description_head(entry)[:80],
             )
             continue
-        out.append({
-            "entry_id": entry.get("id"),
-            "entry_number": entry.get("entry_number"),
-            "description": _entry_description_head(entry),
-            "date_filed": entry.get("date_filed"),
-            "text": text,
-        })
+        out.append(
+            {
+                "entry_id": entry.get("id"),
+                "entry_number": entry.get("entry_number"),
+                "description": _entry_description_head(entry),
+                "date_filed": entry.get("date_filed"),
+                "text": text,
+            }
+        )
     return out
 
 
@@ -677,23 +689,24 @@ def _attach_text(
 # ---------------------------------------------------------------------------
 
 
-def _hearings_for_docket(store: Store, case_id: str, docket_id: int) -> list[dict[str, Any]]:
+def _hearings_for_docket(
+    store: Store, case_id: str, docket_id: int
+) -> list[dict[str, Any]]:
     """Filter the case's hearings to a single docket for the LLM scaffold."""
-    return [
-        h for h in store.get_hearings(case_id)
-        if h.get("docket_id") == docket_id
-    ]
+    return [h for h in store.get_hearings(case_id) if h.get("docket_id") == docket_id]
 
 
-def _deadlines_for_docket(store: Store, case_id: str, docket_id: int) -> list[dict[str, Any]]:
-    return [
-        d for d in store.get_deadlines(case_id)
-        if d.get("docket_id") == docket_id
-    ]
+def _deadlines_for_docket(
+    store: Store, case_id: str, docket_id: int
+) -> list[dict[str, Any]]:
+    return [d for d in store.get_deadlines(case_id) if d.get("docket_id") == docket_id]
 
 
 def _fetch_extra_documents(
-    case: CaseConfig, docket_id: int, *, allow_ocr: bool = True,
+    case: CaseConfig,
+    docket_id: int,
+    *,
+    allow_ocr: bool = True,
 ) -> list[dict[str, Any]]:
     """Fetch operator-provided ``extra_documents`` for one docket.
 
@@ -713,24 +726,28 @@ def _fetch_extra_documents(
             continue
         log.info(
             "summary: docket %s — fetching operator-provided document from %s",
-            docket_id, extra.url,
+            docket_id,
+            extra.url,
         )
         text = pdf.extract_text_from_url(extra.url, allow_ocr=allow_ocr)
         if not text:
             log.warning(
                 "summary: docket %s — operator-provided document %s yielded no text; skipping",
-                docket_id, extra.url,
+                docket_id,
+                extra.url,
             )
             continue
-        out.append({
-            "entry_id": None,
-            "entry_number": None,
-            "description": "operator-provided document",
-            "date_filed": None,
-            "text": text,
-            "source_url": extra.url,
-            "operator_note": extra.note,
-        })
+        out.append(
+            {
+                "entry_id": None,
+                "entry_number": None,
+                "description": "operator-provided document",
+                "date_filed": None,
+                "text": text,
+                "source_url": extra.url,
+                "operator_note": extra.note,
+            }
+        )
     return out
 
 
@@ -757,12 +774,13 @@ def _borrow_primary_from_siblings(
         meta = store.get_docket_meta(sibling_id) or {}
         sibling_docket_number = meta.get("docket_number")
         sibling_court_citation = (
-            store.get_court_citation(meta["court_id"])
-            if meta.get("court_id") else None
+            store.get_court_citation(meta["court_id"]) if meta.get("court_id") else None
         )
         log.info(
             "summary: docket %s has no primary document — borrowing from sibling %s (%s)",
-            primary_docket_id, sibling_id, sibling_docket_number,
+            primary_docket_id,
+            sibling_id,
+            sibling_docket_number,
         )
         try:
             sibling_primary, _ = find_primary_documents(cl, sibling_id, store=store)
@@ -812,25 +830,28 @@ def summarize_docket(
         "docket_id": docket_id,
         "docket_number": docket_number,
         "court_id": court_id,
-        "court_citation": (
-            store.get_court_citation(court_id) if court_id else None
-        ),
+        "court_citation": (store.get_court_citation(court_id) if court_id else None),
         "court_tz": tz_for(court_id) if court_id else None,
     }
 
     log.info(
         "summary: scanning docket %s (%s) for primary documents",
-        docket_id, docket_number,
+        docket_id,
+        docket_number,
     )
     primary, dispositions = find_primary_documents(cl, docket_id, store=store)
     log.info(
         "summary: docket %s found %d primary document(s), %d disposition document(s)",
-        docket_id, len(primary), len(dispositions),
+        docket_id,
+        len(primary),
+        len(dispositions),
     )
 
     primary_documents = _attach_text(primary, allow_ocr=allow_ocr)
     disposition_documents = _attach_text(
-        dispositions, allow_ocr=allow_ocr, allow_description_fallback=True,
+        dispositions,
+        allow_ocr=allow_ocr,
+        allow_description_fallback=True,
     )
 
     # Flag suspiciously-short primary documents so the operator can
@@ -870,7 +891,9 @@ def summarize_docket(
                 "work around this silently, so a confusing or generic "
                 "subscriber-facing summary on this case is the signal "
                 "to investigate the source PDF.",
-                docket_id, doc.get("entry_number"), doc.get("date_filed"),
+                docket_id,
+                doc.get("entry_number"),
+                doc.get("date_filed"),
                 len(text),
             )
 
@@ -891,8 +914,11 @@ def summarize_docket(
         # framing stays appellate-perspective rather than collapsing into
         # the trial-court narrative.
         primary_documents = _borrow_primary_from_siblings(
-            cl=cl, store=store, case=case,
-            primary_docket_id=docket_id, allow_ocr=allow_ocr,
+            cl=cl,
+            store=store,
+            case=case,
+            primary_docket_id=docket_id,
+            allow_ocr=allow_ocr,
         )
 
     if not primary_documents and not extra_documents:
@@ -941,15 +967,20 @@ def summarize_docket(
             "fallback (primary=%d disposition=%d extra=%d); store will "
             "show the refusal text. Check whether the extracted document "
             "text actually carried the case's substance.",
-            docket_id, len(primary_documents), len(disposition_documents), len(extra_documents),
+            docket_id,
+            len(primary_documents),
+            len(disposition_documents),
+            len(extra_documents),
         )
 
     source_ids = [
-        d["entry_id"] for d in primary_documents + disposition_documents
+        d["entry_id"]
+        for d in primary_documents + disposition_documents
         if d.get("entry_id")
     ]
     store.upsert_case_summary(
-        case.case_id, docket_id,
+        case.case_id,
+        docket_id,
         summary=summary_text,
         model=model_id,
         source_entry_ids=source_ids,
@@ -957,7 +988,9 @@ def summarize_docket(
 
     log.info(
         "summary: wrote docket %s summary (%d chars, model=%s)",
-        docket_id, len(summary_text), model_id,
+        docket_id,
+        len(summary_text),
+        model_id,
     )
     return {
         "docket_id": docket_id,
@@ -1006,19 +1039,27 @@ def refresh_stale(
     for case in cases:
         if only_case_ids is not None and case.case_id not in only_case_ids:
             continue
-        aggregation_note = (case_overrides.get(case.case_id) or {}).get("aggregation_note")
+        aggregation_note = (case_overrides.get(case.case_id) or {}).get(
+            "aggregation_note"
+        )
         for docket_id in case.dockets:
             if not force and not store.is_summary_stale(case.case_id, docket_id):
                 continue
             log.info(
                 "summary: docket %s (case %s) %s — regenerating",
-                docket_id, case.case_id,
+                docket_id,
+                case.case_id,
                 "force-refresh" if force else "is stale or missing",
             )
             row = summarize_docket(
-                cl=cl, store=store, case=case, docket_id=docket_id,
+                cl=cl,
+                store=store,
+                case=case,
+                docket_id=docket_id,
                 aggregation_note=aggregation_note,
-                provider=provider, model=model, allow_ocr=allow_ocr,
+                provider=provider,
+                model=model,
+                allow_ocr=allow_ocr,
             )
             if row:
                 written.setdefault(case.case_id, set()).add(docket_id)
@@ -1049,13 +1090,19 @@ def summarize_case(
             log.info(
                 "summary: skipping docket %s (case %s) — already summarized, "
                 "pass force=True to overwrite",
-                docket_id, case.case_id,
+                docket_id,
+                case.case_id,
             )
             continue
         row = summarize_docket(
-            cl=cl, store=store, case=case, docket_id=docket_id,
+            cl=cl,
+            store=store,
+            case=case,
+            docket_id=docket_id,
             aggregation_note=aggregation_note,
-            provider=provider, model=model, allow_ocr=allow_ocr,
+            provider=provider,
+            model=model,
+            allow_ocr=allow_ocr,
         )
         if row:
             out.append(row)

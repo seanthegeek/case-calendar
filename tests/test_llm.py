@@ -64,11 +64,13 @@ class TestParseActions:
         assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
 
     def test_strips_markdown_fences(self):
-        text = "```json\n{\"actions\": [{\"type\": \"IGNORE\"}]}\n```"
+        text = '```json\n{"actions": [{"type": "IGNORE"}]}\n```'
         assert llm._parse_actions(text) == [{"type": "IGNORE"}]
 
     def test_extracts_json_from_chatter(self):
-        text = "Sure, here's my analysis: {\"actions\": [{\"type\": \"IGNORE\"}]} let me know"
+        text = (
+            'Sure, here\'s my analysis: {"actions": [{"type": "IGNORE"}]} let me know'
+        )
         assert llm._parse_actions(text) == [{"type": "IGNORE"}]
 
     def test_no_json_returns_ignore(self):
@@ -94,10 +96,17 @@ class TestParseActions:
 class TestBuildUserMessage:
     def test_includes_case_court_and_tz(self):
         msg = llm.build_user_message(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            entry={"id": 1, "description": "x", "date_filed": "2026-01-01",
-                   "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            entry={
+                "id": 1,
+                "description": "x",
+                "date_filed": "2026-01-01",
+                "recap_documents": [],
+            },
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert "US v. X" in msg
         assert "mad" in msg
@@ -105,20 +114,31 @@ class TestBuildUserMessage:
 
     def test_no_known_hearings_message(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert "no hearings known yet" in msg
 
     def test_known_hearings_serialized(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
             pdf_texts=[],
-            known_hearings=[{"hearing_key": "sentencing-x", "status": "scheduled",
-                              "title": "Sentencing", "starts_at_utc": "2026-04-14T15:00:00+00:00",
-                              "location": "Courtroom 4"}],
+            known_hearings=[
+                {
+                    "hearing_key": "sentencing-x",
+                    "status": "scheduled",
+                    "title": "Sentencing",
+                    "starts_at_utc": "2026-04-14T15:00:00+00:00",
+                    "location": "Courtroom 4",
+                }
+            ],
         )
         assert "sentencing-x" in msg
         assert "Sentencing" in msg
@@ -127,14 +147,21 @@ class TestBuildUserMessage:
         # Both the entry's docket_id and each known hearing's docket_id must
         # be visible to the model so it can apply the cross-docket rule.
         msg = llm.build_user_message(
-            case_name="x", court_id="cadc", court_tz="America/New_York",
+            case_name="x",
+            court_id="cadc",
+            court_tz="America/New_York",
             entry={"id": 1, "description": "", "recap_documents": []},
             pdf_texts=[],
-            known_hearings=[{
-                "hearing_key": "oral-arg-x", "status": "scheduled",
-                "title": "Oral Arg", "starts_at_utc": "2026-05-19T13:30:00+00:00",
-                "location": None, "docket_id": 72380208,
-            }],
+            known_hearings=[
+                {
+                    "hearing_key": "oral-arg-x",
+                    "status": "scheduled",
+                    "title": "Oral Arg",
+                    "starts_at_utc": "2026-05-19T13:30:00+00:00",
+                    "location": None,
+                    "docket_id": 72380208,
+                }
+            ],
             docket_id=72379655,
         )
         assert "docket_id   : 72379655" in msg
@@ -142,7 +169,9 @@ class TestBuildUserMessage:
 
     def test_pdf_texts_truncated_per_pdf(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
             pdf_texts=["a" * 20_000],
             known_hearings=[],
@@ -152,10 +181,16 @@ class TestBuildUserMessage:
 
     def test_recap_doc_descriptions_listed(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
-            entry={"id": 1, "description": "", "recap_documents": [
-                {"id": 99, "description": "Notice of Hearing"}]},
-            pdf_texts=[], known_hearings=[],
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            entry={
+                "id": 1,
+                "description": "",
+                "recap_documents": [{"id": 99, "description": "Notice of Hearing"}],
+            },
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert "Notice of Hearing" in msg
         assert "#99" in msg
@@ -169,21 +204,29 @@ class TestExtractActionsErrors:
         # Conftest already strips all provider env vars.
         with pytest.raises(RuntimeError, match="No LLM provider configured"):
             llm.extract_actions(
-                case_name="x", court_id="x", court_tz="x",
+                case_name="x",
+                court_id="x",
+                court_tz="x",
                 entry={"id": 1, "description": "", "recap_documents": []},
-                pdf_texts=[], known_hearings=[],
+                pdf_texts=[],
+                known_hearings=[],
             )
 
     def test_provider_call_failure_returns_ignore(self, monkeypatch):
         monkeypatch.setenv("LLM_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom"))
+            llm,
+            "_call_anthropic",
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
         )
         result = llm.extract_actions(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert len(result) == 1
         assert result[0]["type"] == "IGNORE"
@@ -216,16 +259,25 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
     captured = {}
+
     def fake_call(system, user, max_tokens):
         captured["system"] = system
         captured["user"] = user
         return '{"actions": [{"type": "ADD", "hearing_key": "x", "title": "T"}]}'
+
     monkeypatch.setattr(llm, "_call_anthropic", fake_call)
 
     out = llm.extract_actions(
-        case_name="US v. Z", court_id="mad", court_tz="America/New_York",
-        entry={"id": 1, "description": "Sentencing set for 4/14", "recap_documents": []},
-        pdf_texts=[], known_hearings=[],
+        case_name="US v. Z",
+        court_id="mad",
+        court_tz="America/New_York",
+        entry={
+            "id": 1,
+            "description": "Sentencing set for 4/14",
+            "recap_documents": [],
+        },
+        pdf_texts=[],
+        known_hearings=[],
     )
     assert out == [{"type": "ADD", "hearing_key": "x", "title": "T"}]
     assert "US v. Z" in captured["user"]
@@ -256,27 +308,37 @@ class TestVerifyHearing:
     def test_returns_confirm_action(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"type": "CONFIRM", "reason": "still scheduled"}',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '{"type": "CONFIRM", "reason": "still scheduled"}',
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "CONFIRM"
 
     def test_returns_reschedule_with_date(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
-                '"local_time": "10:00", "reason": "moved"}',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
+            '"local_time": "10:00", "reason": "moved"}',
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "RESCHEDULE"
         assert out["local_date"] == "2099-02-01"
@@ -284,13 +346,18 @@ class TestVerifyHearing:
     def test_strips_markdown_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '```json\n{"type": "CANCEL", "reason": "vacated"}\n```',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '```json\n{"type": "CANCEL", "reason": "vacated"}\n```',
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "CANCEL"
 
@@ -298,66 +365,91 @@ class TestVerifyHearing:
         # Defensive: model might emit {"actions": [...]} despite the prompt.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}',
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "MARK_HELD"
 
     def test_non_json_response_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda system, user, max_tokens: "I cannot determine.",
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_missing_type_field_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda system, user, max_tokens: '{"reason": "no type field"}',
         )
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_llm_call_failure_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
         def boom(system, user, max_tokens):
             raise RuntimeError("api down")
+
         monkeypatch.setattr(llm, "_call_anthropic", boom)
         out = llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
-            hearing=_hearing(), recent_entries=[],
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_user_message_includes_hearing_and_entries(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured = {}
+
         def fake(system, user, max_tokens):
             captured["user"] = user
             captured["system"] = system
             return '{"type": "CONFIRM"}'
+
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.verify_hearing(
-            case_name="US v. X", court_id="mad", court_tz="America/New_York",
+            case_name="US v. X",
+            court_id="mad",
+            court_tz="America/New_York",
             hearing=_hearing(),
             recent_entries=[
-                {"entry_number": 50, "entry_id": 9999,
-                 "date_filed": "2026-04-01",
-                 "description": "Order vacating trial date"},
+                {
+                    "entry_number": 50,
+                    "entry_id": 9999,
+                    "date_filed": "2026-04-01",
+                    "description": "Order vacating trial date",
+                },
             ],
         )
         assert "trial-x" in captured["user"]
@@ -367,43 +459,58 @@ class TestVerifyHearing:
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_openai",
+            llm,
+            "_call_openai",
             lambda system, user, max_tokens: '{"type": "CONFIRM"}',
         )
         out = llm.verify_hearing(
-            case_name="X", court_id="x", court_tz="UTC",
-            hearing=_hearing(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "CONFIRM"
 
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_gemini",
+            llm,
+            "_call_gemini",
             lambda system, user, max_tokens: '{"type": "CONFIRM"}',
         )
         out = llm.verify_hearing(
-            case_name="X", court_id="x", court_tz="UTC",
-            hearing=_hearing(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "CONFIRM"
 
     def test_no_provider_raises(self):
         with pytest.raises(RuntimeError, match="No LLM provider"):
             llm.verify_hearing(
-                case_name="x", court_id="x", court_tz="x",
-                hearing=_hearing(), recent_entries=[],
+                case_name="x",
+                court_id="x",
+                court_tz="x",
+                hearing=_hearing(),
+                recent_entries=[],
             )
 
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda *a, **kw: '{"actions": []}',
         )
         out = llm.verify_hearing(
-            case_name="X", court_id="x", court_tz="UTC",
-            hearing=_hearing(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
@@ -415,28 +522,34 @@ class TestExtractActionsDispatch:
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_openai",
-            lambda system, user, max_tokens:
-                '{"actions": [{"type": "IGNORE"}]}',
+            llm,
+            "_call_openai",
+            lambda system, user, max_tokens: '{"actions": [{"type": "IGNORE"}]}',
         )
         out = llm.extract_actions(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert out == [{"type": "IGNORE"}]
 
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_gemini",
-            lambda system, user, max_tokens:
-                '{"actions": [{"type": "IGNORE"}]}',
+            llm,
+            "_call_gemini",
+            lambda system, user, max_tokens: '{"actions": [{"type": "IGNORE"}]}',
         )
         out = llm.extract_actions(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
         )
         assert out == [{"type": "IGNORE"}]
 
@@ -447,44 +560,68 @@ class TestExtractActionsDispatch:
 class TestBuildUserMessageOptionalBlocks:
     def test_known_deadlines_block_only_when_passed(self):
         msg_off = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[], known_deadlines=None,
+            pdf_texts=[],
+            known_hearings=[],
+            known_deadlines=None,
         )
         assert "KNOWN DEADLINES" not in msg_off
 
         msg_empty = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[], known_deadlines=[],
+            pdf_texts=[],
+            known_hearings=[],
+            known_deadlines=[],
         )
         assert "KNOWN DEADLINES" in msg_empty
         assert "(no deadlines known yet)" in msg_empty
 
         msg_full = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
-            known_deadlines=[{
-                "deadline_key": "reply-mtd", "status": "pending",
-                "title": "Reply ISO MTD",
-                "due_at_utc": "2026-05-31T21:00:00+00:00",
-                "deadline_type": "reply", "docket_id": 100,
-            }],
+            pdf_texts=[],
+            known_hearings=[],
+            known_deadlines=[
+                {
+                    "deadline_key": "reply-mtd",
+                    "status": "pending",
+                    "title": "Reply ISO MTD",
+                    "due_at_utc": "2026-05-31T21:00:00+00:00",
+                    "deadline_type": "reply",
+                    "docket_id": 100,
+                }
+            ],
         )
         assert "reply-mtd" in msg_full
         assert "Reply ISO MTD" in msg_full
 
     def test_referenced_entries_block(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
             referenced_entries=[
-                {"entry_number": 65, "date_filed": "2026-01-01",
-                 "description": "Motion to Continue trial"},
-                {"entry_number": 66, "short_description": "",
-                 "description": ""},  # empty -> skipped
+                {
+                    "entry_number": 65,
+                    "date_filed": "2026-01-01",
+                    "description": "Motion to Continue trial",
+                },
+                {
+                    "entry_number": 66,
+                    "short_description": "",
+                    "description": "",
+                },  # empty -> skipped
             ],
         )
         assert "RELATED DOCKET ENTRIES" in msg
@@ -492,9 +629,12 @@ class TestBuildUserMessageOptionalBlocks:
 
     def test_referenced_entries_all_empty_drops_block(self):
         msg = llm.build_user_message(
-            case_name="x", court_id="x", court_tz="x",
+            case_name="x",
+            court_id="x",
+            court_tz="x",
             entry={"id": 1, "description": "", "recap_documents": []},
-            pdf_texts=[], known_hearings=[],
+            pdf_texts=[],
+            known_hearings=[],
             referenced_entries=[
                 {"entry_number": 65, "description": ""},
             ],
@@ -509,6 +649,7 @@ class TestCallAnthropic:
     def test_returns_text_block(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         # Mock the anthropic module so we don't import the real SDK.
         fake_mod = MagicMock(name="anthropic")
         fake_client = MagicMock(name="Anthropic client")
@@ -530,6 +671,7 @@ class TestCallAnthropic:
     def test_respects_model_kwarg(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_mod = MagicMock(name="anthropic")
         fake_client = MagicMock()
         fake_mod.Anthropic.return_value = fake_client
@@ -540,11 +682,14 @@ class TestCallAnthropic:
         monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
 
         llm._call_anthropic("s", "u", 50, model="claude-opus-4-7")
-        assert fake_client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
+        assert (
+            fake_client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
+        )
 
     def test_no_text_block_raises(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.Anthropic.return_value = fake_client
@@ -561,6 +706,7 @@ class TestCallOpenAI:
     def test_returns_message_content(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_mod = MagicMock(name="openai")
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
@@ -580,6 +726,7 @@ class TestCallOpenAI:
     def test_json_mode_off_omits_response_format(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
@@ -597,6 +744,7 @@ class TestCallOpenAI:
     def test_empty_content_raises(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
@@ -615,6 +763,7 @@ class TestCallGemini:
     def test_returns_text(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         # google.genai is a nested module; stub both.
         fake_genai = MagicMock(name="google.genai")
         fake_types = MagicMock(name="google.genai.types")
@@ -646,6 +795,7 @@ class TestCallGemini:
     def test_json_mode_off_omits_mime_type(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_genai = MagicMock()
         fake_types = MagicMock()
 
@@ -672,6 +822,7 @@ class TestCallGemini:
     def test_empty_text_raises(self, monkeypatch):
         from unittest.mock import MagicMock
         import sys
+
         fake_genai = MagicMock()
         fake_types = MagicMock()
         fake_types.GenerateContentConfig = lambda **kw: object()
@@ -714,100 +865,138 @@ class TestVerifyDeadline:
     def test_no_provider_raises(self):
         with pytest.raises(RuntimeError, match="No LLM provider"):
             llm.verify_deadline(
-                case_name="x", court_id="x", court_tz="x",
-                deadline=_deadline(), recent_entries=[],
+                case_name="x",
+                court_id="x",
+                court_tz="x",
+                deadline=_deadline(),
+                recent_entries=[],
             )
 
     def test_returns_confirm(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda *a, **kw: '{"type": "CONFIRM", "reason": "still pending"}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "CONFIRM"
 
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_openai",
+            llm,
+            "_call_openai",
             lambda *a, **kw: '{"type": "MARK_FILED"}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "MARK_FILED"
 
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_gemini",
+            llm,
+            "_call_gemini",
             lambda *a, **kw: '{"type": "RESCHEDULE", "local_date": "2026-06-15"}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "RESCHEDULE"
 
     def test_strips_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda *a, **kw: '```json\n{"type": "CANCEL"}\n```',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "CANCEL"
 
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda *a, **kw: '{"actions": [{"type": "CANCEL"}]}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "CANCEL"
 
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic", lambda *a, **kw: '{"actions": []}',
+            llm,
+            "_call_anthropic",
+            lambda *a, **kw: '{"actions": []}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_non_json_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic", lambda *a, **kw: "can't tell",
+            llm,
+            "_call_anthropic",
+            lambda *a, **kw: "can't tell",
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_missing_type_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic", lambda *a, **kw: '{"reason": "x"}',
+            llm,
+            "_call_anthropic",
+            lambda *a, **kw: '{"reason": "x"}',
         )
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
@@ -819,8 +1008,11 @@ class TestVerifyDeadline:
 
         monkeypatch.setattr(llm, "_call_anthropic", boom)
         out = llm.verify_deadline(
-            case_name="x", court_id="x", court_tz="UTC",
-            deadline=_deadline(), recent_entries=[],
+            case_name="x",
+            court_id="x",
+            court_tz="UTC",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
@@ -834,12 +1026,17 @@ class TestVerifyDeadline:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.verify_deadline(
-            case_name="X", court_id="mad", court_tz="UTC",
+            case_name="X",
+            court_id="mad",
+            court_tz="UTC",
             deadline=_deadline(),
             recent_entries=[
-                {"entry_number": 50, "entry_id": 99,
-                 "date_filed": "2026-05-01",
-                 "description": "Filed reply brief"},
+                {
+                    "entry_number": 50,
+                    "entry_id": 99,
+                    "date_filed": "2026-05-01",
+                    "description": "Filed reply brief",
+                },
             ],
         )
         assert "reply-mtd" in captured["user"]
@@ -856,8 +1053,11 @@ class TestVerifyDeadline:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.verify_deadline(
-            case_name="X", court_id="x", court_tz="x",
-            deadline=_deadline(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="x",
+            deadline=_deadline(),
+            recent_entries=[],
         )
         assert "(none)" in captured["user"]
 
@@ -875,8 +1075,11 @@ class TestVerifyHearingNoRecentEntries:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.verify_hearing(
-            case_name="X", court_id="x", court_tz="x",
-            hearing=_hearing(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="x",
+            hearing=_hearing(),
+            recent_entries=[],
         )
         assert "(none)" in captured["user"]
 
@@ -906,8 +1109,11 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
             ),
         )
         llm.verify_hearing(
-            case_name="X", court_id="x", court_tz="x",
-            hearing=hearing, recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="x",
+            hearing=hearing,
+            recent_entries=[],
         )
         # The docket-derived notes ARE shown — verify needs them as context.
         assert "Trial commences June 12, 2024." in captured["user"]
@@ -929,8 +1135,11 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
             audit_notes="[verify-pass] DO NOT LEAK THIS deadline audit reason.",
         )
         llm.verify_deadline(
-            case_name="X", court_id="x", court_tz="x",
-            deadline=deadline, recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="x",
+            deadline=deadline,
+            recent_entries=[],
         )
         assert "Reply due 2/1/2026." in captured["user"]
         assert "DO NOT LEAK THIS" not in captured["user"]
@@ -961,16 +1170,18 @@ class TestResolveDuplicateHearings:
     def test_returns_merge_into_action(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"type": "MERGE_INTO", '
-                '"target_key": "msj-hearing-anthropic-v-usdw", '
-                '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}',
+            llm,
+            "_call_anthropic",
+            lambda system, user, max_tokens: '{"type": "MERGE_INTO", '
+            '"target_key": "msj-hearing-anthropic-v-usdw", '
+            '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="Anthropic v. DOW", court_id="cand",
+            case_name="Anthropic v. DOW",
+            court_id="cand",
             court_tz="America/Los_Angeles",
-            cluster=self._cluster(), recent_entries=[],
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "MERGE_INTO"
         assert out["target_key"] == "msj-hearing-anthropic-v-usdw"
@@ -979,77 +1190,102 @@ class TestResolveDuplicateHearings:
         # Stacked back-to-back proceedings — the LLM keeps both.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="US v. X", court_id="dcd", court_tz="America/New_York",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="US v. X",
+            court_id="dcd",
+            court_tz="America/New_York",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "KEEP_BOTH"
 
     def test_strips_markdown_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '```json\n{"type": "MERGE_INTO", '
-                '"target_key": "msj-hearing-anthropic-v-usdw", '
-                '"reason": "..."}\n```',
+            llm,
+            "_call_anthropic",
+            lambda system, user, max_tokens: '```json\n{"type": "MERGE_INTO", '
+            '"target_key": "msj-hearing-anthropic-v-usdw", '
+            '"reason": "..."}\n```',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="cand", court_tz="America/Los_Angeles",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="cand",
+            court_tz="America/Los_Angeles",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "MERGE_INTO"
 
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
-            lambda system, user, max_tokens:
-                '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}',
+            llm,
+            "_call_anthropic",
+            lambda system,
+            user,
+            max_tokens: '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "KEEP_BOTH"
 
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda system, user, max_tokens: '{"actions": []}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_non_json_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda system, user, max_tokens: "I cannot tell.",
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_missing_type_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda system, user, max_tokens: '{"reason": "no type"}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
@@ -1061,20 +1297,31 @@ class TestResolveDuplicateHearings:
 
         monkeypatch.setattr(llm, "_call_anthropic", boom)
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
 
     def test_no_provider_configured_raises(self, monkeypatch):
         # Strip every *_API_KEY and LLM_PROVIDER override so detection fails.
-        for k in ("LLM_PROVIDER", "ANTHROPIC_API_KEY", "OPENAI_API_KEY",
-                  "GEMINI_API_KEY", "GOOGLE_API_KEY"):
+        for k in (
+            "LLM_PROVIDER",
+            "ANTHROPIC_API_KEY",
+            "OPENAI_API_KEY",
+            "GEMINI_API_KEY",
+            "GOOGLE_API_KEY",
+        ):
             monkeypatch.delenv(k, raising=False)
         with pytest.raises(RuntimeError, match="No LLM provider"):
             llm.resolve_duplicate_hearings(
-                case_name="X", court_id="x", court_tz="UTC",
-                cluster=self._cluster(), recent_entries=[],
+                case_name="X",
+                court_id="x",
+                court_tz="UTC",
+                cluster=self._cluster(),
+                recent_entries=[],
             )
 
     def test_user_message_lists_all_candidates_and_recent(self, monkeypatch):
@@ -1089,14 +1336,18 @@ class TestResolveDuplicateHearings:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.resolve_duplicate_hearings(
-            case_name="Anthropic v. DOW", court_id="cand",
+            case_name="Anthropic v. DOW",
+            court_id="cand",
             court_tz="America/Los_Angeles",
             cluster=self._cluster(),
-            recent_entries=[{
-                "entry_number": 150, "entry_id": 461818939,
-                "date_filed": "2026-04-23",
-                "description": "ORDER RE 149 STIPULATION ...",
-            }],
+            recent_entries=[
+                {
+                    "entry_number": 150,
+                    "entry_id": 461818939,
+                    "date_filed": "2026-04-23",
+                    "description": "ORDER RE 149 STIPULATION ...",
+                }
+            ],
         )
         msg = captured["user"]
         assert "msj-hearing-anthropic-v-usdw" in msg
@@ -1115,8 +1366,11 @@ class TestResolveDuplicateHearings:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert "(none)" in captured["user"]
 
@@ -1125,15 +1379,18 @@ class TestResolveDuplicateHearings:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_openai",
-            lambda system, user, max_tokens:
-                '{"type": "MERGE_INTO", '
-                '"target_key": "msj-hearing-anthropic-v-usdw", '
-                '"reason": "..."}',
+            llm,
+            "_call_openai",
+            lambda system, user, max_tokens: '{"type": "MERGE_INTO", '
+            '"target_key": "msj-hearing-anthropic-v-usdw", '
+            '"reason": "..."}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "MERGE_INTO"
 
@@ -1143,13 +1400,16 @@ class TestResolveDuplicateHearings:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_gemini",
-            lambda system, user, max_tokens:
-                '{"type": "KEEP_BOTH", "reason": "..."}',
+            llm,
+            "_call_gemini",
+            lambda system, user, max_tokens: '{"type": "KEEP_BOTH", "reason": "..."}',
         )
         out = llm.resolve_duplicate_hearings(
-            case_name="X", court_id="x", court_tz="UTC",
-            cluster=self._cluster(), recent_entries=[],
+            case_name="X",
+            court_id="x",
+            court_tz="UTC",
+            cluster=self._cluster(),
+            recent_entries=[],
         )
         assert out["type"] == "KEEP_BOTH"
 
@@ -1180,25 +1440,40 @@ class TestBuildSummaryUserMessage:
                 "docket_number": "1:24-cr-100",
                 "court_citation": "S.D.N.Y.",
             },
-            primary_documents=[{
-                "entry_number": 1, "description": "INDICTMENT",
-                "date_filed": "2024-01-01", "text": "Body of indictment...",
-            }],
-            disposition_documents=[{
-                "entry_number": 99, "description": "JUDGMENT",
-                "date_filed": "2025-06-15", "text": "Judgment body...",
-            }],
-            hearings=[{
-                "title": "Sentencing", "status": "held",
-                "starts_at_utc": "2025-06-10T15:00:00+00:00",
-                "significance": "major",
-            }],
-            deadlines=[{
-                "title": "Reply ISO MTD", "status": "met",
-                "due_at_utc": "2024-12-15T22:00:00+00:00",
-                "deadline_type": "reply",
-            }],
-            primary_char_budget=10_000, disposition_char_budget=10_000,
+            primary_documents=[
+                {
+                    "entry_number": 1,
+                    "description": "INDICTMENT",
+                    "date_filed": "2024-01-01",
+                    "text": "Body of indictment...",
+                }
+            ],
+            disposition_documents=[
+                {
+                    "entry_number": 99,
+                    "description": "JUDGMENT",
+                    "date_filed": "2025-06-15",
+                    "text": "Judgment body...",
+                }
+            ],
+            hearings=[
+                {
+                    "title": "Sentencing",
+                    "status": "held",
+                    "starts_at_utc": "2025-06-10T15:00:00+00:00",
+                    "significance": "major",
+                }
+            ],
+            deadlines=[
+                {
+                    "title": "Reply ISO MTD",
+                    "status": "met",
+                    "due_at_utc": "2024-12-15T22:00:00+00:00",
+                    "deadline_type": "reply",
+                }
+            ],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
         )
         assert "US v. X" in msg
         assert "Parallel district + appellate" in msg
@@ -1209,11 +1484,15 @@ class TestBuildSummaryUserMessage:
 
     def test_empty_hearings_and_deadlines_show_placeholders(self):
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "(none recorded)" in msg
         # primary_documents empty -> "no primary document text available"
@@ -1223,11 +1502,15 @@ class TestBuildSummaryUserMessage:
 
     def test_sealing_advisory_block_emitted_when_present(self):
         msg = llm._build_summary_user_message(
-            case_name="US v. Dubranova", aggregation_note=None,
+            case_name="US v. Dubranova",
+            aggregation_note=None,
             docket={"docket_number": "2:25-cr-578", "court_citation": "C.D. Cal."},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
             sealing_advisory={
                 "sealing_entry_number": 44,
                 "sealing_date_filed": "2025-08-21",
@@ -1253,11 +1536,15 @@ class TestBuildSummaryUserMessage:
     def test_sealing_advisory_block_omitted_when_absent(self):
         # Default (no advisory passed) — block must not appear.
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "DOCKET VISIBILITY ADVISORY" not in msg
 
@@ -1272,17 +1559,21 @@ class TestBuildSummaryUserMessage:
             case_name="Anthropic v. DOW",
             aggregation_note=None,
             docket={"docket_number": "26-2011", "court_id": "ca9"},
-            primary_documents=[], disposition_documents=[],
+            primary_documents=[],
+            disposition_documents=[],
             hearings=[],
-            deadlines=[{
-                "title": "Appellants' Motion for Appropriate Relief",
-                "status": "pending",
-                "due_at_utc": None,
-                "deadline_type": None,
-                "notes": "Appellants must file within 21 days after "
-                         "resolution of related D.C. Cir. case 26-1049.",
-            }],
-            primary_char_budget=100, disposition_char_budget=100,
+            deadlines=[
+                {
+                    "title": "Appellants' Motion for Appropriate Relief",
+                    "status": "pending",
+                    "due_at_utc": None,
+                    "deadline_type": None,
+                    "notes": "Appellants must file within 21 days after "
+                    "resolution of related D.C. Cir. case 26-1049.",
+                }
+            ],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "due_at_utc=None" in msg
         assert "21 days after resolution" in msg
@@ -1291,28 +1582,37 @@ class TestBuildSummaryUserMessage:
         # Non-conditional deadlines keep the scaffold line tight — the
         # date already says everything; notes would just add noise.
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
+            primary_documents=[],
+            disposition_documents=[],
             hearings=[],
-            deadlines=[{
-                "title": "Govt response to MTD",
-                "status": "pending",
-                "due_at_utc": "2026-05-24T21:00:00+00:00",
-                "deadline_type": "response",
-                "notes": "Some operator-added side note that shouldn't reach the LLM.",
-            }],
-            primary_char_budget=100, disposition_char_budget=100,
+            deadlines=[
+                {
+                    "title": "Govt response to MTD",
+                    "status": "pending",
+                    "due_at_utc": "2026-05-24T21:00:00+00:00",
+                    "deadline_type": "response",
+                    "notes": "Some operator-added side note that shouldn't reach the LLM.",
+                }
+            ],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "Some operator-added side note" not in msg
 
     def test_omits_aggregation_note_when_unset(self):
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "AGGREGATION NOTE" not in msg
 
@@ -1327,17 +1627,22 @@ class TestBuildSummaryUserMessage:
             docket={"docket_number": "4:23-cr-00523", "court_citation": "S.D. Tex."},
             primary_documents=[],
             disposition_documents=[],
-            extra_documents=[{
-                "entry_id": None, "entry_number": None,
-                "description": "operator-provided document",
-                "date_filed": None,
-                "text": "REDACTED INDICTMENT body...",
-                "source_url": "https://www.justice.gov/opa/media/1407196/dl",
-                "operator_note": "This is the unsealed indictment. CourtListener "
-                                 "entries 1-4 are missing due to bug #7345.",
-            }],
-            hearings=[], deadlines=[],
-            primary_char_budget=10_000, disposition_char_budget=10_000,
+            extra_documents=[
+                {
+                    "entry_id": None,
+                    "entry_number": None,
+                    "description": "operator-provided document",
+                    "date_filed": None,
+                    "text": "REDACTED INDICTMENT body...",
+                    "source_url": "https://www.justice.gov/opa/media/1407196/dl",
+                    "operator_note": "This is the unsealed indictment. CourtListener "
+                    "entries 1-4 are missing due to bug #7345.",
+                }
+            ],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
         )
         assert "EXTRA DOCUMENTS PROVIDED BY OPERATOR" in msg
         assert "OPERATOR-PROVIDED DOCUMENT" in msg
@@ -1356,22 +1661,30 @@ class TestBuildSummaryUserMessage:
         # When no extra_documents are present, the EXTRA DOCUMENTS section
         # header doesn't render at all — keeps the prompt tight.
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "EXTRA DOCUMENTS" not in msg
 
     def test_extras_section_omitted_when_extras_list_empty(self):
         msg = llm._build_summary_user_message(
-            case_name="X", aggregation_note=None,
+            case_name="X",
+            aggregation_note=None,
             docket={"docket_number": "x", "court_id": "x"},
-            primary_documents=[], disposition_documents=[],
+            primary_documents=[],
+            disposition_documents=[],
             extra_documents=[],
-            hearings=[], deadlines=[],
-            primary_char_budget=100, disposition_char_budget=100,
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=100,
+            disposition_char_budget=100,
         )
         assert "EXTRA DOCUMENTS" not in msg
 
@@ -1380,19 +1693,25 @@ class TestGenerateDocketSummary:
     def test_no_provider_raises(self):
         with pytest.raises(RuntimeError, match="No LLM provider"):
             llm.generate_docket_summary(
-                case_name="x", aggregation_note=None,
+                case_name="x",
+                aggregation_note=None,
                 docket={"docket_number": "x"},
-                primary_documents=[], disposition_documents=[],
-                hearings=[], deadlines=[],
+                primary_documents=[],
+                disposition_documents=[],
+                hearings=[],
+                deadlines=[],
             )
 
     def test_unknown_provider_kwarg_raises(self):
         with pytest.raises(RuntimeError, match="unknown provider"):
             llm.generate_docket_summary(
-                case_name="x", aggregation_note=None,
+                case_name="x",
+                aggregation_note=None,
                 docket={"docket_number": "x"},
-                primary_documents=[], disposition_documents=[],
-                hearings=[], deadlines=[],
+                primary_documents=[],
+                disposition_documents=[],
+                hearings=[],
+                deadlines=[],
                 provider="bogus",
             )
 
@@ -1405,10 +1724,13 @@ class TestGenerateDocketSummary:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         text, ident = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
             provider="anthropic",
         )
         assert text == "A short summary."
@@ -1425,11 +1747,15 @@ class TestGenerateDocketSummary:
 
         monkeypatch.setattr(llm, "_call_openai", fake)
         text, ident = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
-            provider="openai", model="custom-model",
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="openai",
+            model="custom-model",
         )
         assert text == "Summary."
         assert ident == "openai/custom-model"
@@ -1444,10 +1770,13 @@ class TestGenerateDocketSummary:
 
         monkeypatch.setattr(llm, "_call_gemini", fake)
         text, ident = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
             provider="gemini",
         )
         assert ident.startswith("gemini/")
@@ -1455,14 +1784,18 @@ class TestGenerateDocketSummary:
 
     def test_strips_code_fences_from_response(self, monkeypatch):
         monkeypatch.setattr(
-            llm, "_call_anthropic",
+            llm,
+            "_call_anthropic",
             lambda *a, **kw: "```\nThe case is summarized.\n```",
         )
         text, _ = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
             provider="anthropic",
         )
         assert text == "The case is summarized."
@@ -1478,10 +1811,13 @@ class TestGenerateDocketSummary:
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
         _, ident = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
         )
         assert ident == "anthropic/claude-opus-4-7"
         assert called["model"] == "claude-opus-4-7"
@@ -1491,13 +1827,18 @@ class TestGenerateDocketSummary:
         # from the regular key.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm, "_call_anthropic", lambda *a, **kw: "ok",
+            llm,
+            "_call_anthropic",
+            lambda *a, **kw: "ok",
         )
         text, ident = llm.generate_docket_summary(
-            case_name="x", aggregation_note=None,
+            case_name="x",
+            aggregation_note=None,
             docket={"docket_number": "x"},
-            primary_documents=[], disposition_documents=[],
-            hearings=[], deadlines=[],
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
         )
         # Picks Sonnet (the summary-tier default), not Haiku.
         assert ident == "anthropic/" + llm._DEFAULT_SUMMARY_MODELS["anthropic"]
@@ -1550,7 +1891,9 @@ class TestSummaryPromptDatedReferenceGuards:
     """
 
     def test_must_state_dates_when_referencing_schedule(self):
-        assert "if you mention a hearing date, STATE THE DATE" in llm.SUMMARY_SYSTEM_PROMPT
+        assert (
+            "if you mention a hearing date, STATE THE DATE" in llm.SUMMARY_SYSTEM_PROMPT
+        )
         # Concrete forbidden phrases — these are the actual hedges the
         # model produced. If a future edit drops them, the door reopens.
         assert '"a trial date set"' in llm.SUMMARY_SYSTEM_PROMPT
@@ -1606,6 +1949,7 @@ class TestSummaryPromptInsufficientDocumentsRefusal:
         # phrase "organization names" wraps across a line in the prompt,
         # so collapse whitespace before matching.)
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert "Do NOT invent organization names" in normalized
 
@@ -1633,10 +1977,10 @@ class TestSummaryPromptAbsenceOfActivityGuard:
         # The header wraps across a line in the prompt, so collapse
         # whitespace before matching.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
-            "do NOT assert the ABSENCE of scheduling, activity, or "
-            "disposition"
+            "do NOT assert the ABSENCE of scheduling, activity, or disposition"
         ) in normalized
 
     def test_explicitly_forbids_the_dubranova_phrasings(self):
@@ -1682,7 +2026,9 @@ class TestSummaryPromptAbsenceOfActivityGuard:
         # The rule must explicitly tell the model that omitting a
         # closing posture sentence is fine — otherwise it will pad with
         # something close to "remains pending" out of length pressure.
-        assert "Silence on procedural posture is acceptable" in llm.SUMMARY_SYSTEM_PROMPT
+        assert (
+            "Silence on procedural posture is acceptable" in llm.SUMMARY_SYSTEM_PROMPT
+        )
 
 
 class TestSummaryPromptVisibilityAdvisoryGuard:
@@ -1698,6 +2044,7 @@ class TestSummaryPromptVisibilityAdvisoryGuard:
 
     def test_advisory_handling_rule_is_present(self):
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "when a DOCKET VISIBILITY ADVISORY block appears at the top "
@@ -1714,6 +2061,7 @@ class TestSummaryPromptVisibilityAdvisoryGuard:
         # "untrusted text" rule above doesn't kick in and tell the model
         # to ignore it.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "the advisory itself is trusted operator-supplied metadata"
@@ -1736,6 +2084,7 @@ class TestSummaryPromptVisibilityAdvisoryGuard:
         # abstract guidance. The example wraps across a line in the
         # prompt, so collapse whitespace before matching.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert "August 21, 2025 (entry 44)" in normalized
         # And the explicit "subsequent docket activity may not be
@@ -1749,6 +2098,7 @@ class TestSummaryPromptVisibilityAdvisoryGuard:
         # activity has been recorded". The absence-of-activity rule
         # still binds.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             'do not append "case remains pending" or any other '
@@ -1771,6 +2121,7 @@ class TestSummaryPromptDocumentNarrationGuard:
 
     def test_silent_workaround_rule_present(self):
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "work around partial or low-quality source documents SILENTLY"
@@ -1781,6 +2132,7 @@ class TestSummaryPromptDocumentNarrationGuard:
         # future "shorten the rule" edit can't drop the canonical
         # forbidden form. Re-flowed across two lines in the prompt.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             '"The primary document text consists only of page-header '
@@ -1791,8 +2143,7 @@ class TestSummaryPromptDocumentNarrationGuard:
         # "based on minute entries" or "per the limited disposition
         # documents available" instead of the moucka shape.
         assert (
-            '"Based on the available minute entries, [defendant] is '
-            "charged with...\""
+            '"Based on the available minute entries, [defendant] is charged with..."'
         ) in normalized
 
     def test_rule_explicitly_does_not_relax_refusal_rule(self):
@@ -1806,8 +2157,12 @@ class TestSummaryPromptDocumentNarrationGuard:
         # partial". Both sentences wrap across lines, so normalize
         # whitespace before matching.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
-        assert "This rule does NOT relax the refuse-rather-than-fabricate rule below" in normalized
+        assert (
+            "This rule does NOT relax the refuse-rather-than-fabricate rule below"
+            in normalized
+        )
         assert "There is NO middle ground that narrates the workaround" in normalized
 
 
@@ -1834,6 +2189,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # alone would still let the model word the relationship
         # explicitly, which the user prefers to avoid.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "when a forfeiture money judgment against the same "
@@ -1848,6 +2204,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # into the multi-payee territory the next rule explicitly
         # forbids.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "This is a DELIBERATE, prompted omission, NOT a silent drop"
@@ -1858,6 +2215,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # "shorten the rule" edit can't drop the canonical forbidden
         # form. It wraps across multiple lines in the prompt.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             '"$15,100 in restitution ... with a forfeiture money '
@@ -1875,14 +2233,14 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # technically accurate but still redundant noise for lay
         # subscribers. Pin both forms as NOT acceptable.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             '"$15,100 in restitution and a forfeiture money judgment '
             'in the same amount"'
         ) in normalized
         assert (
-            "the court entered a forfeiture money judgment for the "
-            "same $15,100"
+            "the court entered a forfeiture money judgment for the same $15,100"
         ) in normalized
         # And both must appear in the NOT-acceptable list, not the
         # acceptable one. The simplest pin: the "still redundant" or
@@ -1896,6 +2254,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # non-financial details or stops. The "full stop, no mention"
         # framing is the operative signal for the model.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             '"$15,100 in restitution, and a $100 special assessment" '
@@ -1910,6 +2269,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # defendant's debt entirely. The rule must explicitly require
         # the orders run against the SAME defendant.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "The forfeiture money judgment and the restitution are "
@@ -1930,6 +2290,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # Identified-property forfeiture takes things, not money, and
         # stays in the summary on its own merits.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "The forfeiture is a MONEY JUDGMENT (an in personam order "
@@ -1942,9 +2303,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # And the mixed-judgment case (money judgment + identified
         # property in one order) must be explicit — only the money
         # judgment portion drops.
-        assert (
-            "drops only the money-judgment portion under this rule"
-        ) in normalized
+        assert ("drops only the money-judgment portion under this rule") in normalized
 
     def test_total_restitution_match_guardrail_present(self):
         # Guardrail #3 — the forfeiture money judgment must equal the
@@ -1952,18 +2311,15 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # figure. A $15,100 forfeiture against $15,100×2 restitution
         # (totaling $30,200) does NOT match — the forfeiture stays.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "The forfeiture money judgment equals the TOTAL "
             "restitution amount across all victims/payees"
         ) in normalized
         # And the worked counter-example.
-        assert (
-            "$15,100 each to two victims summing to $30,200"
-        ) in normalized
-        assert (
-            "the forfeiture stays in the summary"
-        ) in normalized
+        assert ("$15,100 each to two victims summing to $30,200") in normalized
+        assert ("the forfeiture stays in the summary") in normalized
 
     def test_outside_conditions_default_is_independent_line_items(self):
         # When ANY guardrail fails, the default behavior is to treat
@@ -1971,6 +2327,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # state this default explicitly so the model doesn't fall back
         # to its own heuristic.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "Outside of all three conditions, restitution and "
@@ -1988,6 +2345,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # when the court actually ordered "$15,100 each to two
         # victims, totaling $30,200."
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             "EQUAL-AMOUNT MULTIPLE PAYEES — every payee is its own order"
@@ -1995,8 +2353,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # The "halve or quarter" framing — the core trap the rule is
         # closing.
         assert (
-            "would silently halve (or quarter, etc.) the defendant's "
-            "stated liability"
+            "would silently halve (or quarter, etc.) the defendant's stated liability"
         ) in normalized
 
     def test_equal_amount_multiple_payees_acceptable_shapes_present(self):
@@ -2005,10 +2362,10 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # each to Acme Corp. and Beta Inc." example so a future
         # "shorten the rule" pass doesn't drop the worked shape.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
-            '"$30,200 in restitution, $15,100 each to Acme Corp. '
-            'and Beta Inc."'
+            '"$30,200 in restitution, $15,100 each to Acme Corp. and Beta Inc."'
         ) in normalized
 
     def test_equal_amount_multiple_payees_forbidden_shape_pinned(self):
@@ -2016,6 +2373,7 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # judgment ordered multiple. Pin it so a future editor doesn't
         # drop the warning.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
             '"$15,100 in restitution" stated once when the judgment '
@@ -2027,16 +2385,15 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         # judgments that itemize via an attached schedule — the
         # vocabulary varies but the substance is the same.
         import re
+
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert (
-            "same rule applies to multiple equal-amount forfeiture "
-            "orders"
+            "same rule applies to multiple equal-amount forfeiture orders"
         ) in normalized
         # "as set forth in the attached schedule" — the canonical
         # phrasing courts use to fold per-victim itemizations into a
         # schedule rather than the judgment body proper. The model
         # must recognize this form as N orders.
         assert (
-            '"restitution to victims as set forth in the attached '
-            'schedule"'
+            '"restitution to victims as set forth in the attached schedule"'
         ) in normalized

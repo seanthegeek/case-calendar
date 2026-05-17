@@ -2,7 +2,7 @@
 title: Public index page
 ---
 
-case-calendar can render a static `index.html` alongside your ICS files —
+Case Calendar can render a static `index.html` alongside your ICS files —
 a single landing page that lists every calendar, with one-click subscribe
 buttons, the cases on each calendar, and (when AI summaries are enabled)
 a short prose description for each. Drop it behind any HTTP server and

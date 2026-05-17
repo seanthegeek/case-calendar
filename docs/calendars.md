@@ -2,7 +2,7 @@
 title: Calendar backends
 ---
 
-case-calendar always writes an ICS file. Optionally, it also pushes the same
+Case Calendar always writes an ICS file. Optionally, it also pushes the same
 events to Google Calendar and/or Microsoft 365 / Outlook directly. Both
 push backends auto-enable after a one-time OAuth flow — there's no per-run
 flag.
@@ -98,7 +98,7 @@ One-time setup in the Microsoft Entra admin center:
 1. **Register an application** at
    [entra.microsoft.com](https://entra.microsoft.com) → Identity →
    Applications → App registrations → New registration. Name it
-   `case-calendar` (or whatever). Pick the right account-type tier:
+   `Case Calendar` (or whatever). Pick the right account-type tier:
    - **Personal Microsoft accounts only** — for a personal
      `outlook.com` / `hotmail.com` calendar.
    - **Accounts in this organizational directory only** — for a
@@ -157,7 +157,7 @@ One-time setup in the Microsoft Entra admin center:
    OS keyring (DPAPI on Windows, Keychain on macOS, libsecret on Linux).
 
 Idempotency: Graph generates event ids server-side (unlike Google's
-deterministic ids), so case-calendar caches the returned id on the local
+deterministic ids), so Case Calendar caches the returned id on the local
 row after the first create. A stable `CaseCalendarKey` extended property
 lets the push recover the right event by `$filter` lookup if the local
 cache is ever wiped.

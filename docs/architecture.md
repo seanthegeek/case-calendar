@@ -2,7 +2,7 @@
 title: Architecture
 ---
 
-This page is for the curious — what case-calendar actually does between
+This page is for the curious — what Case Calendar actually does between
 "new docket entry" and "calendar event". You don't need it to run the
 tool, but if you're going to modify it (or just want to understand the
 trade-offs), this is the map.
@@ -62,7 +62,7 @@ extracted via webhook is byte-identical to one extracted via polling.
 
 ## Two LLM tracks
 
-case-calendar uses large-language-model calls for two distinct jobs.
+Case Calendar uses large-language-model calls for two distinct jobs.
 Throughout the codebase and these docs:
 
 - **Extraction** is the act of reading a single docket entry and pulling
@@ -145,7 +145,7 @@ docket and zero LLM calls.
 
 ### What's in the fingerprint
 
-The third short-circuit is the interesting one. case-calendar can't trust
+The third short-circuit is the interesting one. Case Calendar can't trust
 "has this `entry_id` been seen before?" alone, because RECAP entries
 evolve after they first appear — a sealed PDF gets unsealed, or a
 previously-missing PDF finally gets uploaded to RECAP. Those entries

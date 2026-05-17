@@ -52,7 +52,9 @@ def validate_url(url: str, *, client: Optional[httpx.Client] = None) -> Optional
         result, definite_failure = _walk_candidates(url, client)
     except Exception as e:
         log.warning(
-            "URL validation unexpected error for %r (%s); keeping URL as-is", url, e,
+            "URL validation unexpected error for %r (%s); keeping URL as-is",
+            url,
+            e,
         )
         return url
     finally:
@@ -127,5 +129,3 @@ def _candidates(url: str) -> list[str]:
     path = "/" + "/".join(parts) + "/"
     out.append(parsed._replace(path=path, query="", fragment="").geturl())
     return out
-
-

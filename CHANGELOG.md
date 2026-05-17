@@ -8,6 +8,22 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.1.1] - 2026-05-17
+
+### Changed
+
+- Renamed the project from "case-calendar" to "Case Calendar" in all
+  user-facing prose, documentation, the index-page footer and default
+  `site_title`, and the webhook-server log line. CLI commands, file
+  paths, URL paths, env var names, package / module / script entry
+  point identifiers, the webhook JSON `service` identifier, the ICS
+  `PRODID` / `UID` suffixes, and the M365 token-cache name are
+  unchanged — they remain `case-calendar` because they are wire
+  identifiers and renaming them would break existing subscribers,
+  webhook deployments, and token recovery.
+
+[0.1.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.1.1
+
 ## [0.1.0] - 2026-05-16
 
 Initial release.

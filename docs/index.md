@@ -1,12 +1,12 @@
 ---
-title: case-calendar documentation
+title: Case Calendar documentation
 ---
 
 [![CI](https://img.shields.io/github/actions/workflow/status/seanthegeek/case-calendar/ci.yml?branch=main&label=CI)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
 [![codecov](https://img.shields.io/codecov/c/github/seanthegeek/case-calendar/main)](https://codecov.io/gh/seanthegeek/case-calendar)
 [![License](https://img.shields.io/github/license/seanthegeek/case-calendar)](https://github.com/seanthegeek/case-calendar/blob/main/LICENSE)
 
-case-calendar turns federal court dockets into calendar feeds. Point it at a
+Case Calendar turns federal court dockets into calendar feeds. Point it at a
 case on [CourtListener](https://www.courtlistener.com/), and it writes the
 hearing dates and filing deadlines into an ICS file you can subscribe to from
 any calendar app — Apple, Google, Proton, Outlook, Thunderbird — and
@@ -21,7 +21,7 @@ calendar already knows.
 
 ## Limitations
 
-case-calendar is a supplement to docket-watching, not a replacement
+Case Calendar is a supplement to docket-watching, not a replacement
 for it. Three constraints are inherent to the design and worth
 knowing before you rely on it:
 
@@ -51,7 +51,7 @@ knowing before you rely on it:
   hours per its own documentation. Two ways to eliminate this
   lag: subscribe in a calendar app that lets you set the refresh
   interval (Apple Calendar, Thunderbird, Fastmail), or configure
-  case-calendar to push directly to [Google Calendar or Microsoft
+  Case Calendar to push directly to [Google Calendar or Microsoft
   365](calendars.md) — direct push lands the event in your
   calendar in the same emit cycle that writes the ICS file.
 - **Extraction errors.** The cheap regex pre-filter and the
@@ -68,7 +68,7 @@ and a controllable-refresh client or direct push on the downstream
 side — extraction errors are the remaining risk for inaccurate or
 outdated calendar information.
 
-Even so, case-calendar is not a substitute for the calendaring
+Even so, Case Calendar is not a substitute for the calendaring
 software a practicing attorney uses to manage filing deadlines on
 their own cases. Treat it as a convenience layer on top of the
 public docket, not the authoritative record.
@@ -129,7 +129,7 @@ pages explain each step.
 
 ---
 
-*case-calendar is an independent project. It is not affiliated with the
+*Case Calendar is an independent project. It is not affiliated with the
 Administrative Office of the U.S. Courts, the Free Law Project, or
 CourtListener. Calendar entries are best-effort summaries of public docket
 information and are not a substitute for reading the docket itself.*

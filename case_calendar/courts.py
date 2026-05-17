@@ -28,36 +28,49 @@ ET = "America/New_York"
 CT = "America/Chicago"
 MT = "America/Denver"
 PT = "America/Los_Angeles"
-ARIZ = "America/Phoenix"          # MST year-round, no DST
+ARIZ = "America/Phoenix"  # MST year-round, no DST
 AKT = "America/Anchorage"
 HST = "Pacific/Honolulu"
-PR_TZ = "America/Puerto_Rico"     # AST year-round, no DST
-VI_TZ = "America/St_Thomas"       # AST year-round, no DST
-GUAM = "Pacific/Guam"             # ChST year-round, no DST
-SAMOA = "Pacific/Pago_Pago"       # SST year-round, no DST
+PR_TZ = "America/Puerto_Rico"  # AST year-round, no DST
+VI_TZ = "America/St_Thomas"  # AST year-round, no DST
+GUAM = "Pacific/Guam"  # ChST year-round, no DST
+SAMOA = "Pacific/Pago_Pago"  # SST year-round, no DST
 
 
 COURT_TIMEZONES: dict[str, str] = {
     # ---- US Supreme Court ----
     "scotus": ET,
-
     # ---- Courts of Appeals ----
-    "ca1": ET,    "ca2": ET,    "ca3": ET,    "ca4": ET,
-    "ca5": CT,    "ca6": ET,    "ca7": CT,    "ca8": CT,
-    "ca9": PT,    "ca10": MT,   "ca11": ET,
-    "cadc": ET,   "cafc": ET,
-
+    "ca1": ET,
+    "ca2": ET,
+    "ca3": ET,
+    "ca4": ET,
+    "ca5": CT,
+    "ca6": ET,
+    "ca7": CT,
+    "ca8": CT,
+    "ca9": PT,
+    "ca10": MT,
+    "ca11": ET,
+    "cadc": ET,
+    "cafc": ET,
     # ---- District courts: alphabetical by state ----
     # Alabama (CT)
-    "alnd": CT, "almd": CT, "alsd": CT,
+    "alnd": CT,
+    "almd": CT,
+    "alsd": CT,
     # Alaska
     "akd": AKT,
     # Arizona (MST, no DST)
     "azd": ARIZ,
     # Arkansas (CT)
-    "ared": CT, "arwd": CT,
+    "ared": CT,
+    "arwd": CT,
     # California (PT)
-    "cand": PT, "cacd": PT, "caed": PT, "casd": PT,
+    "cand": PT,
+    "cacd": PT,
+    "caed": PT,
+    "casd": PT,
     # Colorado (MT)
     "cod": MT,
     # Connecticut (ET)
@@ -68,25 +81,36 @@ COURT_TIMEZONES: dict[str, str] = {
     "dcd": ET,
     # Florida — panhandle (flnd) is CT, the rest ET. flnd's principal
     # office is in Pensacola/Tallahassee on CT.
-    "flnd": CT, "flmd": ET, "flsd": ET,
+    "flnd": CT,
+    "flmd": ET,
+    "flsd": ET,
     # Georgia (ET)
-    "gand": ET, "gamd": ET, "gasd": ET,
+    "gand": ET,
+    "gamd": ET,
+    "gasd": ET,
     # Hawaii (no DST)
     "hid": HST,
     # Idaho (MT, with the panhandle on PT but principal office is in Boise/MT)
     "idd": MT,
     # Illinois (CT)
-    "ilnd": CT, "ilcd": CT, "ilsd": CT,
+    "ilnd": CT,
+    "ilcd": CT,
+    "ilsd": CT,
     # Indiana — most counties ET, a few CT. Both districts principal offices ET.
-    "innd": ET, "insd": ET,
+    "innd": ET,
+    "insd": ET,
     # Iowa (CT)
-    "iand": CT, "iasd": CT,
+    "iand": CT,
+    "iasd": CT,
     # Kansas — mostly CT, a few MT counties; principal office is CT.
     "ksd": CT,
     # Kentucky — mostly ET; western counties CT. Principal offices ET.
-    "kyed": ET, "kywd": ET,
+    "kyed": ET,
+    "kywd": ET,
     # Louisiana (CT)
-    "laed": CT, "lamd": CT, "lawd": CT,
+    "laed": CT,
+    "lamd": CT,
+    "lawd": CT,
     # Maine (ET)
     "med": ET,
     # Maryland (ET)
@@ -94,13 +118,16 @@ COURT_TIMEZONES: dict[str, str] = {
     # Massachusetts (ET)
     "mad": ET,
     # Michigan (ET)
-    "mied": ET, "miwd": ET,
+    "mied": ET,
+    "miwd": ET,
     # Minnesota (CT)
     "mnd": CT,
     # Mississippi (CT)
-    "msnd": CT, "mssd": CT,
+    "msnd": CT,
+    "mssd": CT,
     # Missouri (CT)
-    "moed": CT, "mowd": CT,
+    "moed": CT,
+    "mowd": CT,
     # Montana (MT)
     "mtd": MT,
     # Nebraska (CT, sliver MT in panhandle)
@@ -114,19 +141,29 @@ COURT_TIMEZONES: dict[str, str] = {
     # New Mexico (MT)
     "nmd": MT,
     # New York (ET)
-    "nyed": ET, "nynd": ET, "nysd": ET, "nywd": ET,
+    "nyed": ET,
+    "nynd": ET,
+    "nysd": ET,
+    "nywd": ET,
     # North Carolina (ET)
-    "nced": ET, "ncmd": ET, "ncwd": ET,
+    "nced": ET,
+    "ncmd": ET,
+    "ncwd": ET,
     # North Dakota — mostly CT, sliver MT. Principal CT.
     "ndd": CT,
     # Ohio (ET)
-    "ohnd": ET, "ohsd": ET,
+    "ohnd": ET,
+    "ohsd": ET,
     # Oklahoma (CT)
-    "oked": CT, "oknd": CT, "okwd": CT,
+    "oked": CT,
+    "oknd": CT,
+    "okwd": CT,
     # Oregon (PT)
     "ord": PT,
     # Pennsylvania (ET)
-    "paed": ET, "pamd": ET, "pawd": ET,
+    "paed": ET,
+    "pamd": ET,
+    "pawd": ET,
     # Puerto Rico (no DST)
     "prd": PR_TZ,
     # Rhode Island (ET)
@@ -136,31 +173,37 @@ COURT_TIMEZONES: dict[str, str] = {
     # South Dakota — mostly CT, sliver MT. Principal CT.
     "sdd": CT,
     # Tennessee — east TN is ET, middle/west TN is CT. Three districts:
-    "tned": ET,    # Eastern (Knoxville/Chattanooga)
-    "tnmd": CT,    # Middle (Nashville)
-    "tnwd": CT,    # Western (Memphis)
+    "tned": ET,  # Eastern (Knoxville/Chattanooga)
+    "tnmd": CT,  # Middle (Nashville)
+    "tnwd": CT,  # Western (Memphis)
     # Texas — mostly CT (El Paso division of txwd is MT but principal CT).
-    "txed": CT, "txnd": CT, "txsd": CT, "txwd": CT,
+    "txed": CT,
+    "txnd": CT,
+    "txsd": CT,
+    "txwd": CT,
     # Utah (MT)
     "utd": MT,
     # Vermont (ET)
     "vtd": ET,
     # Virginia (ET)
-    "vaed": ET, "vawd": ET,
+    "vaed": ET,
+    "vawd": ET,
     # Washington state (PT)
-    "waed": PT, "wawd": PT,
+    "waed": PT,
+    "wawd": PT,
     # West Virginia (ET)
-    "wvnd": ET, "wvsd": ET,
+    "wvnd": ET,
+    "wvsd": ET,
     # Wisconsin (CT)
-    "wied": CT, "wiwd": CT,
+    "wied": CT,
+    "wiwd": CT,
     # Wyoming (MT)
     "wyd": MT,
     # Territories
-    "vid": VI_TZ,                              # US Virgin Islands
-    "gud": GUAM,                               # Guam
-    "nmid": GUAM,                              # Northern Mariana Islands
-    "asd": SAMOA,                              # American Samoa
-
+    "vid": VI_TZ,  # US Virgin Islands
+    "gud": GUAM,  # Guam
+    "nmid": GUAM,  # Northern Mariana Islands
+    "asd": SAMOA,  # American Samoa
     # ---- Bankruptcy courts ----
     # 95 federal bankruptcy courts as enumerated by CourtListener under
     # jurisdiction=FB (fetched 2026-05-14). A bankruptcy court is a "unit
@@ -174,15 +217,21 @@ COURT_TIMEZONES: dict[str, str] = {
     # collide with the Nebraska district "ned" suffix conventions).
     #
     # Alabama (CT)
-    "alnb": CT, "almb": CT, "alsb": CT,
+    "alnb": CT,
+    "almb": CT,
+    "alsb": CT,
     # Alaska
     "akb": AKT,
     # Arizona (MST, no DST) — CourtListener id is "arb", not "azb".
     "arb": ARIZ,
     # Arkansas (CT)
-    "areb": CT, "arwb": CT,
+    "areb": CT,
+    "arwb": CT,
     # California (PT)
-    "canb": PT, "cacb": PT, "caeb": PT, "casb": PT,
+    "canb": PT,
+    "cacb": PT,
+    "caeb": PT,
+    "casb": PT,
     # Colorado (MT)
     "cob": MT,
     # Connecticut (ET)
@@ -192,25 +241,36 @@ COURT_TIMEZONES: dict[str, str] = {
     # District of Columbia (ET)
     "dcb": ET,
     # Florida — flnb principal office Tallahassee (CT panhandle); flmb/flsb ET.
-    "flnb": CT, "flmb": ET, "flsb": ET,
+    "flnb": CT,
+    "flmb": ET,
+    "flsb": ET,
     # Georgia (ET)
-    "ganb": ET, "gamb": ET, "gasb": ET,
+    "ganb": ET,
+    "gamb": ET,
+    "gasb": ET,
     # Hawaii (no DST)
     "hib": HST,
     # Idaho (MT, panhandle PT — principal office in Boise/MT)
     "idb": MT,
     # Illinois (CT)
-    "ilnb": CT, "ilcb": CT, "ilsb": CT,
+    "ilnb": CT,
+    "ilcb": CT,
+    "ilsb": CT,
     # Indiana (both districts principal offices ET)
-    "innb": ET, "insb": ET,
+    "innb": ET,
+    "insb": ET,
     # Iowa (CT)
-    "ianb": CT, "iasb": CT,
+    "ianb": CT,
+    "iasb": CT,
     # Kansas (CT)
     "ksb": CT,
     # Kentucky (ET)
-    "kyeb": ET, "kywb": ET,
+    "kyeb": ET,
+    "kywb": ET,
     # Louisiana (CT)
-    "laeb": CT, "lamb": CT, "lawb": CT,
+    "laeb": CT,
+    "lamb": CT,
+    "lawb": CT,
     # Maine (ET)
     "meb": ET,
     # Maryland (ET)
@@ -218,13 +278,16 @@ COURT_TIMEZONES: dict[str, str] = {
     # Massachusetts (ET)
     "mab": ET,
     # Michigan (ET)
-    "mieb": ET, "miwb": ET,
+    "mieb": ET,
+    "miwb": ET,
     # Minnesota (CT)
     "mnb": CT,
     # Mississippi (CT)
-    "msnb": CT, "mssb": CT,
+    "msnb": CT,
+    "mssb": CT,
     # Missouri (CT)
-    "moeb": CT, "mowb": CT,
+    "moeb": CT,
+    "mowb": CT,
     # Montana (MT)
     "mtb": MT,
     # Nebraska (CT) — CourtListener id is "nebraskab", not "neb".
@@ -238,19 +301,29 @@ COURT_TIMEZONES: dict[str, str] = {
     # New Mexico (MT)
     "nmb": MT,
     # New York (ET)
-    "nyeb": ET, "nynb": ET, "nysb": ET, "nywb": ET,
+    "nyeb": ET,
+    "nynb": ET,
+    "nysb": ET,
+    "nywb": ET,
     # North Carolina (ET)
-    "nceb": ET, "ncmb": ET, "ncwb": ET,
+    "nceb": ET,
+    "ncmb": ET,
+    "ncwb": ET,
     # North Dakota (CT — principal office Fargo/Bismarck)
     "ndb": CT,
     # Ohio (ET)
-    "ohnb": ET, "ohsb": ET,
+    "ohnb": ET,
+    "ohsb": ET,
     # Oklahoma (CT)
-    "okeb": CT, "oknb": CT, "okwb": CT,
+    "okeb": CT,
+    "oknb": CT,
+    "okwb": CT,
     # Oregon (PT)
     "orb": PT,
     # Pennsylvania (ET)
-    "paeb": ET, "pamb": ET, "pawb": ET,
+    "paeb": ET,
+    "pamb": ET,
+    "pawb": ET,
     # Puerto Rico (no DST)
     "prb": PR_TZ,
     # Rhode Island (ET)
@@ -260,76 +333,82 @@ COURT_TIMEZONES: dict[str, str] = {
     # South Dakota (CT)
     "sdb": CT,
     # Tennessee — east TN ET, middle/west TN CT.
-    "tneb": ET, "tnmb": CT, "tnwb": CT,
+    "tneb": ET,
+    "tnmb": CT,
+    "tnwb": CT,
     # Texas (CT — txwb's El Paso division is MT but principal office is CT)
-    "txeb": CT, "txnb": CT, "txsb": CT, "txwb": CT,
+    "txeb": CT,
+    "txnb": CT,
+    "txsb": CT,
+    "txwb": CT,
     # Utah (MT)
     "utb": MT,
     # Vermont (ET)
     "vtb": ET,
     # Virginia (ET)
-    "vaeb": ET, "vawb": ET,
+    "vaeb": ET,
+    "vawb": ET,
     # Washington state (PT)
-    "waeb": PT, "wawb": PT,
+    "waeb": PT,
+    "wawb": PT,
     # West Virginia (ET)
-    "wvnb": ET, "wvsb": ET,
+    "wvnb": ET,
+    "wvsb": ET,
     # Wisconsin (CT)
-    "wieb": CT, "wiwb": CT,
+    "wieb": CT,
+    "wiwb": CT,
     # Wyoming (MT)
     "wyb": MT,
     # Bankruptcy court territories
     "gub": GUAM,
     "nmib": GUAM,
     "vib": VI_TZ,
-
     # ---- Bankruptcy Appellate Panels ----
     # 8 active BAPs as enumerated by CourtListener under jurisdiction=FBP
     # (fetched 2026-05-14). BAPs sit on appeals from bankruptcy courts in
     # their circuit; the timezone reflects the panel clerk's principal
     # office, since panel sessions rotate among member districts.
-    "bap1": ET,    # First Circuit — clerk's office Boston, MA
-    "bap2": ET,    # Second Circuit — NYC
-    "bap6": ET,    # Sixth Circuit — Cincinnati, OH
-    "bap8": CT,    # Eighth Circuit — St. Louis, MO
-    "bap9": PT,    # Ninth Circuit — Pasadena, CA
-    "bap10": MT,   # Tenth Circuit — Denver, CO
+    "bap1": ET,  # First Circuit — clerk's office Boston, MA
+    "bap2": ET,  # Second Circuit — NYC
+    "bap6": ET,  # Sixth Circuit — Cincinnati, OH
+    "bap8": CT,  # Eighth Circuit — St. Louis, MO
+    "bap9": PT,  # Ninth Circuit — Pasadena, CA
+    "bap10": MT,  # Tenth Circuit — Denver, CO
     # Sub-panel ids used by the First Circuit BAP when sitting in a
     # specific member district.
-    "bapma": ET,   # BAP sitting in Massachusetts
-    "bapme": ET,   # BAP sitting in D. Maine
-
+    "bapma": ET,  # BAP sitting in Massachusetts
+    "bapme": ET,  # BAP sitting in D. Maine
     # ---- Specialty federal courts and administrative tribunals ----
     # CourtListener jurisdiction=FS (Federal Special). All are headquartered in
     # Washington, DC or the nearby Falls Church / Alexandria, VA cluster
     # (ET). Sourced from CourtListener's /courts/?jurisdiction=FS listing fetched
     # 2026-05-14.
-    "tax": ET,        # US Tax Court (Washington, DC)
-    "uscfc": ET,      # US Court of Federal Claims (Washington, DC)
-    "cit": ET,        # US Court of International Trade (NYC)
-    "cavc": ET,       # US Court of Appeals for Veterans Claims (DC).
-                      # Note: CourtListener's id is `cavc`, NOT `vetapp` (404 in CourtListener).
-    "fisc": ET,       # Foreign Intelligence Surveillance Court (DC)
-    "fiscr": ET,      # FISC of Review (DC)
-    "asbca": ET,      # Armed Services Board of Contract Appeals (Falls Church, VA)
-    "bia": ET,        # Board of Immigration Appeals (Falls Church, VA)
-    "bva": ET,        # Board of Veterans' Appeals (Washington, DC)
-    "jpml": ET,       # Judicial Panel on Multidistrict Litigation (Washington, DC)
-    "mspb": ET,       # Merit Systems Protection Board (Washington, DC)
-    "olc": ET,        # DOJ Office of Legal Counsel (Washington, DC) — not
-                      # a court but CourtListener lists it under FS for opinion publishing
-    "ttab": ET,       # USPTO Trademark Trial and Appeal Board (Alexandria, VA)
-
+    "tax": ET,  # US Tax Court (Washington, DC)
+    "uscfc": ET,  # US Court of Federal Claims (Washington, DC)
+    "cit": ET,  # US Court of International Trade (NYC)
+    "cavc": ET,  # US Court of Appeals for Veterans Claims (DC).
+    # Note: CourtListener's id is `cavc`, NOT `vetapp` (404 in CourtListener).
+    "fisc": ET,  # Foreign Intelligence Surveillance Court (DC)
+    "fiscr": ET,  # FISC of Review (DC)
+    "asbca": ET,  # Armed Services Board of Contract Appeals (Falls Church, VA)
+    "bia": ET,  # Board of Immigration Appeals (Falls Church, VA)
+    "bva": ET,  # Board of Veterans' Appeals (Washington, DC)
+    "jpml": ET,  # Judicial Panel on Multidistrict Litigation (Washington, DC)
+    "mspb": ET,  # Merit Systems Protection Board (Washington, DC)
+    "olc": ET,  # DOJ Office of Legal Counsel (Washington, DC) — not
+    # a court but CourtListener lists it under FS for opinion publishing
+    "ttab": ET,  # USPTO Trademark Trial and Appeal Board (Alexandria, VA)
     # ---- Military appellate ----
     # CourtListener jurisdiction=MA. All ET — the Courts of Criminal Appeals sit at
     # their respective service installations in the DC / MD / VA
     # cluster, and the Court of Appeals for the Armed Forces (USCAAF)
     # sits in Washington, DC.
-    "armfor": ET,         # US Court of Appeals for the Armed Forces (DC)
-    "acca": ET,           # Army Court of Criminal Appeals (Fort Belvoir, VA)
-    "afcca": ET,          # Air Force Court of Criminal Appeals (Joint Base Andrews, MD)
-    "nmcca": ET,          # Navy-Marine Corps Court of Criminal Appeals (Washington Navy Yard, DC)
-    "uscgcoca": ET,       # Coast Guard Court of Criminal Appeals (Washington, DC)
-    "mc": ET,             # Court of Military Commission Review (Washington, DC)
+    "armfor": ET,  # US Court of Appeals for the Armed Forces (DC)
+    "acca": ET,  # Army Court of Criminal Appeals (Fort Belvoir, VA)
+    "afcca": ET,  # Air Force Court of Criminal Appeals (Joint Base Andrews, MD)
+    "nmcca": ET,  # Navy-Marine Corps Court of Criminal Appeals (Washington Navy Yard, DC)
+    "uscgcoca": ET,  # Coast Guard Court of Criminal Appeals (Washington, DC)
+    "mc": ET,  # Court of Military Commission Review (Washington, DC)
 }
 
 DEFAULT_TZ = ET
@@ -343,7 +422,8 @@ def tz_for(court_id: str) -> str:
         log.warning(
             "courts: no timezone mapping for court_id=%r; falling back to %s. "
             "Add an entry to COURT_TIMEZONES in case_calendar/courts.py.",
-            court_id, DEFAULT_TZ,
+            court_id,
+            DEFAULT_TZ,
         )
         return DEFAULT_TZ
     return tz

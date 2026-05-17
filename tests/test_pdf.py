@@ -40,7 +40,7 @@ class TestLooksGarbled:
     def test_pypdf_glyph_indices_are_garbled(self):
         # Some PDFs produce ``/i255 /1 /2 /11/12/13/14`` glyph-index
         # tokens instead of decoded text — also a low alpha ratio.
-        text = ("/i255\n/1\n/2\n/3\n/11/12/13/14/15/16\n" * 100)
+        text = "/i255\n/1\n/2\n/3\n/11/12/13/14/15/16\n" * 100
         assert pdf.looks_garbled(text) is True
 
     def test_header_heavy_real_text_is_not_garbled(self):
@@ -68,10 +68,14 @@ class TestLooksGarbled:
 
 class TestExtractText:
     def test_uses_plain_text_first(self, monkeypatch):
-        rd = {"plain_text": "  the body is full of real english words like "
-                            "indictment and defendant and conspiracy  ",
-              "is_available": True}
-        monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"should not be called")
+        rd = {
+            "plain_text": "  the body is full of real english words like "
+            "indictment and defendant and conspiracy  ",
+            "is_available": True,
+        }
+        monkeypatch.setattr(
+            pdf, "fetch_pdf_bytes", lambda *a, **kw: b"should not be called"
+        )
         result = pdf.extract_text(rd)
         assert result and "the body" in result
 
@@ -86,14 +90,16 @@ class TestExtractText:
         }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(
-            pdf, "extract_with_pypdf",
+            pdf,
+            "extract_with_pypdf",
             lambda data: "real english text from the indictment " * 30,
         )
         result = pdf.extract_text(rd)
         assert result and "real english text" in result
 
     def test_garbled_plain_text_and_garbled_pypdf_fall_through_to_ocr(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         # The realistic case: CourtListener's plain_text is garbled AND our pypdf is
         # garbled (same source!). OCR is the only path that recovers
@@ -105,20 +111,23 @@ class TestExtractText:
         }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(
-            pdf, "extract_with_pypdf",
+            pdf,
+            "extract_with_pypdf",
             lambda data: "/i255 /1 /2 /11/12/13 " * 200,  # also garbled
         )
         monkeypatch.setattr(
-            pdf, "ocr_with_tesseract",
+            pdf,
+            "ocr_with_tesseract",
             lambda data: "Defendants VICTORIA EDUARDOVNA DUBRANOVA "
-                         "were members of NoName057(16) " * 20,
+            "were members of NoName057(16) " * 20,
         )
         result = pdf.extract_text(rd)
         assert result and "NoName057" in result
         assert "CISM" not in result or "DUBRANOVA" in result  # no garble
 
     def test_garbled_plain_text_falls_back_to_garbled_text_when_fetch_fails(
-        self, monkeypatch,
+        self,
+        monkeypatch,
     ):
         # When we can't fetch a fresh copy, the garbled plain_text is
         # better than nothing — the LLM is briefed to refuse synthesis on
@@ -138,56 +147,72 @@ class TestExtractText:
     def test_sealed_returns_none_without_fetch(self, monkeypatch):
         rd = {"plain_text": "", "is_sealed": True}
         called = []
-        monkeypatch.setattr(pdf, "fetch_pdf_bytes",
-                            lambda *a, **kw: called.append("nope"))
+        monkeypatch.setattr(
+            pdf, "fetch_pdf_bytes", lambda *a, **kw: called.append("nope")
+        )
         assert pdf.extract_text(rd) is None
         assert called == []
 
     def test_unavailable_returns_none_without_fetch(self, monkeypatch):
         rd = {"plain_text": "", "is_available": False}
         called = []
-        monkeypatch.setattr(pdf, "fetch_pdf_bytes",
-                            lambda *a, **kw: called.append("nope"))
+        monkeypatch.setattr(
+            pdf, "fetch_pdf_bytes", lambda *a, **kw: called.append("nope")
+        )
         assert pdf.extract_text(rd) is None
         assert called == []
 
     def test_falls_back_to_pypdf(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_ia": "https://archive.org/x.pdf"}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF-1.4 fake")
-        monkeypatch.setattr(pdf, "extract_with_pypdf",
-                            lambda data: "extracted text " * 50)
+        monkeypatch.setattr(
+            pdf, "extract_with_pypdf", lambda data: "extracted text " * 50
+        )
         result = pdf.extract_text(rd)
         assert result and "extracted text" in result
 
     def test_pypdf_short_falls_back_to_ocr(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_ia": "https://archive.org/x.pdf"}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
-        monkeypatch.setattr(pdf, "ocr_with_tesseract",
-                            lambda data: "ocr'd text " * 30)
+        monkeypatch.setattr(pdf, "ocr_with_tesseract", lambda data: "ocr'd text " * 30)
         result = pdf.extract_text(rd)
         assert result and "ocr'd text" in result
 
     def test_pypdf_short_falls_back_to_returning_partial_when_ocr_disabled(
         self, monkeypatch
     ):
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_ia": "https://archive.org/x.pdf"}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "tiny")
         called = []
-        monkeypatch.setattr(pdf, "ocr_with_tesseract",
-                            lambda data: called.append("nope") or "")
+        monkeypatch.setattr(
+            pdf, "ocr_with_tesseract", lambda data: called.append("nope") or ""
+        )
         result = pdf.extract_text(rd, allow_ocr=False)
         # Returns the short text rather than None.
         assert result == "tiny"
         assert called == []
 
     def test_no_fetch_source_returns_none(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_local": None, "filepath_ia": ""}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_local": None,
+            "filepath_ia": "",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: None)
         assert pdf.extract_text(rd) is None
 
@@ -211,10 +236,17 @@ class TestFetchPdfBytes:
             content = b"%PDF-1.4 bytes"
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def get(self, url): return _Resp()
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
 
         monkeypatch.setattr(httpx, "Client", _Client)
         rd = {"filepath_ia": "https://archive.org/x.pdf"}
@@ -240,6 +272,7 @@ class TestFetchPdfBytes:
 
             def __exit__(self, *a):
                 return False
+
             def get(self, url):
                 seen.append(url)
                 if "archive.org" in url:
@@ -265,9 +298,15 @@ class TestFetchPdfBytes:
         attempts = {"count": 0}
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
             def get(self, url):
                 attempts["count"] += 1
                 if attempts["count"] == 1:
@@ -289,10 +328,17 @@ class TestFetchPdfBytes:
             content = b""
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def get(self, url): return _Resp()
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
 
         monkeypatch.setattr(httpx, "Client", _Client)
         assert pdf.fetch_pdf_bytes({"filepath_ia": "https://x.com/y.pdf"}) is None
@@ -305,6 +351,7 @@ class TestExtractWithPypdfHappyPath:
         # pypdf's own write helpers — but that requires reportlab. Skip if
         # we can't compose one; the failure path is already tested above.
         import pypdf
+
         # PyPDF2 / pypdf can't author a content-stream PDF without help.
         # Use a known-tiny PDF literal that has selectable text. The smallest
         # syntactically valid PDF with text is hand-crafted; rather than
@@ -351,6 +398,7 @@ class TestExtractWithPypdfHappyPath:
         # Also patch the import inside the function — pypdf.PdfReader is
         # imported lazily, so we need to intercept the import too.
         import sys
+
         fake_module = type(sys)("pypdf")
         fake_module.PdfReader = _BoomReader
         fake_module.errors = pypdf_errors
@@ -429,11 +477,13 @@ class TestOcrWithTesseract:
 
                 class _PdfToppmResult:
                     stdout = b""
+
                 return _PdfToppmResult()
             elif tool == "tesseract":
                 # argv format: ["tesseract", "<input.png>", "-", "-l", "eng"]
                 class _TesseractResult:
                     stdout = b"page text"
+
                 return _TesseractResult()
             raise AssertionError(f"unexpected subprocess: {argv}")
 
@@ -458,6 +508,7 @@ class TestOcrWithTesseract:
 
                 class R:
                     stdout = b""
+
                 return R()
             raise subprocess.CalledProcessError(2, "tesseract")
 
@@ -492,10 +543,17 @@ class TestFetchUrlBytes:
             content = b"%PDF-1.4 doj-pr-attachment"
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def get(self, url): return _Resp()
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
 
         monkeypatch.setattr(httpx, "Client", _Client)
         out = pdf.fetch_url_bytes("https://www.justice.gov/opa/media/x/dl")
@@ -509,10 +567,17 @@ class TestFetchUrlBytes:
             content = b""
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def get(self, url): return _Resp()
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
 
         monkeypatch.setattr(httpx, "Client", _Client)
         assert pdf.fetch_url_bytes("https://x.com/missing.pdf") is None
@@ -521,9 +586,15 @@ class TestFetchUrlBytes:
         import httpx
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
             def get(self, url):
                 raise httpx.RequestError("dns failure")
 
@@ -534,8 +605,9 @@ class TestFetchUrlBytes:
 class TestExtractTextFromUrl:
     def test_returns_text_when_pypdf_succeeds(self, monkeypatch):
         monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF bytes")
-        monkeypatch.setattr(pdf, "extract_with_pypdf",
-                            lambda data: "indictment body " * 30)
+        monkeypatch.setattr(
+            pdf, "extract_with_pypdf", lambda data: "indictment body " * 30
+        )
         out = pdf.extract_text_from_url("https://example.com/x.pdf")
         assert out and "indictment body" in out
 
@@ -546,8 +618,9 @@ class TestExtractTextFromUrl:
     def test_falls_back_to_ocr_when_pypdf_short(self, monkeypatch):
         monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
-        monkeypatch.setattr(pdf, "ocr_with_tesseract",
-                            lambda data: "ocr indictment " * 20)
+        monkeypatch.setattr(
+            pdf, "ocr_with_tesseract", lambda data: "ocr indictment " * 20
+        )
         out = pdf.extract_text_from_url("https://example.com/x.pdf")
         assert out and "ocr indictment" in out
 
@@ -555,8 +628,9 @@ class TestExtractTextFromUrl:
         monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "tiny")
         called = []
-        monkeypatch.setattr(pdf, "ocr_with_tesseract",
-                            lambda data: called.append("nope") or "")
+        monkeypatch.setattr(
+            pdf, "ocr_with_tesseract", lambda data: called.append("nope") or ""
+        )
         out = pdf.extract_text_from_url("https://x.com/y.pdf", allow_ocr=False)
         assert out == "tiny"
         assert called == []
@@ -573,11 +647,13 @@ class TestExtractTextFromUrl:
         # bypass font-encoding noise from pypdf when OCR is allowed.
         monkeypatch.setattr(pdf, "fetch_url_bytes", lambda url: b"%PDF")
         monkeypatch.setattr(
-            pdf, "extract_with_pypdf",
+            pdf,
+            "extract_with_pypdf",
             lambda data: "/i255 /1 /2 /11/12/13 " * 200,
         )
         monkeypatch.setattr(
-            pdf, "ocr_with_tesseract",
+            pdf,
+            "ocr_with_tesseract",
             lambda data: "real prose from the doj press release " * 20,
         )
         out = pdf.extract_text_from_url("https://example.com/x.pdf")
@@ -588,16 +664,22 @@ class TestExtractTextOcrShorter:
     def test_falls_back_to_short_pypdf_text_when_ocr_short(self, monkeypatch):
         # Both pypdf and OCR return below-threshold text; the function
         # returns the (short) pypdf text, since it's at least something.
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_ia": "https://archive.org/x.pdf"}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "tiny")
         monkeypatch.setattr(pdf, "ocr_with_tesseract", lambda data: "also tiny")
         assert pdf.extract_text(rd) == "tiny"
 
     def test_returns_none_when_all_paths_empty(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": True,
-              "filepath_ia": "https://archive.org/x.pdf"}
+        rd = {
+            "plain_text": "",
+            "is_available": True,
+            "filepath_ia": "https://archive.org/x.pdf",
+        }
         monkeypatch.setattr(pdf, "fetch_pdf_bytes", lambda *a, **kw: b"%PDF")
         monkeypatch.setattr(pdf, "extract_with_pypdf", lambda data: "")
         monkeypatch.setattr(pdf, "ocr_with_tesseract", lambda data: "")

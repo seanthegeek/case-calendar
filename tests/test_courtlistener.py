@@ -44,9 +44,11 @@ class TestSimpleGets:
 
     def test_auth_header_sent(self, make_client):
         seen = []
+
         def handler(req):
             seen.append(req.headers.get("Authorization"))
             return httpx.Response(200, json={})
+
         cl = make_client(handler)
         cl.get_docket(1)
         assert seen == ["Token test"]
@@ -54,7 +56,10 @@ class TestSimpleGets:
     def test_get_court(self, make_client):
         def handler(req):
             assert req.url.path == "/api/rest/v4/courts/mad/"
-            return httpx.Response(200, json={"id": "mad", "citation_string": "D. Mass."})
+            return httpx.Response(
+                200, json={"id": "mad", "citation_string": "D. Mass."}
+            )
+
         cl = make_client(handler)
         assert cl.get_court("mad")["citation_string"] == "D. Mass."
 
@@ -62,6 +67,7 @@ class TestSimpleGets:
         def handler(req):
             assert req.url.path == "/api/rest/v4/recap-documents/99/"
             return httpx.Response(200, json={"id": 99, "plain_text": "hi"})
+
         cl = make_client(handler)
         assert cl.get_recap_document(99)["plain_text"] == "hi"
 
@@ -72,6 +78,7 @@ class TestRetryLogic:
         monkeypatch.setattr(clmod.time, "sleep", lambda s: slept.append(s))
 
         calls = [0]
+
         def handler(req):
             calls[0] += 1
             if calls[0] == 1:
@@ -95,6 +102,7 @@ class TestRetryLogic:
         monkeypatch.setattr(clmod.time, "sleep", lambda s: slept.append(s))
 
         calls = [0]
+
         def handler(req):
             calls[0] += 1
             if calls[0] < 3:
@@ -122,6 +130,7 @@ class TestRetryLogic:
         monkeypatch.setattr(clmod.time, "sleep", lambda s: slept.append(s))
 
         calls = [0]
+
         def handler(req):
             calls[0] += 1
             if calls[0] == 1:
@@ -139,6 +148,7 @@ class TestRetryLogic:
     def test_giveup_after_max_attempts(self, make_client, monkeypatch):
         monkeypatch.setattr(clmod.time, "sleep", lambda s: None)
         calls = [0]
+
         def handler(req):
             calls[0] += 1
             return httpx.Response(429, headers={"Retry-After": "1"}, json={})
@@ -152,11 +162,17 @@ class TestRetryLogic:
 
 class TestPagination:
     def test_iter_entries_follows_next(self, make_client):
-        page1 = {"results": [{"id": 1, "date_modified": "2026-05-01T00:00:00Z"},
-                              {"id": 2, "date_modified": "2026-04-01T00:00:00Z"}],
-                 "next": "https://www.courtlistener.com/api/rest/v4/docket-entries/?page=2"}
-        page2 = {"results": [{"id": 3, "date_modified": "2026-03-01T00:00:00Z"}],
-                 "next": None}
+        page1 = {
+            "results": [
+                {"id": 1, "date_modified": "2026-05-01T00:00:00Z"},
+                {"id": 2, "date_modified": "2026-04-01T00:00:00Z"},
+            ],
+            "next": "https://www.courtlistener.com/api/rest/v4/docket-entries/?page=2",
+        }
+        page2 = {
+            "results": [{"id": 3, "date_modified": "2026-03-01T00:00:00Z"}],
+            "next": None,
+        }
 
         responses = iter([page1, page2])
 
@@ -172,23 +188,25 @@ class TestPagination:
         # API returns newest-first; we still want the early-stop optimization
         # so we don't page past the cutoff. Within the entries we DO yield,
         # order is oldest-first.
-        pages = iter([
-            {
-                "results": [
-                    {"id": 1, "date_modified": "2026-05-01T00:00:00Z"},
-                    {"id": 2, "date_modified": "2026-04-15T00:00:00Z"},
-                ],
-                "next": "https://x/y?page=2",
-            },
-            {
-                "results": [
-                    {"id": 3, "date_modified": "2026-04-05T00:00:00Z"},
-                    {"id": 4, "date_modified": "2026-01-01T00:00:00Z"},  # below
-                    {"id": 5, "date_modified": "2025-12-01T00:00:00Z"},  # below
-                ],
-                "next": "https://x/y?page=3",
-            },
-        ])
+        pages = iter(
+            [
+                {
+                    "results": [
+                        {"id": 1, "date_modified": "2026-05-01T00:00:00Z"},
+                        {"id": 2, "date_modified": "2026-04-15T00:00:00Z"},
+                    ],
+                    "next": "https://x/y?page=2",
+                },
+                {
+                    "results": [
+                        {"id": 3, "date_modified": "2026-04-05T00:00:00Z"},
+                        {"id": 4, "date_modified": "2026-01-01T00:00:00Z"},  # below
+                        {"id": 5, "date_modified": "2025-12-01T00:00:00Z"},  # below
+                    ],
+                    "next": "https://x/y?page=3",
+                },
+            ]
+        )
         page_count = [0]
 
         def handler(req):
@@ -196,7 +214,9 @@ class TestPagination:
             return httpx.Response(200, json=next(pages))
 
         cl = make_client(handler)
-        ids = [e["id"] for e in cl.iter_entries(42, modified_after="2026-04-01T00:00:00Z")]
+        ids = [
+            e["id"] for e in cl.iter_entries(42, modified_after="2026-04-01T00:00:00Z")
+        ]
         # #1, #2, #3 are above cutoff; #4 stops paging. Yielded oldest-first.
         assert ids == [3, 2, 1]
         # Should have stopped after page 2 — never fetched page 3.

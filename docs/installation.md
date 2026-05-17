@@ -2,7 +2,7 @@
 title: Installation
 ---
 
-case-calendar is a Python CLI. You'll need:
+Case Calendar is a Python CLI. You'll need:
 
 - **Python 3.13** or newer.
 - [**uv**](https://docs.astral.sh/uv/getting-started/installation/) for
@@ -18,7 +18,7 @@ case-calendar is a Python CLI. You'll need:
 
 [← Back to docs](index.md)
 
-## Install case-calendar
+## Install Case Calendar
 
 ```bash
 git clone https://github.com/seanthegeek/case-calendar
@@ -33,7 +33,7 @@ for you.
 
 ## Configure secrets
 
-case-calendar reads secrets from a `.env` file in the project root:
+Case Calendar reads secrets from a `.env` file in the project root:
 
 ```bash
 cp .env.example .env
@@ -66,7 +66,7 @@ PDFs is either:
   multi-KB strings of `ÿ` / glyph-index tokens that the summary LLM can't
   read.
 
-Installing the local OCR fallback lets case-calendar re-process those PDFs
+Installing the local OCR fallback lets Case Calendar re-process those PDFs
 itself, so the AI summary pipeline sees usable text instead of an explicit
 "insufficient documents" refusal:
 
@@ -90,7 +90,7 @@ the primary text extraction has already failed.
 
 ## Optional: calendar push backends
 
-By default case-calendar writes an ICS file you can subscribe to. If you'd
+By default Case Calendar writes an ICS file you can subscribe to. If you'd
 rather have events show up directly in Google Calendar or Microsoft 365 /
 Outlook, see the [calendar backends](calendars.md) page for the one-time
 OAuth setup. Both are opt-in and require no per-command flag once

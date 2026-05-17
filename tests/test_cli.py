@@ -161,27 +161,37 @@ class TestEmitCalendars:
                 },
             },
             "cases": [
-                {"id": "us-v-x", "name": "US v. X",
-                 "calendar": "cyber", "dockets": [100]},
-                {"id": "acme-v-widget", "name": "Acme v. Widget",
-                 "calendar": "tech", "dockets": [200]},
+                {
+                    "id": "us-v-x",
+                    "name": "US v. X",
+                    "calendar": "cyber",
+                    "dockets": [100],
+                },
+                {
+                    "id": "acme-v-widget",
+                    "name": "Acme v. Widget",
+                    "calendar": "tech",
+                    "dockets": [200],
+                },
             ],
         }
 
     def _seed_hearing(self, store, *, case_id, key, calendar_unused="cyber"):
-        store.upsert_hearing({
-            "case_id": case_id,
-            "hearing_key": key,
-            "title": "Sentencing",
-            "hearing_type": "sentencing",
-            "starts_at_utc": "2099-04-14T15:00:00+00:00",
-            "duration_minutes": 90,
-            "timezone": "America/New_York",
-            "status": "scheduled",
-            "significance": "major",
-            "docket_id": 100,
-            "source_entry_ids": [1],
-        })
+        store.upsert_hearing(
+            {
+                "case_id": case_id,
+                "hearing_key": key,
+                "title": "Sentencing",
+                "hearing_type": "sentencing",
+                "starts_at_utc": "2099-04-14T15:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
 
     def test_writes_ics_for_each_calendar(self, store, cfg):
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
@@ -208,17 +218,36 @@ class TestEmitCalendars:
     def test_docket_entry_numbers_rendered_into_ics(self, store, cfg):
         # The hearing's source_entry_ids should be resolved against the
         # entries table to surface PACER docket positions in the description.
-        store.mark_entry(100, 1001, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, description="ORDER")
-        store.mark_entry(100, 1002, "2026-01-02T00:00:00Z", "fp",
-                         entry_number=82, description="ORDER")
-        store.upsert_hearing({
-            "case_id": "us-v-x", "hearing_key": "sentencing-x",
-            "title": "Sentencing", "starts_at_utc": "2099-04-14T15:00:00+00:00",
-            "duration_minutes": 90, "timezone": "America/New_York",
-            "status": "scheduled", "significance": "major",
-            "docket_id": 100, "source_entry_ids": [1001, 1002],
-        })
+        store.mark_entry(
+            100,
+            1001,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            entry_number=65,
+            description="ORDER",
+        )
+        store.mark_entry(
+            100,
+            1002,
+            "2026-01-02T00:00:00Z",
+            "fp",
+            entry_number=82,
+            description="ORDER",
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2099-04-14T15:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1001, 1002],
+            }
+        )
         emit_calendars(cfg, store, only_calendars={"cyber"})
         text = open(cfg["calendars"]["cyber"]["ics_path"]).read()
         # ICS folds long lines at 75 octets, so the literal text may be
@@ -231,23 +260,46 @@ class TestEmitCalendars:
         # and flattened into the hearing's `documents` list, then rendered
         # one-line-per-doc by the description builder.
         docs_1001 = [
-            {"id": 5, "document_number": 65, "attachment_number": None,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65.pdf"},
-            {"id": 6, "document_number": 65, "attachment_number": 1,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65a.pdf"},
+            {
+                "id": 5,
+                "document_number": 65,
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65.pdf",
+            },
+            {
+                "id": 6,
+                "document_number": 65,
+                "attachment_number": 1,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65a.pdf",
+            },
         ]
-        store.mark_entry(100, 1001, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, description="ORDER",
-                         recap_documents=docs_1001)
-        store.upsert_hearing({
-            "case_id": "us-v-x", "hearing_key": "sentencing-x",
-            "title": "Sentencing", "starts_at_utc": "2099-04-14T15:00:00+00:00",
-            "duration_minutes": 90, "timezone": "America/New_York",
-            "status": "scheduled", "significance": "major",
-            "docket_id": 100, "source_entry_ids": [1001],
-        })
+        store.mark_entry(
+            100,
+            1001,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            entry_number=65,
+            description="ORDER",
+            recap_documents=docs_1001,
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2099-04-14T15:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1001],
+            }
+        )
         emit_calendars(cfg, store, only_calendars={"cyber"})
         # Read bytes so the on-disk CRLF survives Python's text-mode
         # newline translation; otherwise the long second URL gets folded
@@ -263,7 +315,9 @@ class TestEmitCalendars:
         # gcal push auto-enables when a token cache is present. Without
         # one — first run, or after a token wipe — push is skipped
         # silently so the daemon never blocks on a missing OAuth.
-        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["google_calendar_id"] = (
+            "abc@group.calendar.google.com"
+        )
         cfg["google_credentials_path"] = "/nonexistent.json"  # would crash if used
         cfg["google_token_path"] = str(tmp_path / "no-such-token.json")
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
@@ -323,7 +377,11 @@ class TestEmitCalendars:
         assert sentinel.read_text() == "untouched"
 
     def test_gcal_push_invokes_sync_when_token_cache_present(
-        self, store, cfg, tmp_path, monkeypatch,
+        self,
+        store,
+        cfg,
+        tmp_path,
+        monkeypatch,
     ):
         # Stage a fake token cache so the resolver enables gcal push, then
         # patch the constructor and sync method so we observe the call.
@@ -331,7 +389,9 @@ class TestEmitCalendars:
         token_path.write_text("{}")
         cfg["google_credentials_path"] = "/nonexistent.json"
         cfg["google_token_path"] = str(token_path)
-        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["google_calendar_id"] = (
+            "abc@group.calendar.google.com"
+        )
 
         instances: list[MagicMock] = []
 
@@ -341,7 +401,8 @@ class TestEmitCalendars:
             return inst
 
         monkeypatch.setattr(
-            "case_calendar.calendars.gcal.GoogleCalendarSync", _factory,
+            "case_calendar.calendars.gcal.GoogleCalendarSync",
+            _factory,
         )
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
         results = emit_calendars(cfg, store)
@@ -350,7 +411,11 @@ class TestEmitCalendars:
         instances[0].sync.assert_called_once()
 
     def test_m365_push_invokes_sync_when_token_cache_present(
-        self, store, cfg, tmp_path, monkeypatch,
+        self,
+        store,
+        cfg,
+        tmp_path,
+        monkeypatch,
     ):
         token_path = tmp_path / "m365-token.json"
         token_path.write_text("{}")
@@ -366,7 +431,8 @@ class TestEmitCalendars:
             return inst
 
         monkeypatch.setattr(
-            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+            "case_calendar.calendars.m365.M365CalendarSync",
+            _factory,
         )
         monkeypatch.delenv("M365_CLIENT_ID", raising=False)
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
@@ -376,7 +442,11 @@ class TestEmitCalendars:
         instances[0].sync.assert_called_once()
 
     def test_m365_use_default_calendar_opts_in(
-        self, store, cfg, tmp_path, monkeypatch,
+        self,
+        store,
+        cfg,
+        tmp_path,
+        monkeypatch,
     ):
         # When m365_calendar_id is absent, m365_use_default_calendar: true
         # still routes to Microsoft's default calendar.
@@ -394,7 +464,8 @@ class TestEmitCalendars:
             return inst
 
         monkeypatch.setattr(
-            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+            "case_calendar.calendars.m365.M365CalendarSync",
+            _factory,
         )
         monkeypatch.delenv("M365_CLIENT_ID", raising=False)
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
@@ -410,10 +481,16 @@ class TestEmitCalendars:
 class TestLoadConfig:
     def test_loads_valid_config(self, tmp_path):
         p = tmp_path / "c.yaml"
-        p.write_text(yaml.safe_dump({
-            "calendars": {"a": {"name": "A"}},
-            "cases": [{"id": "x", "name": "X", "calendar": "a", "dockets": [1]}],
-        }))
+        p.write_text(
+            yaml.safe_dump(
+                {
+                    "calendars": {"a": {"name": "A"}},
+                    "cases": [
+                        {"id": "x", "name": "X", "calendar": "a", "dockets": [1]}
+                    ],
+                }
+            )
+        )
         cfg = _load_config(str(p))
         assert cfg["cases"][0]["id"] == "x"
 
@@ -432,34 +509,51 @@ class TestLoadConfig:
 
 class TestCasesFromConfig:
     def test_parses_extract_deadlines_default(self):
-        cfg = {"cases": [
-            {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
-            {"id": "y", "name": "Y", "calendar": "a", "dockets": [2],
-             "extract_deadlines": True},
-        ]}
+        cfg = {
+            "cases": [
+                {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
+                {
+                    "id": "y",
+                    "name": "Y",
+                    "calendar": "a",
+                    "dockets": [2],
+                    "extract_deadlines": True,
+                },
+            ]
+        }
         cases = _cases_from_config(cfg)
         assert cases[0].extract_deadlines is False
         assert cases[1].extract_deadlines is True
 
     def test_defaults_empty_extra_documents(self):
-        cfg = {"cases": [
-            {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
-        ]}
+        cfg = {
+            "cases": [
+                {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
+            ]
+        }
         cases = _cases_from_config(cfg)
         assert cases[0].extra_documents == []
 
     def test_parses_extra_documents(self):
-        cfg = {"cases": [{
-            "id": "us-v-zewei", "name": "United States v. Zewei",
-            "calendar": "cybercrime", "dockets": [70789744],
-            "extra_documents": [{
-                "docket": 70789744,
-                "url": "https://www.justice.gov/opa/media/1407196/dl",
-                "note": "Sourced from DoJ press release attachment; "
-                        "indictment was unsealed by court order despite "
-                        "SEALED watermarks.",
-            }],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "us-v-zewei",
+                    "name": "United States v. Zewei",
+                    "calendar": "cybercrime",
+                    "dockets": [70789744],
+                    "extra_documents": [
+                        {
+                            "docket": 70789744,
+                            "url": "https://www.justice.gov/opa/media/1407196/dl",
+                            "note": "Sourced from DoJ press release attachment; "
+                            "indictment was unsealed by court order despite "
+                            "SEALED watermarks.",
+                        }
+                    ],
+                }
+            ]
+        }
         cases = _cases_from_config(cfg)
         assert len(cases[0].extra_documents) == 1
         extra = cases[0].extra_documents[0]
@@ -472,83 +566,151 @@ class TestCasesFromConfig:
         # whitespace; the parser strips them so the LLM prompt isn't
         # dotted with blank tails that change cache fingerprints on
         # whitespace churn.
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{
-                "docket": 1, "url": "https://example.com/x.pdf",
-                "note": "\n  trailing newline note  \n",
-            }],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": [
+                        {
+                            "docket": 1,
+                            "url": "https://example.com/x.pdf",
+                            "note": "\n  trailing newline note  \n",
+                        }
+                    ],
+                }
+            ]
+        }
         cases = _cases_from_config(cfg)
         assert cases[0].extra_documents[0].note == "trailing newline note"
 
     def test_extra_documents_none_or_empty_yields_empty_list(self):
         for raw in (None, []):
-            cfg = {"cases": [{
-                "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-                "extra_documents": raw,
-            }]}
+            cfg = {
+                "cases": [
+                    {
+                        "id": "x",
+                        "name": "X",
+                        "calendar": "a",
+                        "dockets": [1],
+                        "extra_documents": raw,
+                    }
+                ]
+            }
             cases = _cases_from_config(cfg)
             assert cases[0].extra_documents == []
 
     def test_extra_documents_must_be_list(self):
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": {"docket": 1},
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": {"docket": 1},
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="must be a list"):
             _cases_from_config(cfg)
 
     def test_extra_documents_entry_must_be_mapping(self):
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": ["not-a-dict"],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": ["not-a-dict"],
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="must be a mapping"):
             _cases_from_config(cfg)
 
     def test_extra_documents_missing_required_key_raises(self):
         # Missing `note` — operator forgot to describe the document.
         # Catch loudly; the note is the whole reason the field exists.
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{"docket": 1, "url": "https://x.com/y.pdf"}],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": [{"docket": 1, "url": "https://x.com/y.pdf"}],
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="missing key"):
             _cases_from_config(cfg)
 
     def test_extra_documents_docket_must_be_on_case(self):
         # Specified docket id isn't tracked by this case — typo / wrong
         # docket. Surface immediately rather than silently no-op'ing.
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{
-                "docket": 999, "url": "https://x.com/y.pdf",
-                "note": "test",
-            }],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": [
+                        {
+                            "docket": 999,
+                            "url": "https://x.com/y.pdf",
+                            "note": "test",
+                        }
+                    ],
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="is not in this case's dockets"):
             _cases_from_config(cfg)
 
     def test_extra_documents_docket_must_be_int(self):
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{
-                "docket": "1", "url": "https://x.com/y.pdf",
-                "note": "test",
-            }],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": [
+                        {
+                            "docket": "1",
+                            "url": "https://x.com/y.pdf",
+                            "note": "test",
+                        }
+                    ],
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="is not in this case's dockets"):
             _cases_from_config(cfg)
 
     def test_extra_documents_note_must_be_string(self):
-        cfg = {"cases": [{
-            "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-            "extra_documents": [{
-                "docket": 1, "url": "https://x.com/y.pdf",
-                "note": 12345,
-            }],
-        }]}
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "extra_documents": [
+                        {
+                            "docket": 1,
+                            "url": "https://x.com/y.pdf",
+                            "note": 12345,
+                        }
+                    ],
+                }
+            ]
+        }
         with pytest.raises(SystemExit, match="note must be a string"):
             _cases_from_config(cfg)
 
@@ -556,13 +718,23 @@ class TestCasesFromConfig:
         # Empty / whitespace-only note is a misconfiguration — the
         # entire point of the field is to describe the document.
         for empty in ("", "   ", "\n\n"):
-            cfg = {"cases": [{
-                "id": "x", "name": "X", "calendar": "a", "dockets": [1],
-                "extra_documents": [{
-                    "docket": 1, "url": "https://x.com/y.pdf",
-                    "note": empty,
-                }],
-            }]}
+            cfg = {
+                "cases": [
+                    {
+                        "id": "x",
+                        "name": "X",
+                        "calendar": "a",
+                        "dockets": [1],
+                        "extra_documents": [
+                            {
+                                "docket": 1,
+                                "url": "https://x.com/y.pdf",
+                                "note": empty,
+                            }
+                        ],
+                    }
+                ]
+            }
             with pytest.raises(SystemExit, match="non-empty string"):
                 _cases_from_config(cfg)
 
@@ -639,8 +811,7 @@ def cfg_file(tmp_path):
             "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
         },
         "cases": [
-            {"id": "us-v-x", "name": "US v. X",
-             "calendar": "cyber", "dockets": [100]},
+            {"id": "us-v-x", "name": "US v. X", "calendar": "cyber", "dockets": [100]},
         ],
     }
     p = tmp_path / "config.yaml"
@@ -670,7 +841,11 @@ class TestCmdSync:
         assert cmd_sync(args) == 2
 
     def test_runs_syncer_and_emits_on_actions(
-        self, cfg_file, fake_cl_ctx, monkeypatch, capsys,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
+        capsys,
     ):
         # Force CaseSyncer.sync_case to report actions, which should trigger
         # the auto-emit. Patch llm.provider_info to avoid the env detection.
@@ -678,9 +853,12 @@ class TestCmdSync:
 
         def _fake_sync_case(self, case):
             return {
-                "dockets_skipped": 0, "entries_seen": 1,
-                "entries_processed": 1, "actions": 1,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 0,
+                "entries_seen": 1,
+                "entries_processed": 1,
+                "actions": 1,
+                "verified": 0,
+                "auto_passed": 0,
             }
 
         monkeypatch.setattr(cli.CaseSyncer, "sync_case", _fake_sync_case)
@@ -704,7 +882,10 @@ class TestCmdSync:
         assert "us-v-x" in out
 
     def test_emits_index_with_no_actions(
-        self, cfg_file, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # Even when no calendar's hearings/deadlines changed, the global
         # index is re-rendered on every sync (a sibling docket's activity
@@ -713,16 +894,21 @@ class TestCmdSync:
         # per-calendar ICS / gcal / M365 work but still writes the index.
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: {
-                "dockets_skipped": 1, "entries_seen": 0,
-                "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 1,
+                "entries_seen": 0,
+                "entries_processed": 0,
+                "actions": 0,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         emit_calls: list[Any] = []
         monkeypatch.setattr(
-            cli, "emit_calendars",
+            cli,
+            "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
         args = Namespace(config=str(cfg_file), case=None, no_emit=False)
@@ -730,7 +916,11 @@ class TestCmdSync:
         assert emit_calls == [set()]
 
     def test_writes_index_on_no_op_sync_when_configured(
-        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        tmp_path,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # End-to-end through the real emit_calendars: a sync that touches
         # zero calendars still refreshes index.html when index_path is set.
@@ -743,11 +933,15 @@ class TestCmdSync:
 
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: {
-                "dockets_skipped": 1, "entries_seen": 0,
-                "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 1,
+                "entries_seen": 0,
+                "entries_processed": 0,
+                "actions": 0,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         args = Namespace(config=str(cfg_file), case=None, no_emit=False)
@@ -756,20 +950,28 @@ class TestCmdSync:
         assert index_path.read_text(encoding="utf-8").startswith("<!doctype html>")
 
     def test_no_emit_flag_skips_emit(
-        self, cfg_file, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: {
-                "dockets_skipped": 0, "entries_seen": 1,
-                "entries_processed": 1, "actions": 1,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 0,
+                "entries_seen": 1,
+                "entries_processed": 1,
+                "actions": 1,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         emit_calls: list[Any] = []
         monkeypatch.setattr(
-            cli, "emit_calendars",
+            cli,
+            "emit_calendars",
             lambda *a, **kw: emit_calls.append(1) or {},
         )
         args = Namespace(config=str(cfg_file), case=None, no_emit=True)
@@ -777,7 +979,11 @@ class TestCmdSync:
         assert emit_calls == []
 
     def test_runs_summary_refresh_when_enabled(
-        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        tmp_path,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # Enable case_summaries in config and stub refresh_stale.
         cfg = yaml.safe_load(cfg_file.read_text())
@@ -785,14 +991,19 @@ class TestCmdSync:
         cfg_file.write_text(yaml.safe_dump(cfg))
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: {
-                "dockets_skipped": 0, "entries_seen": 0,
-                "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 0,
+                "entries_seen": 0,
+                "entries_processed": 0,
+                "actions": 0,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         from case_calendar import summary as summary_mod
+
         refresh_calls: list[dict[str, Any]] = []
 
         def _fake_refresh(**kw):
@@ -801,11 +1012,16 @@ class TestCmdSync:
 
         monkeypatch.setattr(summary_mod, "refresh_stale", _fake_refresh)
         monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda *a, **kw: {"cyber": {
-                "events": 0, "ics_path": None,
-                "gcal_pushed": False, "m365_pushed": False,
-            }},
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: {
+                "cyber": {
+                    "events": 0,
+                    "ics_path": None,
+                    "gcal_pushed": False,
+                    "m365_pushed": False,
+                }
+            },
         )
 
         args = Namespace(config=str(cfg_file), case=None, no_emit=False)
@@ -817,7 +1033,11 @@ class TestCmdSync:
         assert refresh_calls[0]["force"] is False
 
     def test_force_summaries_flag_propagates(
-        self, cfg_file, tmp_path, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        tmp_path,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # `sync --force-summaries` bundles the equivalent of
         # `summarize --force` into the same CourtListener session — avoids a second
@@ -827,30 +1047,42 @@ class TestCmdSync:
         cfg_file.write_text(yaml.safe_dump(cfg))
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: {
-                "dockets_skipped": 0, "entries_seen": 0,
-                "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_passed": 0,
+                "dockets_skipped": 0,
+                "entries_seen": 0,
+                "entries_processed": 0,
+                "actions": 0,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         from case_calendar import summary as summary_mod
+
         refresh_calls: list[dict[str, Any]] = []
         monkeypatch.setattr(
-            summary_mod, "refresh_stale",
+            summary_mod,
+            "refresh_stale",
             lambda **kw: (refresh_calls.append(kw), {})[1],
         )
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
 
         args = Namespace(
-            config=str(cfg_file), case=None, no_emit=False,
+            config=str(cfg_file),
+            case=None,
+            no_emit=False,
             force_summaries=True,
         )
         assert cmd_sync(args) == 0
         assert refresh_calls[0]["force"] is True
 
     def test_only_new_filters_to_unseen_dockets(
-        self, tmp_path, fake_cl_ctx, monkeypatch, capsys,
+        self,
+        tmp_path,
+        fake_cl_ctx,
+        monkeypatch,
+        capsys,
     ):
         # `sync --only-new` skips cases whose dockets are already in the
         # store (the use case: you added new cases to config.yaml and
@@ -858,13 +1090,24 @@ class TestCmdSync:
         cfg = {
             "store_path": str(tmp_path / "x.sqlite"),
             "calendars": {
-                "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
+                "cyber": {
+                    "name": "Cybercrime",
+                    "ics_path": str(tmp_path / "cyber.ics"),
+                },
             },
             "cases": [
-                {"id": "us-v-old", "name": "US v. Old",
-                 "calendar": "cyber", "dockets": [100]},
-                {"id": "us-v-new", "name": "US v. New",
-                 "calendar": "cyber", "dockets": [200]},
+                {
+                    "id": "us-v-old",
+                    "name": "US v. Old",
+                    "calendar": "cyber",
+                    "dockets": [100],
+                },
+                {
+                    "id": "us-v-new",
+                    "name": "US v. New",
+                    "calendar": "cyber",
+                    "dockets": [200],
+                },
             ],
         }
         cfg_path = tmp_path / "config.yaml"
@@ -874,6 +1117,7 @@ class TestCmdSync:
         # Different Store instances → must commit via tx() for the cmd_sync
         # connection to see the row.
         from case_calendar.store import Store
+
         pre_store = Store(cfg["store_path"])
         with pre_store.tx() as _:
             pre_store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
@@ -882,17 +1126,24 @@ class TestCmdSync:
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         synced_ids: list[str] = []
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
-            lambda self, case: synced_ids.append(case.case_id) or {
-                "dockets_skipped": 0, "entries_seen": 0,
-                "entries_processed": 0, "actions": 0,
-                "verified": 0, "auto_passed": 0,
+            cli.CaseSyncer,
+            "sync_case",
+            lambda self, case: synced_ids.append(case.case_id)
+            or {
+                "dockets_skipped": 0,
+                "entries_seen": 0,
+                "entries_processed": 0,
+                "actions": 0,
+                "verified": 0,
+                "auto_passed": 0,
             },
         )
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
 
         args = Namespace(
-            config=str(cfg_path), case=None, no_emit=False,
+            config=str(cfg_path),
+            case=None,
+            no_emit=False,
             only_new=True,
         )
         assert cmd_sync(args) == 0
@@ -901,7 +1152,11 @@ class TestCmdSync:
         assert synced_ids == ["us-v-new"]
 
     def test_only_new_with_no_new_cases_short_circuits(
-        self, tmp_path, fake_cl_ctx, monkeypatch, capsys,
+        self,
+        tmp_path,
+        fake_cl_ctx,
+        monkeypatch,
+        capsys,
     ):
         # When every configured case's dockets are already known, --only-new
         # prints a friendly message and returns 0 without invoking sync_case
@@ -909,16 +1164,24 @@ class TestCmdSync:
         cfg = {
             "store_path": str(tmp_path / "x.sqlite"),
             "calendars": {
-                "cyber": {"name": "Cybercrime", "ics_path": str(tmp_path / "cyber.ics")},
+                "cyber": {
+                    "name": "Cybercrime",
+                    "ics_path": str(tmp_path / "cyber.ics"),
+                },
             },
             "cases": [
-                {"id": "us-v-x", "name": "US v. X",
-                 "calendar": "cyber", "dockets": [100]},
+                {
+                    "id": "us-v-x",
+                    "name": "US v. X",
+                    "calendar": "cyber",
+                    "dockets": [100],
+                },
             ],
         }
         cfg_path = tmp_path / "config.yaml"
         cfg_path.write_text(yaml.safe_dump(cfg))
         from case_calendar.store import Store
+
         pre_store = Store(cfg["store_path"])
         with pre_store.tx() as _:
             pre_store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
@@ -927,16 +1190,20 @@ class TestCmdSync:
         sync_calls: list[str] = []
         emit_calls: list[Any] = []
         monkeypatch.setattr(
-            cli.CaseSyncer, "sync_case",
+            cli.CaseSyncer,
+            "sync_case",
             lambda self, case: sync_calls.append(case.case_id),
         )
         monkeypatch.setattr(
-            cli, "emit_calendars",
+            cli,
+            "emit_calendars",
             lambda *a, **kw: emit_calls.append(1) or {},
         )
 
         args = Namespace(
-            config=str(cfg_path), case=None, no_emit=False,
+            config=str(cfg_path),
+            case=None,
+            no_emit=False,
             only_new=True,
         )
         assert cmd_sync(args) == 0
@@ -948,23 +1215,31 @@ class TestCmdSync:
 
 class TestCmdEmit:
     def test_runs_and_prints_each_backend(
-        self, cfg_file, monkeypatch, capsys,
+        self,
+        cfg_file,
+        monkeypatch,
+        capsys,
     ):
         # emit_calendars is itself well-tested; here we just confirm cmd_emit
         # wires it and prints the expected lines for ICS + gcal + M365.
         cfg = yaml.safe_load(cfg_file.read_text())
-        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["google_calendar_id"] = (
+            "abc@group.calendar.google.com"
+        )
         cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
         cfg_file.write_text(yaml.safe_dump(cfg))
 
         monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda cfg, store: {"cyber": {
-                "events": 3,
-                "ics_path": "/tmp/cyber.ics",
-                "gcal_pushed": True,
-                "m365_pushed": True,
-            }},
+            cli,
+            "emit_calendars",
+            lambda cfg, store: {
+                "cyber": {
+                    "events": 3,
+                    "ics_path": "/tmp/cyber.ics",
+                    "gcal_pushed": True,
+                    "m365_pushed": True,
+                }
+            },
         )
         args = Namespace(config=str(cfg_file))
         assert cmd_emit(args) == 0
@@ -972,6 +1247,7 @@ class TestCmdEmit:
         assert "wrote 3 events" in out
         assert "pushed 3 events to gcal" in out
         assert "pushed 3 events to M365" in out
+
 
 class TestCmdServe:
     def test_rejects_short_secret(self, cfg_file, monkeypatch, capsys):
@@ -981,7 +1257,10 @@ class TestCmdServe:
         assert "WEBHOOK_SECRET" in capsys.readouterr().err
 
     def test_calls_serve_with_emit_fn(
-        self, cfg_file, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # Patch serve() so we don't actually bind a socket; instead capture
         # the emit_fn callback and exercise it through one call to confirm
@@ -1000,15 +1279,22 @@ class TestCmdServe:
         # Cover the gcal_pushed / m365_pushed log branches by returning both
         # flags set; that exercises lines 588-589 and 594-597.
         cfg = yaml.safe_load(cfg_file.read_text())
-        cfg["calendars"]["cyber"]["google_calendar_id"] = "abc@group.calendar.google.com"
+        cfg["calendars"]["cyber"]["google_calendar_id"] = (
+            "abc@group.calendar.google.com"
+        )
         cfg["calendars"]["cyber"]["m365_calendar_id"] = "AAMkADExAAA"
         cfg_file.write_text(yaml.safe_dump(cfg))
         monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda *a, **kw: {"cyber": {
-                "events": 1, "ics_path": "/tmp/cyber.ics",
-                "gcal_pushed": True, "m365_pushed": True,
-            }},
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: {
+                "cyber": {
+                    "events": 1,
+                    "ics_path": "/tmp/cyber.ics",
+                    "gcal_pushed": True,
+                    "m365_pushed": True,
+                }
+            },
         )
 
         args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
@@ -1018,7 +1304,11 @@ class TestCmdServe:
         captured["emit_fn"]({"cyber"})
 
     def test_debounced_summary_refresh_fires(
-        self, cfg_file, fake_cl_ctx, monkeypatch, tmp_path,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
+        tmp_path,
     ):
         # Wire case_summaries on, mark one docket's summary stale, then
         # invoke the captured emit_fn — that arms the debounce timer.
@@ -1032,7 +1322,9 @@ class TestCmdServe:
         # store file already exist with the case_summaries table; opening a
         # Store at the configured path is the cheapest way.
         s = cli.Store(cfg["store_path"])
-        s.upsert_case_summary("us-v-x", 100, summary="old", model="m", source_entry_ids=[])
+        s.upsert_case_summary(
+            "us-v-x", 100, summary="old", model="m", source_entry_ids=[]
+        )
         s.mark_summary_stale("us-v-x", 100)
         s.conn.commit()
         s.close()
@@ -1084,11 +1376,16 @@ class TestCmdServe:
 
         monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
         monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda *a, **kw: {"cyber": {
-                "events": 0, "ics_path": None,
-                "gcal_pushed": False, "m365_pushed": False,
-            }},
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: {
+                "cyber": {
+                    "events": 0,
+                    "ics_path": None,
+                    "gcal_pushed": False,
+                    "m365_pushed": False,
+                }
+            },
         )
 
         args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
@@ -1110,7 +1407,10 @@ class TestCmdServe:
         assert refresh_calls[0]["only_case_ids"] == {"us-v-x"}
 
     def test_debounce_skips_when_no_stale_rows(
-        self, cfg_file, fake_cl_ctx, monkeypatch,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
     ):
         # case_summaries enabled but no docket is stale -> _arm_debounce
         # short-circuits and never starts the timer.
@@ -1125,7 +1425,9 @@ class TestCmdServe:
 
         # Pre-seed a NON-stale summary, so is_summary_stale returns False.
         s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
-        s.upsert_case_summary("us-v-x", 100, summary="x", model="m", source_entry_ids=[])
+        s.upsert_case_summary(
+            "us-v-x", 100, summary="x", model="m", source_entry_ids=[]
+        )
         s.conn.commit()
         s.close()
 
@@ -1148,11 +1450,16 @@ class TestCmdServe:
 
         monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
         monkeypatch.setattr(
-            cli, "emit_calendars",
-            lambda *a, **kw: {"cyber": {
-                "events": 0, "ics_path": None,
-                "gcal_pushed": False, "m365_pushed": False,
-            }},
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: {
+                "cyber": {
+                    "events": 0,
+                    "ics_path": None,
+                    "gcal_pushed": False,
+                    "m365_pushed": False,
+                }
+            },
         )
 
         args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
@@ -1163,7 +1470,10 @@ class TestCmdServe:
 
 class TestCmdSetup:
     def test_gcal_without_credentials_path_errors(
-        self, cfg_file, monkeypatch, capsys,
+        self,
+        cfg_file,
+        monkeypatch,
+        capsys,
     ):
         args = Namespace(config=str(cfg_file), backend="gcal")
         assert cmd_setup(args) == 2
@@ -1180,7 +1490,8 @@ class TestCmdSetup:
             invoked.append({"creds": credentials_path, "tok": token_path})
 
         monkeypatch.setattr(
-            "case_calendar.calendars.gcal.GoogleCalendarSync", _factory,
+            "case_calendar.calendars.gcal.GoogleCalendarSync",
+            _factory,
         )
         args = Namespace(config=str(cfg_file), backend="gcal")
         assert cmd_setup(args) == 0
@@ -1204,7 +1515,8 @@ class TestCmdSetup:
             invoked.append({"id": client_id, "tok": token_path})
 
         monkeypatch.setattr(
-            "case_calendar.calendars.m365.M365CalendarSync", _factory,
+            "case_calendar.calendars.m365.M365CalendarSync",
+            _factory,
         )
         args = Namespace(config=str(cfg_file), backend="m365")
         assert cmd_setup(args) == 0
@@ -1213,10 +1525,16 @@ class TestCmdSetup:
 
 class TestCmdSummarize:
     def test_requires_case_summaries_enabled(
-        self, cfg_file, monkeypatch, capsys,
+        self,
+        cfg_file,
+        monkeypatch,
+        capsys,
     ):
         args = Namespace(
-            config=str(cfg_file), case=None, force=False, no_emit=False,
+            config=str(cfg_file),
+            case=None,
+            force=False,
+            no_emit=False,
         )
         assert cmd_summarize(args) == 2
         assert "case_summaries.enabled" in capsys.readouterr().err
@@ -1228,12 +1546,19 @@ class TestCmdSummarize:
         monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: MagicMock())
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
         args = Namespace(
-            config=str(cfg_file), case="nope", force=False, no_emit=False,
+            config=str(cfg_file),
+            case="nope",
+            force=False,
+            no_emit=False,
         )
         assert cmd_summarize(args) == 2
 
     def test_runs_summarize_case_and_emits(
-        self, cfg_file, fake_cl_ctx, monkeypatch, capsys,
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
+        capsys,
     ):
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True, "provider": "anthropic"}
@@ -1241,6 +1566,7 @@ class TestCmdSummarize:
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
+
         summarize_calls: list[dict[str, Any]] = []
 
         def _fake(**kw):
@@ -1250,11 +1576,15 @@ class TestCmdSummarize:
         monkeypatch.setattr(summary_mod, "summarize_case", _fake)
         emit_calls: list[Any] = []
         monkeypatch.setattr(
-            cli, "emit_calendars",
+            cli,
+            "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
         args = Namespace(
-            config=str(cfg_file), case=None, force=True, no_emit=False,
+            config=str(cfg_file),
+            case=None,
+            force=True,
+            no_emit=False,
         )
         assert cmd_summarize(args) == 0
         assert summarize_calls[0]["force"] is True
@@ -1267,21 +1597,37 @@ class TestCmdShow:
         # cmd_show creates its own Store handle (which uses the same file).
         cfg = yaml.safe_load(cfg_file.read_text())
         s = cli.Store(cfg["store_path"])
-        s.upsert_hearing({
-            "case_id": "us-v-x", "hearing_key": "k1", "title": "Sentencing",
-            "starts_at_utc": "2099-01-01T00:00:00+00:00", "duration_minutes": 60,
-            "timezone": "America/New_York", "status": "scheduled",
-            "significance": "major", "docket_id": 100, "source_entry_ids": [1],
-            "location": "Courtroom 1", "judge": "Hon. Smith",
-            "dial_in": "tel:555-1234",
-        })
-        s.upsert_deadline({
-            "case_id": "us-v-x", "deadline_key": "d1",
-            "title": "Reply ISO MTD", "due_at_utc": "2099-01-15T22:00:00+00:00",
-            "timezone": "America/New_York", "status": "pending",
-            "significance": "major", "deadline_type": "reply",
-            "docket_id": 100, "source_entry_ids": [1],
-        })
+        s.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "k1",
+                "title": "Sentencing",
+                "starts_at_utc": "2099-01-01T00:00:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+                "location": "Courtroom 1",
+                "judge": "Hon. Smith",
+                "dial_in": "tel:555-1234",
+            }
+        )
+        s.upsert_deadline(
+            {
+                "case_id": "us-v-x",
+                "deadline_key": "d1",
+                "title": "Reply ISO MTD",
+                "due_at_utc": "2099-01-15T22:00:00+00:00",
+                "timezone": "America/New_York",
+                "status": "pending",
+                "significance": "major",
+                "deadline_type": "reply",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
         # upsert_hearing / upsert_deadline don't wrap in self.tx(); the
         # caller in sync.py shares one Store handle for the lifetime of the
         # process so commit-on-close isn't needed there. cmd_show opens a
@@ -1308,28 +1654,41 @@ class TestCmdPrune:
         # Config (fixture above) has dockets=[100] only, so 200 is the orphan.
         s = cli.Store(store_path)
         for did, key in ((100, "k100"), (200, "k200")):
-            s.upsert_docket_meta(did, {
-                "court_id": "dcd",
-                "docket_number": f"1:24-cr-{did:05d}",
-                "case_name": f"US v. Docket {did}",
-                "absolute_url": None,
-                "date_last_filing": None,
-            })
-            s.mark_entry(
-                docket_id=did, entry_id=did,
-                date_modified="2026-01-01T00:00:00+00:00",
-                fingerprint="fp", entry_number=1,
-                date_filed="2026-01-01",
-                description="x", short_description="x", recap_documents=[],
+            s.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "dcd",
+                    "docket_number": f"1:24-cr-{did:05d}",
+                    "case_name": f"US v. Docket {did}",
+                    "absolute_url": None,
+                    "date_last_filing": None,
+                },
             )
-            s.upsert_hearing({
-                "case_id": "us-v-x", "hearing_key": key,
-                "title": "Sentencing",
-                "starts_at_utc": "2099-01-01T00:00:00+00:00",
-                "duration_minutes": 60, "timezone": "America/New_York",
-                "status": "scheduled", "significance": "major",
-                "docket_id": did, "source_entry_ids": [did],
-            })
+            s.mark_entry(
+                docket_id=did,
+                entry_id=did,
+                date_modified="2026-01-01T00:00:00+00:00",
+                fingerprint="fp",
+                entry_number=1,
+                date_filed="2026-01-01",
+                description="x",
+                short_description="x",
+                recap_documents=[],
+            )
+            s.upsert_hearing(
+                {
+                    "case_id": "us-v-x",
+                    "hearing_key": key,
+                    "title": "Sentencing",
+                    "starts_at_utc": "2099-01-01T00:00:00+00:00",
+                    "duration_minutes": 60,
+                    "timezone": "America/New_York",
+                    "status": "scheduled",
+                    "significance": "major",
+                    "docket_id": did,
+                    "source_entry_ids": [did],
+                }
+            )
         s.conn.commit()
         s.close()
 
@@ -1337,11 +1696,16 @@ class TestCmdPrune:
         # Only docket 100, which is in config — no orphans to remove.
         cfg = yaml.safe_load(cfg_file.read_text())
         s = cli.Store(cfg["store_path"])
-        s.upsert_docket_meta(100, {
-            "court_id": "dcd", "docket_number": "1:24-cr-00100",
-            "case_name": "US v. X", "absolute_url": None,
-            "date_last_filing": None,
-        })
+        s.upsert_docket_meta(
+            100,
+            {
+                "court_id": "dcd",
+                "docket_number": "1:24-cr-00100",
+                "case_name": "US v. X",
+                "absolute_url": None,
+                "date_last_filing": None,
+            },
+        )
         s.conn.commit()
         s.close()
         args = Namespace(config=str(cfg_file), apply=False)
@@ -1388,14 +1752,19 @@ class TestCmdPrune:
         try:
             assert s.list_all_docket_ids() == [100]
             assert s.count_docket_rows(200) == {
-                "entries": 0, "hearings": 0, "deadlines": 0,
-                "case_summaries": 0, "dockets": 0,
+                "entries": 0,
+                "hearings": 0,
+                "deadlines": 0,
+                "case_summaries": 0,
+                "dockets": 0,
             }
         finally:
             s.close()
 
     def test_child_only_orphan_surfaces_in_plan_with_no_metadata_label(
-        self, cfg_file, capsys,
+        self,
+        cfg_file,
+        capsys,
     ):
         # An entry whose docket row was never written. Plan should list it
         # under the "<no metadata>" label rather than crashing on the
@@ -1403,10 +1772,15 @@ class TestCmdPrune:
         cfg = yaml.safe_load(cfg_file.read_text())
         s = cli.Store(cfg["store_path"])
         s.mark_entry(
-            docket_id=999, entry_id=999,
+            docket_id=999,
+            entry_id=999,
             date_modified="2026-01-01T00:00:00+00:00",
-            fingerprint="fp", entry_number=1, date_filed="2026-01-01",
-            description="x", short_description="x", recap_documents=[],
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="x",
+            short_description="x",
+            recap_documents=[],
         )
         s.conn.commit()
         s.close()
@@ -1428,7 +1802,9 @@ class TestCmdWebhookUrl:
         assert "CASE_CALENDAR_WEBHOOK_SECRET" in err
 
     def test_no_host_prints_placeholder_url_and_stderr_hint(
-        self, monkeypatch, capsys,
+        self,
+        monkeypatch,
+        capsys,
     ):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
         args = Namespace(host=None, check=False)
@@ -1475,10 +1851,18 @@ class TestCmdWebhookUrl:
         # accepted for consistency with other subcommands even though this
         # one doesn't read the config.
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        assert main([
-            "-c", str(cfg_file), "webhook-url",
-            "--host", "webhook.example.com",
-        ]) == 0
+        assert (
+            main(
+                [
+                    "-c",
+                    str(cfg_file),
+                    "webhook-url",
+                    "--host",
+                    "webhook.example.com",
+                ]
+            )
+            == 0
+        )
         assert capsys.readouterr().out.strip() == (
             "https://webhook.example.com/webhooks/case-calendar/abc123"
         )
@@ -1498,8 +1882,13 @@ class TestCmdWebhookUrl:
 
         class _Resp:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
             def read(self):
                 return (
                     b'{"status":"ok","service":"case-calendar",'
@@ -1511,7 +1900,8 @@ class TestCmdWebhookUrl:
             return _Resp()
 
         monkeypatch.setattr(
-            "urllib.request.urlopen", _fake_urlopen,
+            "urllib.request.urlopen",
+            _fake_urlopen,
         )
         args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 0
@@ -1528,7 +1918,10 @@ class TestCmdWebhookUrl:
 
         def _fake_urlopen(req, timeout=10):
             raise urllib.error.HTTPError(
-                req.full_url, 403, "Forbidden", hdrs=None,  # type: ignore[arg-type]
+                req.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,  # type: ignore[arg-type]
                 fp=io.BytesIO(b'{"error":"forbidden"}'),
             )
 
@@ -1562,10 +1955,15 @@ class TestCmdWebhookUrl:
 
         class _Resp:
             status = 301
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
             def read(self):
-                return b'redirect to login'
+                return b"redirect to login"
 
         monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=10: _Resp())
         args = Namespace(host="webhook.example.com", check=True)
@@ -1582,12 +1980,19 @@ class TestCmdWebhookUrl:
 
         class _Resp:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self): return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
 
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
+            "urllib.request.urlopen",
+            lambda req, timeout=10: _Resp(),
         )
         args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
@@ -1600,12 +2005,19 @@ class TestCmdWebhookUrl:
 
         class _Resp:
             status = 200
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
-            def read(self): return b'{"status":"ok"}'
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"status":"ok"}'
 
         monkeypatch.setattr(
-            "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
+            "urllib.request.urlopen",
+            lambda req, timeout=10: _Resp(),
         )
         args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1

@@ -12,12 +12,18 @@ from case_calendar.calendars.ics import render_ics
 
 def _h(**over):
     base = {
-        "case_id": "us-v-x", "hearing_key": "sentencing",
-        "title": "Sentencing", "starts_at_utc": "2026-04-14T15:00:00+00:00",
-        "duration_minutes": 90, "timezone": "America/New_York",
-        "location": "Courtroom 4", "judge": "Judge X",
-        "notes": None, "dial_in": None,
-        "status": "scheduled", "source_entry_ids": [1],
+        "case_id": "us-v-x",
+        "hearing_key": "sentencing",
+        "title": "Sentencing",
+        "starts_at_utc": "2026-04-14T15:00:00+00:00",
+        "duration_minutes": 90,
+        "timezone": "America/New_York",
+        "location": "Courtroom 4",
+        "judge": "Judge X",
+        "notes": None,
+        "dial_in": None,
+        "status": "scheduled",
+        "source_entry_ids": [1],
     }
     base.update(over)
     return base
@@ -71,10 +77,13 @@ class TestRenderIcs:
         assert "BEGIN:VTIMEZONE" not in ics
 
     def test_multiple_tzs_each_get_own_tzid(self):
-        ics = render_ics(calendar_name="X", hearings=[
-            _h(hearing_key="a", timezone="America/New_York"),
-            _h(hearing_key="b", timezone="America/Los_Angeles"),
-        ])
+        ics = render_ics(
+            calendar_name="X",
+            hearings=[
+                _h(hearing_key="a", timezone="America/New_York"),
+                _h(hearing_key="b", timezone="America/Los_Angeles"),
+            ],
+        )
         assert "TZID=America/New_York:" in ics
         assert "TZID=America/Los_Angeles:" in ics
 
@@ -108,8 +117,9 @@ class TestRenderIcs:
         # renderer just passes the title through.
         ics = render_ics(
             calendar_name="X",
-            hearings=[_h(duration_minutes=0,
-                         starts_at_utc="2099-04-14T04:00:00+00:00")],
+            hearings=[
+                _h(duration_minutes=0, starts_at_utc="2099-04-14T04:00:00+00:00")
+            ],
         )
         assert "DTSTART;VALUE=DATE:20990414" in ics
         assert "DTEND;VALUE=DATE:20990415" in ics
@@ -121,15 +131,19 @@ class TestRenderIcs:
         # doesn't represent a real all-day block.
         ics = render_ics(
             calendar_name="X",
-            hearings=[_h(duration_minutes=0, status="held",
-                         starts_at_utc="2026-04-14T04:00:00+00:00")],
+            hearings=[
+                _h(
+                    duration_minutes=0,
+                    status="held",
+                    starts_at_utc="2026-04-14T04:00:00+00:00",
+                )
+            ],
         )
         assert "TRANSP:TRANSPARENT" in ics
         assert "[HELD]" not in ics
 
     def test_skips_hearing_without_starts_at_utc(self):
-        ics = render_ics(calendar_name="X",
-                         hearings=[_h(starts_at_utc=None)])
+        ics = render_ics(calendar_name="X", hearings=[_h(starts_at_utc=None)])
         assert "BEGIN:VEVENT" not in ics
 
     def test_skips_minor_significance(self):
@@ -137,14 +151,19 @@ class TestRenderIcs:
         # subscribers shouldn't see procedural noise in their calendar.
         ics = render_ics(
             calendar_name="X",
-            hearings=[_h(significance="minor",
-                         title="Telephonic Conference Call - Motion to Continue")],
+            hearings=[
+                _h(
+                    significance="minor",
+                    title="Telephonic Conference Call - Motion to Continue",
+                )
+            ],
         )
         assert "BEGIN:VEVENT" not in ics
 
     def test_includes_major_significance(self):
         ics = render_ics(
-            calendar_name="X", hearings=[_h(significance="major")],
+            calendar_name="X",
+            hearings=[_h(significance="major")],
         )
         assert "BEGIN:VEVENT" in ics
 
@@ -155,15 +174,15 @@ class TestRenderIcs:
         assert "BEGIN:VEVENT" in ics
 
     def test_description_includes_dial_in(self):
-        ics = render_ics(calendar_name="X",
-                         hearings=[_h(dial_in="https://meet.example/abc")])
+        ics = render_ics(
+            calendar_name="X", hearings=[_h(dial_in="https://meet.example/abc")]
+        )
         assert "DESCRIPTION:" in ics
         # The colon-and-newline gets escaped to \n
         assert "Dial-in / link" in ics
 
     def test_special_chars_escaped_in_summary(self):
-        ics = render_ics(calendar_name="X",
-                         hearings=[_h(title="A, B; C")])
+        ics = render_ics(calendar_name="X", hearings=[_h(title="A, B; C")])
         assert "SUMMARY:A\\, B\\; C" in ics
 
     def test_line_folding_for_long_summary(self):
@@ -171,18 +190,24 @@ class TestRenderIcs:
         ics = render_ics(calendar_name="X", hearings=[_h(title=long_title)])
         # No single line should exceed 75 octets.
         for line in ics.split("\r\n"):
-            assert len(line.encode("utf-8")) <= 75 or line.startswith(" "), \
+            assert len(line.encode("utf-8")) <= 75 or line.startswith(" "), (
                 f"unfolded line: {line!r}"
+            )
 
     def test_multiple_hearings(self):
-        ics = render_ics(calendar_name="X", hearings=[
-            _h(hearing_key="a"), _h(hearing_key="b"),
-        ])
+        ics = render_ics(
+            calendar_name="X",
+            hearings=[
+                _h(hearing_key="a"),
+                _h(hearing_key="b"),
+            ],
+        )
         assert ics.count("BEGIN:VEVENT") == 2
 
     def test_attendees_rendered(self):
-        ics = render_ics(calendar_name="X",
-                         hearings=[_h(notify_emails=["a@x.com", "b@y.com"])])
+        ics = render_ics(
+            calendar_name="X", hearings=[_h(notify_emails=["a@x.com", "b@y.com"])]
+        )
         assert "ATTENDEE;RSVP=TRUE:mailto:a@x.com" in ics
         assert "ATTENDEE;RSVP=TRUE:mailto:b@y.com" in ics
 
@@ -199,8 +224,12 @@ class TestRenderIcs:
     def test_email_valarm_includes_attendees(self):
         ics = render_ics(
             calendar_name="X",
-            hearings=[_h(reminders=[{"method": "email", "minutes": 60}],
-                         notify_emails=["a@x.com"])],
+            hearings=[
+                _h(
+                    reminders=[{"method": "email", "minutes": 60}],
+                    notify_emails=["a@x.com"],
+                )
+            ],
         )
         # Email VALARM should list recipients.
         valarm_block = ics.split("BEGIN:VALARM")[1].split("END:VALARM")[0]
@@ -225,8 +254,9 @@ class TestRenderIcs:
         # in court tz is the same wall-clock as a tz-aware "+00:00" input.
         ics = render_ics(
             calendar_name="X",
-            hearings=[_h(starts_at_utc="2026-04-14T15:00:00",
-                          timezone="America/New_York")],
+            hearings=[
+                _h(starts_at_utc="2026-04-14T15:00:00", timezone="America/New_York")
+            ],
         )
         # 15:00Z → 11:00 EDT.
         assert "DTSTART;TZID=America/New_York:20260414T110000" in ics

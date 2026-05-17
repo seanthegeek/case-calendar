@@ -9,12 +9,20 @@ from .conftest import must
 
 def _hearing(case_id="us-v-x", key="sentencing", **over):
     base = {
-        "case_id": case_id, "hearing_key": key,
-        "title": "Sentencing", "starts_at_utc": "2026-04-14T15:00:00+00:00",
-        "duration_minutes": 90, "timezone": "America/New_York",
-        "location": "Courtroom 4", "judge": "Judge X", "notes": None,
-        "dial_in": None, "status": "scheduled", "gcal_event_id": None,
-        "docket_id": 12345, "source_entry_ids": [1],
+        "case_id": case_id,
+        "hearing_key": key,
+        "title": "Sentencing",
+        "starts_at_utc": "2026-04-14T15:00:00+00:00",
+        "duration_minutes": 90,
+        "timezone": "America/New_York",
+        "location": "Courtroom 4",
+        "judge": "Judge X",
+        "notes": None,
+        "dial_in": None,
+        "status": "scheduled",
+        "gcal_event_id": None,
+        "docket_id": 12345,
+        "source_entry_ids": [1],
     }
     base.update(over)
     return base
@@ -35,8 +43,7 @@ class TestEntries:
     def test_date_filed_preserved_when_re_marked_without_it(self, store: Store):
         # A re-marked entry (fingerprint flip) shouldn't blank the date_filed
         # we cached on first sight.
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp1",
-                         date_filed="2026-01-01")
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp1", date_filed="2026-01-01")
         store.mark_entry(1, 100, "2026-01-02T00:00:00Z", "fp2")
         row = store.conn.execute(
             "SELECT date_filed FROM entries WHERE entry_id=100"
@@ -54,13 +61,25 @@ class TestEntries:
         # summary pipeline reads instead of re-fetching from CourtListener. Stubs
         # (description IS NULL) must NOT be returned — otherwise summary's
         # local-cache check would think it's warm when it's actually cold.
-        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
-                         date_filed="2024-01-01", entry_number=1,
-                         description="INDICTMENT",
-                         recap_documents=[{"id": 500, "plain_text": "body"}])
-        store.mark_entry(1, 11, "2024-01-02T00:00:00Z", "fp2",
-                         date_filed="2024-01-02", entry_number=2,
-                         description=None)  # filter-failed stub
+        store.mark_entry(
+            1,
+            10,
+            "2024-01-01T00:00:00Z",
+            "fp1",
+            date_filed="2024-01-01",
+            entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[{"id": 500, "plain_text": "body"}],
+        )
+        store.mark_entry(
+            1,
+            11,
+            "2024-01-02T00:00:00Z",
+            "fp2",
+            date_filed="2024-01-02",
+            entry_number=2,
+            description=None,
+        )  # filter-failed stub
         rows = store.get_entries_with_body(1)
         assert len(rows) == 1
         # ``id`` is renamed from entry_id so the shape matches what CourtListener's
@@ -75,40 +94,71 @@ class TestEntries:
         # Summary's CourtListener fallback returns primary documents oldest-first and
         # then sorts them; the local-cache path must produce the same order
         # so swap-ability between the two paths is invariant.
-        store.mark_entry(1, 20, "2024-06-01T00:00:00Z", "fp2",
-                         date_filed="2024-06-01", entry_number=2,
-                         description="SUPERSEDING INDICTMENT",
-                         recap_documents=[])
-        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
-                         date_filed="2024-01-01", entry_number=1,
-                         description="INDICTMENT",
-                         recap_documents=[])
+        store.mark_entry(
+            1,
+            20,
+            "2024-06-01T00:00:00Z",
+            "fp2",
+            date_filed="2024-06-01",
+            entry_number=2,
+            description="SUPERSEDING INDICTMENT",
+            recap_documents=[],
+        )
+        store.mark_entry(
+            1,
+            10,
+            "2024-01-01T00:00:00Z",
+            "fp1",
+            date_filed="2024-01-01",
+            entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[],
+        )
         rows = store.get_entries_with_body(1)
         assert [r["id"] for r in rows] == [10, 20]
 
     def test_get_entries_with_body_handles_legacy_null_recap_documents(
-        self, store: Store,
+        self,
+        store: Store,
     ):
         # Pre-fix rows have recap_documents=NULL. Reading must not crash —
         # those rows simply have an empty list, so pdf.extract_text would
         # find nothing to short-circuit on and fall through to network.
-        store.mark_entry(1, 10, "2024-01-01T00:00:00Z", "fp1",
-                         date_filed="2024-01-01", entry_number=1,
-                         description="INDICTMENT", recap_documents=None)
+        store.mark_entry(
+            1,
+            10,
+            "2024-01-01T00:00:00Z",
+            "fp1",
+            date_filed="2024-01-01",
+            entry_number=1,
+            description="INDICTMENT",
+            recap_documents=None,
+        )
         rows = store.get_entries_with_body(1)
         assert rows[0]["recap_documents"] == []
 
     def test_get_recent_relevant_entries_skips_filter_failed(self, store: Store):
         # Filter-failed entries are stored without description; they shouldn't
         # appear as context for downstream LLM calls.
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         description="MOTION for Hearing TO SET CIPA",
-                         entry_number=65)
-        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp",
-                         description=None)  # filter-failed stub
-        store.mark_entry(1, 102, "2026-01-03T00:00:00Z", "fp",
-                         description="PAPERLESS Order Setting Pretrial",
-                         entry_number=66)
+        store.mark_entry(
+            1,
+            100,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            description="MOTION for Hearing TO SET CIPA",
+            entry_number=65,
+        )
+        store.mark_entry(
+            1, 101, "2026-01-02T00:00:00Z", "fp", description=None
+        )  # filter-failed stub
+        store.mark_entry(
+            1,
+            102,
+            "2026-01-03T00:00:00Z",
+            "fp",
+            description="PAPERLESS Order Setting Pretrial",
+            entry_number=66,
+        )
         recent = store.get_recent_relevant_entries(
             1, before_date_modified="2026-02-01T00:00:00Z", limit=5
         )
@@ -117,20 +167,20 @@ class TestEntries:
 
     def test_get_recent_relevant_entries_respects_before_cutoff(self, store: Store):
         # Should only return entries strictly older than the cutoff.
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         description="earlier", entry_number=1)
-        store.mark_entry(1, 200, "2026-03-01T00:00:00Z", "fp",
-                         description="later", entry_number=2)
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", description="earlier", entry_number=1
+        )
+        store.mark_entry(
+            1, 200, "2026-03-01T00:00:00Z", "fp", description="later", entry_number=2
+        )
         recent = store.get_recent_relevant_entries(
             1, before_date_modified="2026-02-01T00:00:00Z", limit=5
         )
         assert [r["entry_id"] for r in recent] == [100]
 
     def test_get_entry_numbers(self, store: Store):
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65)
-        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp",
-                         entry_number=66)
+        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65)
+        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp", entry_number=66)
         # Entry without an entry_number — paperless minute order.
         store.mark_entry(1, 102, "2026-01-03T00:00:00Z", "fp")
         got = store.get_entry_numbers([100, 101, 102, 999])
@@ -142,20 +192,32 @@ class TestEntries:
 
     def test_get_entry_documents_roundtrip(self, store: Store):
         docs = [
-            {"id": 5, "document_number": 65, "attachment_number": None,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65.pdf",
-             "filepath_local": "recap/x/65.pdf", "description": None},
-            {"id": 6, "document_number": 65, "attachment_number": 1,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65a.pdf",
-             "filepath_local": "recap/x/65a.pdf", "description": "Exhibit A"},
+            {
+                "id": 5,
+                "document_number": 65,
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65.pdf",
+                "filepath_local": "recap/x/65.pdf",
+                "description": None,
+            },
+            {
+                "id": 6,
+                "document_number": 65,
+                "attachment_number": 1,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65a.pdf",
+                "filepath_local": "recap/x/65a.pdf",
+                "description": "Exhibit A",
+            },
         ]
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, recap_documents=docs)
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65, recap_documents=docs
+        )
         # Unknown ids are silently dropped. Filter-failed stubs have no docs.
-        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp",
-                         entry_number=66)
+        store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp", entry_number=66)
         got = store.get_entry_documents([100, 101, 999])
         assert set(got) == {100}
         assert got[100] == docs
@@ -165,21 +227,40 @@ class TestEntries:
         # documents" case: re-marking with a longer list replaces the
         # cached JSON so emit-time descriptions show the new doc.
         first = [
-            {"id": 5, "document_number": 65, "attachment_number": None,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65.pdf",
-             "filepath_local": None, "description": None},
+            {
+                "id": 5,
+                "document_number": 65,
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65.pdf",
+                "filepath_local": None,
+                "description": None,
+            },
         ]
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, recap_documents=first)
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65, recap_documents=first
+        )
         second = first + [
-            {"id": 6, "document_number": 65, "attachment_number": 1,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/65a.pdf",
-             "filepath_local": None, "description": None},
+            {
+                "id": 6,
+                "document_number": 65,
+                "attachment_number": 1,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/65a.pdf",
+                "filepath_local": None,
+                "description": None,
+            },
         ]
-        store.mark_entry(1, 100, "2026-01-02T00:00:00Z", "fp2",
-                         entry_number=65, recap_documents=second)
+        store.mark_entry(
+            1,
+            100,
+            "2026-01-02T00:00:00Z",
+            "fp2",
+            entry_number=65,
+            recap_documents=second,
+        )
         got = store.get_entry_documents([100])
         assert got[100] == second
 
@@ -188,9 +269,10 @@ class TestEntries:
 
     def test_get_recent_relevant_entries_limit(self, store: Store):
         for i in range(10):
-            ts = f"2026-01-{i+1:02d}T00:00:00Z"
-            store.mark_entry(1, 100 + i, ts, "fp",
-                             description=f"entry {i}", entry_number=i)
+            ts = f"2026-01-{i + 1:02d}T00:00:00Z"
+            store.mark_entry(
+                1, 100 + i, ts, "fp", description=f"entry {i}", entry_number=i
+            )
         recent = store.get_recent_relevant_entries(
             1, before_date_modified="2026-02-01T00:00:00Z", limit=3
         )
@@ -201,29 +283,53 @@ class TestEntries:
 
 class TestDockets:
     def test_meta_roundtrip(self, store: Store):
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "US v. X", "absolute_url": "/docket/7/"
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "US v. X",
+                "absolute_url": "/docket/7/",
+            },
+        )
         got = must(store.get_docket_meta(7))
         assert got["court_id"] == "mad"
         assert got["docket_number"] == "1:25"
 
     def test_set_docket_last_modified_preserves_meta(self, store: Store):
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+            },
+        )
         store.set_docket_last_modified(7, "2026-05-08T11:00:00-07:00")
         meta = must(store.get_docket_meta(7))
         assert meta["docket_number"] == "1:25"  # not nuked
         assert store.docket_last_modified(7) == "2026-05-08T11:00:00-07:00"
 
     def test_meta_upsert_overwrites(self, store: Store):
-        store.upsert_docket_meta(7, {"court_id": "mad", "docket_number": "old",
-                                     "case_name": "X", "absolute_url": "/x/"})
-        store.upsert_docket_meta(7, {"court_id": "mad", "docket_number": "new",
-                                     "case_name": "Y", "absolute_url": "/y/"})
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "old",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
+        )
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "new",
+                "case_name": "Y",
+                "absolute_url": "/y/",
+            },
+        )
         assert must(store.get_docket_meta(7))["docket_number"] == "new"
 
     def test_bump_advances_forward(self, store: Store):
@@ -255,20 +361,30 @@ class TestDockets:
         # column write.
         assert store.known_docket_ids() == set()
         store.set_docket_last_modified(100, "2026-05-08T00:00:00Z")
-        store.upsert_docket_meta(200, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/200/",
-        })
+        store.upsert_docket_meta(
+            200,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/200/",
+            },
+        )
         assert store.known_docket_ids() == {100, 200}
 
     def test_date_last_filing_persists_via_upsert(self, store: Store):
         # date_last_filing is captured from CourtListener on the polling path; ensure
         # it round-trips through upsert_docket_meta + get_docket_meta.
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-            "date_last_filing": "2026-05-08",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+                "date_last_filing": "2026-05-08",
+            },
+        )
         meta = must(store.get_docket_meta(7))
         assert meta["date_last_filing"] == "2026-05-08"
 
@@ -276,26 +392,41 @@ class TestDockets:
         # A subsequent upsert that doesn't pass date_last_filing (e.g. a
         # webhook-driven path that touches metadata but never re-fetches
         # the docket) must NOT wipe the previously-cached value.
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-            "date_last_filing": "2026-05-08",
-        })
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+                "date_last_filing": "2026-05-08",
+            },
+        )
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+            },
+        )
         assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_advances_forward(self, store: Store):
         # process_entry calls this with entry.date_filed so webhook-only
         # deployments can keep the index date current without refetching
         # the parent docket per delivery.
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-            "date_last_filing": "2026-05-01",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+                "date_last_filing": "2026-05-01",
+            },
+        )
         store.bump_docket_last_filing(7, "2026-05-08")
         assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
@@ -303,11 +434,16 @@ class TestDockets:
         # An entry whose date_filed is older than what CourtListener already gave us
         # (e.g. a late-arriving webhook for an old entry) must not move
         # the cutoff backwards.
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-            "date_last_filing": "2026-05-08",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+                "date_last_filing": "2026-05-08",
+            },
+        )
         store.bump_docket_last_filing(7, "2026-05-01")
         assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
@@ -322,11 +458,16 @@ class TestDockets:
         # entry's date_filed was; CourtListener sometimes omits the field, and an
         # empty-string bump must not insert a row or clobber an existing
         # value.
-        store.upsert_docket_meta(7, {
-            "court_id": "mad", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/7/",
-            "date_last_filing": "2026-05-08",
-        })
+        store.upsert_docket_meta(
+            7,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/7/",
+                "date_last_filing": "2026-05-08",
+            },
+        )
         store.bump_docket_last_filing(7, "")
         assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
@@ -336,20 +477,28 @@ class TestCaseAggregates:
         # Earliest date_filed across the case's dockets wins as the case's
         # "filed" date; latest docket-level date_last_filing wins as the
         # "last filing" date the index page surfaces.
-        store.upsert_docket_meta(10, {
-            "court_id": "nysd", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/10/",
-            "date_last_filing": "2026-05-10",
-        })
-        store.upsert_docket_meta(11, {
-            "court_id": "nysd", "docket_number": "1:24",
-            "case_name": "X", "absolute_url": "/d/11/",
-            "date_last_filing": "2026-04-01",
-        })
-        store.mark_entry(10, 1, "2025-01-15T08:00:00Z", "fp",
-                         date_filed="2025-01-15")
-        store.mark_entry(11, 2, "2024-09-01T08:00:00Z", "fp",
-                         date_filed="2024-09-01")
+        store.upsert_docket_meta(
+            10,
+            {
+                "court_id": "nysd",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/10/",
+                "date_last_filing": "2026-05-10",
+            },
+        )
+        store.upsert_docket_meta(
+            11,
+            {
+                "court_id": "nysd",
+                "docket_number": "1:24",
+                "case_name": "X",
+                "absolute_url": "/d/11/",
+                "date_last_filing": "2026-04-01",
+            },
+        )
+        store.mark_entry(10, 1, "2025-01-15T08:00:00Z", "fp", date_filed="2025-01-15")
+        store.mark_entry(11, 2, "2024-09-01T08:00:00Z", "fp", date_filed="2024-09-01")
         agg = store.get_case_aggregates([10, 11])
         assert agg["date_filed"] == "2024-09-01"
         assert agg["last_filing_date"] == "2026-05-10"
@@ -360,11 +509,16 @@ class TestCaseAggregates:
         # date_last_filing, a docket whose date_modified is newer than its
         # date_last_filing must NOT show date_modified as "last filing".
         store.set_docket_last_modified(10, "2026-05-10T12:00:00Z")
-        store.upsert_docket_meta(10, {
-            "court_id": "nysd", "docket_number": "1:25",
-            "case_name": "X", "absolute_url": "/d/10/",
-            "date_last_filing": "2026-04-01",
-        })
+        store.upsert_docket_meta(
+            10,
+            {
+                "court_id": "nysd",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/d/10/",
+                "date_last_filing": "2026-04-01",
+            },
+        )
         agg = store.get_case_aggregates([10])
         assert agg["last_filing_date"] == "2026-04-01"
 
@@ -434,10 +588,24 @@ class TestHearings:
     def test_in_court_filters_cross_court_siblings(self, store: Store):
         # Parallel proceedings in different courts must not show up in each
         # other's known-events context — that's the contamination this guards.
-        store.upsert_docket_meta(1001, {"court_id": "cadc", "docket_number": "26-1049",
-                                         "case_name": "X", "absolute_url": "/x/"})
-        store.upsert_docket_meta(1002, {"court_id": "ca9", "docket_number": "26-2011",
-                                         "case_name": "X", "absolute_url": "/y/"})
+        store.upsert_docket_meta(
+            1001,
+            {
+                "court_id": "cadc",
+                "docket_number": "26-1049",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
+        )
+        store.upsert_docket_meta(
+            1002,
+            {
+                "court_id": "ca9",
+                "docket_number": "26-2011",
+                "case_name": "X",
+                "absolute_url": "/y/",
+            },
+        )
         store.upsert_hearing(_hearing(key="oral-arg-dc", docket_id=1001))
         store.upsert_hearing(_hearing(key="oral-arg-9", docket_id=1002))
         cadc = store.get_hearings_in_court("us-v-x", "cadc")
@@ -448,10 +616,24 @@ class TestHearings:
     def test_in_court_keeps_same_court_siblings(self, store: Store):
         # Multi-defendant criminal: same court, separate dockets per defendant —
         # legitimately aggregated, must still appear together.
-        store.upsert_docket_meta(2001, {"court_id": "dcd", "docket_number": "1:24-cr-261",
-                                         "case_name": "X", "absolute_url": "/a/"})
-        store.upsert_docket_meta(2002, {"court_id": "dcd", "docket_number": "1:24-cr-261",
-                                         "case_name": "X", "absolute_url": "/b/"})
+        store.upsert_docket_meta(
+            2001,
+            {
+                "court_id": "dcd",
+                "docket_number": "1:24-cr-261",
+                "case_name": "X",
+                "absolute_url": "/a/",
+            },
+        )
+        store.upsert_docket_meta(
+            2002,
+            {
+                "court_id": "dcd",
+                "docket_number": "1:24-cr-261",
+                "case_name": "X",
+                "absolute_url": "/b/",
+            },
+        )
         store.upsert_hearing(_hearing(key="arraignment-a", docket_id=2001))
         store.upsert_hearing(_hearing(key="arraignment-b", docket_id=2002))
         out = store.get_hearings_in_court("us-v-x", "dcd")
@@ -461,14 +643,22 @@ class TestHearings:
         # docket_id NULL (legacy data) or court_id NULL (docket metadata not yet
         # cached) — keep them so we don't silently drop context.
         store.upsert_hearing(_hearing(key="legacy", docket_id=None))
-        store.upsert_docket_meta(3001, {"court_id": None, "docket_number": "x",
-                                         "case_name": "X", "absolute_url": "/c/"})
+        store.upsert_docket_meta(
+            3001,
+            {
+                "court_id": None,
+                "docket_number": "x",
+                "case_name": "X",
+                "absolute_url": "/c/",
+            },
+        )
         store.upsert_hearing(_hearing(key="uncached", docket_id=3001))
         out = store.get_hearings_in_court("us-v-x", "cadc")
         assert {h["hearing_key"] for h in out} == {"legacy", "uncached"}
 
     def test_find_concurrent_hearing_clusters_groups_by_docket_and_time(
-        self, store: Store,
+        self,
+        store: Store,
     ):
         # Two future hearings sharing the same (docket_id, starts_at_utc)
         # form a cluster. A third hearing at a different time on the same
@@ -476,19 +666,34 @@ class TestHearings:
         # different docket does NOT (the rule is same-court same-slot,
         # not same-time-anywhere).
         future = "2099-04-14T15:00:00+00:00"
-        store.upsert_hearing(_hearing(
-            key="msj-hearing", starts_at_utc=future, docket_id=1,
-        ))
-        store.upsert_hearing(_hearing(
-            key="motion-hearing-2", starts_at_utc=future, docket_id=1,
-        ))
-        store.upsert_hearing(_hearing(
-            key="status", starts_at_utc="2099-04-15T15:00:00+00:00",
-            docket_id=1,
-        ))
-        store.upsert_hearing(_hearing(
-            key="other-docket", starts_at_utc=future, docket_id=2,
-        ))
+        store.upsert_hearing(
+            _hearing(
+                key="msj-hearing",
+                starts_at_utc=future,
+                docket_id=1,
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="motion-hearing-2",
+                starts_at_utc=future,
+                docket_id=1,
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="status",
+                starts_at_utc="2099-04-15T15:00:00+00:00",
+                docket_id=1,
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="other-docket",
+                starts_at_utc=future,
+                docket_id=2,
+            )
+        )
         clusters = store.find_concurrent_hearing_clusters("us-v-x")
         assert len(clusters) == 1
         keys = {h["hearing_key"] for h in clusters[0]}
@@ -497,40 +702,62 @@ class TestHearings:
         assert all(isinstance(h["source_entry_ids"], list) for h in clusters[0])
 
     def test_find_concurrent_hearing_clusters_excludes_past_and_non_scheduled(
-        self, store: Store,
+        self,
+        store: Store,
     ):
         # Past slots are handled by the auto-held sweep — don't bother
         # the LLM about them.
         past = "2020-01-01T00:00:00+00:00"
-        store.upsert_hearing(_hearing(
-            key="past-a", starts_at_utc=past, docket_id=1,
-        ))
-        store.upsert_hearing(_hearing(
-            key="past-b", starts_at_utc=past, docket_id=1,
-        ))
+        store.upsert_hearing(
+            _hearing(
+                key="past-a",
+                starts_at_utc=past,
+                docket_id=1,
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="past-b",
+                starts_at_utc=past,
+                docket_id=1,
+            )
+        )
         # Cancelled / held rows must not poison a future cluster either —
         # only count 'scheduled' rows.
         future = "2099-04-14T15:00:00+00:00"
-        store.upsert_hearing(_hearing(
-            key="future-cancelled", starts_at_utc=future, docket_id=1,
-            status="cancelled",
-        ))
-        store.upsert_hearing(_hearing(
-            key="future-scheduled", starts_at_utc=future, docket_id=1,
-            status="scheduled",
-        ))
+        store.upsert_hearing(
+            _hearing(
+                key="future-cancelled",
+                starts_at_utc=future,
+                docket_id=1,
+                status="cancelled",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="future-scheduled",
+                starts_at_utc=future,
+                docket_id=1,
+                status="scheduled",
+            )
+        )
         assert store.find_concurrent_hearing_clusters("us-v-x") == []
 
 
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {
-        "case_id": case_id, "deadline_key": key,
+        "case_id": case_id,
+        "deadline_key": key,
         "title": "Govt response to MTD",
         "due_at_utc": "2026-05-24T21:00:00+00:00",  # 5pm ET → 21:00 UTC
         "timezone": "America/New_York",
-        "notes": None, "status": "pending", "significance": "major",
-        "deadline_type": "response", "gcal_event_id": None,
-        "docket_id": 72380208, "source_entry_ids": [1],
+        "notes": None,
+        "status": "pending",
+        "significance": "major",
+        "deadline_type": "response",
+        "gcal_event_id": None,
+        "docket_id": 72380208,
+        "source_entry_ids": [1],
     }
     base.update(over)
     return base
@@ -561,10 +788,24 @@ class TestDeadlines:
         assert store.get_deadline("anthropic-v-dow", "missing") is None
 
     def test_in_court_filters_cross_court_siblings(self, store: Store):
-        store.upsert_docket_meta(1001, {"court_id": "cadc", "docket_number": "26-1049",
-                                         "case_name": "X", "absolute_url": "/x/"})
-        store.upsert_docket_meta(1002, {"court_id": "ca9", "docket_number": "26-2011",
-                                         "case_name": "X", "absolute_url": "/y/"})
+        store.upsert_docket_meta(
+            1001,
+            {
+                "court_id": "cadc",
+                "docket_number": "26-1049",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
+        )
+        store.upsert_docket_meta(
+            1002,
+            {
+                "court_id": "ca9",
+                "docket_number": "26-2011",
+                "case_name": "X",
+                "absolute_url": "/y/",
+            },
+        )
         store.upsert_deadline(_deadline(key="reply-dc", docket_id=1001))
         store.upsert_deadline(_deadline(key="reply-9", docket_id=1002))
         cadc = store.get_deadlines_in_court("anthropic-v-dow", "cadc")
@@ -573,10 +814,24 @@ class TestDeadlines:
         assert {d["deadline_key"] for d in ca9} == {"reply-9"}
 
     def test_in_court_keeps_same_court_siblings(self, store: Store):
-        store.upsert_docket_meta(2001, {"court_id": "dcd", "docket_number": "1:24-cr-261",
-                                         "case_name": "X", "absolute_url": "/a/"})
-        store.upsert_docket_meta(2002, {"court_id": "dcd", "docket_number": "1:24-cr-261",
-                                         "case_name": "X", "absolute_url": "/b/"})
+        store.upsert_docket_meta(
+            2001,
+            {
+                "court_id": "dcd",
+                "docket_number": "1:24-cr-261",
+                "case_name": "X",
+                "absolute_url": "/a/",
+            },
+        )
+        store.upsert_docket_meta(
+            2002,
+            {
+                "court_id": "dcd",
+                "docket_number": "1:24-cr-261",
+                "case_name": "X",
+                "absolute_url": "/b/",
+            },
+        )
         store.upsert_deadline(_deadline(key="brief-a", docket_id=2001))
         store.upsert_deadline(_deadline(key="brief-b", docket_id=2002))
         out = store.get_deadlines_in_court("anthropic-v-dow", "dcd")
@@ -584,8 +839,15 @@ class TestDeadlines:
 
     def test_in_court_includes_dangling_rows(self, store: Store):
         store.upsert_deadline(_deadline(key="legacy", docket_id=None))
-        store.upsert_docket_meta(3001, {"court_id": None, "docket_number": "x",
-                                         "case_name": "X", "absolute_url": "/c/"})
+        store.upsert_docket_meta(
+            3001,
+            {
+                "court_id": None,
+                "docket_number": "x",
+                "case_name": "X",
+                "absolute_url": "/c/",
+            },
+        )
         store.upsert_deadline(_deadline(key="uncached", docket_id=3001))
         out = store.get_deadlines_in_court("anthropic-v-dow", "cadc")
         assert {d["deadline_key"] for d in out} == {"legacy", "uncached"}
@@ -639,7 +901,8 @@ class TestConcurrencyPragmas:
         assert timeout == 5000
 
     def test_contending_writer_blocks_instead_of_immediately_raising(
-        self, tmp_path,
+        self,
+        tmp_path,
     ):
         # Two Store instances against the same DB file (simulates the
         # sync-process / serve-process split). Hold a write lock on one,
@@ -696,8 +959,9 @@ class TestConcurrencyPragmas:
 
 class TestEntryByNumber:
     def test_returns_row(self, store: Store):
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, description="Order")
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65, description="Order"
+        )
         row = store.get_entry_by_number(1, 65)
         assert row and row["entry_id"] == 100
 
@@ -710,8 +974,9 @@ class TestEntryDocumentsMalformedJson:
         # Insert an entry with malformed recap_documents JSON via raw SQL.
         # get_entry_documents must catch the JSONDecodeError and skip the row
         # rather than crashing the whole emit.
-        store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp",
-                         entry_number=65, description="Order")
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65, description="Order"
+        )
         store.conn.execute(
             "UPDATE entries SET recap_documents=? WHERE entry_id=?",
             ("not json", 100),
@@ -740,35 +1005,46 @@ class TestRefreshEntryRecapDocuments:
         # write a new row (refresh is for repairing existing data, not
         # inserting; sync owns inserts).
         result = store.refresh_entry_recap_documents(
-            {"id": 999, "recap_documents": []}, docket_id=1,
+            {"id": 999, "recap_documents": []},
+            docket_id=1,
         )
         assert result is False
         assert store.get_entry_by_number(1, 65) is None  # nothing inserted
 
-    def test_overwrites_recap_documents_without_touching_fingerprint(self, store: Store):
+    def test_overwrites_recap_documents_without_touching_fingerprint(
+        self, store: Store
+    ):
         store.mark_entry(
-            1, 100, "2026-01-01T00:00:00Z", "original-fingerprint",
-            entry_number=65, description="INDICTMENT",
-            recap_documents=[{
-                "id": 500,
-                "attachment_number": None,
-                "is_available": True,
-                "is_sealed": False,
-                "plain_text": None,  # stale — the bug shape
-            }],
+            1,
+            100,
+            "2026-01-01T00:00:00Z",
+            "original-fingerprint",
+            entry_number=65,
+            description="INDICTMENT",
+            recap_documents=[
+                {
+                    "id": 500,
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": None,  # stale — the bug shape
+                }
+            ],
         )
         # Hand the method a fresh CourtListener-shaped entry whose main
         # recap_document carries full plain_text.
         fresh_entry = {
             "id": 100,
-            "recap_documents": [{
-                "id": 500,
-                "document_number": "1",
-                "attachment_number": None,
-                "is_available": True,
-                "is_sealed": False,
-                "plain_text": "Body of the indictment with charges.",
-            }],
+            "recap_documents": [
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": "Body of the indictment with charges.",
+                }
+            ],
         }
         assert store.refresh_entry_recap_documents(fresh_entry, docket_id=1) is True
         # plain_text now populated.
@@ -810,7 +1086,9 @@ class TestGcalAndM365Setters:
     def test_set_m365_id_for_deadline_writes_and_clears(self, store: Store):
         store.upsert_deadline(_deadline())
         store.set_m365_id_for_deadline(
-            "anthropic-v-dow", "govt-response-mtd", "AAMk-DL",
+            "anthropic-v-dow",
+            "govt-response-mtd",
+            "AAMk-DL",
         )
         row = store.conn.execute(
             "SELECT m365_event_id FROM deadlines WHERE deadline_key=?",
@@ -818,7 +1096,9 @@ class TestGcalAndM365Setters:
         ).fetchone()
         assert row["m365_event_id"] == "AAMk-DL"
         store.set_m365_id_for_deadline(
-            "anthropic-v-dow", "govt-response-mtd", None,
+            "anthropic-v-dow",
+            "govt-response-mtd",
+            None,
         )
         row = store.conn.execute(
             "SELECT m365_event_id FROM deadlines WHERE deadline_key=?",
@@ -830,7 +1110,8 @@ class TestGcalAndM365Setters:
 class TestCaseSummaries:
     def test_upsert_and_retrieve(self, store: Store):
         store.upsert_case_summary(
-            "us-v-x", 1,
+            "us-v-x",
+            1,
             summary="The defendants are charged with...",
             model="anthropic/claude-sonnet-4-6",
             source_entry_ids=[10, 20],
@@ -928,8 +1209,15 @@ class TestSchemaMigration:
 
         # Open via Store: migration should succeed and let us use new fields.
         s = Store(path)
-        s.upsert_docket_meta(1, {"court_id": "mad", "docket_number": "1:25",
-                                  "case_name": "X", "absolute_url": "/x/"})
+        s.upsert_docket_meta(
+            1,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
+        )
         s.mark_entry(1, 100, "2026-01-01", "fp", date_filed="2026-01-01")
         assert must(s.get_docket_meta(1))["court_id"] == "mad"
         assert s.entry_seen(1, 100, "fp")
@@ -980,11 +1268,13 @@ class TestSplitAuditSegments:
 
     def test_none_returns_empty_pair(self):
         from case_calendar.store import _split_audit_segments
+
         assert _split_audit_segments(None) == ("", "")
         assert _split_audit_segments("") == ("", "")
 
     def test_no_audit_prefix_passes_notes_through_unchanged(self):
         from case_calendar.store import _split_audit_segments
+
         notes = "Trial commences June 12, 2024. Pretrial deadlines: ..."
         clean, audit = _split_audit_segments(notes)
         assert clean == notes
@@ -992,6 +1282,7 @@ class TestSplitAuditSegments:
 
     def test_verify_pass_paragraph_moves(self):
         from case_calendar.store import _split_audit_segments
+
         notes = (
             "Trial commences June 12, 2024.\n\n"
             "[verify-pass] Cancellation not supported by docket; reverted."
@@ -1004,6 +1295,7 @@ class TestSplitAuditSegments:
 
     def test_dedupe_paragraph_moves(self):
         from case_calendar.store import _split_audit_segments
+
         notes = "Motion hearing on MSJ.\n\n[dedupe] Merged into msj-hearing: same slot"
         clean, audit = _split_audit_segments(notes)
         assert clean == "Motion hearing on MSJ."
@@ -1011,6 +1303,7 @@ class TestSplitAuditSegments:
 
     def test_multiple_audit_paragraphs_concatenated(self):
         from case_calendar.store import _split_audit_segments
+
         notes = (
             "Original scheduling order text.\n\n"
             "[verify-pass] First reschedule per entry 65.\n\n"
@@ -1032,6 +1325,7 @@ class TestSplitAuditSegments:
         # these — they might be real court text that happens to contain
         # brackets. Manual cleanup only.
         from case_calendar.store import _split_audit_segments
+
         notes = (
             "Trial commences June 12, 2024.\n\n"
             "[Trial vacated by guilty plea entered 8/15/2023.]"
@@ -1045,6 +1339,7 @@ class TestSplitAuditSegments:
         # like "[1]" or "[Doc. 65]". Only paragraphs that LEAD with the
         # audit prefix are moved.
         from case_calendar.store import _split_audit_segments
+
         notes = "Order [Doc. 65] resets trial to 6/12/2024."
         clean, audit = _split_audit_segments(notes)
         assert clean == notes
@@ -1253,13 +1548,16 @@ class TestPruneHelpers:
         # Full row set: dockets meta + one entry + one hearing + one deadline
         # + one case_summary, all keyed on docket_id. Mirrors what a normal
         # sync leaves on disk for one docket.
-        store.upsert_docket_meta(docket_id, {
-            "court_id": "dcd",
-            "docket_number": f"1:24-cr-{docket_id:05d}",
-            "case_name": f"US v. Docket {docket_id}",
-            "absolute_url": None,
-            "date_last_filing": None,
-        })
+        store.upsert_docket_meta(
+            docket_id,
+            {
+                "court_id": "dcd",
+                "docket_number": f"1:24-cr-{docket_id:05d}",
+                "case_name": f"US v. Docket {docket_id}",
+                "absolute_url": None,
+                "date_last_filing": None,
+            },
+        )
         entry_id = docket_id * 100 + 1
         store.mark_entry(
             docket_id=docket_id,
@@ -1272,31 +1570,46 @@ class TestPruneHelpers:
             short_description="Indictment",
             recap_documents=[],
         )
-        store.upsert_hearing({
-            "case_id": case_id, "hearing_key": f"sentencing-{docket_id}",
-            "title": "Sentencing",
-            "starts_at_utc": "2099-01-01T00:00:00+00:00",
-            "duration_minutes": 60, "timezone": "America/New_York",
-            "status": "scheduled", "significance": "major",
-            "docket_id": docket_id, "source_entry_ids": [entry_id],
-        })
-        store.upsert_deadline({
-            "case_id": case_id, "deadline_key": f"reply-{docket_id}",
-            "title": "Reply ISO MTD",
-            "due_at_utc": "2099-01-15T22:00:00+00:00",
-            "timezone": "America/New_York", "status": "pending",
-            "significance": "major", "deadline_type": "reply",
-            "docket_id": docket_id, "source_entry_ids": [entry_id],
-        })
+        store.upsert_hearing(
+            {
+                "case_id": case_id,
+                "hearing_key": f"sentencing-{docket_id}",
+                "title": "Sentencing",
+                "starts_at_utc": "2099-01-01T00:00:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": docket_id,
+                "source_entry_ids": [entry_id],
+            }
+        )
+        store.upsert_deadline(
+            {
+                "case_id": case_id,
+                "deadline_key": f"reply-{docket_id}",
+                "title": "Reply ISO MTD",
+                "due_at_utc": "2099-01-15T22:00:00+00:00",
+                "timezone": "America/New_York",
+                "status": "pending",
+                "significance": "major",
+                "deadline_type": "reply",
+                "docket_id": docket_id,
+                "source_entry_ids": [entry_id],
+            }
+        )
         store.upsert_case_summary(
-            case_id=case_id, docket_id=docket_id,
-            summary="text", model="anthropic/test",
+            case_id=case_id,
+            docket_id=docket_id,
+            summary="text",
+            model="anthropic/test",
             source_entry_ids=[entry_id],
         )
         store.conn.commit()
 
     def test_list_all_docket_ids_includes_dockets_and_child_orphans(
-        self, store: Store,
+        self,
+        store: Store,
     ):
         # Two dockets with full metadata + a child-only orphan whose dockets
         # row never landed (sync interrupted between mark_entry and
@@ -1325,14 +1638,20 @@ class TestPruneHelpers:
         self._seed_docket(store, 100)
         counts = store.count_docket_rows(100)
         assert counts == {
-            "entries": 1, "hearings": 1, "deadlines": 1,
-            "case_summaries": 1, "dockets": 1,
+            "entries": 1,
+            "hearings": 1,
+            "deadlines": 1,
+            "case_summaries": 1,
+            "dockets": 1,
         }
 
     def test_count_docket_rows_unknown_id_is_all_zero(self, store: Store):
         assert store.count_docket_rows(999) == {
-            "entries": 0, "hearings": 0, "deadlines": 0,
-            "case_summaries": 0, "dockets": 0,
+            "entries": 0,
+            "hearings": 0,
+            "deadlines": 0,
+            "case_summaries": 0,
+            "dockets": 0,
         }
 
     def test_delete_docket_removes_every_referenced_row(self, store: Store):
@@ -1340,14 +1659,20 @@ class TestPruneHelpers:
         self._seed_docket(store, 200)
         deleted = store.delete_docket(100)
         assert deleted == {
-            "entries": 1, "hearings": 1, "deadlines": 1,
-            "case_summaries": 1, "dockets": 1,
+            "entries": 1,
+            "hearings": 1,
+            "deadlines": 1,
+            "case_summaries": 1,
+            "dockets": 1,
         }
         # Sibling docket 200 untouched.
         assert store.list_all_docket_ids() == [200]
         assert store.count_docket_rows(100) == {
-            "entries": 0, "hearings": 0, "deadlines": 0,
-            "case_summaries": 0, "dockets": 0,
+            "entries": 0,
+            "hearings": 0,
+            "deadlines": 0,
+            "case_summaries": 0,
+            "dockets": 0,
         }
         # Tx commits inside delete_docket — close+reopen still shows the
         # deletion (catches a "forgot to commit" regression).

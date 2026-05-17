@@ -1,4 +1,4 @@
-# case-calendar
+# Case Calendar
 
 [![CI](https://img.shields.io/github/actions/workflow/status/seanthegeek/case-calendar/ci.yml?branch=main&label=CI)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
 [![codecov](https://img.shields.io/codecov/c/github/seanthegeek/case-calendar/main)](https://codecov.io/gh/seanthegeek/case-calendar)
@@ -24,7 +24,7 @@ scheduling orders or judgments, transcribe dates into a calendar — is
 fragile and slow. One missed minute entry and you don't know a
 sentencing got moved.
 
-case-calendar automates that loop. Point it at a case and it pulls new
+Case Calendar automates that loop. Point it at a case and it pulls new
 docket entries, identifies the ones that schedule hearings or set
 filing deadlines, extracts the dates, and writes them into an ICS file
 your calendar app subscribes to. The ICS file updates within seconds
@@ -106,7 +106,7 @@ or [`AGENTS.md`](AGENTS.md) for the exhaustive reference.
 
 ## Limitations
 
-case-calendar is a supplement to docket-watching, not a replacement
+Case Calendar is a supplement to docket-watching, not a replacement
 for it. Three constraints are inherent to the design and worth
 knowing before you rely on it:
 
@@ -137,7 +137,7 @@ knowing before you rely on it:
   4–16 hours per its own documentation. Two ways to eliminate
   this lag: subscribe in a calendar app that lets you set the
   refresh interval (Apple Calendar, Thunderbird, Fastmail), or
-  configure case-calendar to push directly to [Google Calendar
+  configure Case Calendar to push directly to [Google Calendar
   or Microsoft 365](docs/calendars.md) — direct push lands the
   event in your calendar in the same emit cycle that writes the
   ICS file.
@@ -155,7 +155,7 @@ and a controllable-refresh client or direct push on the downstream
 side — extraction errors are the remaining risk for inaccurate or
 outdated calendar information.
 
-Even so, case-calendar is not a substitute for the calendaring
+Even so, Case Calendar is not a substitute for the calendaring
 software a practicing attorney uses to manage filing deadlines on
 their own cases. Treat it as a convenience layer on top of the
 public docket, not the authoritative record.
@@ -202,7 +202,7 @@ on GitHub Pages:
 
 ## Status
 
-case-calendar is open-source software under the
+Case Calendar is open-source software under the
 [LICENSE](LICENSE) in this repository. It's an independent project —
 not affiliated with the Administrative Office of the U.S. Courts, the
 Free Law Project, or CourtListener.

@@ -7,16 +7,27 @@ from case_calendar.calendars.description import (
 
 
 def test_minimal_description_is_empty():
-    assert build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=None,
-    ) == ""
+    assert (
+        build(
+            notes=None,
+            dial_in=None,
+            docket_number=None,
+            court_citation=None,
+            docket_absolute_url=None,
+            source_entry_ids=None,
+        )
+        == ""
+    )
 
 
 def test_single_judge_renders_as_judge_label():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=None,
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=None,
         judge="Hon. Jane Smith",
     )
     assert "Judge: Hon. Jane Smith" in out
@@ -26,8 +37,12 @@ def test_single_judge_renders_as_judge_label():
 def test_appellate_panel_renders_as_panel_label():
     # Comma in the judge string => appellate panel; render with "Panel:".
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=None,
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=None,
         judge="Henderson, Katsas, Rao",
     )
     assert "Panel: Henderson, Katsas, Rao" in out
@@ -53,7 +68,10 @@ def test_full_description_renders_in_order():
 
 def test_absolute_url_kept_intact_when_already_full():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
         docket_absolute_url="https://www.courtlistener.com/docket/9/x/",
         source_entry_ids=None,
     )
@@ -67,16 +85,21 @@ def test_docket_entry_numbers_render_above_cl_ids():
     # in the description spares a lookup. The line lives directly above the
     # CourtListener entry IDs so the audit trail reads docket-first, ID-second.
     out = build(
-        notes=None, dial_in=None, docket_number="1:25-cr-1",
-        court_citation="D. Mass.", docket_absolute_url="/d/1/",
+        notes=None,
+        dial_in=None,
+        docket_number="1:25-cr-1",
+        court_citation="D. Mass.",
+        docket_absolute_url="/d/1/",
         source_entry_ids=[1001, 1002],
         docket_entry_numbers=[65, 66],
     )
     sections = out.split("\n\n")
-    docket_idx = next(i for i, s in enumerate(sections)
-                      if s.startswith("Docket entries:"))
-    cl_idx = next(i for i, s in enumerate(sections)
-                  if s.startswith("CourtListener entry IDs:"))
+    docket_idx = next(
+        i for i, s in enumerate(sections) if s.startswith("Docket entries:")
+    )
+    cl_idx = next(
+        i for i, s in enumerate(sections) if s.startswith("CourtListener entry IDs:")
+    )
     assert docket_idx < cl_idx
     assert "Docket entries: 65, 66" in out
 
@@ -85,7 +108,10 @@ def test_docket_entry_numbers_omitted_when_none_known():
     # All source entries lacked a docket position (paperless minute orders);
     # the line is skipped entirely rather than rendering an empty list.
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
         docket_absolute_url=None,
         source_entry_ids=[1001],
         docket_entry_numbers=[],
@@ -96,12 +122,20 @@ def test_docket_entry_numbers_omitted_when_none_known():
 
 def test_documents_block_renders_with_ia_url():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         documents=[
-            {"document_number": 65, "attachment_number": None,
-             "is_available": True, "is_sealed": False,
-             "filepath_ia": "https://archive.org/foo.pdf"},
+            {
+                "document_number": 65,
+                "attachment_number": None,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_ia": "https://archive.org/foo.pdf",
+            },
         ],
     )
     assert "Documents:\n65: https://archive.org/foo.pdf" in out
@@ -109,25 +143,48 @@ def test_documents_block_renders_with_ia_url():
 
 def test_documents_block_falls_back_to_cl_storage_when_no_ia():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         documents=[
-            {"document_number": 65, "is_available": True, "is_sealed": False,
-             "filepath_local": "recap/gov.uscourts.cand.1/65.0.pdf"},
+            {
+                "document_number": 65,
+                "is_available": True,
+                "is_sealed": False,
+                "filepath_local": "recap/gov.uscourts.cand.1/65.0.pdf",
+            },
         ],
     )
-    assert "65: https://storage.courtlistener.com/recap/gov.uscourts.cand.1/65.0.pdf" in out
+    assert (
+        "65: https://storage.courtlistener.com/recap/gov.uscourts.cand.1/65.0.pdf"
+        in out
+    )
 
 
 def test_documents_block_renders_attachments_with_suffix():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         documents=[
-            {"document_number": 65, "attachment_number": 0,
-             "is_available": True, "filepath_ia": "https://archive.org/65.pdf"},
-            {"document_number": 65, "attachment_number": 1,
-             "is_available": True, "filepath_ia": "https://archive.org/65a.pdf"},
+            {
+                "document_number": 65,
+                "attachment_number": 0,
+                "is_available": True,
+                "filepath_ia": "https://archive.org/65.pdf",
+            },
+            {
+                "document_number": 65,
+                "attachment_number": 1,
+                "is_available": True,
+                "filepath_ia": "https://archive.org/65a.pdf",
+            },
         ],
     )
     assert "65: https://archive.org/65.pdf" in out
@@ -136,8 +193,12 @@ def test_documents_block_renders_attachments_with_suffix():
 
 def test_documents_block_marks_sealed_and_unavailable():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         documents=[
             {"document_number": 65, "is_sealed": True, "is_available": False},
             {"document_number": 66, "is_sealed": False, "is_available": False},
@@ -149,8 +210,12 @@ def test_documents_block_marks_sealed_and_unavailable():
 
 def test_documents_block_omitted_when_no_docs():
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         documents=[],
     )
     assert "Documents:" not in out
@@ -159,16 +224,29 @@ def test_documents_block_omitted_when_no_docs():
 def test_documents_block_above_entry_numbers():
     # Order in the body: Documents → Docket entries → CourtListener IDs.
     out = build(
-        notes=None, dial_in=None, docket_number=None, court_citation=None,
-        docket_absolute_url=None, source_entry_ids=[1001],
+        notes=None,
+        dial_in=None,
+        docket_number=None,
+        court_citation=None,
+        docket_absolute_url=None,
+        source_entry_ids=[1001],
         docket_entry_numbers=[65],
-        documents=[{"document_number": 65, "is_available": True,
-                    "filepath_ia": "https://archive.org/65.pdf"}],
+        documents=[
+            {
+                "document_number": 65,
+                "is_available": True,
+                "filepath_ia": "https://archive.org/65.pdf",
+            }
+        ],
     )
     sections = out.split("\n\n")
     docs_idx = next(i for i, s in enumerate(sections) if s.startswith("Documents:"))
-    nums_idx = next(i for i, s in enumerate(sections) if s.startswith("Docket entries:"))
-    ids_idx = next(i for i, s in enumerate(sections) if s.startswith("CourtListener entry IDs:"))
+    nums_idx = next(
+        i for i, s in enumerate(sections) if s.startswith("Docket entries:")
+    )
+    ids_idx = next(
+        i for i, s in enumerate(sections) if s.startswith("CourtListener entry IDs:")
+    )
     assert docs_idx < nums_idx < ids_idx
 
 
@@ -176,8 +254,11 @@ def test_no_source_text_block_emitted():
     # Description shows only the structured fields plus the entry-id audit
     # line. The raw docket prose lives one click away at the Docket: URL.
     out = build(
-        notes="Short note.", dial_in=None, docket_number="1:25-cv-1",
-        court_citation="N.D. Cal.", docket_absolute_url="/docket/1/foo/",
+        notes="Short note.",
+        dial_in=None,
+        docket_number="1:25-cv-1",
+        court_citation="N.D. Cal.",
+        docket_absolute_url="/docket/1/foo/",
         source_entry_ids=[35, 31],
     )
     assert "Source text:" not in out
@@ -219,8 +300,7 @@ class TestDocumentLabel:
 
     def test_attachment_label(self):
         assert (
-            _document_label({"document_number": 65, "attachment_number": 1})
-            == "65-1"
+            _document_label({"document_number": 65, "attachment_number": 1}) == "65-1"
         )
 
     def test_returns_none_for_missing_doc_number(self):
@@ -230,23 +310,27 @@ class TestDocumentLabel:
     def test_non_int_attachment_treated_as_main(self):
         # Defensive: non-integer attachment_number coerces to 0 (= main doc).
         assert (
-            _document_label({"document_number": 65, "attachment_number": "x"})
-            == "65"
+            _document_label({"document_number": 65, "attachment_number": "x"}) == "65"
         )
 
 
 class TestDocumentUrl:
     def test_prefers_ia(self):
-        url = _document_url({
-            "filepath_ia": "https://archive.org/65.pdf",
-            "filepath_local": "recap/x/65.pdf",
-        })
+        url = _document_url(
+            {
+                "filepath_ia": "https://archive.org/65.pdf",
+                "filepath_local": "recap/x/65.pdf",
+            }
+        )
         assert url == "https://archive.org/65.pdf"
 
     def test_falls_back_to_cl_storage(self):
-        url = _document_url({
-            "filepath_ia": None, "filepath_local": "recap/x/65.pdf",
-        })
+        url = _document_url(
+            {
+                "filepath_ia": None,
+                "filepath_local": "recap/x/65.pdf",
+            }
+        )
         assert url == "https://storage.courtlistener.com/recap/x/65.pdf"
 
     def test_returns_none_when_no_paths(self):

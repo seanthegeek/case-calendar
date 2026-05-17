@@ -2,7 +2,7 @@
 title: Real-time webhooks
 ---
 
-By default case-calendar polls CourtListener on a cron. That works, but
+By default Case Calendar polls CourtListener on a cron. That works, but
 CourtListener throttles the free tier (300 requests per day) and a polling
 schedule means the ICS file is only refreshed at each cron tick —
 minutes or hours after CourtListener has the entry, depending on how
@@ -86,7 +86,7 @@ HTTPS URL pointing at port 8000.
 
 ## 4. Compute and verify the webhook URL
 
-case-calendar will print the exact URL to register, with an optional probe
+Case Calendar will print the exact URL to register, with an optional probe
 that verifies the secret matches:
 
 ```bash
@@ -102,7 +102,7 @@ What `--check` does:
 - Hits the secret-gated `/health` endpoint and confirms three things in
   one shot:
   - The host is reachable from the public internet.
-  - case-calendar (and not, say, a Cloudflare access policy or a stale
+  - Case Calendar (and not, say, a Cloudflare access policy or a stale
     Caddy config) is actually answering on that path.
   - The secret in your `.env` matches the secret the running receiver
     expects.

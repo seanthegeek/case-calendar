@@ -16,12 +16,18 @@ from case_calendar.calendars import gcal
 
 def _h(**over):
     base = {
-        "case_id": "us-v-x", "hearing_key": "sentencing",
-        "title": "Sentencing", "starts_at_utc": "2026-04-14T15:00:00+00:00",
-        "duration_minutes": 90, "timezone": "America/New_York",
-        "location": "Courtroom 4", "judge": "Judge X",
-        "notes": "Sentencing notes.", "dial_in": None,
-        "status": "scheduled", "source_entry_ids": [1],
+        "case_id": "us-v-x",
+        "hearing_key": "sentencing",
+        "title": "Sentencing",
+        "starts_at_utc": "2026-04-14T15:00:00+00:00",
+        "duration_minutes": 90,
+        "timezone": "America/New_York",
+        "location": "Courtroom 4",
+        "judge": "Judge X",
+        "notes": "Sentencing notes.",
+        "dial_in": None,
+        "status": "scheduled",
+        "source_entry_ids": [1],
     }
     base.update(over)
     return base
@@ -62,7 +68,8 @@ class TestEventBody:
 
     def test_pacific_court_uses_pacific_tz(self):
         body = gcal.GoogleCalendarSync._event_body(
-            "eid", _h(timezone="America/Los_Angeles"),
+            "eid",
+            _h(timezone="America/Los_Angeles"),
         )
         assert body["start"]["timeZone"] == "America/Los_Angeles"
         # 15:00Z in April is 08:00 PDT.
@@ -79,8 +86,8 @@ class TestEventBody:
         # Title prefixing ("[time TBD]" / "[time unknown]") is the cli emit
         # layer's job now; the renderer just passes the title through.
         body = gcal.GoogleCalendarSync._event_body(
-            "eid", _h(duration_minutes=0,
-                      starts_at_utc="2099-04-14T04:00:00+00:00"),
+            "eid",
+            _h(duration_minutes=0, starts_at_utc="2099-04-14T04:00:00+00:00"),
         )
         assert "date" in body["start"]
         assert "dateTime" not in body["start"]
@@ -97,7 +104,8 @@ class TestEventBody:
 
     def test_attendees_added_when_notify_emails_set(self):
         body = gcal.GoogleCalendarSync._event_body(
-            "eid", _h(notify_emails=["a@x.com", "b@y.com"]),
+            "eid",
+            _h(notify_emails=["a@x.com", "b@y.com"]),
         )
         assert body["attendees"] == [{"email": "a@x.com"}, {"email": "b@y.com"}]
 
@@ -107,7 +115,8 @@ class TestEventBody:
 
     def test_reminder_overrides_set(self):
         body = gcal.GoogleCalendarSync._event_body(
-            "eid", _h(reminders=[{"method": "popup", "minutes": 30}]),
+            "eid",
+            _h(reminders=[{"method": "popup", "minutes": 30}]),
         )
         assert body["reminders"] == {
             "useDefault": False,
@@ -280,14 +289,16 @@ class TestBuildService:
         fake_creds = MagicMock()
         fake_creds.valid = True
         monkeypatch.setattr(
-            gcal_mod.Credentials, "from_authorized_user_file",
+            gcal_mod.Credentials,
+            "from_authorized_user_file",
             lambda path, scopes: fake_creds,
         )
         built = MagicMock(name="service")
         monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: built)
 
         gcs = gcal_mod.GoogleCalendarSync(
-            credentials_path="/c.json", token_path=token,
+            credentials_path="/c.json",
+            token_path=token,
         )
         assert gcs.service is built
 
@@ -303,14 +314,16 @@ class TestBuildService:
         fake_creds.to_json.return_value = "{}"  # must be str for Path.write_text
 
         monkeypatch.setattr(
-            gcal_mod.Credentials, "from_authorized_user_file",
+            gcal_mod.Credentials,
+            "from_authorized_user_file",
             lambda path, scopes: fake_creds,
         )
         monkeypatch.setattr(gcal_mod, "Request", MagicMock())
         monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
 
         gcal_mod.GoogleCalendarSync(
-            credentials_path="/c.json", token_path=token,
+            credentials_path="/c.json",
+            token_path=token,
         )
         fake_creds.refresh.assert_called_once()
         # Token cache rewritten with refreshed creds.
@@ -326,13 +339,15 @@ class TestBuildService:
         new_creds.to_json.return_value = "{}"
         flow_obj.run_local_server.return_value = new_creds
         monkeypatch.setattr(
-            gcal_mod.InstalledAppFlow, "from_client_secrets_file",
+            gcal_mod.InstalledAppFlow,
+            "from_client_secrets_file",
             lambda path, scopes: flow_obj,
         )
         monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
 
         gcal_mod.GoogleCalendarSync(
-            credentials_path="/c.json", token_path=token,
+            credentials_path="/c.json",
+            token_path=token,
         )
         flow_obj.run_local_server.assert_called_once()
         # Token cache written after flow completes.

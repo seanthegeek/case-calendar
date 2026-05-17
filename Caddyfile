@@ -1,4 +1,4 @@
-# Caddyfile for case-calendar.
+# Caddyfile for Case Calendar.
 #
 # This file is checked in as a working template — edit the domain + paths
 # below to match your deployment. The distro Caddy package reads
@@ -29,7 +29,7 @@
 # `systemctl enable --now caddy`.
 
 calendars.example.com {
-	# Absolute path to the case-calendar `out/` directory. The default
+	# Absolute path to the Case Calendar `out/` directory. The default
 	# layout puts ICS files (cybercrime.ics, tech.ics, ...) and the
 	# generated index.html in the same directory, so a single file_server
 	# directive covers both.

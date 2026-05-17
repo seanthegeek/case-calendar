@@ -29,7 +29,8 @@ class TestValidateURL:
             return httpx.Response(200)
 
         out = url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         assert out == "https://example.com/foo/bar/"
 
@@ -41,7 +42,8 @@ class TestValidateURL:
             return httpx.Response(200)
 
         out = url_validator.validate_url(
-            "https://example.com/foo/bar/junk", client=_client(handler),
+            "https://example.com/foo/bar/junk",
+            client=_client(handler),
         )
         assert out == "https://example.com/foo/bar/"
 
@@ -52,7 +54,8 @@ class TestValidateURL:
             return httpx.Response(404)
 
         out = url_validator.validate_url(
-            "https://example.com/typo", client=_client(handler),
+            "https://example.com/typo",
+            client=_client(handler),
         )
         assert out is None
 
@@ -61,7 +64,8 @@ class TestValidateURL:
             return httpx.Response(404)
 
         out = url_validator.validate_url(
-            "https://example.com/a/b/c", client=_client(handler),
+            "https://example.com/a/b/c",
+            client=_client(handler),
         )
         assert out is None
 
@@ -77,7 +81,8 @@ class TestValidateURL:
             return httpx.Response(200)
 
         out = url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         assert out == "https://example.com/foo/bar/"
         assert calls == {"head": 1, "get": 1}
@@ -87,7 +92,8 @@ class TestValidateURL:
             raise httpx.ConnectError("simulated network down")
 
         out = url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         # Fail-open: return the input rather than dropping the field.
         assert out == "https://example.com/foo/bar/"
@@ -106,25 +112,31 @@ class TestValidateURL:
             return httpx.Response(200)
 
         url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         # Second call hits the cache, so only one HTTP request was made.
         assert calls[0] == 1
 
     def test_failures_not_cached_so_transient_errors_retry(self):
-        outcomes = iter([404, 404, 200, 200])  # first call: bad URL + bad parent; second: ok + ok
+        outcomes = iter(
+            [404, 404, 200, 200]
+        )  # first call: bad URL + bad parent; second: ok + ok
 
         def handler(req):
             return httpx.Response(next(outcomes))
 
         first = url_validator.validate_url(
-            "https://example.com/a/b/c", client=_client(handler),
+            "https://example.com/a/b/c",
+            client=_client(handler),
         )
         second = url_validator.validate_url(
-            "https://example.com/a/b/c", client=_client(handler),
+            "https://example.com/a/b/c",
+            client=_client(handler),
         )
         assert first is None
         assert second == "https://example.com/a/b/c"
@@ -140,7 +152,8 @@ class TestValidateURL:
             return httpx.Response(200)
 
         out = url_validator.validate_url(
-            "https://example.com/foo/junk?id=1", client=_client(handler),
+            "https://example.com/foo/junk?id=1",
+            client=_client(handler),
         )
         assert out == "https://example.com/foo/"
 
@@ -152,7 +165,9 @@ class TestSyncIntegration:
         from case_calendar import sync
 
         monkeypatch.setattr(
-            url_validator, "validate_url", lambda u: "https://example.com/repaired/",
+            url_validator,
+            "validate_url",
+            lambda u: "https://example.com/repaired/",
         )
         action = {"dial_in": "https://example.com/broken", "notes": "n"}
         sync._validate_action_dial_in(action)
@@ -194,10 +209,12 @@ class TestImplicitClient:
         # Use httpx's MockTransport-aware Client by patching httpx.Client
         # to return a transport-mock-backed instance.
         from unittest.mock import MagicMock
+
         closed = MagicMock()
 
         class _MockClient:
-            def __init__(self, *a, **k): pass
+            def __init__(self, *a, **k):
+                pass
 
             def head(self, url):
                 r = MagicMock()
@@ -233,7 +250,8 @@ class TestCheckHttpCodes:
             return httpx.Response(503)
 
         out = url_validator.validate_url(
-            "https://example.com/a/b/c", client=_client(handler),
+            "https://example.com/a/b/c",
+            client=_client(handler),
         )
         # No 4xx ever observed → fail-open: keep the input URL.
         assert out == "https://example.com/a/b/c"
@@ -247,6 +265,7 @@ class TestCheckHttpCodes:
             raise httpx.ConnectError("GET fallback down")
 
         out = url_validator.validate_url(
-            "https://example.com/foo/bar/", client=_client(handler),
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
         assert out == "https://example.com/foo/bar/"

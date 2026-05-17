@@ -74,8 +74,9 @@ def test_unknown_court_falls_back_to_default_with_warning(caplog):
     with caplog.at_level(logging.WARNING):
         tz = tz_for("zzz")
     assert tz == DEFAULT_TZ
-    assert any("zzz" in r.message for r in caplog.records), \
+    assert any("zzz" in r.message for r in caplog.records), (
         "should warn about the missing court_id"
+    )
 
 
 def test_empty_court_falls_back_silently(caplog):
@@ -90,19 +91,66 @@ def test_empty_court_falls_back_silently(caplog):
 def test_all_values_are_valid_iana():
     valid_prefixes = ("America/", "Pacific/")
     for cid, tz in COURT_TIMEZONES.items():
-        assert any(tz.startswith(p) for p in valid_prefixes), \
+        assert any(tz.startswith(p) for p in valid_prefixes), (
             f"{cid} -> {tz!r} not in expected prefixes"
+        )
 
 
 def test_coverage_includes_all_94_district_court_states():
     # At least one district per state in the union, plus DC and PR.
     must_cover = {
-        "alnd", "akd", "azd", "ared", "cand", "cod", "ctd", "ded", "dcd",
-        "flsd", "gand", "hid", "idd", "ilnd", "innd", "iand", "ksd",
-        "kyed", "laed", "med", "mdd", "mad", "mied", "mnd", "msnd", "moed",
-        "mtd", "ned", "nvd", "nhd", "njd", "nmd", "nysd", "nced", "ndd",
-        "ohnd", "oked", "ord", "paed", "prd", "rid", "scd", "sdd", "tned",
-        "txed", "utd", "vtd", "vaed", "waed", "wvnd", "wied", "wyd",
+        "alnd",
+        "akd",
+        "azd",
+        "ared",
+        "cand",
+        "cod",
+        "ctd",
+        "ded",
+        "dcd",
+        "flsd",
+        "gand",
+        "hid",
+        "idd",
+        "ilnd",
+        "innd",
+        "iand",
+        "ksd",
+        "kyed",
+        "laed",
+        "med",
+        "mdd",
+        "mad",
+        "mied",
+        "mnd",
+        "msnd",
+        "moed",
+        "mtd",
+        "ned",
+        "nvd",
+        "nhd",
+        "njd",
+        "nmd",
+        "nysd",
+        "nced",
+        "ndd",
+        "ohnd",
+        "oked",
+        "ord",
+        "paed",
+        "prd",
+        "rid",
+        "scd",
+        "sdd",
+        "tned",
+        "txed",
+        "utd",
+        "vtd",
+        "vaed",
+        "waed",
+        "wvnd",
+        "wied",
+        "wyd",
     }
     missing = must_cover - set(COURT_TIMEZONES)
     assert not missing, f"missing district courts: {missing}"
@@ -111,46 +159,104 @@ def test_coverage_includes_all_94_district_court_states():
 # Pulled from CourtListener API jurisdiction=FB on 2026-05-14, filtered
 # to active courts only (defunct/historical entries excluded). Two id
 # surprises pinned here: "arb" (not "azb") and "nebraskab" (not "neb").
-ALL_BANKRUPTCY_COURTS = frozenset({
-    "akb", "almb", "alnb", "alsb", "arb", "areb", "arwb",
-    "cacb", "caeb", "canb", "casb", "cob", "ctb",
-    "dcb", "deb",
-    "flmb", "flnb", "flsb",
-    "gamb", "ganb", "gasb", "gub",
-    "hib",
-    "ianb", "iasb", "idb",
-    "ilcb", "ilnb", "ilsb",
-    "innb", "insb",
-    "ksb",
-    "kyeb", "kywb",
-    "laeb", "lamb", "lawb",
-    "mab", "mdb", "meb",
-    "mieb", "miwb",
-    "mnb",
-    "moeb", "mowb",
-    "msnb", "mssb",
-    "mtb",
-    "nceb", "ncmb", "ncwb",
-    "ndb",
-    "nebraskab",
-    "nhb", "njb", "nmb", "nmib", "nvb",
-    "nyeb", "nynb", "nysb", "nywb",
-    "ohnb", "ohsb",
-    "okeb", "oknb", "okwb",
-    "orb",
-    "paeb", "pamb", "pawb",
-    "prb",
-    "rib", "scb", "sdb",
-    "tneb", "tnmb", "tnwb",
-    "txeb", "txnb", "txsb", "txwb",
-    "utb",
-    "vaeb", "vawb",
-    "vib", "vtb",
-    "waeb", "wawb",
-    "wieb", "wiwb",
-    "wvnb", "wvsb",
-    "wyb",
-})
+ALL_BANKRUPTCY_COURTS = frozenset(
+    {
+        "akb",
+        "almb",
+        "alnb",
+        "alsb",
+        "arb",
+        "areb",
+        "arwb",
+        "cacb",
+        "caeb",
+        "canb",
+        "casb",
+        "cob",
+        "ctb",
+        "dcb",
+        "deb",
+        "flmb",
+        "flnb",
+        "flsb",
+        "gamb",
+        "ganb",
+        "gasb",
+        "gub",
+        "hib",
+        "ianb",
+        "iasb",
+        "idb",
+        "ilcb",
+        "ilnb",
+        "ilsb",
+        "innb",
+        "insb",
+        "ksb",
+        "kyeb",
+        "kywb",
+        "laeb",
+        "lamb",
+        "lawb",
+        "mab",
+        "mdb",
+        "meb",
+        "mieb",
+        "miwb",
+        "mnb",
+        "moeb",
+        "mowb",
+        "msnb",
+        "mssb",
+        "mtb",
+        "nceb",
+        "ncmb",
+        "ncwb",
+        "ndb",
+        "nebraskab",
+        "nhb",
+        "njb",
+        "nmb",
+        "nmib",
+        "nvb",
+        "nyeb",
+        "nynb",
+        "nysb",
+        "nywb",
+        "ohnb",
+        "ohsb",
+        "okeb",
+        "oknb",
+        "okwb",
+        "orb",
+        "paeb",
+        "pamb",
+        "pawb",
+        "prb",
+        "rib",
+        "scb",
+        "sdb",
+        "tneb",
+        "tnmb",
+        "tnwb",
+        "txeb",
+        "txnb",
+        "txsb",
+        "txwb",
+        "utb",
+        "vaeb",
+        "vawb",
+        "vib",
+        "vtb",
+        "waeb",
+        "wawb",
+        "wieb",
+        "wiwb",
+        "wvnb",
+        "wvsb",
+        "wyb",
+    }
+)
 
 
 def test_bankruptcy_courts_match_parent_district_tz():
@@ -159,13 +265,14 @@ def test_bankruptcy_courts_match_parent_district_tz():
     # the parent district's tz. CourtListener's ID convention is parent_id[:-1] + 'b'
     # for most courts, with two documented exceptions.
     irregular = {
-        "arb": "azd",         # Arizona — CourtListener has no "azb"
-        "nebraskab": "ned",   # Nebraska — CourtListener spells the id out in full
+        "arb": "azd",  # Arizona — CourtListener has no "azb"
+        "nebraskab": "ned",  # Nebraska — CourtListener spells the id out in full
     }
     for bk_id in ALL_BANKRUPTCY_COURTS:
         district_id = irregular.get(bk_id, bk_id[:-1] + "d")
-        assert district_id in COURT_TIMEZONES, \
+        assert district_id in COURT_TIMEZONES, (
             f"bankruptcy {bk_id} expects parent district {district_id} which is missing"
+        )
         assert COURT_TIMEZONES[bk_id] == COURT_TIMEZONES[district_id], (
             f"{bk_id} -> {COURT_TIMEZONES[bk_id]} doesn't match parent "
             f"{district_id} -> {COURT_TIMEZONES[district_id]} (per 28 U.S.C. § 151 "
@@ -174,8 +281,9 @@ def test_bankruptcy_courts_match_parent_district_tz():
 
 
 def test_coverage_includes_all_active_bankruptcy_courts():
-    assert len(ALL_BANKRUPTCY_COURTS) == 94, \
+    assert len(ALL_BANKRUPTCY_COURTS) == 94, (
         f"expected 94 active bankruptcy courts per CourtListener, got {len(ALL_BANKRUPTCY_COURTS)} in fixture"
+    )
     missing = ALL_BANKRUPTCY_COURTS - set(COURT_TIMEZONES)
     assert not missing, f"missing bankruptcy courts: {missing}"
 
@@ -185,9 +293,12 @@ def test_defunct_courts_are_not_listed():
     # representative sample so a future "add for completeness" doesn't
     # re-introduce them without a separate decision.
     must_not_include = {
-        "tennesseeb",     # FB — defunct D. Tennessee, 1797-1801
-        "cma",            # MA — renamed to armfor by the 1994 NDAA
-        "usafctmilrev", "usarmymilrev", "cgcomilrev", "usnmcmilrev",
+        "tennesseeb",  # FB — defunct D. Tennessee, 1797-1801
+        "cma",  # MA — renamed to armfor by the 1994 NDAA
+        "usafctmilrev",
+        "usarmymilrev",
+        "cgcomilrev",
+        "usnmcmilrev",
     }
     overlap = must_not_include & set(COURT_TIMEZONES)
     assert not overlap, f"defunct ids leaked back into COURT_TIMEZONES: {overlap}"
@@ -199,25 +310,37 @@ def test_coverage_includes_all_bankruptcy_appellate_panels():
     missing = must_cover - set(COURT_TIMEZONES)
     assert not missing, f"missing BAPs: {missing}"
     # The five geographic-circuit BAPs sit in known city principal offices.
-    assert tz_for("bap1") == "America/New_York"   # Boston
-    assert tz_for("bap6") == "America/New_York"   # Cincinnati
-    assert tz_for("bap8") == "America/Chicago"    # St. Louis
+    assert tz_for("bap1") == "America/New_York"  # Boston
+    assert tz_for("bap6") == "America/New_York"  # Cincinnati
+    assert tz_for("bap8") == "America/Chicago"  # St. Louis
     assert tz_for("bap9") == "America/Los_Angeles"  # Pasadena
-    assert tz_for("bap10") == "America/Denver"    # Denver
+    assert tz_for("bap10") == "America/Denver"  # Denver
 
 
 def test_coverage_includes_all_federal_special_tribunals():
     # Pulled from CourtListener API jurisdiction=FS on 2026-05-14.
     # All headquartered in DC / Falls Church VA / Alexandria VA cluster.
     must_cover = {
-        "tax", "uscfc", "cit", "cavc", "fisc", "fiscr",
-        "asbca", "bia", "bva", "jpml", "mspb", "olc", "ttab",
+        "tax",
+        "uscfc",
+        "cit",
+        "cavc",
+        "fisc",
+        "fiscr",
+        "asbca",
+        "bia",
+        "bva",
+        "jpml",
+        "mspb",
+        "olc",
+        "ttab",
     }
     missing = must_cover - set(COURT_TIMEZONES)
     assert not missing, f"missing FS tribunals: {missing}"
     for cid in must_cover:
-        assert tz_for(cid) == "America/New_York", \
+        assert tz_for(cid) == "America/New_York", (
             f"FS tribunal {cid} should be ET (DC-area), got {tz_for(cid)}"
+        )
 
 
 def test_cavc_replaces_dead_vetapp_id():
@@ -237,5 +360,6 @@ def test_coverage_includes_all_active_military_appellate_courts():
     missing = must_cover - set(COURT_TIMEZONES)
     assert not missing, f"missing MA military appellate courts: {missing}"
     for cid in must_cover:
-        assert tz_for(cid) == "America/New_York", \
+        assert tz_for(cid) == "America/New_York", (
             f"military appellate {cid} should be ET, got {tz_for(cid)}"
+        )

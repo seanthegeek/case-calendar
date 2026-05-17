@@ -51,10 +51,12 @@ class TestIsDeadlineRelevant:
 class TestIsExtractable:
     def test_hearing_only_when_deadlines_off(self):
         # A hearing entry passes regardless of the flag.
-        assert is_extractable(make(desc="Sentencing set for 4/14/2026"),
-                              want_deadlines=False)
-        assert is_extractable(make(desc="Sentencing set for 4/14/2026"),
-                              want_deadlines=True)
+        assert is_extractable(
+            make(desc="Sentencing set for 4/14/2026"), want_deadlines=False
+        )
+        assert is_extractable(
+            make(desc="Sentencing set for 4/14/2026"), want_deadlines=True
+        )
 
     def test_deadline_blocked_when_deadlines_off(self):
         e = make(desc="Response due by 5/24/2026")
@@ -79,7 +81,8 @@ class TestIsExtractable:
         # If they were the ONLY signal carrier and they're empty, the
         # entry is treated as having no text at all.
         assert not is_extractable(
-            make(recap_descs=("",)), want_deadlines=True,
+            make(recap_descs=("",)),
+            want_deadlines=True,
         )
 
 
@@ -125,9 +128,7 @@ class TestIsHearingRelevant:
         )
 
     def test_short_description_can_trigger(self):
-        assert is_hearing_relevant(
-            make(short="Plea Agreement Hearing")
-        )
+        assert is_hearing_relevant(make(short="Plea Agreement Hearing"))
 
     def test_case_insensitive(self):
         assert is_hearing_relevant(make(desc="SENTENCING"))

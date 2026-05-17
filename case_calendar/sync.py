@@ -51,17 +51,17 @@ class ExtraDocument:
     the document is and why it was added is the right primary signal.
     """
 
-    docket: int           # which docket this document belongs to
-    url: str              # PDF URL to fetch
-    note: str             # required — trusted operator context shown to the LLM
+    docket: int  # which docket this document belongs to
+    url: str  # PDF URL to fetch
+    note: str  # required — trusted operator context shown to the LLM
 
 
 @dataclass
 class CaseConfig:
-    case_id: str          # stable ID used as primary key in the store
-    name: str             # human title
+    case_id: str  # stable ID used as primary key in the store
+    name: str  # human title
     dockets: list[int]
-    calendar: str         # which output calendar this case belongs to
+    calendar: str  # which output calendar this case belongs to
     extract_deadlines: bool = False
     """Force-on override for filing-deadline extraction. False (the default)
     means auto-detect from each docket's ``docket_number`` prefix: civil
@@ -84,7 +84,8 @@ class CaseConfig:
 # followed by a digit (the case number).
 # Anything else — civil, appellate, MDL, specialty — defaults to deadlines-on.
 _CRIMINAL_DOCKET_TYPES = re.compile(
-    r"-(?:cr|cm|cmc|po|mj-cr)-\d", re.IGNORECASE,
+    r"-(?:cr|cm|cmc|po|mj-cr)-\d",
+    re.IGNORECASE,
 )
 
 
@@ -174,7 +175,9 @@ def _extract_docket_refs(entry: dict[str, Any]) -> list[int]:
     footer first so a clerk timestamp's day-of-month doesn't get parsed as
     a referenced motion.
     """
-    desc = (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    desc = (
+        (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    )
     desc = _ENTERED_FOOTER.sub("", desc)
     seen: list[int] = []
     for m in _DOCKET_REF.finditer(desc):
@@ -185,7 +188,9 @@ def _extract_docket_refs(entry: dict[str, Any]) -> list[int]:
 
 
 def _needs_pdf(entry: dict[str, Any]) -> bool:
-    desc = (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    desc = (
+        (entry.get("description") or "") + " " + (entry.get("short_description") or "")
+    )
     desc = _ENTERED_FOOTER.sub("", desc)
     if _ORDER_GRANTS_SCHEDULING_MOTION.search(desc):
         return True
@@ -235,13 +240,13 @@ def _validate_action_dial_in(action: dict[str, Any]) -> None:
     # can salvage it.
     addendum = f"Dial-in (unverified): {original}"
     existing_notes = action.get("notes")
-    action["notes"] = (
-        f"{existing_notes}\n\n{addendum}" if existing_notes else addendum
-    )
+    action["notes"] = f"{existing_notes}\n\n{addendum}" if existing_notes else addendum
     action["dial_in"] = None
 
 
-def _local_to_utc(date_str: Optional[str], time_str: Optional[str], tz: str) -> Optional[str]:
+def _local_to_utc(
+    date_str: Optional[str], time_str: Optional[str], tz: str
+) -> Optional[str]:
     if not date_str:
         return None
     if time_str:
@@ -270,7 +275,9 @@ def _deadline_local_to_utc(
 
 
 def _append_audit_line(
-    existing_audit: Optional[str], source: str, note: str,
+    existing_audit: Optional[str],
+    source: str,
+    note: str,
 ) -> str:
     """Append a new ``[<source>]`` audit line to a row's existing audit_notes.
 
@@ -307,6 +314,7 @@ def _mark_held_date_matches(
         return True
     try:
         from datetime import date
+
         existing_date = datetime.fromisoformat(existing_starts).date()
         action_date = date.fromisoformat(action_date_str)
     except (ValueError, TypeError):
@@ -340,7 +348,9 @@ class CaseSyncer:
     # --- shared helpers (used by polling sync_case AND the webhook server) ---
 
     def resolve_extract_deadlines(
-        self, case: CaseConfig, docket_id: int | None = None,
+        self,
+        case: CaseConfig,
+        docket_id: int | None = None,
     ) -> bool:
         """Decide whether to extract filing deadlines for this case/docket.
 
@@ -368,7 +378,9 @@ class CaseSyncer:
         return not saw_classifiable_off
 
     def _is_cross_court_mutation(
-        self, existing: Optional[dict[str, Any]], current_docket_id: int,
+        self,
+        existing: Optional[dict[str, Any]],
+        current_docket_id: int,
     ) -> Optional[tuple[Optional[str], Optional[str]]]:
         """Detect when an action would mutate a row owned by another court.
 
@@ -393,12 +405,12 @@ class CaseSyncer:
         existing_docket = existing.get("docket_id")
         if not existing_docket or existing_docket == current_docket_id:
             return None
-        existing_court = (
-            self.store.get_docket_meta(existing_docket) or {}
-        ).get("court_id")
-        current_court = (
-            self.store.get_docket_meta(current_docket_id) or {}
-        ).get("court_id")
+        existing_court = (self.store.get_docket_meta(existing_docket) or {}).get(
+            "court_id"
+        )
+        current_court = (self.store.get_docket_meta(current_docket_id) or {}).get(
+            "court_id"
+        )
         if not existing_court or not current_court:
             return None
         if existing_court == current_court:
@@ -467,10 +479,9 @@ class CaseSyncer:
         # Everything else (notices, briefs, attorney appearances, etc.) gets
         # a fingerprint-only stub: dedup keeps working, but no dead-weight
         # body text.
-        summary_relevant = (
-            summary_mod.is_primary_document(entry)
-            or summary_mod.is_disposition(entry)
-        )
+        summary_relevant = summary_mod.is_primary_document(
+            entry
+        ) or summary_mod.is_disposition(entry)
         store_full = processed or summary_relevant
         self.store.mark_entry(
             docket_id,
@@ -533,7 +544,8 @@ class CaseSyncer:
             if last_mod and docket_mod and docket_mod <= last_mod:
                 log.info(
                     "docket %s unchanged since %s; skipping (no API/LLM calls)",
-                    docket_id, last_mod,
+                    docket_id,
+                    last_mod,
                 )
                 # We've already paid the get_docket call above; capturing
                 # date_last_filing here costs nothing extra and is the only
@@ -541,7 +553,8 @@ class CaseSyncer:
                 # the column was added.
                 if docket.get("date_last_filing"):
                     self.store.bump_docket_last_filing(
-                        docket_id, docket["date_last_filing"],
+                        docket_id,
+                        docket["date_last_filing"],
                     )
                 stats["dockets_skipped"] += 1
                 continue
@@ -672,7 +685,9 @@ class CaseSyncer:
             tz = tz_for(court_id)
 
             recent = self.store.get_recent_relevant_entries(
-                docket_id, "9999-12-31T00:00:00", limit=15,
+                docket_id,
+                "9999-12-31T00:00:00",
+                limit=15,
             )
             action = llm_mod.verify_hearing(
                 case_name=case.name,
@@ -739,18 +754,19 @@ class CaseSyncer:
             if not local_date:
                 log.warning(
                     "verify RESCHEDULE without local_date: case=%s key=%r",
-                    case.case_id, hearing.get("hearing_key"),
+                    case.case_id,
+                    hearing.get("hearing_key"),
                 )
                 return False
             convert_tz = hearing.get("timezone") or tz
-            merged["starts_at_utc"] = _local_to_utc(
-                local_date, local_time, convert_tz
-            )
+            merged["starts_at_utc"] = _local_to_utc(local_date, local_time, convert_tz)
             audit_note = action.get("reason") or "Rescheduled per recent docket entries"
         else:
             log.warning(
                 "verify-pass unknown action type %s for case=%s key=%r",
-                atype, case.case_id, hearing.get("hearing_key"),
+                atype,
+                case.case_id,
+                hearing.get("hearing_key"),
             )
             return False
 
@@ -764,11 +780,15 @@ class CaseSyncer:
         # circular-reasoning shape this column split eliminates.
         if audit_note is not None:
             merged["audit_notes"] = _append_audit_line(
-                hearing.get("audit_notes"), "verify-pass", audit_note,
+                hearing.get("audit_notes"),
+                "verify-pass",
+                audit_note,
             )
         log.info(
             "verify-pass applying %s case=%s key=%r reason=%s",
-            atype, case.case_id, hearing.get("hearing_key"),
+            atype,
+            case.case_id,
+            hearing.get("hearing_key"),
             (action.get("reason") or "")[:120],
         )
         merged["source_entry_ids"] = sources
@@ -808,7 +828,9 @@ class CaseSyncer:
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
             recent = self.store.get_recent_relevant_entries(
-                docket_id, "9999-12-31T00:00:00", limit=15,
+                docket_id,
+                "9999-12-31T00:00:00",
+                limit=15,
             )
             action = llm_mod.resolve_duplicate_hearings(
                 case_name=case.name,
@@ -838,19 +860,22 @@ class CaseSyncer:
         if atype != "MERGE_INTO":
             log.info(
                 "dedupe: keys=%s -> %s reason=%r",
-                [h.get("hearing_key") for h in cluster], atype,
+                [h.get("hearing_key") for h in cluster],
+                atype,
                 (action.get("reason") or "")[:120],
             )
             return 0
 
         target_key = action.get("target_key")
         target = next(
-            (h for h in cluster if h.get("hearing_key") == target_key), None,
+            (h for h in cluster if h.get("hearing_key") == target_key),
+            None,
         )
         if not target:
             log.warning(
                 "dedupe MERGE_INTO target_key %r not in cluster %s: leaving cluster alone",
-                target_key, [h.get("hearing_key") for h in cluster],
+                target_key,
+                [h.get("hearing_key") for h in cluster],
             )
             return 0
 
@@ -887,7 +912,10 @@ class CaseSyncer:
 
         log.info(
             "dedupe: merged %d hearing(s) into %r on docket %s (case=%s)",
-            n_cancelled, target_key, target.get("docket_id"), case.case_id,
+            n_cancelled,
+            target_key,
+            target.get("docket_id"),
+            case.case_id,
         )
         return n_cancelled
 
@@ -926,7 +954,9 @@ class CaseSyncer:
             tz = tz_for(court_id)
 
             recent = self.store.get_recent_relevant_entries(
-                docket_id, "9999-12-31T00:00:00", limit=15,
+                docket_id,
+                "9999-12-31T00:00:00",
+                limit=15,
             )
             action = llm_mod.verify_deadline(
                 case_name=case.name,
@@ -962,7 +992,9 @@ class CaseSyncer:
             audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
             merged["status"] = "cancelled"
-            audit_note = action.get("reason") or "No docket entry supports this deadline"
+            audit_note = (
+                action.get("reason") or "No docket entry supports this deadline"
+            )
         elif atype == "MARK_FILED":
             merged["status"] = "met"
         elif atype == "RESCHEDULE":
@@ -970,7 +1002,8 @@ class CaseSyncer:
             if not local_date:
                 log.warning(
                     "verify_deadline RESCHEDULE without local_date: case=%s key=%r",
-                    case.case_id, deadline.get("deadline_key"),
+                    case.case_id,
+                    deadline.get("deadline_key"),
                 )
                 return False
             convert_tz = deadline.get("timezone") or tz
@@ -981,17 +1014,23 @@ class CaseSyncer:
         else:
             log.warning(
                 "verify_deadline unknown action type %s: case=%s key=%r",
-                atype, case.case_id, deadline.get("deadline_key"),
+                atype,
+                case.case_id,
+                deadline.get("deadline_key"),
             )
             return False
 
         if audit_note is not None:
             merged["audit_notes"] = _append_audit_line(
-                deadline.get("audit_notes"), "verify-pass", audit_note,
+                deadline.get("audit_notes"),
+                "verify-pass",
+                audit_note,
             )
         log.info(
             "verify_deadline applying %s case=%s key=%r reason=%s",
-            atype, case.case_id, deadline.get("deadline_key"),
+            atype,
+            case.case_id,
+            deadline.get("deadline_key"),
             (action.get("reason") or "")[:120],
         )
         merged["source_entry_ids"] = sources
@@ -1018,7 +1057,9 @@ class CaseSyncer:
         for r in rows:
             log.info(
                 "auto-marking deadline passed: case=%s key=%r due=%s",
-                r["case_id"], r["deadline_key"], r["due_at_utc"],
+                r["case_id"],
+                r["deadline_key"],
+                r["due_at_utc"],
             )
             self.store.conn.execute(
                 "UPDATE deadlines SET status='passed', last_updated=? "
@@ -1056,24 +1097,26 @@ class CaseSyncer:
         duration = action.get("duration_minutes") or _default_duration(
             action.get("hearing_type"), bool(local_time)
         )
-        self.store.upsert_hearing({
-            "case_id": case.case_id,
-            "hearing_key": action["hearing_key"],
-            "title": action.get("title")
+        self.store.upsert_hearing(
+            {
+                "case_id": case.case_id,
+                "hearing_key": action["hearing_key"],
+                "title": action.get("title")
                 or action["hearing_key"].replace("-", " ").title(),
-            "starts_at_utc": starts_utc,
-            "duration_minutes": duration,
-            "timezone": tz,
-            "location": action.get("location"),
-            "judge": action.get("judge"),
-            "notes": action.get("notes"),
-            "dial_in": action.get("dial_in"),
-            "status": status,
-            "significance": action.get("significance") or "major",
-            "gcal_event_id": None,
-            "docket_id": docket_id,
-            "source_entry_ids": prev_sources,
-        })
+                "starts_at_utc": starts_utc,
+                "duration_minutes": duration,
+                "timezone": tz,
+                "location": action.get("location"),
+                "judge": action.get("judge"),
+                "notes": action.get("notes"),
+                "dial_in": action.get("dial_in"),
+                "status": status,
+                "significance": action.get("significance") or "major",
+                "gcal_event_id": None,
+                "docket_id": docket_id,
+                "source_entry_ids": prev_sources,
+            }
+        )
 
     # --- per-entry logic ---
 
@@ -1122,7 +1165,8 @@ class CaseSyncer:
         referenced = self._resolve_docket_refs(docket_id, entry)
         known_deadlines = (
             self.store.get_deadlines_in_court(case.case_id, court_id)
-            if want_deadlines else None
+            if want_deadlines
+            else None
         )
 
         actions = llm.extract_actions(
@@ -1207,7 +1251,8 @@ class CaseSyncer:
             log.debug(
                 "entry %s has %d recap_document(s) but none are fetchable "
                 "(paperless / not-yet-uploaded); skipping PDF stage",
-                entry.get("id"), len(rds),
+                entry.get("id"),
+                len(rds),
             )
             return []
 
@@ -1231,7 +1276,8 @@ class CaseSyncer:
                     log.info(
                         "recap_doc %s not yet on PACER (entry %s); "
                         "will retry next sync",
-                        doc_id, entry.get("id"),
+                        doc_id,
+                        entry.get("id"),
                     )
                 else:
                     log.info(
@@ -1267,14 +1313,20 @@ class CaseSyncer:
             log.warning(
                 "skipping date-less ADD: case=%s key=%r entry=%s "
                 "(LLM should have IGNOREd; treating as such)",
-                case.case_id, key, entry["id"],
+                case.case_id,
+                key,
+                entry["id"],
             )
             return
 
         log.info(
             "applying %s case=%s key=%r entry=%s date=%s time=%s",
-            atype, case.case_id, key, entry["id"],
-            action.get("local_date"), action.get("local_time"),
+            atype,
+            case.case_id,
+            key,
+            entry["id"],
+            action.get("local_date"),
+            action.get("local_time"),
         )
 
         existing = self.store.get_hearing(case.case_id, key)
@@ -1284,7 +1336,12 @@ class CaseSyncer:
                 "rejecting cross-court hearing action: case=%s key=%r "
                 "existing_court=%s current_court=%s entry=%s type=%s "
                 "(LLM in current court reused a key already owned by another court)",
-                case.case_id, key, cross[0], cross[1], entry["id"], atype,
+                case.case_id,
+                key,
+                cross[0],
+                cross[1],
+                entry["id"],
+                atype,
             )
             return
         eid = entry["id"]
@@ -1314,14 +1371,21 @@ class CaseSyncer:
                 # adjourning it. Insert a fresh row directly into
                 # 'cancelled' so the audit trail captures the event.
                 self._insert_terminal_hearing(
-                    case, docket_id, tz, entry, action,
-                    status="cancelled", prev_sources=prev_sources,
+                    case,
+                    docket_id,
+                    tz,
+                    entry,
+                    action,
+                    status="cancelled",
+                    prev_sources=prev_sources,
                 )
             else:
                 log.warning(
                     "CANCEL on unknown key with no local_date: "
                     "case=%s key=%r entry=%s — dropping",
-                    case.case_id, key, entry["id"],
+                    case.case_id,
+                    key,
+                    entry["id"],
                 )
             return
 
@@ -1336,7 +1400,9 @@ class CaseSyncer:
                     log.warning(
                         "MARK_HELD date mismatch: case=%s key=%r "
                         "existing_starts=%s action_local_date=%s — rejecting",
-                        case.case_id, key, existing.get("starts_at_utc"),
+                        case.case_id,
+                        key,
+                        existing.get("starts_at_utc"),
                         action.get("local_date"),
                     )
                     return
@@ -1351,14 +1417,21 @@ class CaseSyncer:
                 # Same as CANCEL-on-unknown: a minute entry for a hearing
                 # we never saw scheduled. Insert directly into 'held'.
                 self._insert_terminal_hearing(
-                    case, docket_id, tz, entry, action,
-                    status="held", prev_sources=prev_sources,
+                    case,
+                    docket_id,
+                    tz,
+                    entry,
+                    action,
+                    status="held",
+                    prev_sources=prev_sources,
                 )
             else:
                 log.warning(
                     "MARK_HELD on unknown key with no local_date: "
                     "case=%s key=%r entry=%s — dropping",
-                    case.case_id, key, entry["id"],
+                    case.case_id,
+                    key,
+                    entry["id"],
                 )
             return
 
@@ -1386,9 +1459,7 @@ class CaseSyncer:
         if duration is None and existing and atype != "RESCHEDULE":
             duration = existing.get("duration_minutes") or None
         if duration is None:
-            duration = _default_duration(
-                action.get("hearing_type"), bool(local_time)
-            )
+            duration = _default_duration(action.get("hearing_type"), bool(local_time))
 
         # Timezone is sticky after first insertion. A hearing happens in one
         # courthouse; later entries from sibling dockets in different
@@ -1408,18 +1479,18 @@ class CaseSyncer:
             "case_id": case.case_id,
             "hearing_key": key,
             "title": action.get("title")
-                or (existing.get("title") if existing else key.replace("-", " ").title()),
+            or (existing.get("title") if existing else key.replace("-", " ").title()),
             "starts_at_utc": starts_utc,
             "duration_minutes": duration,
             "timezone": sticky_tz,
             "location": action.get("location")
-                or (existing.get("location") if existing else None),
+            or (existing.get("location") if existing else None),
             "judge": action.get("judge")
-                or (existing.get("judge") if existing else None),
+            or (existing.get("judge") if existing else None),
             "notes": action.get("notes")
-                or (existing.get("notes") if existing else None),
+            or (existing.get("notes") if existing else None),
             "dial_in": action.get("dial_in")
-                or (existing.get("dial_in") if existing else None),
+            or (existing.get("dial_in") if existing else None),
             "status": "scheduled",
             "significance": significance,
             "gcal_event_id": existing.get("gcal_event_id") if existing else None,
@@ -1457,19 +1528,26 @@ class CaseSyncer:
                 log.warning(
                     "skipping date-less ADD_DEADLINE: case=%s key=%r entry=%s "
                     "(LLM should have IGNOREd or marked conditional)",
-                    case.case_id, key, entry["id"],
+                    case.case_id,
+                    key,
+                    entry["id"],
                 )
                 return
             log.info(
-                "applying conditional ADD_DEADLINE: case=%s key=%r entry=%s "
-                "notes=%r",
-                case.case_id, key, entry["id"],
+                "applying conditional ADD_DEADLINE: case=%s key=%r entry=%s notes=%r",
+                case.case_id,
+                key,
+                entry["id"],
                 (action.get("notes") or "")[:120],
             )
 
         log.info(
             "applying %s case=%s key=%r entry=%s date=%s",
-            atype, case.case_id, key, entry["id"], action.get("local_date"),
+            atype,
+            case.case_id,
+            key,
+            entry["id"],
+            action.get("local_date"),
         )
 
         existing = self.store.get_deadline(case.case_id, key)
@@ -1479,7 +1557,12 @@ class CaseSyncer:
                 "rejecting cross-court deadline action: case=%s key=%r "
                 "existing_court=%s current_court=%s entry=%s type=%s "
                 "(LLM in current court reused a key already owned by another court)",
-                case.case_id, key, cross[0], cross[1], entry["id"], atype,
+                case.case_id,
+                key,
+                cross[0],
+                cross[1],
+                entry["id"],
+                atype,
             )
             return
         eid = entry["id"]
@@ -1505,25 +1588,28 @@ class CaseSyncer:
                 due_at_utc = _deadline_local_to_utc(
                     action["local_date"], action.get("local_time"), tz
                 )
-                self.store.upsert_deadline({
-                    "case_id": case.case_id,
-                    "deadline_key": key,
-                    "title": action.get("title")
-                        or key.replace("-", " ").title(),
-                    "due_at_utc": due_at_utc,
-                    "timezone": tz,
-                    "notes": action.get("notes"),
-                    "status": "cancelled",
-                    "significance": action.get("significance") or "major",
-                    "deadline_type": action.get("deadline_type"),
-                    "docket_id": docket_id,
-                    "source_entry_ids": prev_sources,
-                })
+                self.store.upsert_deadline(
+                    {
+                        "case_id": case.case_id,
+                        "deadline_key": key,
+                        "title": action.get("title") or key.replace("-", " ").title(),
+                        "due_at_utc": due_at_utc,
+                        "timezone": tz,
+                        "notes": action.get("notes"),
+                        "status": "cancelled",
+                        "significance": action.get("significance") or "major",
+                        "deadline_type": action.get("deadline_type"),
+                        "docket_id": docket_id,
+                        "source_entry_ids": prev_sources,
+                    }
+                )
             else:
                 log.warning(
                     "CANCEL_DEADLINE on unknown key with no local_date: "
                     "case=%s key=%r entry=%s — dropping",
-                    case.case_id, key, entry["id"],
+                    case.case_id,
+                    key,
+                    entry["id"],
                 )
             return
 
@@ -1540,7 +1626,9 @@ class CaseSyncer:
                 log.info(
                     "MARK_FILED on unknown key (no row to update): "
                     "case=%s key=%r entry=%s",
-                    case.case_id, key, entry["id"],
+                    case.case_id,
+                    key,
+                    entry["id"],
                 )
             return
 
@@ -1565,15 +1653,15 @@ class CaseSyncer:
             "case_id": case.case_id,
             "deadline_key": key,
             "title": action.get("title")
-                or (existing.get("title") if existing else key.replace("-", " ").title()),
+            or (existing.get("title") if existing else key.replace("-", " ").title()),
             "due_at_utc": due_at_utc,
             "timezone": sticky_tz,
             "notes": action.get("notes")
-                or (existing.get("notes") if existing else None),
+            or (existing.get("notes") if existing else None),
             "status": "pending",
             "significance": significance,
             "deadline_type": action.get("deadline_type")
-                or (existing.get("deadline_type") if existing else None),
+            or (existing.get("deadline_type") if existing else None),
             "gcal_event_id": existing.get("gcal_event_id") if existing else None,
             "docket_id": sticky_docket_id,
             "source_entry_ids": prev_sources,

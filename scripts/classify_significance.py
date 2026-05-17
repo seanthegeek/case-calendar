@@ -37,6 +37,7 @@ def _parse_json(raw: str) -> dict:
     except json.JSONDecodeError as e:
         return {"significance": "?", "reason": f"parse error: {e}; raw={raw[:120]}"}
 
+
 CLASSIFY_SYSTEM = (
     "You classify a single court hearing as MAJOR or MINOR for a "
     "calendar-sync tool. Output ONLY a JSON object: "
@@ -71,8 +72,9 @@ def _call_anthropic_deterministic(system: str, user: str, max_tokens: int) -> st
         model=model,
         max_tokens=max_tokens,
         temperature=0,
-        system=[{"type": "text", "text": system,
-                 "cache_control": {"type": "ephemeral"}}],
+        system=[
+            {"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}
+        ],
         messages=[{"role": "user", "content": user}],
     )
     for block in resp.content:
@@ -100,8 +102,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if _detect_provider() != "anthropic":
-        print("This script currently uses the anthropic SDK directly.",
-              file=sys.stderr)
+        print("This script currently uses the anthropic SDK directly.", file=sys.stderr)
         return 1
 
     store = Store(args.db)
@@ -133,16 +134,20 @@ def main(argv: list[str] | None = None) -> int:
                     descs.append(d)
         prev = r["prev_significance"] or "—"
         if not descs:
-            print(f"  {r['case_id']:18} {r['hearing_key']:35} {prev:5} —     "
-                  f"{r['title'][:43]:45} (no source descriptions stored)")
+            print(
+                f"  {r['case_id']:18} {r['hearing_key']:35} {prev:5} —     "
+                f"{r['title'][:43]:45} (no source descriptions stored)"
+            )
             continue
         verdict = classify(r["case_id"], dict(r), descs)
         sig = verdict.get("significance", "?")
         reason = verdict.get("reason", "")[:80]
         flips = sig != prev and sig in ("major", "minor")
         flag = "*" if flips else " "
-        print(f" {flag}{r['case_id']:18} {r['hearing_key']:35} {prev:5} {sig:5} "
-              f"{r['title'][:43]:45} {reason}")
+        print(
+            f" {flag}{r['case_id']:18} {r['hearing_key']:35} {prev:5} {sig:5} "
+            f"{r['title'][:43]:45} {reason}"
+        )
         if flips:
             changed += 1
             if args.apply:
@@ -155,8 +160,7 @@ def main(argv: list[str] | None = None) -> int:
         store.conn.commit()
         print(f"\nApplied {changed} updates.")
     else:
-        print(f"\nDry-run: {changed} rows would change "
-              f"(re-run with --apply to write).")
+        print(f"\nDry-run: {changed} rows would change (re-run with --apply to write).")
 
     store.close()
     return 0
