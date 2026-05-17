@@ -1,0 +1,26 @@
+name: Calendar bug report
+description: Report an issue with event extraction
+labels: [bug]
+body:
+  - type: input
+    id: docket-url
+    attributes:
+      label: CourtListener docket URL
+      placeholder: https://www.courtlistener.com/docket/xxxxxxxxx/united-states-v-smith/
+    validations:
+      required: true
+  - type: input
+    id: llm-model
+    attributes:
+      label: LLM used for extraction
+      description: The model identifier from `LLM_MODEL` (or the per-provider default).
+      placeholder: claude-haiku-4-5, gpt-5.4-nano, gemini-2.5-flash-lite
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Describe the problem
+      placeholder: The hearing at docket number xx is missing.
+    validations:
+      required: true

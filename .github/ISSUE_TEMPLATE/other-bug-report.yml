@@ -1,0 +1,22 @@
+name: Other bug report
+description: Report a bug that isn't about event extraction or case summarization
+labels: [bug]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Describe the problem
+      description: What happened, and what did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Commands run, config relevant to the bug, and anything else needed to reproduce.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs or output
+      description: Paste any error messages or log lines. Redact tokens and email addresses.
+      render: shell

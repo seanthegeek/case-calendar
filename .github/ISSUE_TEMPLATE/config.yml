@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Add a case to CaseCalendar.net
+    url: https://github.com/seanthegeek/case-calendar/discussions/2
+    about: Request a new case be added to the public CaseCalendar.net feeds.

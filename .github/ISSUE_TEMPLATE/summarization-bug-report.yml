@@ -1,0 +1,26 @@
+name: Summarization bug report
+description: Report an issue with case summarization
+labels: [bug]
+body:
+  - type: input
+    id: docket-url
+    attributes:
+      label: CourtListener docket URL
+      placeholder: https://www.courtlistener.com/docket/xxxxxxxxx/united-states-v-smith/
+    validations:
+      required: true
+  - type: input
+    id: llm-model
+    attributes:
+      label: LLM used for summarization
+      description: The summary model identifier from `LLM_SUMMARY_MODEL` (or the per-provider default).
+      placeholder: claude-sonnet-4-6, gpt-5.4, gemini-2.5-pro
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Describe the problem
+      placeholder: The LLM hallucinates this detail
+    validations:
+      required: true
