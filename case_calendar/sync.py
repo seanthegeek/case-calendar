@@ -241,7 +241,7 @@ def _validate_action_dial_in(action: dict[str, Any]) -> None:
     action["dial_in"] = None
 
 
-def _local_to_utc(date_str: str, time_str: Optional[str], tz: str) -> Optional[str]:
+def _local_to_utc(date_str: Optional[str], time_str: Optional[str], tz: str) -> Optional[str]:
     if not date_str:
         return None
     if time_str:
@@ -261,7 +261,7 @@ DEADLINE_DEFAULT_LOCAL_TIME = "17:00"
 
 
 def _deadline_local_to_utc(
-    date_str: str, time_str: Optional[str], tz: str
+    date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
     """Same as _local_to_utc but defaults missing times to 17:00 court-local
     rather than midnight. Used by the deadline path so the stored UTC
@@ -1077,7 +1077,7 @@ class CaseSyncer:
 
     # --- per-entry logic ---
 
-    def _ensure_court(self, court_id: str) -> None:
+    def _ensure_court(self, court_id: Optional[str]) -> None:
         """Cache court metadata (citation_string) on first sight."""
         if not court_id:
             return
@@ -1176,7 +1176,7 @@ class CaseSyncer:
         for n in _extract_docket_refs(entry):
             row = self.store.get_entry_by_number(docket_id, n)
             if row and (row.get("description") or row.get("short_description")):
-                eid = row.get("entry_id")
+                eid = row["entry_id"]
                 if eid not in seen_ids:
                     seen_ids.add(eid)
                     out.append({"entry_number": n, **row})
@@ -1185,7 +1185,7 @@ class CaseSyncer:
             docket_id, entry.get("date_modified") or "", limit=5
         )
         for row in recent:
-            eid = row.get("entry_id")
+            eid = row["entry_id"]
             if eid not in seen_ids:
                 seen_ids.add(eid)
                 out.append({"entry_number": row.get("entry_number"), **row})

@@ -9,14 +9,16 @@ from __future__ import annotations
 import argparse
 import io
 import urllib.error
+from argparse import Namespace
 from pathlib import Path
-from types import SimpleNamespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 import yaml
 
 from case_calendar import cli
+from .conftest import must
 from case_calendar.cli import (
     _cases_from_config,
     _compose_title,
@@ -116,26 +118,26 @@ class TestDeadlineToHearing:
         # The "deadline:" prefix on the hearing_key keeps the ICS UID and
         # gcal deterministic ID separate from any real hearing's namespace —
         # otherwise a hearing and a deadline sharing a slug would collide.
-        out = _deadline_to_hearing(self._row())
+        out = must(_deadline_to_hearing(self._row()))
         assert out["hearing_key"] == "deadline:reply-mtd"
 
     def test_does_not_pre_prefix_title(self):
         # _compose_title is responsible for prefixing — _deadline_to_hearing
         # returns the raw title so cli.py's compose step has clean inputs.
-        out = _deadline_to_hearing(self._row())
+        out = must(_deadline_to_hearing(self._row()))
         assert out["title"] == "Reply ISO MTD"
 
     def test_passed_status_maps_to_held(self):
         # Past-due pending deadlines flip to 'passed' in the store; for
         # rendering they map to 'held' so they stay visible in the ICS feed.
-        out = _deadline_to_hearing(self._row(status="passed"))
+        out = must(_deadline_to_hearing(self._row(status="passed")))
         assert out["status"] == "held"
 
     def test_met_status_maps_to_cancelled(self):
         # 'met' = the filing was made. Renderers skip cancelled rows so
         # they fall off the calendar — exactly what we want for met
         # deadlines, which no longer need a reminder.
-        out = _deadline_to_hearing(self._row(status="met"))
+        out = must(_deadline_to_hearing(self._row(status="met")))
         assert out["status"] == "cancelled"
 
 
@@ -251,7 +253,6 @@ class TestEmitCalendars:
         # newline translation; otherwise the long second URL gets folded
         # ("\r\n ") and the fold normalizes to "\n " under text mode, so
         # the literal "\r\n " unfold misses it.
-        from pathlib import Path
         text = Path(cfg["calendars"]["cyber"]["ics_path"]).read_bytes().decode()
         unfolded = text.replace("\r\n ", "")
         assert "Documents:" in unfolded
@@ -653,10 +654,10 @@ def fake_cl_ctx(monkeypatch):
     instance = MagicMock(name="CourtListener")
 
     class _Ctx:
-        def __enter__(self_inner):
+        def __enter__(self):
             return instance
 
-        def __exit__(self_inner, *_):
+        def __exit__(self, *_):
             return False
 
     monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: _Ctx())
@@ -665,7 +666,7 @@ def fake_cl_ctx(monkeypatch):
 
 class TestCmdSync:
     def test_unknown_case_id_returns_2(self, cfg_file):
-        args = SimpleNamespace(config=str(cfg_file), case="nope", no_emit=False)
+        args = Namespace(config=str(cfg_file), case="nope", no_emit=False)
         assert cmd_sync(args) == 2
 
     def test_runs_syncer_and_emits_on_actions(
@@ -695,7 +696,7 @@ class TestCmdSync:
 
         monkeypatch.setattr(cli, "emit_calendars", _spy_emit)
 
-        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        args = Namespace(config=str(cfg_file), case=None, no_emit=False)
         assert cmd_sync(args) == 0
         # Auto-emit fired, scoped to the case's calendar.
         assert emit_calls == [{"cyber"}]
@@ -724,7 +725,7 @@ class TestCmdSync:
             cli, "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
-        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        args = Namespace(config=str(cfg_file), case=None, no_emit=False)
         assert cmd_sync(args) == 0
         assert emit_calls == [set()]
 
@@ -749,7 +750,7 @@ class TestCmdSync:
                 "verified": 0, "auto_passed": 0,
             },
         )
-        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        args = Namespace(config=str(cfg_file), case=None, no_emit=False)
         assert cmd_sync(args) == 0
         assert index_path.exists()
         assert index_path.read_text(encoding="utf-8").startswith("<!doctype html>")
@@ -771,7 +772,7 @@ class TestCmdSync:
             cli, "emit_calendars",
             lambda *a, **kw: emit_calls.append(1) or {},
         )
-        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=True)
+        args = Namespace(config=str(cfg_file), case=None, no_emit=True)
         assert cmd_sync(args) == 0
         assert emit_calls == []
 
@@ -807,7 +808,7 @@ class TestCmdSync:
             }},
         )
 
-        args = SimpleNamespace(config=str(cfg_file), case=None, no_emit=False)
+        args = Namespace(config=str(cfg_file), case=None, no_emit=False)
         assert cmd_sync(args) == 0
         assert len(refresh_calls) == 1
         assert refresh_calls[0]["only_case_ids"] == {"us-v-x"}
@@ -841,7 +842,7 @@ class TestCmdSync:
         )
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
 
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_file), case=None, no_emit=False,
             force_summaries=True,
         )
@@ -890,7 +891,7 @@ class TestCmdSync:
         )
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
 
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_path), case=None, no_emit=False,
             only_new=True,
         )
@@ -934,7 +935,7 @@ class TestCmdSync:
             lambda *a, **kw: emit_calls.append(1) or {},
         )
 
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_path), case=None, no_emit=False,
             only_new=True,
         )
@@ -965,7 +966,7 @@ class TestCmdEmit:
                 "m365_pushed": True,
             }},
         )
-        args = SimpleNamespace(config=str(cfg_file))
+        args = Namespace(config=str(cfg_file))
         assert cmd_emit(args) == 0
         out = capsys.readouterr().out
         assert "wrote 3 events" in out
@@ -975,7 +976,7 @@ class TestCmdEmit:
 class TestCmdServe:
     def test_rejects_short_secret(self, cfg_file, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "too-short")
-        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=8000)
+        args = Namespace(config=str(cfg_file), host="127.0.0.1", port=8000)
         assert cmd_serve(args) == 2
         assert "WEBHOOK_SECRET" in capsys.readouterr().err
 
@@ -1010,7 +1011,7 @@ class TestCmdServe:
             }},
         )
 
-        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
         assert cmd_serve(args) == 0
         assert captured["port"] == 9000
         # Invoke the wired emit_fn — must accept a calendar set.
@@ -1090,7 +1091,7 @@ class TestCmdServe:
             }},
         )
 
-        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
 
         # Override _fake_serve to wait for the debounce thread to finish
         # before serve() returns, so the store is still open when
@@ -1154,7 +1155,7 @@ class TestCmdServe:
             }},
         )
 
-        args = SimpleNamespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
         assert cmd_serve(args) == 0
         # No Timer was created because no stale row existed.
         assert timers == []
@@ -1164,7 +1165,7 @@ class TestCmdSetup:
     def test_gcal_without_credentials_path_errors(
         self, cfg_file, monkeypatch, capsys,
     ):
-        args = SimpleNamespace(config=str(cfg_file), backend="gcal")
+        args = Namespace(config=str(cfg_file), backend="gcal")
         assert cmd_setup(args) == 2
         assert "google_credentials_path" in capsys.readouterr().err
 
@@ -1181,14 +1182,14 @@ class TestCmdSetup:
         monkeypatch.setattr(
             "case_calendar.calendars.gcal.GoogleCalendarSync", _factory,
         )
-        args = SimpleNamespace(config=str(cfg_file), backend="gcal")
+        args = Namespace(config=str(cfg_file), backend="gcal")
         assert cmd_setup(args) == 0
         assert invoked[0]["creds"] == "/c.json"
         assert "gcal token staged" in capsys.readouterr().out
 
     def test_m365_without_client_id_errors(self, cfg_file, monkeypatch, capsys):
         monkeypatch.delenv("M365_CLIENT_ID", raising=False)
-        args = SimpleNamespace(config=str(cfg_file), backend="m365")
+        args = Namespace(config=str(cfg_file), backend="m365")
         assert cmd_setup(args) == 2
         assert "m365_client_id" in capsys.readouterr().err
 
@@ -1205,7 +1206,7 @@ class TestCmdSetup:
         monkeypatch.setattr(
             "case_calendar.calendars.m365.M365CalendarSync", _factory,
         )
-        args = SimpleNamespace(config=str(cfg_file), backend="m365")
+        args = Namespace(config=str(cfg_file), backend="m365")
         assert cmd_setup(args) == 0
         assert "m365 auth record staged" in capsys.readouterr().out
 
@@ -1214,7 +1215,7 @@ class TestCmdSummarize:
     def test_requires_case_summaries_enabled(
         self, cfg_file, monkeypatch, capsys,
     ):
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_file), case=None, force=False, no_emit=False,
         )
         assert cmd_summarize(args) == 2
@@ -1226,7 +1227,7 @@ class TestCmdSummarize:
         cfg_file.write_text(yaml.safe_dump(cfg))
         monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: MagicMock())
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_file), case="nope", force=False, no_emit=False,
         )
         assert cmd_summarize(args) == 2
@@ -1252,7 +1253,7 @@ class TestCmdSummarize:
             cli, "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
-        args = SimpleNamespace(
+        args = Namespace(
             config=str(cfg_file), case=None, force=True, no_emit=False,
         )
         assert cmd_summarize(args) == 0
@@ -1288,7 +1289,7 @@ class TestCmdShow:
         s.conn.commit()
         s.close()
 
-        args = SimpleNamespace(config=str(cfg_file), case=None)
+        args = Namespace(config=str(cfg_file), case=None)
         assert cmd_show(args) == 0
         out = capsys.readouterr().out
         assert "Sentencing" in out and "Reply ISO MTD" in out
@@ -1296,7 +1297,7 @@ class TestCmdShow:
         assert "tel:555-1234" in out
 
     def test_case_filter_limits_to_one_case(self, cfg_file, capsys):
-        args = SimpleNamespace(config=str(cfg_file), case="other-case")
+        args = Namespace(config=str(cfg_file), case="other-case")
         assert cmd_show(args) == 0
         assert capsys.readouterr().out == ""
 
@@ -1343,7 +1344,7 @@ class TestCmdPrune:
         })
         s.conn.commit()
         s.close()
-        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        args = Namespace(config=str(cfg_file), apply=False)
         assert cli.cmd_prune(args) == 0
         out = capsys.readouterr().out
         assert "No orphan dockets" in out
@@ -1352,7 +1353,7 @@ class TestCmdPrune:
     def test_dry_run_lists_orphans_without_deleting(self, cfg_file, capsys):
         cfg = yaml.safe_load(cfg_file.read_text())
         self._seed_two_dockets(cfg["store_path"])
-        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        args = Namespace(config=str(cfg_file), apply=False)
         assert cli.cmd_prune(args) == 0
         out = capsys.readouterr().out
         # Plan surfaces docket_id, label, and per-table counts.
@@ -1377,7 +1378,7 @@ class TestCmdPrune:
     def test_apply_deletes_orphan_rows(self, cfg_file, capsys):
         cfg = yaml.safe_load(cfg_file.read_text())
         self._seed_two_dockets(cfg["store_path"])
-        args = SimpleNamespace(config=str(cfg_file), apply=True)
+        args = Namespace(config=str(cfg_file), apply=True)
         assert cli.cmd_prune(args) == 0
         out = capsys.readouterr().out
         assert "Deleting" in out
@@ -1409,7 +1410,7 @@ class TestCmdPrune:
         )
         s.conn.commit()
         s.close()
-        args = SimpleNamespace(config=str(cfg_file), apply=False)
+        args = Namespace(config=str(cfg_file), apply=False)
         assert cli.cmd_prune(args) == 0
         out = capsys.readouterr().out
         assert "docket_id=999" in out
@@ -1421,7 +1422,7 @@ class TestCmdWebhookUrl:
         # The conftest autouse fixture already strips any inherited secret,
         # but be explicit so this test reads cleanly in isolation.
         monkeypatch.delenv("CASE_CALENDAR_WEBHOOK_SECRET", raising=False)
-        args = SimpleNamespace(host=None, check=False)
+        args = Namespace(host=None, check=False)
         assert cli.cmd_webhook_url(args) == 2
         err = capsys.readouterr().err
         assert "CASE_CALENDAR_WEBHOOK_SECRET" in err
@@ -1430,7 +1431,7 @@ class TestCmdWebhookUrl:
         self, monkeypatch, capsys,
     ):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host=None, check=False)
+        args = Namespace(host=None, check=False)
         assert cli.cmd_webhook_url(args) == 0
         out = capsys.readouterr()
         assert out.out.strip() == (
@@ -1442,7 +1443,7 @@ class TestCmdWebhookUrl:
 
     def test_host_without_scheme_gets_https(self, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="webhook.example.com", check=False)
+        args = Namespace(host="webhook.example.com", check=False)
         assert cli.cmd_webhook_url(args) == 0
         out = capsys.readouterr()
         assert out.out.strip() == (
@@ -1454,7 +1455,7 @@ class TestCmdWebhookUrl:
     def test_explicit_scheme_respected(self, monkeypatch, capsys):
         # Useful for local curl testing against the receiver on 127.0.0.1.
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="http://localhost:8000", check=False)
+        args = Namespace(host="http://localhost:8000", check=False)
         assert cli.cmd_webhook_url(args) == 0
         assert capsys.readouterr().out.strip() == (
             "http://localhost:8000/webhooks/case-calendar/abc123"
@@ -1462,7 +1463,7 @@ class TestCmdWebhookUrl:
 
     def test_trailing_slash_on_host_normalized(self, monkeypatch, capsys):
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host="https://webhook.example.com/", check=False)
+        args = Namespace(host="https://webhook.example.com/", check=False)
         assert cli.cmd_webhook_url(args) == 0
         # No double slash before the /webhooks/ prefix.
         assert capsys.readouterr().out.strip() == (
@@ -1486,7 +1487,7 @@ class TestCmdWebhookUrl:
         # --check needs an actual host to probe; refuse rather than emit a
         # bogus placeholder URL.
         monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
-        args = SimpleNamespace(host=None, check=True)
+        args = Namespace(host=None, check=True)
         assert cli.cmd_webhook_url(args) == 2
         assert "--host" in capsys.readouterr().err
 
@@ -1512,7 +1513,7 @@ class TestCmdWebhookUrl:
         monkeypatch.setattr(
             "urllib.request.urlopen", _fake_urlopen,
         )
-        args = SimpleNamespace(host="webhook.example.com", check=True)
+        args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 0
         out = capsys.readouterr().out
         assert "health check OK" in out
@@ -1532,7 +1533,7 @@ class TestCmdWebhookUrl:
             )
 
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-        args = SimpleNamespace(host="webhook.example.com", check=True)
+        args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
         err = capsys.readouterr().err
         assert "HTTP 403" in err
@@ -1545,7 +1546,7 @@ class TestCmdWebhookUrl:
             raise urllib.error.URLError("nodename nor servname known")
 
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
-        args = SimpleNamespace(host="bogus.invalid", check=True)
+        args = Namespace(host="bogus.invalid", check=True)
         assert cli.cmd_webhook_url(args) == 1
         err = capsys.readouterr().err
         assert "cannot reach" in err
@@ -1567,7 +1568,7 @@ class TestCmdWebhookUrl:
                 return b'redirect to login'
 
         monkeypatch.setattr("urllib.request.urlopen", lambda req, timeout=10: _Resp())
-        args = SimpleNamespace(host="webhook.example.com", check=True)
+        args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
         err = capsys.readouterr().err
         assert "HTTP 301" in err
@@ -1588,7 +1589,7 @@ class TestCmdWebhookUrl:
         monkeypatch.setattr(
             "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
         )
-        args = SimpleNamespace(host="webhook.example.com", check=True)
+        args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
         assert "non-JSON" in capsys.readouterr().err
 
@@ -1606,7 +1607,7 @@ class TestCmdWebhookUrl:
         monkeypatch.setattr(
             "urllib.request.urlopen", lambda req, timeout=10: _Resp(),
         )
-        args = SimpleNamespace(host="webhook.example.com", check=True)
+        args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
         assert "doesn't identify as case-calendar" in capsys.readouterr().err
 

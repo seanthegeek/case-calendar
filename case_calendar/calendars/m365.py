@@ -76,7 +76,7 @@ class M365CalendarSync:
             InteractiveBrowserCredential,
             TokenCachePersistenceOptions,
         )
-        from msgraph import GraphServiceClient
+        from msgraph.graph_service_client import GraphServiceClient
 
         self._AuthenticationRecord = AuthenticationRecord
         self._InteractiveBrowserCredential = InteractiveBrowserCredential
@@ -238,14 +238,15 @@ class M365CalendarSync:
         )
         events_rb = self._events_rb(calendar_id)
         if calendar_id:
-            qp = CalEventsRB.EventsRequestBuilderGetQueryParameters(
+            cal_qp = CalEventsRB.EventsRequestBuilderGetQueryParameters(
                 filter=filter_expr, top=1,
             )
+            config: Any = RequestConfiguration(query_parameters=cal_qp)
         else:
-            qp = MeEventsRB.EventsRequestBuilderGetQueryParameters(
+            me_qp = MeEventsRB.EventsRequestBuilderGetQueryParameters(
                 filter=filter_expr, top=1,
             )
-        config = RequestConfiguration(query_parameters=qp)
+            config = RequestConfiguration(query_parameters=me_qp)
         try:
             result = await events_rb.get(request_configuration=config)
         except Exception as e:

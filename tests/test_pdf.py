@@ -227,12 +227,19 @@ class TestFetchPdfBytes:
         seen: list[str] = []
 
         class _Resp:
-            def __init__(self, status, content): self.status_code = status; self.content = content
+            def __init__(self, status, content):
+                self.status_code = status
+                self.content = content
 
         class _Client:
-            def __init__(self, *a, **k): pass
-            def __enter__(self): return self
-            def __exit__(self, *a): return False
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
             def get(self, url):
                 seen.append(url)
                 if "archive.org" in url:
@@ -334,11 +341,11 @@ class TestExtractWithPypdfHappyPath:
         # logs and returns empty string rather than crashing the whole
         # summary call. The bug shape: a PDF that's valid enough to
         # download but malformed enough to break pypdf.
-        import pypdf
+        import pypdf.errors as pypdf_errors
 
         class _BoomReader:
             def __init__(self, *a, **k):
-                raise pypdf.errors.PdfReadError("Stream has ended unexpectedly")
+                raise pypdf_errors.PdfReadError("Stream has ended unexpectedly")
 
         monkeypatch.setattr(pdf, "PdfReader", _BoomReader, raising=False)
         # Also patch the import inside the function — pypdf.PdfReader is
@@ -346,7 +353,7 @@ class TestExtractWithPypdfHappyPath:
         import sys
         fake_module = type(sys)("pypdf")
         fake_module.PdfReader = _BoomReader
-        fake_module.errors = pypdf.errors
+        fake_module.errors = pypdf_errors
         monkeypatch.setitem(sys.modules, "pypdf", fake_module)
         assert pdf.extract_with_pypdf(b"%PDF-1.4 garbage") == ""
 
@@ -357,7 +364,7 @@ class TestExtractWithPypdfHappyPath:
         # multi-page PDF. The good pages still contribute text; the bad
         # one contributes empty.
         import sys
-        import pypdf
+        import pypdf.errors as pypdf_errors
 
         class _BadPage:
             def extract_text(self):
@@ -373,7 +380,7 @@ class TestExtractWithPypdfHappyPath:
 
         fake_module = type(sys)("pypdf")
         fake_module.PdfReader = _Reader
-        fake_module.errors = pypdf.errors
+        fake_module.errors = pypdf_errors
         monkeypatch.setitem(sys.modules, "pypdf", fake_module)
         out = pdf.extract_with_pypdf(b"%PDF-1.4")
         # Bad page contributed nothing; good page's text survived.
@@ -420,14 +427,14 @@ class TestOcrWithTesseract:
                 Path(prefix + "-1.png").write_bytes(b"\x89PNG fake")
                 Path(prefix + "-2.png").write_bytes(b"\x89PNG fake")
 
-                class R:
+                class _PdfToppmResult:
                     stdout = b""
-                return R()
+                return _PdfToppmResult()
             elif tool == "tesseract":
                 # argv format: ["tesseract", "<input.png>", "-", "-l", "eng"]
-                class R:
+                class _TesseractResult:
                     stdout = b"page text"
-                return R()
+                return _TesseractResult()
             raise AssertionError(f"unexpected subprocess: {argv}")
 
         monkeypatch.setattr(subprocess, "run", _run)

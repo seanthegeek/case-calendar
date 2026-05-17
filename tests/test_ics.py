@@ -83,7 +83,7 @@ class TestRenderIcs:
         # DTSTART reverts to a bare UTC stamp.
         assert "TZID=Bogus" not in ics
         # The DTSTART line ends with Z (UTC suffix).
-        line = next(l for l in ics.split("\r\n") if l.startswith("DTSTART:"))
+        line = next(ln for ln in ics.split("\r\n") if ln.startswith("DTSTART:"))
         assert line.endswith("Z")
 
     def test_cancelled_event_is_filtered_out(self):

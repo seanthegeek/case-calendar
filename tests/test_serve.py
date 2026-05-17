@@ -530,8 +530,6 @@ class TestServerWide500Handler:
 
         from case_calendar import serve as serve_mod
 
-        original = serve_mod.WebhookServer.process_locked
-
         def _boom(self, *a, **kw):
             raise RuntimeError("lock subsystem down")
 

@@ -309,7 +309,7 @@ class TestBuildService:
         monkeypatch.setattr(gcal_mod, "Request", MagicMock())
         monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
 
-        gcs = gcal_mod.GoogleCalendarSync(
+        gcal_mod.GoogleCalendarSync(
             credentials_path="/c.json", token_path=token,
         )
         fake_creds.refresh.assert_called_once()
@@ -331,7 +331,7 @@ class TestBuildService:
         )
         monkeypatch.setattr(gcal_mod, "build", lambda *a, **kw: MagicMock())
 
-        gcs = gcal_mod.GoogleCalendarSync(
+        gcal_mod.GoogleCalendarSync(
             credentials_path="/c.json", token_path=token,
         )
         flow_obj.run_local_server.assert_called_once()

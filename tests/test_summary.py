@@ -8,12 +8,12 @@ pre-canned ``/docket-entries/`` pages.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
 
 from case_calendar import summary
+from case_calendar.courtlistener import CourtListener
 from case_calendar.summary import (
     _is_disposition_document,
     find_primary_documents,
@@ -23,7 +23,7 @@ from case_calendar.summary import (
     summarize_case,
     summarize_docket,
 )
-from case_calendar.sync import ExtraDocument
+from case_calendar.sync import CaseConfig as _Case, ExtraDocument
 
 
 # ---------------------------------------------------------------------------
@@ -31,16 +31,17 @@ from case_calendar.sync import ExtraDocument
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class _Case:
-    """Minimal CaseConfig-shaped stand-in (avoids importing sync into tests
-    that don't otherwise need it). The summary module duck-types these."""
-    case_id: str
-    name: str
-    dockets: list[int]
-    calendar: str = "test"
-    extract_deadlines: bool = False
-    extra_documents: list[ExtraDocument] = field(default_factory=list)
+class _BoomCourtListenerBase(CourtListener):
+    """Base for one-off CourtListener stubs whose `_get` raises.
+
+    Used by tests that prove a short-circuit path never reaches the
+    network. Subclasses just override `_get` with the assertion they
+    want to enforce.
+    """
+
+    def __init__(self) -> None:
+        # Deliberately skip the real `__init__` (no httpx client, no token).
+        pass
 
 
 class _FakeResp:
@@ -51,12 +52,15 @@ class _FakeResp:
         return self._payload
 
 
-class _FakeCourtListener:
+class _FakeCourtListener(CourtListener):
     """Records GETs and replays canned ``/docket-entries/`` pages.
 
     Pages are keyed by ``(docket_id, order_by)`` — `find_primary_documents`
     makes two such requests per docket (date_filed and -date_filed). Each
     page payload is the raw CourtListener response shape: ``{"results": [...], "next": ...}``.
+
+    Subclasses the real client so it's accepted wherever a `CourtListener`
+    is expected, but skips the real `__init__` (no httpx, no token).
     """
 
     def __init__(self, pages: dict[tuple[int, str], list[dict[str, Any]]]):
@@ -66,7 +70,7 @@ class _FakeCourtListener:
         self._pages = pages
         self.calls: list[dict[str, Any]] = []
 
-    def _get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResp:
+    def _get(self, url: str, params: dict[str, Any] | None = None) -> _FakeResp:  # type: ignore[override]
         self.calls.append({"url": url, "params": params})
         if params is None:
             # The summary code only passes params on the first page; the
@@ -408,10 +412,10 @@ class TestFindPrimaryDocuments:
             recap_documents=[{"id": 600, "plain_text": "judgment body"}],
         )
         # CourtListener is wired to raise if called — proves the short-circuit hit.
-        class _BoomCL:
+        class _BoomCourtListener(_BoomCourtListenerBase):
             def _get(self, *a, **kw):
                 raise AssertionError("CourtListener must not be called when local cache is warm")
-        primary, dispositions = find_primary_documents(_BoomCL(), 1, store=store)
+        primary, dispositions = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
         # Recap document payload (with plain_text) is preserved end-to-end
@@ -590,10 +594,10 @@ class TestFindPrimaryDocuments:
         )
         # Sanity: a follow-up call with a CourtListener that would raise on any
         # _get must now succeed entirely from the (repaired) cache.
-        class _BoomCL:
+        class _BoomCourtListener(_BoomCourtListenerBase):
             def _get(self, *a, **kw):
                 raise AssertionError("repaired cache must short-circuit")
-        primary2, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        primary2, _ = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary2] == [10]
 
     def test_sealed_or_unavailable_main_doc_does_not_count_as_stale(self, store):
@@ -614,13 +618,13 @@ class TestFindPrimaryDocuments:
                 "plain_text": None,
             }],
         )
-        class _BoomCL:
+        class _BoomCourtListener(_BoomCourtListenerBase):
             def _get(self, *a, **kw):
                 raise AssertionError(
                     "is_available=False is not a staleness signal — "
                     "the short-circuit must hold"
                 )
-        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        primary, _ = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
 
     def test_sealed_main_doc_does_not_count_as_stale(self, store):
@@ -640,13 +644,13 @@ class TestFindPrimaryDocuments:
                 "plain_text": None,
             }],
         )
-        class _BoomCL:
+        class _BoomCourtListener(_BoomCourtListenerBase):
             def _get(self, *a, **kw):
                 raise AssertionError(
                     "is_sealed=True is not a staleness signal — "
                     "the short-circuit must hold"
                 )
-        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        primary, _ = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
 
     def test_attachment_with_empty_plain_text_does_not_count_as_stale(self, store):
@@ -678,13 +682,13 @@ class TestFindPrimaryDocuments:
                 },
             ],
         )
-        class _BoomCL:
+        class _BoomCourtListener(_BoomCourtListenerBase):
             def _get(self, *a, **kw):
                 raise AssertionError(
                     "an attachment's empty plain_text is not a staleness "
                     "signal — the short-circuit must hold"
                 )
-        primary, _ = find_primary_documents(_BoomCL(), 1, store=store)
+        primary, _ = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
 
 

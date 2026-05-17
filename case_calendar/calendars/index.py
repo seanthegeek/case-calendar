@@ -835,14 +835,11 @@ def build_calendar_models(
             # Per-docket AI summaries — opt-in feature. The list is empty when
             # the operator hasn't run `case-calendar summarize` for this case,
             # which causes the renderer to skip the summary block entirely.
-            summaries: list[dict[str, Any]] = []
-            get_summaries = getattr(store, "get_case_summaries", None)
-            if callable(get_summaries):
-                summaries = get_summaries(c["id"])
-                # Preserve config-defined docket order in the rendered output
-                # so multi-docket cases read in the order the operator listed.
-                order = {did: i for i, did in enumerate(docket_ids)}
-                summaries.sort(key=lambda s: order.get(s.get("docket_id"), 1_000_000))
+            summaries: list[dict[str, Any]] = store.get_case_summaries(c["id"])
+            # Preserve config-defined docket order in the rendered output
+            # so multi-docket cases read in the order the operator listed.
+            order = {did: i for i, did in enumerate(docket_ids)}
+            summaries.sort(key=lambda s: order.get(s.get("docket_id"), 1_000_000))
             case_rows.append({
                 "id": c.get("id"),
                 "name": c.get("name"),

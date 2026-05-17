@@ -14,7 +14,7 @@ from case_calendar import llm as llm_mod
 from case_calendar.store import Store
 from case_calendar.sync import CaseConfig, CaseSyncer
 
-from .conftest import FakeCourtListener
+from .conftest import FakeCourtListener, must
 
 
 @pytest.fixture
@@ -319,7 +319,7 @@ class TestDocketMetaCaching:
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [_entry(1, "x")]})
         syncer = CaseSyncer(cl, store)
         syncer.sync_case(case)
-        meta = store.get_docket_meta(100)
+        meta = must(store.get_docket_meta(100))
         assert meta["court_id"] == "mad"
         assert meta["docket_number"] == "1:25-cr-00001-X"
 
@@ -341,7 +341,7 @@ class TestLastFilingDateCapture:
         )
         syncer = CaseSyncer(cl, store)
         syncer.sync_case(case)
-        meta = store.get_docket_meta(100)
+        meta = must(store.get_docket_meta(100))
         assert meta["date_last_filing"] == "2026-05-08"
 
     def test_webhook_bumps_last_filing_from_entry(
@@ -360,7 +360,7 @@ class TestLastFilingDateCapture:
         cl = FakeCourtListener(dockets={100: _docket(date_last_filing="2026-05-01")})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-05-10"))
-        assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-10"
+        assert must(store.get_docket_meta(100))["date_last_filing"] == "2026-05-10"
 
     def test_polling_captures_last_filing_on_short_circuit(
         self, store: Store, case, monkeypatch,
@@ -383,7 +383,7 @@ class TestLastFilingDateCapture:
         syncer = CaseSyncer(cl, store)
         stats = syncer.sync_case(case)
         assert stats["dockets_skipped"] == 1
-        assert store.get_docket_meta(100)["date_last_filing"] == "2026-04-28"
+        assert must(store.get_docket_meta(100))["date_last_filing"] == "2026-04-28"
 
     def test_webhook_does_not_move_last_filing_backwards(
         self, store: Store, case, monkeypatch,
@@ -401,7 +401,7 @@ class TestLastFilingDateCapture:
         cl = FakeCourtListener(dockets={100: _docket(date_last_filing="2026-05-08")})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "x", date_filed="2026-04-01"))
-        assert store.get_docket_meta(100)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(100))["date_last_filing"] == "2026-05-08"
 
 
 class TestStickyTimezone:
@@ -620,7 +620,7 @@ class TestCrossCourtActionGuard:
             "ORDER stay appellate proceedings granted; brief schedule moved",
         ))
 
-        d = store.get_deadline("x", "petitioner-reply-brief-appellate")
+        d = must(store.get_deadline("x", "petitioner-reply-brief-appellate"))
         # Unchanged: still owned by D.C. Cir.; date and notes intact;
         # ca9 entry 42 NOT folded into source_entry_ids.
         assert d["docket_id"] == 200
@@ -652,7 +652,7 @@ class TestCrossCourtActionGuard:
             42, "ORDER referencing oral argument in D.C. Cir.",
         ))
 
-        h = store.get_hearing("x", "oral-arg")
+        h = must(store.get_hearing("x", "oral-arg"))
         assert h["docket_id"] == 200
         assert h["notes"] is None  # not overwritten with the ca9 string
         assert h["source_entry_ids"] == [101]
@@ -693,7 +693,7 @@ class TestCrossCourtActionGuard:
             2, "Minute entry: status conference held",
         ))
 
-        h = store.get_hearing("x", "status-conf")
+        h = must(store.get_hearing("x", "status-conf"))
         assert h["status"] == "held"
         # Source entries gained the sibling-docket entry — legit aggregation.
         assert h["source_entry_ids"] == [1, 2]
@@ -725,7 +725,7 @@ class TestCrossCourtActionGuard:
         syncer.process_entry(case_local, 100, _entry(
             7, "Minute entry: hearing held",
         ))
-        h = store.get_hearing("legacy", "h1")
+        h = must(store.get_hearing("legacy", "h1"))
         assert h["status"] == "held"
 
 
@@ -791,8 +791,8 @@ class TestProcessEntryDirect:
     def test_ensure_court_noop_on_empty_court_id(self, store: Store, case):
         # The `_ensure_court` guard short-circuits on missing court_id —
         # CourtListener is never called and nothing is written.
-        class _BoomCourtListener:
-            def get_court(self, _):
+        class _BoomCourtListener(FakeCourtListener):
+            def get_court(self, court_id):  # type: ignore[override]
                 raise AssertionError("get_court must not run on empty court_id")
         syncer = CaseSyncer(_BoomCourtListener(), store)
         syncer._ensure_court("")  # no-op
@@ -2251,11 +2251,11 @@ class TestEnsureCourtErrorPath:
         # The court fetch can fail (CourtListener outage, unknown court id). When it
         # does we log a warning but continue — the citation stays missing
         # rather than crashing the whole sync.
-        class _RaisingCL(FakeCourtListener):
+        class _RaisingCourtListener(FakeCourtListener):
             def get_court(self, court_id):
                 raise RuntimeError("CourtListener down")
 
-        cl = _RaisingCL(dockets={100: _docket()})
+        cl = _RaisingCourtListener(dockets={100: _docket()})
         make_llm_stub(monkeypatch, by_entry={})  # no actions emitted
         stub_verify(monkeypatch)
 

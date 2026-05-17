@@ -4,6 +4,8 @@ import pytest
 
 from case_calendar.store import Store
 
+from .conftest import must
+
 
 def _hearing(case_id="us-v-x", key="sentencing", **over):
     base = {
@@ -203,7 +205,7 @@ class TestDockets:
             "court_id": "mad", "docket_number": "1:25",
             "case_name": "US v. X", "absolute_url": "/docket/7/"
         })
-        got = store.get_docket_meta(7)
+        got = must(store.get_docket_meta(7))
         assert got["court_id"] == "mad"
         assert got["docket_number"] == "1:25"
 
@@ -213,7 +215,7 @@ class TestDockets:
             "case_name": "X", "absolute_url": "/d/7/",
         })
         store.set_docket_last_modified(7, "2026-05-08T11:00:00-07:00")
-        meta = store.get_docket_meta(7)
+        meta = must(store.get_docket_meta(7))
         assert meta["docket_number"] == "1:25"  # not nuked
         assert store.docket_last_modified(7) == "2026-05-08T11:00:00-07:00"
 
@@ -222,7 +224,7 @@ class TestDockets:
                                      "case_name": "X", "absolute_url": "/x/"})
         store.upsert_docket_meta(7, {"court_id": "mad", "docket_number": "new",
                                      "case_name": "Y", "absolute_url": "/y/"})
-        assert store.get_docket_meta(7)["docket_number"] == "new"
+        assert must(store.get_docket_meta(7))["docket_number"] == "new"
 
     def test_bump_advances_forward(self, store: Store):
         # Forward-only advance: a newer entry's date_modified bumps the
@@ -267,7 +269,7 @@ class TestDockets:
             "case_name": "X", "absolute_url": "/d/7/",
             "date_last_filing": "2026-05-08",
         })
-        meta = store.get_docket_meta(7)
+        meta = must(store.get_docket_meta(7))
         assert meta["date_last_filing"] == "2026-05-08"
 
     def test_date_last_filing_none_does_not_clobber(self, store: Store):
@@ -283,7 +285,7 @@ class TestDockets:
             "court_id": "mad", "docket_number": "1:25",
             "case_name": "X", "absolute_url": "/d/7/",
         })
-        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_advances_forward(self, store: Store):
         # process_entry calls this with entry.date_filed so webhook-only
@@ -295,7 +297,7 @@ class TestDockets:
             "date_last_filing": "2026-05-01",
         })
         store.bump_docket_last_filing(7, "2026-05-08")
-        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_ignores_older(self, store: Store):
         # An entry whose date_filed is older than what CourtListener already gave us
@@ -307,13 +309,13 @@ class TestDockets:
             "date_last_filing": "2026-05-08",
         })
         store.bump_docket_last_filing(7, "2026-05-01")
-        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_inserts_when_missing(self, store: Store):
         # First-time webhook delivery for a docket we haven't poll-synced;
         # bump should land the value even though no row exists yet.
         store.bump_docket_last_filing(7, "2026-05-08")
-        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
     def test_bump_last_filing_empty_string_noop(self, store: Store):
         # The opportunistic bump in process_entry passes whatever the
@@ -326,7 +328,7 @@ class TestDockets:
             "date_last_filing": "2026-05-08",
         })
         store.bump_docket_last_filing(7, "")
-        assert store.get_docket_meta(7)["date_last_filing"] == "2026-05-08"
+        assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
 
 class TestCaseAggregates:
@@ -786,7 +788,7 @@ class TestGcalAndM365Setters:
     def test_set_gcal_id(self, store: Store):
         store.upsert_hearing(_hearing())
         store.set_gcal_id("us-v-x", "sentencing", "evt-123")
-        row = store.get_hearing("us-v-x", "sentencing")
+        row = must(store.get_hearing("us-v-x", "sentencing"))
         assert row["gcal_event_id"] == "evt-123"
 
     def test_set_m365_id_for_hearing_writes_and_clears(self, store: Store):
@@ -833,7 +835,7 @@ class TestCaseSummaries:
             model="anthropic/claude-sonnet-4-6",
             source_entry_ids=[10, 20],
         )
-        row = store.get_docket_summary("us-v-x", 1)
+        row = must(store.get_docket_summary("us-v-x", 1))
         assert row["summary"].startswith("The defendants")
         assert row["model"] == "anthropic/claude-sonnet-4-6"
         assert row["source_entry_ids"] == [10, 20]
@@ -841,7 +843,7 @@ class TestCaseSummaries:
     def test_upsert_overwrites_existing(self, store: Store):
         store.upsert_case_summary("us-v-x", 1, summary="v1", model="m1")
         store.upsert_case_summary("us-v-x", 1, summary="v2", model="m2")
-        assert store.get_docket_summary("us-v-x", 1)["summary"] == "v2"
+        assert must(store.get_docket_summary("us-v-x", 1))["summary"] == "v2"
 
     def test_get_docket_summary_missing_returns_none(self, store: Store):
         assert store.get_docket_summary("nope", 1) is None
@@ -884,7 +886,7 @@ class TestCaseSummaries:
         rows = store.get_case_summaries("us-v-x")
         assert rows[0]["source_entry_ids"] == []
         # Same fallback in get_docket_summary.
-        assert store.get_docket_summary("us-v-x", 1)["source_entry_ids"] == []
+        assert must(store.get_docket_summary("us-v-x", 1))["source_entry_ids"] == []
 
 
 class TestSchemaMigration:
@@ -929,7 +931,7 @@ class TestSchemaMigration:
         s.upsert_docket_meta(1, {"court_id": "mad", "docket_number": "1:25",
                                   "case_name": "X", "absolute_url": "/x/"})
         s.mark_entry(1, 100, "2026-01-01", "fp", date_filed="2026-01-01")
-        assert s.get_docket_meta(1)["court_id"] == "mad"
+        assert must(s.get_docket_meta(1))["court_id"] == "mad"
         assert s.entry_seen(1, 100, "fp")
         s.close()
 
@@ -1109,7 +1111,7 @@ class TestAuditNotesMigration:
         c.close()
 
         s = Store(path)
-        h = s.get_hearing("us-v-x", "trial")
+        h = must(s.get_hearing("us-v-x", "trial"))
         assert h["notes"] == "Trial commences June 12, 2024."
         assert h["audit_notes"] == (
             "[verify-pass] Cancellation not supported per recent entries."
@@ -1159,7 +1161,7 @@ class TestAuditNotesMigration:
         c.close()
 
         s = Store(path)
-        h = s.get_hearing("us-v-x", "trial")
+        h = must(s.get_hearing("us-v-x", "trial"))
         # The marker stays in the notes — it's not at the start of a
         # paragraph so it's not a real audit segment.
         assert h["notes"] == (
@@ -1208,7 +1210,7 @@ class TestAuditNotesMigration:
         s.close()
         # Second open: nothing to migrate, results unchanged.
         s2 = Store(path)
-        h = s2.get_hearing("us-v-x", "trial")
+        h = must(s2.get_hearing("us-v-x", "trial"))
         assert h["notes"] == "Court text."
         assert h["audit_notes"] == "[verify-pass] Reason A."
         s2.close()
@@ -1233,7 +1235,7 @@ class TestAuditNotesMigration:
         # Re-run the migration in place — production opens hit it
         # automatically on every Store() construction.
         s._migrate_audit_segments()
-        h = s.get_hearing("us-v-x", "trial")
+        h = must(s.get_hearing("us-v-x", "trial"))
         assert h["notes"] == "Court text."
         assert "Already-extracted" in h["audit_notes"]
         assert "Stale reason" in h["audit_notes"]

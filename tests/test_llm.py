@@ -6,7 +6,7 @@ so we never hit any network or import the heavy SDKs lazily-imported inside.
 
 from __future__ import annotations
 
-import json
+from typing import Any
 
 import pytest
 
@@ -533,7 +533,9 @@ class TestCallAnthropic:
         fake_mod = MagicMock(name="anthropic")
         fake_client = MagicMock()
         fake_mod.Anthropic.return_value = fake_client
-        block = MagicMock(); block.type = "text"; block.text = "ok"
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
         fake_client.messages.create.return_value.content = [block]
         monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
 
@@ -546,7 +548,8 @@ class TestCallAnthropic:
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.Anthropic.return_value = fake_client
-        non_text = MagicMock(); non_text.type = "tool_use"
+        non_text = MagicMock()
+        non_text.type = "tool_use"
         fake_client.messages.create.return_value.content = [non_text]
         monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
 
@@ -561,8 +564,10 @@ class TestCallOpenAI:
         fake_mod = MagicMock(name="openai")
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock(); msg.content = '{"actions": []}'
-        choice = MagicMock(); choice.message = msg
+        msg = MagicMock()
+        msg.content = '{"actions": []}'
+        choice = MagicMock()
+        choice.message = msg
         fake_client.chat.completions.create.return_value.choices = [choice]
         monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
@@ -578,8 +583,10 @@ class TestCallOpenAI:
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock(); msg.content = "prose"
-        choice = MagicMock(); choice.message = msg
+        msg = MagicMock()
+        msg.content = "prose"
+        choice = MagicMock()
+        choice.message = msg
         fake_client.chat.completions.create.return_value.choices = [choice]
         monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
@@ -593,8 +600,10 @@ class TestCallOpenAI:
         fake_mod = MagicMock()
         fake_client = MagicMock()
         fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock(); msg.content = ""
-        choice = MagicMock(); choice.message = msg
+        msg = MagicMock()
+        msg.content = ""
+        choice = MagicMock()
+        choice.message = msg
         fake_client.chat.completions.create.return_value.choices = [choice]
         monkeypatch.setitem(sys.modules, "openai", fake_mod)
 
@@ -622,7 +631,8 @@ class TestCallGemini:
 
         # Stub the package structure so `from google import genai` and
         # `from google.genai import types as gtypes` both resolve.
-        fake_google = MagicMock(); fake_google.genai = fake_genai
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
         monkeypatch.setitem(sys.modules, "google", fake_google)
         monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
         monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
@@ -649,7 +659,8 @@ class TestCallGemini:
         fake_genai.Client.return_value = fake_client
         fake_client.models.generate_content.return_value.text = "prose"
 
-        fake_google = MagicMock(); fake_google.genai = fake_genai
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
         monkeypatch.setitem(sys.modules, "google", fake_google)
         monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
         monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
@@ -669,7 +680,8 @@ class TestCallGemini:
         fake_genai.Client.return_value = fake_client
         fake_client.models.generate_content.return_value.text = ""
 
-        fake_google = MagicMock(); fake_google.genai = fake_genai
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
         monkeypatch.setitem(sys.modules, "google", fake_google)
         monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
         monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)

@@ -6,8 +6,6 @@ httpx pipeline (auth header, JSON decoding, retry-on-429) runs for real.
 
 from __future__ import annotations
 
-import time
-
 import httpx
 import pytest
 

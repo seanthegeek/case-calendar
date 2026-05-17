@@ -9,6 +9,7 @@ no event loop quirks beyond what asyncio.run already sets up.
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -47,20 +48,29 @@ def _make_syncer(client) -> M365CalendarSync:
     """Build an M365CalendarSync without invoking the real __init__.
 
     The constructor would import azure-identity, hit the keyring, and try
-    to open a browser — none of which we can do hermetically.
+    to open a browser — none of which we can do hermetically. Tests
+    never read token_path / credential, so we leave those unset.
     """
     s = M365CalendarSync.__new__(M365CalendarSync)
     s.client_id = "test-client-id"
-    s.token_path = None
-    s.credential = None
     s.client = client
     return s
 
 
+class _StatusError(Exception):
+    """Stand-in for Graph SDK exceptions that carry `response_status_code`.
+
+    `_is_404` reads the attribute via `getattr`; this subclass mirrors
+    the shape so tests can construct an error with a known status code.
+    """
+
+    def __init__(self, message: str, status: int | None) -> None:
+        super().__init__(message)
+        self.response_status_code = status
+
+
 def _fake_404():
-    err = Exception("not found")
-    err.response_status_code = 404
-    return err
+    return _StatusError("not found", 404)
 
 
 # --- pure helpers ---
@@ -86,15 +96,11 @@ class TestCorrelationKey:
 
 class TestIs404:
     def test_404_detection(self):
-        e = Exception("nope")
-        e.response_status_code = 404
-        assert _is_404(e) is True
+        assert _is_404(_StatusError("nope", 404)) is True
 
     def test_other_codes_not_404(self):
         for code in (400, 401, 403, 500, None):
-            e = Exception("x")
-            e.response_status_code = code
-            assert _is_404(e) is False
+            assert _is_404(_StatusError("x", code)) is False
 
     def test_no_attr_not_404(self):
         assert _is_404(Exception("x")) is False
@@ -333,8 +339,7 @@ class TestUpsertFlow:
 class TestUpsertErrorPaths:
     def test_cached_id_non_404_error_propagates(self, fake_client):
         store = MagicMock()
-        err = Exception("server boom")
-        err.response_status_code = 500
+        err = _StatusError("server boom", 500)
         item = MagicMock()
         item.patch = AsyncMock(side_effect=err)
         fake_client.me.events.by_event_id.side_effect = lambda eid: item
@@ -357,8 +362,7 @@ class TestUpsertErrorPaths:
 
     def test_delete_non_404_error_propagates(self, fake_client):
         store = MagicMock()
-        err = Exception("server boom")
-        err.response_status_code = 500
+        err = _StatusError("server boom", 500)
         item = MagicMock()
         item.delete = AsyncMock(side_effect=err)
         item.patch = AsyncMock()
@@ -402,8 +406,7 @@ class TestUpsertErrorPaths:
 
     def test_find_by_correlation_non_404_propagates(self, fake_client):
         store = MagicMock()
-        err = Exception("server boom")
-        err.response_status_code = 500
+        err = _StatusError("server boom", 500)
         fake_client.me.events.get.side_effect = err
 
         s = _make_syncer(fake_client)
@@ -468,7 +471,7 @@ class TestBuildCredential:
         # The InteractiveBrowserCredential instances get .authenticate()
         # called only on first-run; daemon-path silent refresh constructs
         # but doesn't call .authenticate().
-        cred_instances: list[MagicMock] = []
+        cred_instances: list[Any] = []
 
         class _FakeCred:
             def __init__(self, **kw):

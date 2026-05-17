@@ -291,7 +291,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     return 0
 
 
-def _resolve_gcal(cfg: dict[str, Any], *, setup: bool) -> tuple[str | None, Path] | None:
+def _resolve_gcal(cfg: dict[str, Any], *, setup: bool) -> tuple[str, Path] | None:
     """Return (credentials_path, token_path) if gcal push is enabled, else None.
 
     Push is enabled when ``google_credentials_path`` is configured AND

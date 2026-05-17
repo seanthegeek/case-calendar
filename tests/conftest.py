@@ -7,14 +7,27 @@ extractor.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, TypeVar
 
 import pytest
 
 from case_calendar.courtlistener import CourtListener
 from case_calendar.store import Store
+
+T = TypeVar("T")
+
+
+def must(value: T | None) -> T:
+    """Assert ``value`` is not None and narrow its type.
+
+    Wraps store getters and similar Optional-returning calls so tests
+    can subscript the result directly. Failing here means the row the
+    test expected to exist is missing — a test bug, not a runtime
+    null check.
+    """
+    assert value is not None
+    return value
 
 
 @pytest.fixture
@@ -79,11 +92,15 @@ def make_recap_doc():
     return _make
 
 
-class FakeCourtListener:
+class FakeCourtListener(CourtListener):
     """Stand-in for CourtListener that records calls and returns canned data.
 
     Pass `dockets={id: {...}}`, `entries={id: [entry, ...]}`,
     `courts={id: {...}}`, or `recap_docs={id: {...}}` per test.
+
+    Subclasses the real client so type-checkers accept it wherever a
+    `CourtListener` is expected, but deliberately skips the real
+    `__init__` (which opens an httpx client and demands a real token).
     """
 
     def __init__(
