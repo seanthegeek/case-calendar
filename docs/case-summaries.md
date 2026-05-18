@@ -140,7 +140,7 @@ also told:
 
 ## Multi-docket aggregation
 
-For cases that span multiple LOGICAL PACER dockets (district + appellate;
+For cases that span multiple logical PACER dockets (district + appellate;
 co-defendants on separate dockets; parallel filings in different venues),
 the AI summary is generated **per logical docket** — one summary per
 distinct `(docket_number, court_id)` pair — then rendered as a labeled

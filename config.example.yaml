@@ -144,18 +144,18 @@ cases:
   # `dockets:` is a list of CourtListener docket_ids. Two patterns:
   #
   #   1. Parallel proceedings — district + appellate or related filings
-  #      in different venues with DIFFERENT docket numbers (the Anthropic
+  #      in different venues with different docket numbers (the Anthropic
   #      v. DOW shape below). Case Calendar renders one summary
   #      paragraph and one docket link per logical PACER docket.
   #
   #   2. CourtListener sibling docket_ids — multiple docket_id rows that
-  #      all map to the SAME (docket_number, court_id). This happens
+  #      all map to the same (docket_number, court_id). This happens
   #      when the upstream pacer_case_id changed mid-life and
   #      CourtListener stored the docket under two or more docket_ids
-  #      (CourtListener issue #7345). List EVERY sibling so the AI
+  #      (CourtListener issue #7345). List every sibling so the AI
   #      summary pools entries across them into one complete view; the
   #      renderer collapses siblings to one paragraph and one docket
-  #      link. The link goes to whichever docket_id you list FIRST, so
+  #      link. The link goes to whichever docket_id you list first, so
   #      put your preferred CL page first (typically the one with the
   #      most CourtListener-side content).
   #
