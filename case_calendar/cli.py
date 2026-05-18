@@ -266,6 +266,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
                 or stats.get("verified")
                 or stats.get("auto_passed")
                 or stats.get("entries_processed")
+                or stats.get("deduped")
+                or stats.get("deduped_held")
             ):
                 affected_calendars.add(case.calendar)
 

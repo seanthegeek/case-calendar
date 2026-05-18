@@ -945,35 +945,99 @@ class Store:
         self,
         case_id: str,
     ) -> list[list[dict[str, Any]]]:
-        """Future scheduled hearings sharing (docket_id, starts_at_utc).
+        """Future scheduled hearings sharing the same logical PACER slot.
 
         Returns a list of clusters, each a list of >=2 hearing dicts with
         ``source_entry_ids`` already JSON-decoded. A single court cannot
-        hold two hearings on one docket at the same date and time, so
-        equal ``(docket_id, starts_at_utc)`` across ``status='scheduled'``
-        rows is a signal that the per-entry extractor split one logical
-        event across keys (e.g. a stipulation referred to "Hearing on
-        Motion for Summary Judgment" and the signed order called it
-        "Motion Hearing" — same slot, two ``hearing_key``s). The end-of-
-        sync dedupe sweep in :class:`CaseSyncer` resolves these via a
-        focused LLM call. Past hearings are excluded — the auto-held
-        sweep handles them.
+        hold two hearings on one logical PACER docket at the same date
+        and time, so equal ``(docket_number, court_id, starts_at_utc)``
+        across ``status='scheduled'`` rows is a signal that the
+        per-entry extractor split one logical event across keys — either
+        the same CL docket's extractor used two vocabulary forms (e.g.
+        a stipulation said "Hearing on Motion for Summary Judgment" and
+        the signed order called it "Motion Hearing") OR cross-CL-sibling
+        drift (the Akhter / Didenko shape, where two CL docket_ids in
+        the same `(docket_number, court_id)` group each get their own
+        copy of the same logical hearing under different keys). The
+        end-of-sync dedupe sweep in :class:`CaseSyncer` resolves these
+        via a focused LLM call. Past hearings are excluded — the
+        verify-pass and the held-dedup sweep cover them.
         """
         now_iso = datetime.now(timezone.utc).isoformat()
-        rows = self.conn.execute(
-            """
-            SELECT * FROM hearings
-            WHERE case_id=? AND status='scheduled'
-              AND starts_at_utc IS NOT NULL AND starts_at_utc >= ?
-              AND docket_id IS NOT NULL
-            ORDER BY docket_id, starts_at_utc, hearing_key
-            """,
-            (case_id, now_iso),
-        ).fetchall()
-        clusters: dict[tuple[int, str], list[dict[str, Any]]] = {}
+        return self._concurrent_clusters(case_id, status="scheduled", earliest=now_iso)
+
+    def find_concurrent_held_hearing_clusters(
+        self,
+        case_id: str,
+    ) -> list[list[dict[str, Any]]]:
+        """Held hearings sharing the same logical PACER slot.
+
+        Returns clusters of >=2 ``status='held'`` rows that share
+        ``(docket_number, court_id, starts_at_utc)`` — the same logical
+        PACER docket, the same exact UTC slot. A court cannot have held
+        two hearings simultaneously, so a same-slot held cluster is
+        unambiguously a key-drift duplicate from the per-entry
+        extractor — typically cross-CL-sibling drift (the Didenko
+        sentencing-didenko vs sentencing-didenko-2 shape) where the
+        per-entry extractor allocated a fresh key on the new sibling
+        instead of reusing the existing key it was given in
+        ``known_hearings``. The end-of-sync held-dedup sweep merges
+        these deterministically (no LLM call needed — the
+        same-court-same-slot-same-day argument is bulletproof).
+
+        Past AND future held rows are included — held is held regardless
+        of whether the UTC slot has passed; the dedup applies the same
+        way to a sentencing held last month as to one held an hour ago.
+        """
+        return self._concurrent_clusters(case_id, status="held")
+
+    def _concurrent_clusters(
+        self,
+        case_id: str,
+        *,
+        status: str,
+        earliest: Optional[str] = None,
+    ) -> list[list[dict[str, Any]]]:
+        """Shared implementation for the scheduled / held cluster helpers.
+
+        Clusters by ``(docket_number, court_id, starts_at_utc)`` when
+        dockets metadata is available; falls back to ``(str(docket_id),
+        "", starts_at_utc)`` otherwise (orphan docket whose metadata
+        was never upserted — the pre-grouping behavior). In production
+        sync writes dockets metadata before any hearing rows for that
+        docket, so the fallback only fires in narrow test fixtures.
+        """
+        sql = (
+            "SELECT h.*, d.docket_number AS d_docket_number, "
+            "d.court_id AS d_court_id "
+            "FROM hearings h "
+            "LEFT JOIN dockets d ON d.docket_id = h.docket_id "
+            "WHERE h.case_id=? AND h.status=? "
+            "AND h.starts_at_utc IS NOT NULL "
+            "AND h.docket_id IS NOT NULL"
+        )
+        params: list[Any] = [case_id, status]
+        if earliest is not None:
+            sql += " AND h.starts_at_utc >= ?"
+            params.append(earliest)
+        sql += (
+            " ORDER BY COALESCE(d.docket_number, ''), "
+            "COALESCE(d.court_id, ''), h.docket_id, "
+            "h.starts_at_utc, h.hearing_key"
+        )
+        rows = self.conn.execute(sql, params).fetchall()
+        clusters: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for r in rows:
             h = self._row_to_hearing(r)
-            key = (h["docket_id"], h["starts_at_utc"])
+            dn = r["d_docket_number"]
+            cid = r["d_court_id"]
+            if dn and cid:
+                key = (dn, cid, h["starts_at_utc"])
+            else:
+                # Orphan docket (metadata missing) — fall back to the
+                # pre-grouping key so we still catch same-docket-id
+                # same-slot dupes in this edge case.
+                key = (f"#docket-id={h['docket_id']}", "", h["starts_at_utc"])
             clusters.setdefault(key, []).append(h)
         return [c for c in clusters.values() if len(c) > 1]
 

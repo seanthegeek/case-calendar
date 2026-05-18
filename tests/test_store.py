@@ -743,6 +743,114 @@ class TestHearings:
         )
         assert store.find_concurrent_hearing_clusters("us-v-x") == []
 
+    def test_find_concurrent_hearing_clusters_groups_cross_sibling_drift(
+        self,
+        store: Store,
+    ):
+        # The cross-CL-sibling case: two CL docket_ids in the same
+        # (docket_number, court_id) group hold same-slot future hearings
+        # under different keys. The cluster key uses (docket_number,
+        # court_id, starts_at_utc) so they group together.
+        for did in (4001, 4002):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "dcd",
+                    "docket_number": "1:24-cr-00261",
+                    "case_name": "United States v. Didenko",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        future = "2099-04-14T15:00:00+00:00"
+        store.upsert_hearing(
+            _hearing(key="sentencing-didenko", starts_at_utc=future, docket_id=4001)
+        )
+        store.upsert_hearing(
+            _hearing(key="sentencing-didenko-2", starts_at_utc=future, docket_id=4002)
+        )
+        clusters = store.find_concurrent_hearing_clusters("us-v-x")
+        assert len(clusters) == 1
+        keys = {h["hearing_key"] for h in clusters[0]}
+        assert keys == {"sentencing-didenko", "sentencing-didenko-2"}
+
+    def test_find_concurrent_held_hearing_clusters_groups_same_slot_held_rows(
+        self,
+        store: Store,
+    ):
+        # Cross-CL-sibling held-row drift — the verbatim didenko shape.
+        # Two CL docket_ids in the same (docket_number, court_id) group;
+        # both have a HELD hearing at the same UTC slot under different
+        # keys. The held-cluster helper picks them up.
+        for did in (4001, 4002):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "dcd",
+                    "docket_number": "1:24-cr-00261",
+                    "case_name": "X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        slot = "2026-02-19T16:00:00+00:00"  # the didenko sentencing UTC slot
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-didenko",
+                starts_at_utc=slot,
+                docket_id=4001,
+                status="held",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-didenko-2",
+                starts_at_utc=slot,
+                docket_id=4002,
+                status="held",
+            )
+        )
+        clusters = store.find_concurrent_held_hearing_clusters("us-v-x")
+        assert len(clusters) == 1
+        keys = {h["hearing_key"] for h in clusters[0]}
+        assert keys == {"sentencing-didenko", "sentencing-didenko-2"}
+
+    def test_find_concurrent_held_hearing_clusters_excludes_non_held(
+        self,
+        store: Store,
+    ):
+        # Scheduled / cancelled rows must not appear in the held cluster
+        # (their dedup paths are separate).
+        for did in (5001, 5002):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "dcd",
+                    "docket_number": "1:24-cr-00500",
+                    "case_name": "X",
+                    "absolute_url": "/x/",
+                },
+            )
+        slot = "2026-02-19T16:00:00+00:00"
+        store.upsert_hearing(
+            _hearing(key="held-1", starts_at_utc=slot, docket_id=5001, status="held")
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="scheduled-clone",
+                starts_at_utc=slot,
+                docket_id=5002,
+                status="scheduled",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="cancelled-clone",
+                starts_at_utc=slot,
+                docket_id=5002,
+                status="cancelled",
+            )
+        )
+        assert store.find_concurrent_held_hearing_clusters("us-v-x") == []
+
 
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {

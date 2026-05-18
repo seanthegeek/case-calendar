@@ -40,8 +40,38 @@ adheres to [Semantic Versioning][semver].
   case_summaries_pre_group_migration RENAME TO case_summaries;` plus a
   downgrade.
 
+- `Store.find_concurrent_hearing_clusters` now clusters scheduled rows
+  by `(docket_number, court_id, starts_at_utc)` instead of
+  `(docket_id, starts_at_utc)`. The existing LLM-driven
+  `_dedupe_concurrent_hearings` therefore picks up cross-CL-sibling
+  drift on SCHEDULED rows too (the Akhter-shape future-trial scenario
+  with two CL docket_ids holding same-slot trials under different
+  keys). Orphan dockets that lack `dockets` metadata fall back to the
+  pre-grouping `docket_id` key so this is non-breaking for the rare
+  edge case where a hearing row exists without its parent metadata.
+- `cmd_sync` adds the case's calendar to `affected_calendars` when
+  either dedup sweep flips a row, so a sweep-only sync (no entries
+  processed) still re-renders the ICS — otherwise a same-slot
+  duplicate flipped to cancelled would linger in the cached feed
+  until the next sync touched an entry.
+
 ### Added
 
+- `_dedupe_concurrent_held_hearings` sweep that merges `status='held'`
+  hearings sharing the same logical PACER slot
+  `(docket_number, court_id, starts_at_utc)`. Resolution is
+  deterministic (no LLM call) — a court physically can't have held two
+  hearings simultaneously, so same-slot held clusters are
+  unambiguously key-drift duplicates. The motivating case is
+  cross-CL-sibling drift exposed by the docket grouping work:
+  `sentencing-didenko` (from prior sync of one CL sibling) and
+  `sentencing-didenko-2` (from today's sync of the sibling CL docket
+  with a different `pacer_case_id`) at the exact same UTC slot. The
+  canonical row keeps its key and gets the siblings' `source_entry_ids`
+  merged in; siblings are cancelled with a `[dedupe-held]` audit note
+  pointing at the canonical. Renderers skip cancelled rows so the
+  calendar surfaces one event, not N. Accompanying store helper:
+  `Store.find_concurrent_held_hearing_clusters`.
 - Extractor pattern coverage for appellate deadlines: petitions for
   rehearing (FRAP 40), mandate issuance (FRAP 41), joint appendix due
   dates, the "MOTION by [Party] to extend" appellate filing convention,
