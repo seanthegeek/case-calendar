@@ -39,6 +39,14 @@ class CourtListener:
         self.client = httpx.Client(
             timeout=timeout,
             headers={"Authorization": f"Token {token}"},
+            # httpx defaults to follow_redirects=False (unlike requests),
+            # so a 301/302 from CourtListener would otherwise become an
+            # error rather than transparently following to the new URL.
+            # Match the rest of the project's httpx clients (the PDF
+            # fetch chain in pdf.py and the URL validator) so a future
+            # hostname migration, trailing-slash normalization, or
+            # similar reshape doesn't break the API client.
+            follow_redirects=True,
         )
         # Earliest monotonic time at which the next request may be issued —
         # set when any call hits a 429, so subsequent calls on the same

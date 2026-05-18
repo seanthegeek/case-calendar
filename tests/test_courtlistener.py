@@ -232,3 +232,50 @@ class TestInit:
     def test_context_manager_closes_client(self):
         with CourtListener(token="x") as cl:
             assert cl.client is not None
+
+    def test_client_follows_redirects(self):
+        # httpx defaults follow_redirects=False (unlike requests). The
+        # rest of the project's httpx clients (pdf.fetch_pdf_bytes,
+        # pdf.fetch_url_bytes, url_validator) all set it True; the
+        # CourtListener client must match so a hostname migration,
+        # trailing-slash normalization, or similar 301/302 from
+        # CourtListener doesn't become a failing request. Pin the
+        # attribute so a future refactor of __init__ doesn't quietly
+        # regress it.
+        with CourtListener(token="x") as cl:
+            assert cl.client.follow_redirects is True
+
+
+class TestFollowsRedirects:
+    def test_get_follows_302_to_final_response(self):
+        # Behavior-level confirmation that goes through the real
+        # `__init__`: a CourtListener endpoint that serves a 302
+        # redirect (e.g. a future hostname migration or a
+        # trailing-slash normalization layer) lands on the final
+        # response transparently rather than turning into a status
+        # error and tripping the _get retry path.
+        #
+        # The MockTransport is swapped into the client built by the
+        # real constructor — that way the test fails if the
+        # constructor stops setting follow_redirects=True, not just
+        # if httpx itself breaks.
+        call_count = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            call_count[0] += 1
+            if req.url.path == "/api/rest/v4/dockets/42/":
+                return httpx.Response(
+                    302,
+                    headers={"Location": "https://www.courtlistener.com/api/rest/v4/dockets/42/new/"},
+                )
+            assert req.url.path == "/api/rest/v4/dockets/42/new/"
+            return httpx.Response(200, json={"id": 42, "case_name": "Redirected"})
+
+        cl = CourtListener(token="test")
+        # Replace the network transport with our mock while keeping
+        # every other client setting the real constructor produced —
+        # crucially `follow_redirects=True`.
+        cl.client._transport = httpx.MockTransport(handler)
+        assert cl.get_docket(42)["case_name"] == "Redirected"
+        # Two transport calls: the 302 then the redirected 200.
+        assert call_count[0] == 2
