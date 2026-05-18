@@ -2819,6 +2819,298 @@ class TestDedupeConcurrentHearings:
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
 
+    def test_cross_cl_sibling_scheduled_drift_is_clustered(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        # The Akhter-shape OPEN-case scenario: two CL docket_ids in the
+        # same (docket_number, court_id) group each hold a future
+        # scheduled hearing at the same UTC slot under different keys.
+        # The cluster key is now group-aware, so the existing
+        # _dedupe_concurrent_hearings sweep picks them up and the LLM
+        # gets called to resolve.
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "United States v. X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        future = "2099-04-14T15:00:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "trial-x",
+                "title": "Jury Trial",
+                "starts_at_utc": future,
+                "duration_minutes": 480,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "trial-x-2",
+                "title": "Jury Trial",
+                "starts_at_utc": future,
+                "duration_minutes": 480,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 101,  # different CL docket_id, SAME group
+                "source_entry_ids": [20],
+            }
+        )
+        stub_verify(monkeypatch)
+        captured = stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "trial-x",
+                "reason": "Cross-CL-sibling drift on the same PACER docket.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 1
+        # The LLM saw both keys as one cluster despite different docket_ids.
+        keys_seen = {h["hearing_key"] for h in captured["cluster"]}
+        assert keys_seen == {"trial-x", "trial-x-2"}
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["trial-x"]["status"] == "scheduled"
+        assert rows["trial-x-2"]["status"] == "cancelled"
+
+
+class TestDedupeConcurrentHeldHearings:
+    """End-of-sync deterministic merge for HELD rows that share the same
+    logical PACER slot. A court physically can't hold two hearings
+    simultaneously, so same-slot held clusters are unambiguous key-drift
+    duplicates — no LLM call needed.
+
+    Motivating case: didenko sentencing-didenko (from prior sync of one
+    CL docket) vs sentencing-didenko-2 (from today's sync of a sibling
+    CL docket with a different `pacer_case_id`) at the exact same UTC
+    slot.
+    """
+
+    def _seed_cross_sibling_held_pair(self, store):
+        # Two CL docket_ids in the same (docket_number, court_id) group,
+        # both with a HELD hearing at the same UTC slot under different
+        # keys. The canonical row (selected by source_entry_ids count)
+        # is `sentencing-didenko` with [10, 11, 12]; the duplicate has
+        # just [99].
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "United States v. X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        slot = "2026-02-19T16:00:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-didenko",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10, 11, 12],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-didenko-2",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 101,
+                "source_entry_ids": [99],
+            }
+        )
+
+    def test_merges_cross_sibling_held_duplicate_deterministically(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        self._seed_cross_sibling_held_pair(store)
+        stub_verify(monkeypatch)
+        # No LLM should be consulted — the merge is deterministic.
+
+        def boom(*a, **k):
+            raise AssertionError(
+                "resolve_duplicate_hearings called for held cluster — "
+                "should be deterministic"
+            )
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_held"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # Canonical (more source_entry_ids) stays held.
+        assert rows["sentencing-didenko"]["status"] == "held"
+        assert rows["sentencing-didenko"]["source_entry_ids"] == [10, 11, 12, 99]
+        # Duplicate cancelled with [dedupe-held] audit note pointing
+        # at the canonical key.
+        assert rows["sentencing-didenko-2"]["status"] == "cancelled"
+        notes = rows["sentencing-didenko-2"]["audit_notes"] or ""
+        assert "[dedupe-held]" in notes
+        assert "sentencing-didenko" in notes
+
+    def test_no_held_clusters_skips_dedup(self, store, case, monkeypatch):
+        # Quiet case with no same-slot held duplicates — sweep is a no-op.
+        stub_verify(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats.get("deduped_held", 0) == 0
+
+    def test_merges_dedup_overlapping_source_entry_ids(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        # When the canonical row and the duplicate share one or more
+        # source_entry_ids (common when both CL siblings cite the same
+        # PACER minute-entry as the source for their respective held
+        # rows), the merge must dedup those ids — emitting [10, 11, 99]
+        # instead of [10, 11, 10, 99]. Exercises the "sid already in
+        # seen, skip" path inside the per-cluster merge loop.
+        # Use the same docket_number / court_id as `_docket()` so the
+        # CL re-fetch during sync_case doesn't overwrite our seed under
+        # a different group key (which would split the cluster).
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "United States v. X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        slot = "2026-03-04T15:30:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                # Canonical: more sources, picked as target.
+                "source_entry_ids": [10, 11],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x-2",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 101,
+                # Duplicate: 10 overlaps with canonical; 99 is new.
+                "source_entry_ids": [10, 99],
+            }
+        )
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("LLM should not be consulted for held cluster")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_held"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # 10 appears once, not twice — the dedup branch fired.
+        assert rows["sentencing-x"]["source_entry_ids"] == [10, 11, 99]
+
+    def test_scheduled_rows_at_same_slot_are_not_picked_up(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        # The held sweep MUST ignore non-held rows (those are handled by
+        # the LLM-driven _dedupe_concurrent_hearings).
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "X",
+                    "absolute_url": "/x/",
+                },
+            )
+        slot = "2099-04-14T15:00:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "trial-x",
+                "title": "Trial",
+                "starts_at_utc": slot,
+                "duration_minutes": 480,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "trial-x-2",
+                "title": "Trial",
+                "starts_at_utc": slot,
+                "duration_minutes": 480,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 101,
+                "source_entry_ids": [20],
+            }
+        )
+        stub_verify(monkeypatch)
+        # The scheduled dedup will call the LLM — stub it to a no-op
+        # KEEP_BOTH so we don't accidentally claim the held sweep did
+        # the work.
+        stub_dedupe(monkeypatch, action={"type": "KEEP_BOTH", "reason": "stub"})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats.get("deduped_held", 0) == 0
+
 
 # --- verify_deadline end-of-case pass (parallel to TestVerifyScheduledHearings) ---
 
@@ -3257,15 +3549,28 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
     def test_primary_document_marks_stale(self, store, case, monkeypatch):
         # Seed a non-stale summary row, then process an entry whose
         # description matches summary.is_primary_document. After
-        # process_entry, the row should be flagged stale.
+        # process_entry, the row should be flagged stale on the LOGICAL
+        # PACER docket key (docket_number, court_id), not on the CL
+        # docket_id — see the docket grouping design decision in AGENTS.md.
+        d = _docket()
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": d["court_id"],
+                "docket_number": d["docket_number"],
+                "case_name": d["case_name"],
+                "absolute_url": d["absolute_url"],
+            },
+        )
+        group = (d["docket_number"], d["court_id"])
         store.upsert_case_summary(
             "us-v-x",
-            100,
+            *group,
             summary="old",
             model="m",
             source_entry_ids=[],
         )
-        assert store.is_summary_stale("us-v-x", 100) is False
+        assert store.is_summary_stale("us-v-x", *group) is False
 
         make_llm_stub(
             monkeypatch,
@@ -3277,12 +3582,23 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         syncer = CaseSyncer(cl, store)
         # "INDICTMENT" head matches summary.is_primary_document.
         syncer.process_entry(case, 100, _entry(1, "INDICTMENT as to defendant"))
-        assert store.is_summary_stale("us-v-x", 100) is True
+        assert store.is_summary_stale("us-v-x", *group) is True
 
     def test_disposition_marks_stale(self, store, case, monkeypatch):
+        d = _docket()
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": d["court_id"],
+                "docket_number": d["docket_number"],
+                "case_name": d["case_name"],
+                "absolute_url": d["absolute_url"],
+            },
+        )
+        group = (d["docket_number"], d["court_id"])
         store.upsert_case_summary(
             "us-v-x",
-            100,
+            *group,
             summary="old",
             model="m",
             source_entry_ids=[],
@@ -3296,7 +3612,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
-        assert store.is_summary_stale("us-v-x", 100) is True
+        assert store.is_summary_stale("us-v-x", *group) is True
 
     def test_primary_document_persists_description_and_recap_docs(
         self,

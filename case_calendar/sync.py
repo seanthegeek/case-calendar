@@ -521,9 +521,19 @@ class CaseSyncer:
         # regenerate the summary before re-rendering the index. We check
         # this independently of `processed` because primary documents
         # and judgments rarely match the hearing-relevance regex but are
-        # the most important signals for the summary.
+        # the most important signals for the summary. The stale flag
+        # targets the LOGICAL PACER docket (docket_number, court_id)
+        # rather than the CL docket_id — CourtListener can split one
+        # PACER docket across multiple docket_id rows (see the docket
+        # grouping design decision in AGENTS.md), and we want the next
+        # refresh to regenerate the single pooled summary, not three
+        # near-duplicates.
         if summary_relevant:
-            self.store.mark_summary_stale(case.case_id, docket_id)
+            meta = self.store.get_docket_meta(docket_id) or {}
+            docket_number = meta.get("docket_number")
+            court_id = meta.get("court_id")
+            if docket_number and court_id:
+                self.store.mark_summary_stale(case.case_id, docket_number, court_id)
         return processed
 
     # --- polling entry point ---
@@ -614,6 +624,16 @@ class CaseSyncer:
         # gets a chance to clear concurrency before we ask the LLM to
         # resolve it.
         stats["deduped"] = self._dedupe_concurrent_hearings(case)
+        # Held-row dedup is a separate sweep: two `held` rows on the
+        # same logical PACER docket at the same UTC slot cannot be
+        # legitimate (the court physically can't have held two hearings
+        # simultaneously), so we merge them deterministically without an
+        # LLM call. The motivating case is cross-CL-sibling drift —
+        # didenko's `sentencing-didenko` (from CL docket A) and
+        # `sentencing-didenko-2` (from CL docket B) at the same UTC slot
+        # were created by the per-entry extractor allocating a fresh
+        # key on the new sibling instead of reusing the existing key.
+        stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
         if self.resolve_extract_deadlines(case):
             stats["deadlines_verified"] = self._verify_pending_deadlines(case)
             stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
@@ -917,6 +937,86 @@ class CaseSyncer:
             target.get("docket_id"),
             case.case_id,
         )
+        return n_cancelled
+
+    def _dedupe_concurrent_held_hearings(self, case: CaseConfig) -> int:
+        """Merge held hearings sharing the same logical PACER slot.
+
+        Two ``status='held'`` rows on the same logical PACER docket at
+        the same UTC slot are unambiguously a key-drift duplicate — a
+        court cannot have physically held two hearings simultaneously,
+        so the per-entry extractor must have allocated two different
+        ``hearing_key`` values for one logical event. Common cause:
+        cross-CL-sibling drift (the didenko sentencing-didenko vs
+        sentencing-didenko-2 shape) where the per-entry extractor on
+        the newly-synced sibling didn't reuse the existing key it was
+        given in ``known_hearings``.
+
+        Resolution is deterministic — no LLM call needed:
+        - Canonical row = most ``source_entry_ids`` (more sync passes
+          built up its audit trail), tie-broken by oldest
+          ``last_updated`` (the original row), tie-broken by
+          ``hearing_key`` alphabetically (stable ordering).
+        - Merge sibling rows' ``source_entry_ids`` into the canonical.
+        - Cancel each sibling with ``status='cancelled'`` and an audit
+          note pointing at the canonical key. Renderers skip cancelled
+          rows; the row stays for the audit trail.
+
+        Returns the count of rows cancelled.
+        """
+        clusters = self.store.find_concurrent_held_hearing_clusters(case.case_id)
+        if not clusters:
+            return 0
+
+        def _rank(h: dict[str, Any]) -> tuple[int, str, str]:
+            # Higher source_entry_ids count first (so we sort descending
+            # via negation), oldest last_updated next (ascending), then
+            # alphabetical hearing_key for stable tie-break.
+            n = len(h.get("source_entry_ids") or [])
+            return (-n, h.get("last_updated") or "", h.get("hearing_key") or "")
+
+        n_cancelled = 0
+        for cluster in clusters:
+            ranked = sorted(cluster, key=_rank)
+            target = ranked[0]
+            target_key = target.get("hearing_key")
+            # Merge source_entry_ids from siblings into the canonical.
+            merged_sources: list[Any] = list(target.get("source_entry_ids") or [])
+            seen: set[Any] = set(merged_sources)
+            for dup in ranked[1:]:
+                for sid in dup.get("source_entry_ids") or []:
+                    if sid not in seen:
+                        seen.add(sid)
+                        merged_sources.append(sid)
+            target["source_entry_ids"] = merged_sources
+            self.store.upsert_hearing(target)
+
+            slot = target.get("starts_at_utc")
+            for dup in ranked[1:]:
+                dup_row = dict(dup)
+                dup_row["status"] = "cancelled"
+                dup_row["audit_notes"] = _append_audit_line(
+                    dup_row.get("audit_notes"),
+                    "dedupe-held",
+                    f"Merged into {target_key}: same UTC slot {slot} as canonical held row",
+                )
+                self.store.upsert_hearing(dup_row)
+                n_cancelled += 1
+            log.info(
+                "dedupe-held: merged %d hearing(s) into %r at %s (case=%s)",
+                len(ranked) - 1,
+                target_key,
+                slot,
+                case.case_id,
+            )
+
+        # Unconditional commit: the early-return at the top of this
+        # function guarantees we only reach here when `clusters` was
+        # non-empty, which means at least one row was cancelled.
+        # Guarding on `n_cancelled` would be dead code (the AGENTS.md
+        # testing philosophy treats unreachable defensive code as a
+        # test smell).
+        self.store.conn.commit()
         return n_cancelled
 
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:

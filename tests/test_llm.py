@@ -701,6 +701,28 @@ class TestCallAnthropic:
         with pytest.raises(ValueError, match="No text block"):
             llm._call_anthropic("s", "u", 10)
 
+    def test_constructor_sets_generous_max_retries(self, monkeypatch):
+        # The SDK default is 2 (cumulative backoff ~1.5s) — too short
+        # to ride out an Anthropic 529 Overloaded condition, which can
+        # last tens of seconds. Pin the higher value so a future bump
+        # of the SDK default downward doesn't silently regress us into
+        # losing entries on overload.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
+        fake_client.messages.create.return_value.content = [block]
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+
+        llm._call_anthropic("s", "u", 10)
+        ctor_kwargs = fake_mod.Anthropic.call_args.kwargs
+        assert ctor_kwargs["max_retries"] >= 5
+
 
 class TestCallOpenAI:
     def test_returns_message_content(self, monkeypatch):
@@ -757,6 +779,26 @@ class TestCallOpenAI:
 
         with pytest.raises(ValueError, match="No content"):
             llm._call_openai("s", "u", 10)
+
+    def test_constructor_sets_generous_max_retries(self, monkeypatch):
+        # SDK default of 2 retries is too short for transient overload;
+        # see the matching pin on `_call_anthropic`.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = "ok"
+        choice = MagicMock()
+        choice.message = msg
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+        llm._call_openai("s", "u", 10)
+        ctor_kwargs = fake_mod.OpenAI.call_args.kwargs
+        assert ctor_kwargs["max_retries"] >= 5
 
 
 class TestCallGemini:

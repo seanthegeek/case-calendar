@@ -1,7 +1,7 @@
 # Case Calendar config
 #
 # Required env vars when running:
-#   COURTLISTENER_TOKEN  — your CL API key
+#   COURTLISTENER_TOKEN  — your CourtListener API key
 #   ANTHROPIC_API_KEY    — for the LLM extractor
 #
 # Run order:
@@ -141,6 +141,25 @@ calendars:
     ics_path: out/natsec.ics
 
 cases:
+  # `dockets:` is a list of CourtListener docket_ids. Two patterns:
+  #
+  #   1. Parallel proceedings — district + appellate or related filings
+  #      in different venues with different docket numbers (the Anthropic
+  #      v. DOW shape below). Case Calendar renders one summary
+  #      paragraph and one docket link per logical PACER docket.
+  #
+  #   2. CourtListener sibling docket_ids — multiple docket_id rows that
+  #      all map to the same (docket_number, court_id). This happens
+  #      when the upstream pacer_case_id changed mid-life and
+  #      CourtListener stored the docket under two or more docket_ids
+  #      (CourtListener issue #7345). List every sibling so the AI
+  #      summary pools entries across them into one complete view; the
+  #      renderer collapses siblings to one paragraph and one docket
+  #      link. The link goes to whichever docket_id you list first, so
+  #      put your preferred CourtListener page first (typically the one with the
+  #      most CourtListener-side content).
+  #
+  # See docs/configuration.md for the full discussion.
   # ---- Anthropic v. DOW family ----
   - id: anthropic-v-dow
     name: "Anthropic v. DOW"
@@ -221,9 +240,9 @@ cases:
   # indictment whose docket entries are still hidden by a data bug, or a
   # sentencing order that wasn't uploaded to RECAP. Each entry is fetched
   # at summary-generation time and folded into the primary-document or
-  # disposition set as if it had come from CL. The `note` is trusted
+  # disposition set as if it had come from CourtListener. The `note` is trusted
   # operator context shown to the LLM (the document TEXT itself is still
-  # treated as untrusted, the same way CL/PACER text is).
+  # treated as untrusted, the same way CourtListener / PACER text is).
   #
   # Worked example below: Xu Zewei, charged in S.D. Tex. 4:23-cr-00523
   # with the HAFNIUM-era Microsoft Exchange intrusions and extradited
@@ -240,18 +259,28 @@ cases:
   #       of the indictment in the meantime.
   #
   #   (b) entry 20's PDF (the agreed motion to designate the case
-  #       as complex) is reachable directly from CL's storage bucket,
-  #       but the v4 API reports `is_available: false` because the
-  #       file was uploaded under an older `pacer_case_id` (1940635)
-  #       than the docket's current one (1940634), and CL's
+  #       as complex) is reachable directly from CourtListener's storage
+  #       bucket, but the v4 API reports `is_available: false` because
+  #       the file was uploaded under an older `pacer_case_id` (1940635)
+  #       than the docket's current one (1940634), and CourtListener's
   #       availability reconciler matches on the current id only
-  #       (CL bug https://github.com/freelawproject/courtlistener/issues/7345).
+  #       (CourtListener bug https://github.com/freelawproject/courtlistener/issues/7345,
+  #       closed by FLP without a committed fix — entries like this
+  #       are likely to remain CourtListener-invisible indefinitely until
+  #       someone re-uploads the file to PACER under the docket's current
+  #       pacer_case_id).
   #
-  # Remove each entry once its upstream gap closes. Keep operator
-  # `note` text short — just identify the document; details about
-  # the upstream gap belong in this comment block, not in the note,
-  # since the note is shown to the summary LLM and bug/workaround
-  # context only confuses the summary.
+  # You don't have to monitor for upstream gap closure. If the file
+  # eventually becomes findable via CourtListener (re-upload under the
+  # new pacer_case_id, or a future reconciler change), the summary
+  # pipeline compares a normalized-text fingerprint of every extra
+  # against every CourtListener-surfaced doc on the same docket group and silently
+  # drops the duplicate before it reaches the LLM, with a WARN log
+  # naming the URL so you can clean up `config.yaml` at your leisure.
+  # Keep operator `note` text short — just identify the document;
+  # details about the upstream gap belong in this comment block, not
+  # in the note, since the note is shown to the summary LLM and
+  # bug/workaround context only confuses the summary.
   #
   # Fields (all required):
   #   docket   integer  — must be one of this case's `dockets` ids
@@ -264,7 +293,7 @@ cases:
   #                       "pleading" vs "disposition"). The note rides
   #                       into the prompt as trusted operator metadata;
   #                       the document TEXT itself is still treated as
-  #                       untrusted in the same way as CL / PACER text.
+  #                       untrusted in the same way as CourtListener / PACER text.
   - id: us-v-zewei
     name: "United States v. Zewei"
     calendar: cybercrime

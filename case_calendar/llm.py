@@ -256,9 +256,9 @@ that identifies this logical hearing within the case ACROSS reschedules.
 CRITICAL hearing_key rules:
 - Use defendant lastname + hearing type. Examples: "sentencing-wang",
   "trial-mcgonigal", "status-conf-prince", "oral-arg".
-- DO NOT put dates or times in the key. NEVER. The proposed date often
-  changes on reschedule, leaving the key pointing at a date that no longer
-  matches the row. BAD: "status-conf-knoot-101724", "trial-wang-mar2026".
+- DO NOT put dates or times in the key. NEVER. Dates change on reschedule,
+  leaving the key pointing at a date that no longer matches the row.
+  BAD: "status-conf-knoot-101724", "trial-wang-mar2026".
   GOOD: "status-conf-knoot", "trial-wang".
 - For SEQUENTIAL status conferences (one happens, the next is set later) —
   these ARE distinct events and each gets its own row. Use a small integer
@@ -403,7 +403,7 @@ array):
                           the order granting it (which sets the new date) is
                           the actual scheduling event.
 - RESCHEDULE_DEADLINE   — entry moves an existing known deadline to a new
-                          date (typically a granted extension). Match by
+                          date (e.g., a granted extension). Match by
                           deadline_key.
 - CANCEL_DEADLINE       — entry vacates a known deadline (case dismissed,
                           briefing schedule withdrawn, motion mooted). Always
@@ -458,8 +458,8 @@ The amicus distinction is critical and is NOT a judgment call:
 - A deadline for the PARTIES to respond to a specific motion for leave to
   file amicus, OR the would-be amicus's reply on its leave motion, is
   MINOR. These are the procedural shuffle around granting leave for a
-  specific amicus; the leave motions get granted reflexively in most
-  cases, the brief itself is what matters. Title cues for the minor
+  specific amicus; the brief itself is the substantive content, not the
+  leave motion. Title cues for the minor
   flavor: "Response to Motion for Leave to File Amici Curiae Brief
   (X)", "Reply ISO Motion for Leave to File Amicus Brief", "Opposition
   to Motion for Leave (X)". Title cues for the major flavor: "Amicus
@@ -668,7 +668,19 @@ def _call_anthropic(
     import anthropic
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
-    client = anthropic.Anthropic(timeout=120.0)
+    # Bump from the SDK default of 2 retries to 8. The default gives up
+    # after ~1.5s of cumulative backoff (0.5s + 1s), which is not enough
+    # for the 529 Overloaded condition the API returns when capacity is
+    # tight — overload events routinely last tens of seconds, so the
+    # SDK gives up before the API clears and the per-entry call falls
+    # through to the IGNORE-on-failure path in `extract_actions`. With
+    # max_retries=8 the cumulative backoff ceiling is ~127s (0.5 + 1 +
+    # 2 + 4 + 8 + 16 + 32 + 64) before honoring any Retry-After header
+    # the server sends, which covers nearly every transient overload.
+    # The SDK uses exponential backoff with jitter and honors
+    # Retry-After, so steady-state cost is minimal — this just buys
+    # headroom for the worst case.
+    client = anthropic.Anthropic(timeout=120.0, max_retries=8)
     resp = client.messages.create(
         model=chosen,
         max_tokens=max_tokens,
@@ -698,7 +710,11 @@ def _call_openai(
     import openai
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["openai"])
-    client = openai.OpenAI(timeout=120.0)
+    # See the matching comment on `_call_anthropic`: bump max_retries
+    # from the SDK default of 2 to give the cumulative backoff enough
+    # headroom to ride out a multi-second provider overload (~127s
+    # ceiling before any Retry-After header is honored).
+    client = openai.OpenAI(timeout=120.0, max_retries=8)
     kwargs: dict[str, Any] = {
         "model": chosen,
         "max_tokens": max_tokens,
@@ -1476,8 +1492,7 @@ CRITICAL — do NOT confuse closely-related dispositions:
   there is a disposition.
 
 CRITICAL — a trial DATE in a scheduling order is NOT proof a trial OCCURRED.
-- Trial dates are set early in nearly every case and frequently move or get
-  vacated.
+- A scheduling-order trial date can be moved or vacated before it arrives.
 - A guilty plea entered before the scheduled trial date moots the trial —
   the trial does NOT go forward. (Fed. R. Crim. P. 11 doesn't itself use
   "vacate"; courts vary on whether they enter a formal vacatur order or
@@ -1551,10 +1566,10 @@ a state worth describing:
 - BAD: "no hearings have been recorded"
 - BAD: "no deadlines are set"
 - BAD: "no hearings or deadlines have been recorded on this docket"
-- BAD: "the case remains pending" (as a closing positive claim — cases
-       ARE often pending, but say so by describing what IS happening,
-       such as briefing underway or a scheduled hearing with a date,
-       not by asserting the absence of a disposition document)
+- BAD: "the case remains pending" (as a closing positive claim — when a
+       case is pending, say so by describing what IS happening, such as
+       briefing underway or a scheduled hearing with a date, not by
+       asserting the absence of a disposition document)
 - BAD: "no disposition has been entered"
 - BAD: "the docket shows no recent activity"
 State what IS in evidence — the charges, any disposition you can
@@ -1719,10 +1734,10 @@ An optional "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section may appear
 after the disposition documents. Each entry in that section is labeled
 "OPERATOR-PROVIDED DOCUMENT (sourced outside CourtListener)" and carries
 a "NOTE FROM OPERATOR" describing what the document is and why it was
-added — typically because CourtListener / PACER are missing a document
-the public should be able to see (e.g. an unsealed indictment whose
-docket entries are still hidden by a data bug, or a sentencing order
-that wasn't uploaded to RECAP). The note may also call out caveats —
+added because CourtListener / PACER are missing a document the public
+should be able to see (e.g. an unsealed indictment whose docket entries
+are still hidden by a data bug, or a sentencing order that wasn't
+uploaded to RECAP). The note may also call out caveats —
 for example, an indictment may bear "SEALED" watermarks on its face
 even though the seal has since been lifted by court order. Treat the
 operator's NOTE as trustworthy context about the document's identity

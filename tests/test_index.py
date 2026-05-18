@@ -89,11 +89,20 @@ class TestRenderSummaries:
 
     def test_single_summary_no_docket_label(self):
         html = _render_summaries(
-            {"summaries": [{"docket_id": 1, "summary": "It is a case."}]},
+            {
+                "summaries": [
+                    {
+                        "docket_number": "1:24-cv-1",
+                        "court_id": "nysd",
+                        "summary": "It is a case.",
+                    }
+                ]
+            },
             dockets=[
                 {
                     "docket_id": 1,
                     "docket_number": "1:24-cv-1",
+                    "court_id": "nysd",
                     "court_citation": "S.D.N.Y.",
                 }
             ],
@@ -107,19 +116,29 @@ class TestRenderSummaries:
         html = _render_summaries(
             {
                 "summaries": [
-                    {"docket_id": 1, "summary": "Trial court matter."},
-                    {"docket_id": 2, "summary": "On appeal."},
+                    {
+                        "docket_number": "1:24-cv-1",
+                        "court_id": "nysd",
+                        "summary": "Trial court matter.",
+                    },
+                    {
+                        "docket_number": "24-1234",
+                        "court_id": "ca2",
+                        "summary": "On appeal.",
+                    },
                 ]
             },
             dockets=[
                 {
                     "docket_id": 1,
                     "docket_number": "1:24-cv-1",
+                    "court_id": "nysd",
                     "court_citation": "S.D.N.Y.",
                 },
                 {
                     "docket_id": 2,
                     "docket_number": "24-1234",
+                    "court_id": "ca2",
                     "court_citation": "2d Cir.",
                 },
             ],
@@ -128,12 +147,48 @@ class TestRenderSummaries:
         assert "1:24-cv-1" in html and "24-1234" in html
         assert "Trial court matter." in html and "On appeal." in html
 
+    def test_cl_docket_splits_collapse_to_one_paragraph(self):
+        # The Akhter shape: three CL docket_ids share one (docket_number,
+        # court_id) — the index renders a SINGLE paragraph for the group,
+        # NOT three labeled near-duplicates.
+        html = _render_summaries(
+            {
+                "summaries": [
+                    {
+                        "docket_number": "1:25-cr-00307",
+                        "court_id": "vaed",
+                        "summary": "Pooled summary across all three CL siblings.",
+                    },
+                ]
+            },
+            dockets=[
+                {
+                    "docket_id": 71989485,
+                    "docket_number": "1:25-cr-00307",
+                    "court_id": "vaed",
+                    "court_citation": "E.D. Va.",
+                    "sibling_docket_ids": [73333500, 73320754],
+                }
+            ],
+        )
+        # One summary → no docket label, even though three CL siblings.
+        assert "Pooled summary across all three CL siblings." in html
+        assert "docket-label" not in html
+
     def test_empty_summary_strings_are_skipped(self):
         html = _render_summaries(
             {
                 "summaries": [
-                    {"docket_id": 1, "summary": ""},
-                    {"docket_id": 2, "summary": "   "},
+                    {
+                        "docket_number": "1:24-cv-1",
+                        "court_id": "nysd",
+                        "summary": "",
+                    },
+                    {
+                        "docket_number": "1:24-cv-2",
+                        "court_id": "nysd",
+                        "summary": "   ",
+                    },
                 ]
             },
             dockets=[],
@@ -143,7 +198,15 @@ class TestRenderSummaries:
 
     def test_summary_text_is_escaped(self):
         html = _render_summaries(
-            {"summaries": [{"docket_id": 1, "summary": "<script>"}]},
+            {
+                "summaries": [
+                    {
+                        "docket_number": "1:24-cv-1",
+                        "court_id": "nysd",
+                        "summary": "<script>",
+                    }
+                ]
+            },
             dockets=[],
         )
         assert "<script>" not in html
