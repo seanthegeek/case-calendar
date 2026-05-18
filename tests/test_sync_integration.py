@@ -572,6 +572,34 @@ class TestInterruptDoesNotAdvanceCutoff:
 
         assert store.docket_last_modified(100) == self._CL_DOCKET_MODIFIED
 
+    def test_empty_docket_modified_skips_cutoff_write(
+        self, store, case, monkeypatch
+    ):
+        # Defensive case: CourtListener should always populate
+        # `date_modified` on a docket record, but the code guards
+        # against an empty / missing value anyway. Writing "" as the
+        # cutoff would let the next docket-level short-circuit
+        # misbehave on a string-vs-empty compare, so the explicit
+        # skip is the documented contract. This pins the falsy path
+        # of `if docket_mod:` after the iteration loop — without it
+        # codecov sees the post-fix region as having a partial branch.
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        # CourtListener returns a docket without `date_modified` — coerced to "".
+        cl = FakeCourtListener(
+            dockets={100: _docket(date_modified="")},
+            entries={100: []},
+        )
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+
+        # The end-of-loop cutoff bump did NOT fire (its guard saw an
+        # empty `docket_mod`), so the stored value is still the prior
+        # clean cutoff — not blank.
+        assert store.docket_last_modified(100) == prior_cutoff
+
 
 class TestDocketMetaCaching:
     def test_court_fetched_once(self, store: Store, case, monkeypatch):
