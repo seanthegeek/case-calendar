@@ -376,6 +376,28 @@ class TestTransportErrorRetry:
         # attempt that exhausts the budget is the one that re-raises).
         assert attempts[0] == clmod._TRANSPORT_RETRY_BUDGET + 1
 
+    def test_loop_exhausted_with_no_response_raises_runtime_error(self, monkeypatch):
+        # Safety-net coverage. The `_get` retry loop's post-loop tail
+        # raises ``RuntimeError`` when every iteration completed via
+        # the transport-error path (no `last_response` ever recorded)
+        # AND `range(6)` ran out. Under the shipped constants
+        # (``_TRANSPORT_RETRY_BUDGET=5`` < loop count 6) this is
+        # unreachable — the 6th transport error re-raises before the
+        # loop can exit normally. Patch the budget above the loop
+        # count so transport errors stop raising mid-loop; that lets
+        # the loop iterate all 6 times and fall through to the tail
+        # raise, proving the safety net still fires if the constants
+        # ever drift apart.
+        monkeypatch.setattr(clmod, "_TRANSPORT_RETRY_BUDGET", 100)
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=req)
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        with pytest.raises(RuntimeError, match="no response from"):
+            cl.get_docket(42)
+
 
 class TestFollowsRedirects:
     def test_get_follows_302_to_final_response(self):
