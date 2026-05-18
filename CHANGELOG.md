@@ -8,6 +8,64 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.3.0] - 2026-05-18
+
+### Changed
+
+- Dropped the direct `httpx` dependency from the three modules that
+  made HTTP calls — `case_calendar.courtlistener`,
+  `case_calendar.pdf`, `case_calendar.url_validator` — and replaced
+  it with `urllib.request` / `urllib.error` / `http.client` from the
+  stdlib. The previous 0.2.5 entry had already dropped
+  `httpx-retries`; this is the rest of the same simplification, on
+  the rationale that for THIS workload (one CourtListener host
+  dominating HTTP traffic, per-entry LLM round-trips dominating
+  end-to-end latency) the keep-alive / ergonomic-API benefits of
+  `httpx` don't outweigh keeping one less library in the project's
+  direct-dep surface. The transitive `httpx` install is unchanged —
+  `anthropic`, `openai`, `google-genai`, and `msgraph-sdk` all use
+  it internally for their own HTTP needs.
+- Behavior is preserved across all three call sites:
+  - `CourtListener._get` keeps its 6-attempt retry loop for
+    429/5xx, the `_RETRY_AFTER_BUFFER_SECONDS` buffer, the
+    `_no_request_before` cross-request cooldown, and the separate
+    `_TRANSPORT_RETRY_BUDGET` for transient transport failures.
+    The retryable-exception set now uses the stdlib equivalents
+    (`urllib.error.URLError`, `socket.timeout`,
+    `http.client.HTTPException`, `ConnectionError`) rather than
+    the old `httpx.{TimeoutException, NetworkError, RemoteProtocolError}`.
+    Redirects are followed by the default `HTTPRedirectHandler`,
+    matching the previous `follow_redirects=True` setting.
+  - `pdf._get_with_retry` keeps the same status-code-retry set
+    (429/502/503/504) and the same `_PDF_RETRY_TOTAL` budget.
+  - `url_validator._request_with_retry` keeps the same narrow
+    retryable-exception set and the same fail-open semantics on
+    non-retryable errors and malformed URLs.
+- A new `case_calendar.courtlistener.HTTPStatusError` replaces the
+  previous `httpx.HTTPStatusError` as the surface exception raised
+  by `_get` on exhausted retries or non-429 4xx responses. Carries
+  the same fields callers used (`status_code`, `body`, `url`).
+- `validate_url` no longer accepts a `client=` parameter — there's
+  no shared HTTP client to inject when using stdlib `urlopen`. The
+  one caller (`case_calendar.sync`) already invoked it without a
+  client, so no breaking call-site impact.
+
+### Removed
+
+- Direct dependency on `httpx`.
+
+### Tests
+
+- The MockTransport-based test infrastructure for the three migrated
+  modules is replaced with a `urllib.request.urlopen` monkey-patch.
+  Each module's test file defines a tiny `_FakeResp` (status, body,
+  context-manager protocol) and a `_http_error` helper for
+  simulating 4xx/5xx responses. The production retry loops run
+  end-to-end against these stubs; coverage on all three files is
+  100%.
+
+[0.3.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.0
+
 ## [0.2.5] - 2026-05-18
 
 ### Security
