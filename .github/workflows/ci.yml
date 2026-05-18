@@ -32,13 +32,15 @@ jobs:
         run: uv sync --extra test
 
       - name: Ruff lint
-        # Pin ruff so CI's format check matches what contributors run
-        # locally. Bump this version when ``ruff format`` opinion changes
-        # land in a new release and the codebase is reformatted to match.
-        run: uv run --with 'ruff==0.14.8' ruff check case_calendar tests
+        # ``--with ruff`` pulls the newest ruff release every run, matching
+        # the "latest pyright" rule below: tracking upstream avoids letting
+        # a stale pin drift away from the format opinion contributors hit
+        # in their editors. When a new ruff release changes formatting,
+        # run ``uv run --with ruff ruff format`` and commit the diff.
+        run: uv run --with ruff ruff check case_calendar tests
 
       - name: Ruff format check
-        run: uv run --with 'ruff==0.14.8' ruff format --check case_calendar tests
+        run: uv run --with ruff ruff format --check case_calendar tests
 
       - name: Pyright
         # PYRIGHT_PYTHON_FORCE_VERSION=latest pulls the newest pyright

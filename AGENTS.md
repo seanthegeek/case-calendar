@@ -127,10 +127,11 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 
 - Formatter/linter: **Ruff**
   - All code must be linted and formatted
+  - Always use the latest version of ruff. CI runs `uv run --with ruff ruff check` / `ruff format --check` so the format opinion tracks upstream; when a new ruff release reformats code, run `uv run --with ruff ruff format` locally and commit the diff in the same PR
 - Type annotations use `TypedDict` for structured results
 - Supports all currently supported Python versions
 - Modern type annotations across the entire project
-  - Always use the the latest version of pywright for static type checking
+  - Always use the latest version of pyright for static type checking. Run with `PYRIGHT_PYTHON_FORCE_VERSION=latest` to override the pyright-python wrapper's pinned release; CI sets this env var on the pyright step
 - Testing framework: **pytest**
 - Every bit of code should have a test
 - Build backend: **hatchling**
