@@ -2,6 +2,7 @@
 
 from case_calendar.store import compact_recap_documents
 from case_calendar.sync import (
+    _append_audit_line,
     _deadline_local_to_utc,
     _default_duration,
     _docket_implies_deadlines,
@@ -521,3 +522,19 @@ class TestCompactRecapDocuments:
     def test_empty_input_empty_output(self):
         assert compact_recap_documents({"recap_documents": []}) == []
         assert compact_recap_documents({}) == []
+
+
+class TestAppendAuditLine:
+    def test_no_existing_audit_returns_just_the_line(self):
+        assert _append_audit_line(None, "verify-pass", "note") == "[verify-pass] note"
+        assert _append_audit_line("", "dedupe", "x") == "[dedupe] x"
+
+    def test_existing_audit_appends_with_blank_line_separator(self):
+        # Audit paragraphs stack across sync runs, separated by a blank line
+        # so the column stays readable.
+        out = _append_audit_line("[earlier] prior note", "verify-pass", "next")
+        assert out == "[earlier] prior note\n\n[verify-pass] next"
+
+    def test_existing_audit_trailing_newlines_are_trimmed_before_append(self):
+        out = _append_audit_line("[earlier] prior\n\n", "dedupe", "merged")
+        assert out == "[earlier] prior\n\n[dedupe] merged"

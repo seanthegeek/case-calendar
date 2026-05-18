@@ -730,3 +730,113 @@ class TestWriteIndex:
         )
         assert target.exists()
         assert target.read_text(encoding="utf-8").startswith("<!doctype html>")
+
+
+class TestRenderSubscribeEdgeCases:
+    """``_render_subscribe`` accepts arbitrary ``links`` dicts, so a caller
+    that hands it an https URL without a paired webcal URL hits the
+    rare "button without a subscribe anchor" path. ``_ics_links`` never
+    produces that combination today, but pinning the branch keeps a
+    future refactor honest."""
+
+    def test_https_without_webcal_renders_button_only(self):
+        html = render_index(
+            calendars=[
+                {
+                    "id": "c",
+                    "name": "C",
+                    "links": {
+                        "webcal": None,
+                        "https": "https://example.invalid/c.ics",
+                        "relative": "c.ics",
+                    },
+                    "cases": [],
+                }
+            ]
+        )
+        # No Subscribe anchor (webcal absent), but the Copy-feed-URL
+        # button still renders against the https URL.
+        assert ">Subscribe</a>" not in html
+        assert (
+            'class="copy-feed" data-url="https://example.invalid/c.ics"' in html
+        )
+
+
+class TestRenderSummariesNoCourtCitation:
+    """When a docket's metadata is missing court_citation, the per-docket
+    summary label falls back to the bare docket number."""
+
+    def test_multi_docket_summary_label_omits_citation(self):
+        case = {
+            "case_id": "us-v-x",
+            "name": "X",
+            "summaries": [
+                {
+                    "docket_number": "1:25-cr-1",
+                    "court_id": "mad",
+                    "summary": "First docket summary.",
+                },
+                {
+                    "docket_number": "1:25-cr-2",
+                    "court_id": "mad",
+                    "summary": "Second docket summary.",
+                },
+            ],
+        }
+        dockets = [
+            {
+                "docket_number": "1:25-cr-1",
+                "court_id": "mad",
+                "court_citation": "D. Mass.",
+            },
+            {
+                "docket_number": "1:25-cr-2",
+                "court_id": "mad",
+                # court_citation missing — the branch under test.
+            },
+        ]
+        out = _render_summaries(case, dockets)
+        # The first paragraph's label includes the citation; the second
+        # is bare docket-number only.
+        assert "1:25-cr-1 (D. Mass.)" in out
+        assert ">1:25-cr-2</span>" in out
+        # And we did NOT print "(None)" or similar for the missing citation.
+        assert "1:25-cr-2 (" not in out
+
+
+class TestDocketAbsoluteUrlAlreadyAbsolute:
+    """The docket label promotion only prepends the CourtListener host
+    when ``absolute_url`` is a relative path. When it's already a full
+    URL (rare but possible for non-CourtListener sources), we link to it
+    as-is."""
+
+    def test_absolute_url_starting_with_http_is_passed_through(self):
+        html = render_index(
+            calendars=[
+                {
+                    "id": "c",
+                    "name": "C",
+                    "links": {"webcal": None, "https": None, "relative": "c.ics"},
+                    "cases": [
+                        {
+                            "case_id": "us-v-x",
+                            "name": "X",
+                            "date_filed": None,
+                            "last_filing_date": None,
+                            "dockets": [
+                                {
+                                    "docket_id": 1,
+                                    "docket_number": "1:25-cr-1",
+                                    "court_id": "mad",
+                                    "court_citation": "D. Mass.",
+                                    "absolute_url": "https://other.example/d/1/",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        )
+        # Direct passthrough — no CourtListener host prepended.
+        assert 'href="https://other.example/d/1/"' in html
+        assert "https://www.courtlistener.com/https://other" not in html

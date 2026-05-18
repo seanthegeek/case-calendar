@@ -231,6 +231,43 @@ class TestBuildUserMessage:
         assert "Notice of Hearing" in msg
         assert "#99" in msg
 
+    def test_recap_doc_with_empty_description_is_skipped(self):
+        # Branch coverage for the empty-description-filter inside the
+        # recap-document loop. Two docs: one with text, one without; the
+        # message lists only the populated one.
+        msg = llm.build_user_message(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            entry={
+                "id": 1,
+                "description": "",
+                "recap_documents": [
+                    {"id": 1, "description": ""},
+                    {"id": 2, "description": "Real document"},
+                ],
+            },
+            pdf_texts=[],
+            known_hearings=[],
+        )
+        assert "Real document" in msg
+        # The empty-description row was dropped silently.
+        assert "#1" not in msg
+
+    def test_empty_pdf_texts_list_does_not_add_pdf_block(self):
+        # Branch coverage: pdf_texts is non-empty but every element is
+        # falsy, so the joined string strips to "" and the PDF block
+        # is omitted entirely.
+        msg = llm.build_user_message(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            entry={"id": 1, "description": "", "recap_documents": []},
+            pdf_texts=["", ""],
+            known_hearings=[],
+        )
+        assert "ATTACHED PDF TEXT" not in msg
+
 
 # --- extract_actions error path ---
 

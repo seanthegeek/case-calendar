@@ -1328,9 +1328,8 @@ class CaseSyncer:
             row = self.store.get_entry_by_number(docket_id, n)
             if row and (row.get("description") or row.get("short_description")):
                 eid = row["entry_id"]
-                if eid not in seen_ids:
-                    seen_ids.add(eid)
-                    out.append({"entry_number": n, **row})
+                seen_ids.add(eid)
+                out.append({"entry_number": n, **row})
 
         recent = self.store.get_recent_relevant_entries(
             docket_id, entry.get("date_modified") or "", limit=5
@@ -1376,22 +1375,19 @@ class CaseSyncer:
             text = pdf.extract_text(rd)
             if text:
                 out.append(text)
+            elif not rd.get("is_available"):
+                log.info(
+                    "recap_doc %s not yet on PACER (entry %s); "
+                    "will retry next sync",
+                    doc_id,
+                    entry.get("id"),
+                )
             else:
-                if rd.get("is_sealed"):
-                    log.info("recap_doc %s sealed; skipping", doc_id)
-                elif not rd.get("is_available"):
-                    log.info(
-                        "recap_doc %s not yet on PACER (entry %s); "
-                        "will retry next sync",
-                        doc_id,
-                        entry.get("id"),
-                    )
-                else:
-                    log.info(
-                        "recap_doc %s available but text extraction yielded "
-                        "nothing; install pdftoppm + tesseract for OCR fallback",
-                        doc_id,
-                    )
+                log.info(
+                    "recap_doc %s available but text extraction yielded "
+                    "nothing; install pdftoppm + tesseract for OCR fallback",
+                    doc_id,
+                )
         return out
 
     def _apply_action(

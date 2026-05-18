@@ -1,5 +1,8 @@
+from datetime import datetime, timezone
+
 from case_calendar.calendars.description import (
     _document_label,
+    _document_lines,
     _document_url,
     build,
     no_time_title_prefix,
@@ -289,6 +292,58 @@ class TestNoTimeTitlePrefix:
     def test_naive_timestamp_treated_as_utc(self):
         # Branch coverage for the tzinfo-is-None promotion.
         assert no_time_title_prefix("2099-01-01T00:00:00") == "[time TBD]"
+
+    def test_explicit_now_skips_default_lookup(self):
+        # Branch coverage for the `if now is None:` False side: an explicit
+        # `now` makes the comparison deterministic without consulting the
+        # wall clock.
+        anchor = datetime(2030, 6, 15, tzinfo=timezone.utc)
+        assert (
+            no_time_title_prefix("2031-01-01T00:00:00+00:00", now=anchor)
+            == "[time TBD]"
+        )
+        assert (
+            no_time_title_prefix("2029-01-01T00:00:00+00:00", now=anchor)
+            == "[time unknown]"
+        )
+
+
+class TestDocumentLines:
+    """``_document_lines`` is the per-document line builder; the headline
+    test covers the URL case via the public ``build`` function, but the
+    skip-and-fall-through branches need direct coverage."""
+
+    def test_skips_doc_without_document_number(self):
+        # A doc whose `document_number` is None has no label, so the row is
+        # silently dropped rather than emitting a malformed line.
+        lines = _document_lines(
+            [
+                {
+                    "document_number": None,
+                    "is_sealed": False,
+                    "is_available": True,
+                    "filepath_ia": "https://archive.org/x.pdf",
+                }
+            ]
+        )
+        assert lines == []
+
+    def test_available_doc_without_paths_is_omitted_silently(self):
+        # A doc that's marked available but has no IA mirror and no
+        # CourtListener storage path is an inconsistency — drop the row
+        # rather than printing a label with no URL.
+        lines = _document_lines(
+            [
+                {
+                    "document_number": 42,
+                    "is_sealed": False,
+                    "is_available": True,
+                    "filepath_ia": None,
+                    "filepath_local": None,
+                }
+            ]
+        )
+        assert lines == []
 
 
 # --- _document_label / _document_url ---

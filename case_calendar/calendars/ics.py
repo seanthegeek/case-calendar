@@ -154,12 +154,7 @@ def render_ics(*, calendar_name: str, hearings: Iterable[dict]) -> str:
             lines.append(f"DTSTART;VALUE=DATE:{d}")
             lines.append(f"DTEND;VALUE=DATE:{next_day}")
 
-        if h["status"] == "cancelled":
-            lines.append("STATUS:CANCELLED")
-        elif h["status"] == "held":
-            lines.append("STATUS:CONFIRMED")
-        else:
-            lines.append("STATUS:CONFIRMED")
+        lines.append("STATUS:CONFIRMED")
 
         # Date-only hearings shouldn't block the user's whole day — the
         # hearing has a SPECIFIC time we don't know yet. TRANSP:TRANSPARENT
