@@ -8,7 +8,7 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [0.3.0] - 2026-05-18
+## [0.2.6] - 2026-05-18
 
 ### Changed
 
@@ -64,7 +64,7 @@ adheres to [Semantic Versioning][semver].
   end-to-end against these stubs; coverage on all three files is
   100%.
 
-[0.3.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.0
+[0.2.6]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.6
 
 ## [0.2.5] - 2026-05-18
 
