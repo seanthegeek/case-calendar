@@ -455,7 +455,8 @@ class TestFetchPdfBytes:
             == pdf._PDF_RETRY_TOTAL
         )
         assert any(
-            u.host == "storage.courtlistener.com" or (u.host or "").endswith(".storage.courtlistener.com")
+            u.host == "storage.courtlistener.com"
+            or (u.host or "").endswith(".storage.courtlistener.com")
             for u in urls_seen
         )
 

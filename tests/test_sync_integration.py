@@ -572,9 +572,7 @@ class TestInterruptDoesNotAdvanceCutoff:
 
         assert store.docket_last_modified(100) == self._CL_DOCKET_MODIFIED
 
-    def test_empty_docket_modified_skips_cutoff_write(
-        self, store, case, monkeypatch
-    ):
+    def test_empty_docket_modified_skips_cutoff_write(self, store, case, monkeypatch):
         # Defensive case: CourtListener should always populate
         # `date_modified` on a docket record, but the code guards
         # against an empty / missing value anyway. Writing "" as the
