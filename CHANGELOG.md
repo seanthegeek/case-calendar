@@ -10,6 +10,36 @@ adheres to [Semantic Versioning][semver].
 
 ## [0.2.0] - 2026-05-17
 
+### Changed
+
+- `case_summaries` is now keyed by the logical PACER docket
+  `(case_id, docket_number, court_id)` rather than by the CourtListener
+  `docket_id`. CourtListener's reconciler can split one logical PACER
+  docket across multiple `docket_id` rows when the upstream
+  `pacer_case_id` changed mid-life (see
+  [CourtListener issue #7345](https://github.com/freelawproject/courtlistener/issues/7345));
+  the canonical example is the Akhter twins case (`1:25-cr-00307`,
+  E.D. Va.) where three CL `docket_id`s carry non-overlapping slices of
+  the PACER entries. The summary pipeline now pools entries across
+  every CL `docket_id` in the same `(docket_number, court_id)` group
+  via `summary.find_primary_documents_for_group` (deduplicated by PACER
+  `entry_number`, falling back to `(date_filed, description)` for
+  paperless minute orders), so each logical docket gets one pooled
+  summary and one paragraph in the index instead of N near-duplicates.
+  Sync's stale-flagging is rerouted through the group key as well.
+  The index renderer collapses same-group docket metadata to a single
+  entry per logical PACER docket (siblings stay accessible via
+  `sibling_docket_ids`). **Operators should back up `data/case-calendar.sqlite`
+  (plus the `-wal` / `-shm` sidecars) before upgrading.** A
+  non-destructive migration runs automatically on Store init: the
+  existing `case_summaries` table is renamed to
+  `case_summaries_pre_group_migration` (kept around for one release as
+  a rollback escape hatch) and the new table is backfilled from it,
+  with the latest `generated_at` winning on group collisions. Rolling
+  back to 0.1.x is `DROP TABLE case_summaries; ALTER TABLE
+  case_summaries_pre_group_migration RENAME TO case_summaries;` plus a
+  downgrade.
+
 ### Added
 
 - Extractor pattern coverage for appellate deadlines: petitions for

@@ -515,26 +515,35 @@ def _render_summaries(
 ) -> str:
     """Render the AI-generated per-docket summary block for one case.
 
-    ``summaries`` on the case is a list of ``{docket_id, summary}`` rows.
-    When the case has a single docket and a single summary, we render the
+    ``summaries`` on the case is a list of ``{docket_number, court_id,
+    summary, ...}`` rows — one per logical PACER docket on the case (not
+    per CourtListener docket_id; see the docket grouping design decision
+    in AGENTS.md). When the case has a single summary we render the
     prose without a docket label. When the case aggregates multiple
-    dockets, we label each paragraph with the docket number so subscribers
-    can tell which suit each sentence refers to. Missing summaries are
-    simply absent — the gate is at generation time, not display time.
+    logical PACER dockets (e.g., a district + appellate filing), we
+    label each paragraph with the docket number so subscribers can tell
+    which suit each sentence refers to. Missing summaries are simply
+    absent — the gate is at generation time, not display time.
     """
     summaries = case.get("summaries") or []
     if not summaries:
         return ""
-    docket_label_by_id: dict[Any, str] = {}
+    # Build a (docket_number, court_id) → label map from the docket
+    # metadata. CourtListener docket_id splits sharing the same
+    # (docket_number, court_id) get the same label entry, so they
+    # collapse to one paragraph in the rendered output.
+    label_by_group: dict[tuple[str, str], str] = {}
     for d in dockets:
+        docket_number = d.get("docket_number")
+        court_id = d.get("court_id")
+        if not docket_number or not court_id:
+            continue
         # Format: "1:24-cr-12345 (S.D.N.Y.)" — short enough to sit inline
         # at the start of a paragraph as a colored subhead.
-        parts = []
-        if d.get("docket_number"):
-            parts.append(d["docket_number"])
+        parts = [docket_number]
         if d.get("court_citation"):
             parts.append(f"({d['court_citation']})")
-        docket_label_by_id[d.get("docket_id")] = " ".join(parts) if parts else ""
+        label_by_group[(docket_number, court_id)] = " ".join(parts)
 
     multi = len([s for s in summaries if (s.get("summary") or "").strip()]) > 1
     paragraphs: list[str] = []
@@ -543,7 +552,8 @@ def _render_summaries(
         if not body:
             continue
         if multi:
-            label = docket_label_by_id.get(s.get("docket_id")) or ""
+            group_key = (s.get("docket_number"), s.get("court_id"))
+            label = label_by_group.get(group_key) or ""
             label_html = (
                 f'<span class="docket-label">{_esc(label)}</span> — ' if label else ""
             )
@@ -588,11 +598,14 @@ def _render_case(case: dict[str, Any]) -> str:
         "dockets": [
             {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y.",
              "absolute_url": "https://www.courtlistener.com/docket/...",
-             "docket_id": 12345},
+             "docket_id": 12345,
+             "sibling_docket_ids": [12346, 12347]},  # optional — other CL
+                                                     # ids in the same group
             ...
         ],
         "summaries": [
-            {"docket_id": 12345, "summary": "..."},
+            {"docket_number": "1:24-cr-12345", "court_id": "nysd",
+             "summary": "..."},
             ...
         ] | [],
         "date_filed": "2025-01-15" | None,
@@ -812,30 +825,66 @@ def build_calendar_models(
         case_rows: list[dict[str, Any]] = []
         for c in cases_by_cal.get(cal_id, []):
             docket_ids = list(c.get("dockets") or [])
+            # Build dockets_meta but collapse CourtListener docket_id splits
+            # that share the same (docket_number, court_id) — they're one
+            # logical PACER docket and should show as one entry in the
+            # rendered output. The freshest (first-encountered) docket_id
+            # in each group wins; sibling ids are kept aside on the entry
+            # so subscribers / debugging can see them all.
             dockets_meta: list[dict[str, Any]] = []
+            group_index: dict[tuple[Any, Any], int] = {}
             for did in docket_ids:
                 meta = store.get_docket_meta(did) or {}
                 court_citation = None
                 if meta.get("court_id"):
                     court_citation = store.get_court_citation(meta["court_id"])
+                docket_number = meta.get("docket_number")
+                court_id = meta.get("court_id")
+                if docket_number and court_id:
+                    group_key: tuple[Any, Any] = (docket_number, court_id)
+                    if group_key in group_index:
+                        # Already have an entry for this group — append the
+                        # docket_id to the sibling list and keep going.
+                        existing = dockets_meta[group_index[group_key]]
+                        existing.setdefault("sibling_docket_ids", []).append(did)
+                        continue
+                    group_index[group_key] = len(dockets_meta)
                 dockets_meta.append(
                     {
                         "docket_id": did,
-                        "docket_number": meta.get("docket_number"),
-                        "court_id": meta.get("court_id"),
+                        "docket_number": docket_number,
+                        "court_id": court_id,
                         "court_citation": court_citation,
                         "absolute_url": meta.get("absolute_url"),
                     }
                 )
             agg = store.get_case_aggregates(docket_ids)
-            # Per-docket AI summaries — opt-in feature. The list is empty when
-            # the operator hasn't run `case-calendar summarize` for this case,
-            # which causes the renderer to skip the summary block entirely.
+            # Per-logical-docket AI summaries — opt-in feature. The list is
+            # empty when the operator hasn't run `case-calendar summarize`
+            # for this case, which causes the renderer to skip the summary
+            # block entirely. Rows are keyed by (docket_number, court_id),
+            # so a case with one logical docket spread across three CL
+            # docket_ids gets ONE summary, not three.
             summaries: list[dict[str, Any]] = store.get_case_summaries(c["id"])
             # Preserve config-defined docket order in the rendered output
             # so multi-docket cases read in the order the operator listed.
-            order = {did: i for i, did in enumerate(docket_ids)}
-            summaries.sort(key=lambda s: order.get(s.get("docket_id"), 1_000_000))
+            # We order by group (docket_number, court_id), since a single
+            # logical docket may map to multiple CL docket_ids in config.
+            order: dict[tuple[Any, Any], int] = {}
+            for i, did in enumerate(docket_ids):
+                m = store.get_docket_meta(did) or {}
+                dn = m.get("docket_number")
+                cid = m.get("court_id")
+                if dn and cid:
+                    order_key: tuple[Any, Any] = (dn, cid)
+                    if order_key not in order:
+                        order[order_key] = i
+            summaries.sort(
+                key=lambda s: order.get(
+                    (s.get("docket_number"), s.get("court_id")),
+                    1_000_000,
+                )
+            )
             case_rows.append(
                 {
                     "id": c.get("id"),

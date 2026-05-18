@@ -3257,15 +3257,28 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
     def test_primary_document_marks_stale(self, store, case, monkeypatch):
         # Seed a non-stale summary row, then process an entry whose
         # description matches summary.is_primary_document. After
-        # process_entry, the row should be flagged stale.
+        # process_entry, the row should be flagged stale on the LOGICAL
+        # PACER docket key (docket_number, court_id), not on the CL
+        # docket_id — see the docket grouping design decision in AGENTS.md.
+        d = _docket()
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": d["court_id"],
+                "docket_number": d["docket_number"],
+                "case_name": d["case_name"],
+                "absolute_url": d["absolute_url"],
+            },
+        )
+        group = (d["docket_number"], d["court_id"])
         store.upsert_case_summary(
             "us-v-x",
-            100,
+            *group,
             summary="old",
             model="m",
             source_entry_ids=[],
         )
-        assert store.is_summary_stale("us-v-x", 100) is False
+        assert store.is_summary_stale("us-v-x", *group) is False
 
         make_llm_stub(
             monkeypatch,
@@ -3277,12 +3290,23 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         syncer = CaseSyncer(cl, store)
         # "INDICTMENT" head matches summary.is_primary_document.
         syncer.process_entry(case, 100, _entry(1, "INDICTMENT as to defendant"))
-        assert store.is_summary_stale("us-v-x", 100) is True
+        assert store.is_summary_stale("us-v-x", *group) is True
 
     def test_disposition_marks_stale(self, store, case, monkeypatch):
+        d = _docket()
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": d["court_id"],
+                "docket_number": d["docket_number"],
+                "case_name": d["case_name"],
+                "absolute_url": d["absolute_url"],
+            },
+        )
+        group = (d["docket_number"], d["court_id"])
         store.upsert_case_summary(
             "us-v-x",
-            100,
+            *group,
             summary="old",
             model="m",
             source_entry_ids=[],
@@ -3296,7 +3320,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         cl = FakeCourtListener(dockets={100: _docket()})
         syncer = CaseSyncer(cl, store)
         syncer.process_entry(case, 100, _entry(1, "JUDGMENT in a Criminal Case"))
-        assert store.is_summary_stale("us-v-x", 100) is True
+        assert store.is_summary_stale("us-v-x", *group) is True
 
     def test_primary_document_persists_description_and_recap_docs(
         self,

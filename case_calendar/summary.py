@@ -501,6 +501,69 @@ def find_primary_documents(
     return primary, dispositions
 
 
+def _logical_entry_dedup_key(entry: dict[str, Any]) -> tuple:
+    """Stable key for the same PACER entry across CourtListener docket siblings.
+
+    CourtListener assigns its own ``id`` per docket_id, so the same logical
+    PACER entry on two CL dockets has different ``id`` values. Within a
+    ``(docket_number, court_id)`` group the PACER ``entry_number`` is the
+    same, so it's the natural dedup key. For paperless minute orders that
+    have no entry_number, falls back to ``(date_filed, description prefix)``
+    — two CL dockets in the same group should agree on those fields for
+    the same paperless event.
+    """
+    enum = entry.get("entry_number")
+    if enum is not None:
+        return ("num", int(enum))
+    date = entry.get("date_filed") or ""
+    desc = (entry.get("description") or "").strip()[:200]
+    return ("desc", date, desc)
+
+
+def find_primary_documents_for_group(
+    cl: CourtListener,
+    group_docket_ids: list[int],
+    *,
+    store: Optional[Store] = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pool primary documents + dispositions across every CL docket in the group.
+
+    CourtListener can split one logical PACER docket into multiple
+    docket_id rows when the upstream ``pacer_case_id`` changed mid-life;
+    each CL row carries a partial slice of the PACER entries. This helper
+    calls :func:`find_primary_documents` per CL docket_id and unions the
+    results, deduping with :func:`_logical_entry_dedup_key` so the same
+    PACER entry (different CL ``id``, same PACER ``entry_number``) is only
+    returned once.
+
+    ``group_docket_ids`` should be ordered freshest-first (which
+    :meth:`Store.get_docket_group_ids` already does via
+    ``date_modified DESC``) so first-seen-wins prefers the most-recently-
+    ingested CL row when a logical entry appears on multiple siblings.
+    """
+    primary: list[dict[str, Any]] = []
+    dispositions: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+
+    def _take(target: list[dict[str, Any]], entry: dict[str, Any]) -> None:
+        key = _logical_entry_dedup_key(entry)
+        if key in seen:
+            return
+        seen.add(key)
+        target.append(entry)
+
+    for did in group_docket_ids:
+        p, d = find_primary_documents(cl, did, store=store)
+        for e in p:
+            _take(primary, e)
+        for e in d:
+            _take(dispositions, e)
+
+    primary.sort(key=lambda e: e.get("date_filed") or "")
+    dispositions.sort(key=lambda e: e.get("date_filed") or "")
+    return primary, dispositions
+
+
 # ---------------------------------------------------------------------------
 # Sealing detection
 # ---------------------------------------------------------------------------
@@ -709,26 +772,28 @@ def _attach_text(
 # ---------------------------------------------------------------------------
 
 
-def _hearings_for_docket(
-    store: Store, case_id: str, docket_id: int
+def _hearings_for_group(
+    store: Store, case_id: str, group_docket_ids: Iterable[int]
 ) -> list[dict[str, Any]]:
-    """Filter the case's hearings to a single docket for the LLM scaffold."""
-    return [h for h in store.get_hearings(case_id) if h.get("docket_id") == docket_id]
+    """Filter the case's hearings to every docket_id in the group."""
+    group_set = set(group_docket_ids)
+    return [h for h in store.get_hearings(case_id) if h.get("docket_id") in group_set]
 
 
-def _deadlines_for_docket(
-    store: Store, case_id: str, docket_id: int
+def _deadlines_for_group(
+    store: Store, case_id: str, group_docket_ids: Iterable[int]
 ) -> list[dict[str, Any]]:
-    return [d for d in store.get_deadlines(case_id) if d.get("docket_id") == docket_id]
+    group_set = set(group_docket_ids)
+    return [d for d in store.get_deadlines(case_id) if d.get("docket_id") in group_set]
 
 
 def _fetch_extra_documents(
     case: CaseConfig,
-    docket_id: int,
+    group_docket_ids: Iterable[int],
     *,
     allow_ocr: bool = True,
 ) -> list[dict[str, Any]]:
-    """Fetch operator-provided ``extra_documents`` for one docket.
+    """Fetch operator-provided ``extra_documents`` for every docket in the group.
 
     Returns one flat list of doc dicts, each carrying ``source_url`` (the
     LLM prompt's provenance line) and ``operator_note`` (the trusted
@@ -738,22 +803,27 @@ def _fetch_extra_documents(
     run on whatever CourtListener did surface. The summary LLM sees these in their
     own "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section, distinct from the
     primary-document and disposition slots that the CourtListener-walk fills.
+
+    Pins the operator-supplied ``extra.docket`` against any CL docket_id
+    in the group — when a logical PACER docket is split across multiple
+    CL siblings, an extra pinned to one of them applies to the group.
     """
     extras = getattr(case, "extra_documents", None) or []
+    group_set = set(group_docket_ids)
     out: list[dict[str, Any]] = []
     for extra in extras:
-        if extra.docket != docket_id:
+        if extra.docket not in group_set:
             continue
         log.info(
             "summary: docket %s — fetching operator-provided document from %s",
-            docket_id,
+            extra.docket,
             extra.url,
         )
         text = pdf.extract_text_from_url(extra.url, allow_ocr=allow_ocr)
         if not text:
             log.warning(
                 "summary: docket %s — operator-provided document %s yielded no text; skipping",
-                docket_id,
+                extra.docket,
                 extra.url,
             )
             continue
@@ -838,7 +908,15 @@ def summarize_docket(
     model: Optional[str] = None,
     allow_ocr: bool = True,
 ) -> Optional[dict[str, Any]]:
-    """Generate, persist, and return the summary row for one docket.
+    """Generate, persist, and return the summary row for the LOGICAL PACER docket.
+
+    Resolves ``docket_id`` to ``(docket_number, court_id)`` via the
+    ``dockets`` table, then pools entries across every CL ``docket_id``
+    in the same group (see :meth:`Store.get_docket_group_ids` and the
+    matching AGENTS.md design decision). The summary row is keyed by
+    ``(case_id, docket_number, court_id)``, so calling this multiple
+    times with different ``docket_id``s from the same group writes to
+    the same row (idempotent — last write wins).
 
     Returns ``None`` when no primary-document text is available — we
     don't want to hallucinate a summary from the docket metadata alone.
@@ -846,6 +924,16 @@ def summarize_docket(
     meta = store.get_docket_meta(docket_id) or {}
     docket_number = meta.get("docket_number")
     court_id = meta.get("court_id")
+    if not docket_number or not court_id:
+        log.warning(
+            "summary: skipping docket %s — no (docket_number, court_id) "
+            "metadata yet (run sync first to populate)",
+            docket_id,
+        )
+        return None
+    group_docket_ids = store.get_docket_group_ids(docket_number, court_id) or [
+        docket_id
+    ]
     docket_for_prompt = {
         "docket_id": docket_id,
         "docket_number": docket_number,
@@ -855,14 +943,19 @@ def summarize_docket(
     }
 
     log.info(
-        "summary: scanning docket %s (%s) for primary documents",
-        docket_id,
+        "summary: scanning %s (%s) for primary documents across %d CL docket(s) %s",
         docket_number,
+        court_id,
+        len(group_docket_ids),
+        group_docket_ids,
     )
-    primary, dispositions = find_primary_documents(cl, docket_id, store=store)
+    primary, dispositions = find_primary_documents_for_group(
+        cl, group_docket_ids, store=store
+    )
     log.info(
-        "summary: docket %s found %d primary document(s), %d disposition document(s)",
-        docket_id,
+        "summary: %s (%s) found %d primary document(s), %d disposition document(s)",
+        docket_number,
+        court_id,
         len(primary),
         len(dispositions),
     )
@@ -917,11 +1010,13 @@ def summarize_docket(
                 len(text),
             )
 
-    # Fetch any operator-supplied extra_documents for this docket. These
-    # don't slot into primary/disposition — they ride into the LLM
+    # Fetch any operator-supplied extra_documents for this docket group.
+    # These don't slot into primary/disposition — they ride into the LLM
     # prompt as their own block, each carrying the operator's note
-    # describing what it is.
-    extra_documents = _fetch_extra_documents(case, docket_id, allow_ocr=allow_ocr)
+    # describing what it is. Pinned to any docket_id in the group.
+    extra_documents = _fetch_extra_documents(
+        case, group_docket_ids, allow_ocr=allow_ocr
+    )
 
     if not primary_documents and len(case.dockets) > 1:
         # Appellate dockets (and parallel filings that pivot off a sibling)
@@ -948,15 +1043,24 @@ def summarize_docket(
         )
         return None
 
-    hearings = _hearings_for_docket(store, case.case_id, docket_id)
-    deadlines = _deadlines_for_docket(store, case.case_id, docket_id)
+    hearings = _hearings_for_group(store, case.case_id, group_docket_ids)
+    deadlines = _deadlines_for_group(store, case.case_id, group_docket_ids)
 
-    sealing_advisory = detect_sealing(cl, docket_id, dispositions=dispositions)
+    # Sealing detection runs on the canonical docket_id (the first in the
+    # group, which is the freshest-modified CL row). The advisory walks
+    # ~one page of entries on that docket; running it across every sibling
+    # would multiply CL API calls without strengthening the signal — the
+    # sealing order is on the PACER docket itself, not per-CL-row, so
+    # whichever sibling is checked first will see it.
+    sealing_advisory = detect_sealing(
+        cl, group_docket_ids[0], dispositions=dispositions
+    )
     if sealing_advisory is not None:
         log.info(
-            "summary: docket %s — sealing advisory: order at entry #%s "
+            "summary: %s (%s) — sealing advisory: order at entry #%s "
             "(filed %s), %d post-seal available entries observed",
-            docket_id,
+            docket_number,
+            court_id,
             sealing_advisory.get("sealing_entry_number"),
             sealing_advisory.get("sealing_date_filed"),
             sealing_advisory.get("available_post_seal_entries"),
@@ -1000,24 +1104,64 @@ def summarize_docket(
     ]
     store.upsert_case_summary(
         case.case_id,
-        docket_id,
+        docket_number,
+        court_id,
         summary=summary_text,
         model=model_id,
         source_entry_ids=source_ids,
     )
 
     log.info(
-        "summary: wrote docket %s summary (%d chars, model=%s)",
-        docket_id,
+        "summary: wrote %s (%s) summary (%d chars, model=%s)",
+        docket_number,
+        court_id,
         len(summary_text),
         model_id,
     )
     return {
-        "docket_id": docket_id,
+        "docket_number": docket_number,
+        "court_id": court_id,
+        "group_docket_ids": list(group_docket_ids),
         "summary": summary_text,
         "model": model_id,
         "source_entry_ids": source_ids,
     }
+
+
+def _group_dockets_on_case(
+    store: Store, case: CaseConfig
+) -> list[tuple[str, str, int]]:
+    """Map the case's CL docket_ids onto logical PACER docket groups.
+
+    Returns one ``(docket_number, court_id, canonical_docket_id)`` tuple
+    per group. The canonical CL docket_id is the freshest one in the
+    group (the head of :meth:`Store.get_docket_group_ids`), used as the
+    representative for :func:`summarize_docket` calls. CL docket_ids
+    that have no ``dockets`` metadata yet (never synced) are skipped
+    with a warning — the next sync populates the row and the next
+    summarize call picks them up.
+    """
+    seen: set[tuple[str, str]] = set()
+    groups: list[tuple[str, str, int]] = []
+    for docket_id in case.dockets:
+        meta = store.get_docket_meta(docket_id)
+        if not meta or not meta.get("docket_number") or not meta.get("court_id"):
+            log.warning(
+                "summary: docket %s on case %s has no (docket_number, "
+                "court_id) metadata yet — skipping until sync populates it",
+                docket_id,
+                case.case_id,
+            )
+            continue
+        key = (meta["docket_number"], meta["court_id"])
+        if key in seen:
+            continue
+        seen.add(key)
+        # The canonical docket_id can be any CL row in the group — pass
+        # this one through, and summarize_docket internally re-resolves
+        # to the full group via Store.get_docket_group_ids.
+        groups.append((key[0], key[1], docket_id))
+    return groups
 
 
 def refresh_stale(
@@ -1031,14 +1175,16 @@ def refresh_stale(
     model: Optional[str] = None,
     allow_ocr: bool = True,
     force: bool = False,
-) -> dict[str, set[int]]:
+) -> dict[str, set[tuple[str, str]]]:
     """Regenerate any summaries that are missing or marked stale.
 
-    Walks ``cases`` (the parsed CaseConfig list from cli) and checks every
-    docket against :meth:`Store.is_summary_stale`; for each stale docket,
-    calls :func:`summarize_docket`. Returns ``{case_id: {docket_id, ...}}``
-    for the rows that were (re)written so callers can scope the resulting
-    emit to the affected calendars.
+    Walks ``cases`` (the parsed CaseConfig list from cli), groups each
+    case's CL docket_ids by ``(docket_number, court_id)``, and for each
+    group checks :meth:`Store.is_summary_stale`. Stale groups get
+    regenerated via :func:`summarize_docket`. Returns
+    ``{case_id: {(docket_number, court_id), ...}}`` for the groups that
+    were (re)written so callers can scope the resulting emit to the
+    affected calendars.
 
     This is the automatic path: ``sync.process_entry`` flips ``stale=1`` when
     it sees a primary-document or disposition entry, and ``cmd_sync`` /
@@ -1055,19 +1201,24 @@ def refresh_stale(
     cases (the dataclass CaseConfig doesn't carry that field).
     """
     case_overrides = case_overrides or {}
-    written: dict[str, set[int]] = {}
+    written: dict[str, set[tuple[str, str]]] = {}
     for case in cases:
         if only_case_ids is not None and case.case_id not in only_case_ids:
             continue
         aggregation_note = (case_overrides.get(case.case_id) or {}).get(
             "aggregation_note"
         )
-        for docket_id in case.dockets:
-            if not force and not store.is_summary_stale(case.case_id, docket_id):
+        for docket_number, court_id, canonical_docket_id in _group_dockets_on_case(
+            store, case
+        ):
+            if not force and not store.is_summary_stale(
+                case.case_id, docket_number, court_id
+            ):
                 continue
             log.info(
-                "summary: docket %s (case %s) %s — regenerating",
-                docket_id,
+                "summary: %s (%s) on case %s %s — regenerating",
+                docket_number,
+                court_id,
                 case.case_id,
                 "force-refresh" if force else "is stale or missing",
             )
@@ -1075,14 +1226,14 @@ def refresh_stale(
                 cl=cl,
                 store=store,
                 case=case,
-                docket_id=docket_id,
+                docket_id=canonical_docket_id,
                 aggregation_note=aggregation_note,
                 provider=provider,
                 model=model,
                 allow_ocr=allow_ocr,
             )
             if row:
-                written.setdefault(case.case_id, set()).add(docket_id)
+                written.setdefault(case.case_id, set()).add((docket_number, court_id))
     return written
 
 
@@ -1097,20 +1248,26 @@ def summarize_case(
     allow_ocr: bool = True,
     force: bool = False,
 ) -> list[dict[str, Any]]:
-    """Summarize every docket on a case.
+    """Summarize every logical PACER docket on a case.
 
-    With ``force=False`` (the default), dockets that already have a summary
-    row are skipped — primary documents are stable, so existing summaries
-    are still valid. Pass ``force=True`` after a model upgrade or prompt
+    CL docket_ids that resolve to the same ``(docket_number, court_id)``
+    group are summarized once — entries are pooled across siblings. With
+    ``force=False`` (the default), groups that already have a summary
+    row are skipped. Pass ``force=True`` after a model upgrade or prompt
     change to overwrite.
     """
     out: list[dict[str, Any]] = []
-    for docket_id in case.dockets:
-        if not force and store.get_docket_summary(case.case_id, docket_id):
+    for docket_number, court_id, canonical_docket_id in _group_dockets_on_case(
+        store, case
+    ):
+        if not force and store.get_docket_summary(
+            case.case_id, docket_number, court_id
+        ):
             log.info(
-                "summary: skipping docket %s (case %s) — already summarized, "
+                "summary: skipping %s (%s) on case %s — already summarized, "
                 "pass force=True to overwrite",
-                docket_id,
+                docket_number,
+                court_id,
                 case.case_id,
             )
             continue
@@ -1118,7 +1275,7 @@ def summarize_case(
             cl=cl,
             store=store,
             case=case,
-            docket_id=docket_id,
+            docket_id=canonical_docket_id,
             aggregation_note=aggregation_note,
             provider=provider,
             model=model,

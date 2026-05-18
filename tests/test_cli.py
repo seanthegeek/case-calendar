@@ -1318,14 +1318,27 @@ class TestCmdServe:
         cfg["case_summaries"] = {"enabled": True, "debounce_seconds": 0.01}
         cfg_file.write_text(yaml.safe_dump(cfg))
 
-        # Seed an existing stale summary row in the store. This requires the
-        # store file already exist with the case_summaries table; opening a
-        # Store at the configured path is the cheapest way.
+        # Seed an existing stale summary row in the store. Needs the dockets
+        # metadata so the debounce arm can resolve docket_id → group.
         s = cli.Store(cfg["store_path"])
-        s.upsert_case_summary(
-            "us-v-x", 100, summary="old", model="m", source_entry_ids=[]
+        s.upsert_docket_meta(
+            100,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-1",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
         )
-        s.mark_summary_stale("us-v-x", 100)
+        s.upsert_case_summary(
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="old",
+            model="m",
+            source_entry_ids=[],
+        )
+        s.mark_summary_stale("us-v-x", "1:25-cr-1", "mad")
         s.conn.commit()
         s.close()
 
@@ -1425,8 +1438,22 @@ class TestCmdServe:
 
         # Pre-seed a NON-stale summary, so is_summary_stale returns False.
         s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
+        s.upsert_docket_meta(
+            100,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-1",
+                "case_name": "X",
+                "absolute_url": "/x/",
+            },
+        )
         s.upsert_case_summary(
-            "us-v-x", 100, summary="x", model="m", source_entry_ids=[]
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="x",
+            model="m",
+            source_entry_ids=[],
         )
         s.conn.commit()
         s.close()
@@ -1571,7 +1598,14 @@ class TestCmdSummarize:
 
         def _fake(**kw):
             summarize_calls.append(kw)
-            return [{"docket_id": 100, "summary": "x" * 42, "model": "m"}]
+            return [
+                {
+                    "docket_number": "1:25-cr-1",
+                    "court_id": "mad",
+                    "summary": "x" * 42,
+                    "model": "m",
+                }
+            ]
 
         monkeypatch.setattr(summary_mod, "summarize_case", _fake)
         emit_calls: list[Any] = []

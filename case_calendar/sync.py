@@ -521,9 +521,19 @@ class CaseSyncer:
         # regenerate the summary before re-rendering the index. We check
         # this independently of `processed` because primary documents
         # and judgments rarely match the hearing-relevance regex but are
-        # the most important signals for the summary.
+        # the most important signals for the summary. The stale flag
+        # targets the LOGICAL PACER docket (docket_number, court_id)
+        # rather than the CL docket_id — CourtListener can split one
+        # PACER docket across multiple docket_id rows (see the docket
+        # grouping design decision in AGENTS.md), and we want the next
+        # refresh to regenerate the single pooled summary, not three
+        # near-duplicates.
         if summary_relevant:
-            self.store.mark_summary_stale(case.case_id, docket_id)
+            meta = self.store.get_docket_meta(docket_id) or {}
+            docket_number = meta.get("docket_number")
+            court_id = meta.get("court_id")
+            if docket_number and court_id:
+                self.store.mark_summary_stale(case.case_id, docket_number, court_id)
         return processed
 
     # --- polling entry point ---

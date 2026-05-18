@@ -1108,58 +1108,86 @@ class TestGcalAndM365Setters:
 
 
 class TestCaseSummaries:
+    # case_summaries is keyed by the LOGICAL PACER docket
+    # (case_id, docket_number, court_id), not the CourtListener docket_id —
+    # see the AGENTS.md design decision on docket grouping.
+    DKT = "1:25-cr-00307"
+    DKT2 = "1:25-cr-00308"
+    COURT = "vaed"
+
     def test_upsert_and_retrieve(self, store: Store):
         store.upsert_case_summary(
             "us-v-x",
-            1,
+            self.DKT,
+            self.COURT,
             summary="The defendants are charged with...",
             model="anthropic/claude-sonnet-4-6",
             source_entry_ids=[10, 20],
         )
-        row = must(store.get_docket_summary("us-v-x", 1))
+        row = must(store.get_docket_summary("us-v-x", self.DKT, self.COURT))
         assert row["summary"].startswith("The defendants")
         assert row["model"] == "anthropic/claude-sonnet-4-6"
         assert row["source_entry_ids"] == [10, 20]
+        assert row["docket_number"] == self.DKT
+        assert row["court_id"] == self.COURT
 
     def test_upsert_overwrites_existing(self, store: Store):
-        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m1")
-        store.upsert_case_summary("us-v-x", 1, summary="v2", model="m2")
-        assert must(store.get_docket_summary("us-v-x", 1))["summary"] == "v2"
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="v1", model="m1"
+        )
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="v2", model="m2"
+        )
+        row = must(store.get_docket_summary("us-v-x", self.DKT, self.COURT))
+        assert row["summary"] == "v2"
 
     def test_get_docket_summary_missing_returns_none(self, store: Store):
-        assert store.get_docket_summary("nope", 1) is None
+        assert store.get_docket_summary("nope", self.DKT, self.COURT) is None
 
-    def test_get_case_summaries_returns_all_dockets(self, store: Store):
-        store.upsert_case_summary("us-v-x", 1, summary="a", model="m")
-        store.upsert_case_summary("us-v-x", 2, summary="b", model="m")
+    def test_get_case_summaries_returns_all_groups(self, store: Store):
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="a", model="m"
+        )
+        store.upsert_case_summary(
+            "us-v-x", self.DKT2, self.COURT, summary="b", model="m"
+        )
         rows = store.get_case_summaries("us-v-x")
-        assert {r["docket_id"] for r in rows} == {1, 2}
+        assert {(r["docket_number"], r["court_id"]) for r in rows} == {
+            (self.DKT, self.COURT),
+            (self.DKT2, self.COURT),
+        }
 
     def test_stale_lifecycle(self, store: Store):
         # New row is not stale; mark_summary_stale flips it; upsert resets.
-        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m")
-        assert store.is_summary_stale("us-v-x", 1) is False
-        store.mark_summary_stale("us-v-x", 1)
-        assert store.is_summary_stale("us-v-x", 1) is True
-        assert store.get_summary_stale_since("us-v-x", 1) is not None
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="v1", model="m"
+        )
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+        store.mark_summary_stale("us-v-x", self.DKT, self.COURT)
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is True
+        assert store.get_summary_stale_since("us-v-x", self.DKT, self.COURT) is not None
         # Upserting after a refresh resets stale flag + clears stale_since.
-        store.upsert_case_summary("us-v-x", 1, summary="v2", model="m")
-        assert store.is_summary_stale("us-v-x", 1) is False
-        assert store.get_summary_stale_since("us-v-x", 1) is None
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="v2", model="m"
+        )
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+        assert store.get_summary_stale_since("us-v-x", self.DKT, self.COURT) is None
 
     def test_missing_row_is_stale_by_definition(self, store: Store):
         # New cases never written get treated as stale so refresh_stale
         # creates a row on the next sync.
-        assert store.is_summary_stale("never-summarized", 1) is True
+        assert store.is_summary_stale("never-summarized", self.DKT, self.COURT) is True
 
     def test_mark_summary_stale_on_missing_row_is_noop(self, store: Store):
         # No row exists -> UPDATE matches nothing; subsequent get returns None.
-        store.mark_summary_stale("nope", 1)
-        assert store.get_summary_stale_since("nope", 1) is None
+        store.mark_summary_stale("nope", self.DKT, self.COURT)
+        assert store.get_summary_stale_since("nope", self.DKT, self.COURT) is None
 
     def test_get_case_summaries_handles_malformed_source_entry_ids(self, store: Store):
         # source_entry_ids stored as malformed JSON falls back to [].
-        store.upsert_case_summary("us-v-x", 1, summary="v1", model="m")
+        store.upsert_case_summary(
+            "us-v-x", self.DKT, self.COURT, summary="v1", model="m"
+        )
         store.conn.execute(
             "UPDATE case_summaries SET source_entry_ids=? WHERE case_id=?",
             ("not-json", "us-v-x"),
@@ -1167,7 +1195,66 @@ class TestCaseSummaries:
         rows = store.get_case_summaries("us-v-x")
         assert rows[0]["source_entry_ids"] == []
         # Same fallback in get_docket_summary.
-        assert must(store.get_docket_summary("us-v-x", 1))["source_entry_ids"] == []
+        row = must(store.get_docket_summary("us-v-x", self.DKT, self.COURT))
+        assert row["source_entry_ids"] == []
+
+    def test_pool_groups_one_summary_across_cl_splits(self, store: Store):
+        # The canonical Akhter case: three CL docket_ids share one
+        # (docket_number, court_id). The summary lives on the GROUP, so
+        # all three CL ids round-trip to the same row.
+        for did in (71989485, 73333500, 73320754):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": self.COURT,
+                    "docket_number": self.DKT,
+                    "case_name": "US v. Akhter",
+                    "absolute_url": "/x/",
+                },
+            )
+        store.upsert_case_summary(
+            "us-v-akhter",
+            self.DKT,
+            self.COURT,
+            summary="pooled",
+            model="m",
+        )
+        # Every CL docket_id in the group resolves to the same summary.
+        for did in (71989485, 73333500, 73320754):
+            meta = must(store.get_docket_meta(did))
+            row = must(
+                store.get_docket_summary(
+                    "us-v-akhter", meta["docket_number"], meta["court_id"]
+                )
+            )
+            assert row["summary"] == "pooled"
+        # And only ONE summary row exists for the case.
+        assert len(store.get_case_summaries("us-v-akhter")) == 1
+
+    def test_get_docket_group_ids(self, store: Store):
+        for did in (71989485, 73333500, 73320754):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": self.COURT,
+                    "docket_number": self.DKT,
+                    "case_name": "US v. Akhter",
+                    "absolute_url": "/x/",
+                },
+            )
+        # A different (docket_number, court_id) is correctly excluded.
+        store.upsert_docket_meta(
+            99,
+            {
+                "court_id": "cacd",
+                "docket_number": "2:26-cr-99",
+                "case_name": "other",
+                "absolute_url": "/y/",
+            },
+        )
+        ids = store.get_docket_group_ids(self.DKT, self.COURT)
+        assert set(ids) == {71989485, 73333500, 73320754}
+        assert 99 not in ids
 
 
 class TestSchemaMigration:
@@ -1255,6 +1342,212 @@ class TestSchemaMigration:
         path = tmp_path / "x.sqlite"
         Store(path).close()
         Store(path).close()
+
+
+class TestCaseSummariesGroupMigration:
+    """Migration that re-keys case_summaries from (case_id, docket_id) to
+    (case_id, docket_number, court_id). Non-destructive — the old table is
+    renamed to case_summaries_pre_group_migration as a rollback escape hatch.
+    """
+
+    def _seed_pre_migration_db(self, path):
+        """Build a DB carrying the pre-group case_summaries shape."""
+        c = sqlite3.connect(path)
+        c.row_factory = sqlite3.Row
+        c.executescript("""
+            CREATE TABLE dockets (
+                docket_id INTEGER PRIMARY KEY,
+                date_modified TEXT,
+                last_synced_at TEXT NOT NULL,
+                court_id TEXT,
+                docket_number TEXT,
+                case_name TEXT,
+                absolute_url TEXT,
+                date_last_filing TEXT
+            );
+            CREATE TABLE case_summaries (
+                case_id TEXT NOT NULL,
+                docket_id INTEGER NOT NULL,
+                summary TEXT NOT NULL,
+                model TEXT,
+                source_entry_ids TEXT,
+                stale INTEGER NOT NULL DEFAULT 0,
+                stale_since TEXT,
+                generated_at TEXT NOT NULL,
+                PRIMARY KEY (case_id, docket_id)
+            );
+        """)
+        return c
+
+    def test_backfills_docket_number_and_court_id(self, tmp_path):
+        path = tmp_path / "old.sqlite"
+        c = self._seed_pre_migration_db(path)
+        c.execute(
+            "INSERT INTO dockets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-01-01", "2026-01-01", "vaed", "1:25-cr-1", "X", "/x/", None),
+        )
+        c.execute(
+            "INSERT INTO case_summaries "
+            "(case_id, docket_id, summary, model, source_entry_ids, stale, "
+            "stale_since, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("us-v-x", 1, "v1", "m", "[]", 0, None, "2026-01-01T00:00:00+00:00"),
+        )
+        c.commit()
+        c.close()
+
+        # Migration runs automatically on Store init.
+        s = Store(path)
+        try:
+            row = must(s.get_docket_summary("us-v-x", "1:25-cr-1", "vaed"))
+            assert row["summary"] == "v1"
+            # The pre-migration table is preserved as the rollback escape hatch.
+            tables = {
+                r["name"]
+                for r in s.conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            assert "case_summaries_pre_group_migration" in tables
+        finally:
+            s.close()
+
+    def test_collision_keeps_newest_generated_at(self, tmp_path):
+        # Three CL docket_ids sharing one (docket_number, court_id) —
+        # the migration must collapse to ONE row and keep the newest.
+        path = tmp_path / "akhter.sqlite"
+        c = self._seed_pre_migration_db(path)
+        for did in (71989485, 73333500, 73320754):
+            c.execute(
+                "INSERT INTO dockets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    did,
+                    "2026-05-15",
+                    "2026-05-15",
+                    "vaed",
+                    "1:25-cr-00307",
+                    "United States v. Akhter",
+                    "/x/",
+                    None,
+                ),
+            )
+        c.executemany(
+            "INSERT INTO case_summaries "
+            "(case_id, docket_id, summary, model, source_entry_ids, stale, "
+            "stale_since, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "us-v-akhter",
+                    71989485,
+                    "older",
+                    "m",
+                    "[]",
+                    0,
+                    None,
+                    "2026-05-14T00:00:00+00:00",
+                ),
+                (
+                    "us-v-akhter",
+                    73320754,
+                    "middle",
+                    "m",
+                    "[]",
+                    0,
+                    None,
+                    "2026-05-15T00:00:00+00:00",
+                ),
+                (
+                    "us-v-akhter",
+                    73333500,
+                    "newest",
+                    "m",
+                    "[]",
+                    0,
+                    None,
+                    "2026-05-16T00:00:00+00:00",
+                ),
+            ],
+        )
+        c.commit()
+        c.close()
+
+        s = Store(path)
+        try:
+            rows = s.get_case_summaries("us-v-akhter")
+            # Three CL docket_ids → ONE summary row post-migration.
+            assert len(rows) == 1
+            assert rows[0]["summary"] == "newest"
+        finally:
+            s.close()
+
+    def test_orphan_summary_is_skipped_with_warning(self, tmp_path, caplog):
+        # A case_summaries row whose docket_id has no matching dockets row
+        # (sync interrupted mid-write) gets skipped — there's no way to
+        # resolve (docket_number, court_id). The orphan stays in the
+        # pre-migration aside table so an operator can investigate.
+        path = tmp_path / "orphan.sqlite"
+        c = self._seed_pre_migration_db(path)
+        c.execute(
+            "INSERT INTO case_summaries "
+            "(case_id, docket_id, summary, model, source_entry_ids, stale, "
+            "stale_since, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "us-v-orphan",
+                999,
+                "stranded",
+                "m",
+                "[]",
+                0,
+                None,
+                "2026-05-01T00:00:00+00:00",
+            ),
+        )
+        c.commit()
+        c.close()
+
+        with caplog.at_level("WARNING", logger="case_calendar.store"):
+            s = Store(path)
+        try:
+            # Orphan dropped from the new table.
+            assert s.get_case_summaries("us-v-orphan") == []
+            # Preserved in the aside table.
+            row = s.conn.execute(
+                "SELECT summary FROM case_summaries_pre_group_migration "
+                "WHERE case_id=? AND docket_id=?",
+                ("us-v-orphan", 999),
+            ).fetchone()
+            assert row is not None and row["summary"] == "stranded"
+            assert "orphan summary" in caplog.text
+        finally:
+            s.close()
+
+    def test_idempotent_re_open(self, tmp_path):
+        # Open once (runs migration), close, open again — the second
+        # Store() construction must not error on the already-migrated
+        # shape (detection short-circuits at the top).
+        path = tmp_path / "x.sqlite"
+        c = self._seed_pre_migration_db(path)
+        c.execute(
+            "INSERT INTO dockets VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (1, "2026-01-01", "2026-01-01", "vaed", "1:25-cr-1", "X", "/x/", None),
+        )
+        c.execute(
+            "INSERT INTO case_summaries "
+            "(case_id, docket_id, summary, model, source_entry_ids, stale, "
+            "stale_since, generated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            ("us-v-x", 1, "v1", "m", "[]", 0, None, "2026-01-01T00:00:00+00:00"),
+        )
+        c.commit()
+        c.close()
+        Store(path).close()
+        # Second open must succeed.
+        s = Store(path)
+        try:
+            assert (
+                must(s.get_docket_summary("us-v-x", "1:25-cr-1", "vaed"))["summary"]
+                == "v1"
+            )
+        finally:
+            s.close()
 
 
 class TestSplitAuditSegments:
@@ -1600,7 +1893,8 @@ class TestPruneHelpers:
         )
         store.upsert_case_summary(
             case_id=case_id,
-            docket_id=docket_id,
+            docket_number=f"1:24-cr-{docket_id:05d}",
+            court_id="dcd",
             summary="text",
             model="anthropic/test",
             source_entry_ids=[entry_id],

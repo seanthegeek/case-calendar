@@ -17,6 +17,7 @@ from case_calendar.courtlistener import CourtListener
 from case_calendar.summary import (
     _is_disposition_document,
     find_primary_documents,
+    find_primary_documents_for_group,
     is_disposition,
     is_primary_document,
     refresh_stale,
@@ -903,6 +904,114 @@ class TestFindPrimaryDocuments:
         assert [e["id"] for e in primary] == [10]
 
 
+class TestFindPrimaryDocumentsForGroup:
+    """Pool primary documents and dispositions across every CL docket_id in
+    a (docket_number, court_id) group. The canonical case is Akhter
+    (1:25-cr-00307, E.D. Va.): three CL docket_ids each carry a partial,
+    non-overlapping slice of the PACER entries — only the pool sees the
+    full picture.
+    """
+
+    def test_pools_non_overlapping_entries(self):
+        # Two CL docket_ids in the same group, each holding a different
+        # entry. The group view shows both.
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2025-11-13",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 99,
+                        "description": "JUDGMENT in a Criminal Case",
+                        "date_filed": "2026-04-15",
+                        "entry_number": 120,
+                        "recap_documents": [{"id": 600}],
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        primary, dispositions = find_primary_documents_for_group(cl, [1, 2])
+        assert [e["id"] for e in primary] == [10]
+        assert [e["id"] for e in dispositions] == [99]
+
+    def test_dedupes_by_entry_number(self):
+        # Same logical PACER entry (entry_number=1) on two CL siblings
+        # under DIFFERENT CL ids. Pool returns it ONCE — first-seen wins.
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2025-11-13",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 999,  # DIFFERENT CL id, SAME PACER entry_number
+                        "description": "INDICTMENT",
+                        "date_filed": "2025-11-13",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 501}],
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        primary, _ = find_primary_documents_for_group(cl, [1, 2])
+        # ONE entry — fresh CL docket (id 1, walked first) wins.
+        assert len(primary) == 1
+        assert primary[0]["id"] == 10
+
+    def test_paperless_dedup_uses_description_and_date(self):
+        # Paperless entries have null entry_number. Dedup falls back to
+        # (date_filed, description prefix) — same logical event on two CL
+        # siblings collapses to one.
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "PAPERLESS Minute Order: defendant pleads guilty",
+                        "date_filed": "2026-04-30",
+                        "entry_number": None,
+                    }
+                ],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 999,
+                        "description": "PAPERLESS Minute Order: defendant pleads guilty",
+                        "date_filed": "2026-04-30",
+                        "entry_number": None,
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        # "pleads guilty" matches the disposition keyword regex.
+        _, dispositions = find_primary_documents_for_group(cl, [1, 2])
+        assert len(dispositions) == 1
+
+    def test_empty_group_returns_empty_lists(self):
+        cl = _FakeCourtListener({})
+        primary, dispositions = find_primary_documents_for_group(cl, [])
+        assert primary == []
+        assert dispositions == []
+
+
 # ---------------------------------------------------------------------------
 # detect_sealing
 # ---------------------------------------------------------------------------
@@ -1276,7 +1385,93 @@ def _seed_docket_meta(store, docket_id, *, court_id="dcd", docket_number="1:24-c
     )
 
 
+# Default group key used by tests that call _seed_docket_meta(store, X) with no
+# overrides — the (docket_number, court_id) the resulting case_summaries row is
+# keyed by post-grouping refactor.
+_DEFAULT_GROUP = ("1:24-cr-100", "dcd")
+
+
 class TestSummarizeDocket:
+    def test_returns_none_when_docket_metadata_missing(
+        self, store, patch_llm, patch_pdf
+    ):
+        # No upsert_docket_meta — the docket_id has no row in the `dockets`
+        # table, so we can't resolve to a (docket_number, court_id) group.
+        # summarize_docket bails with a warning rather than trying to write
+        # a row keyed by null.
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        assert patch_llm == []
+
+    def test_pools_entries_across_cl_docket_group(self, store, patch_llm, patch_pdf):
+        # The canonical Akhter case: three CL docket_ids share the same
+        # (docket_number, court_id) group. Each carries a partial slice of
+        # the entries — the indictment on one, the judgment on another.
+        # summarize_docket(docket_id=N) for ANY N in the group pools all
+        # three slices and writes ONE summary keyed by the group.
+        for did, court_id, docket_number in [
+            (71989485, "vaed", "1:25-cr-00307"),
+            (73333500, "vaed", "1:25-cr-00307"),
+            (73320754, "vaed", "1:25-cr-00307"),
+        ]:
+            _seed_docket_meta(
+                store, did, docket_number=docket_number, court_id=court_id
+            )
+        patch_pdf["texts"] = {500: "INDICTMENT body", 600: "JUDGMENT body"}
+        cl = _FakeCourtListener(
+            {
+                # CL docket 71989485 has the indictment (early entries).
+                (71989485, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2025-11-13",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (71989485, "-date_filed"): [],
+                # CL docket 73333500 has the judgment (later entries).
+                (73333500, "date_filed"): [],
+                (73333500, "-date_filed"): [
+                    {
+                        "id": 99,
+                        "description": "JUDGMENT in a Criminal Case",
+                        "date_filed": "2026-05-15",
+                        "entry_number": 136,
+                        "recap_documents": [{"id": 600}],
+                    }
+                ],
+                (73320754, "date_filed"): [],
+                (73320754, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-akhter",
+            name="US v. Akhter",
+            dockets=[71989485, 73333500, 73320754],
+            calendar="cyber",
+        )
+        # Call with ANY docket_id in the group — should produce one summary.
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=71989485)
+        assert row is not None
+        assert row["docket_number"] == "1:25-cr-00307"
+        assert row["court_id"] == "vaed"
+        # The LLM received BOTH the indictment and the judgment, drawn
+        # from two different CL siblings.
+        assert len(patch_llm) == 1
+        call = patch_llm[0]
+        primary_descs = [p["description"] for p in call["primary_documents"]]
+        disp_descs = [d["description"] for d in call["disposition_documents"]]
+        assert "INDICTMENT" in primary_descs
+        assert any("JUDGMENT" in d for d in disp_descs)
+        # Persisted as ONE row keyed by the group, not three.
+        rows = store.get_case_summaries("us-v-akhter")
+        assert len(rows) == 1
+
     def test_writes_summary_when_primary_text_available(
         self, store, patch_llm, patch_pdf
     ):
@@ -1305,8 +1500,8 @@ class TestSummarizeDocket:
         assert row is not None
         assert row["summary"] == "A two-sentence summary of the matter."
         assert row["model"] == "fake/model-v1"
-        # Persisted to the store.
-        persisted = store.get_docket_summary("us-v-doe", 1)
+        # Persisted to the store under the LOGICAL PACER docket key.
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
         assert persisted["summary"] == row["summary"]
         # LLM received the expected scaffold.
         assert len(patch_llm) == 1
@@ -1341,7 +1536,7 @@ class TestSummarizeDocket:
 
         assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
         assert patch_llm == []
-        assert store.get_docket_summary("us-v-doe", 1) is None
+        assert store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP) is None
 
     def test_insufficient_documents_fallback_is_stored_and_warns(
         self,
@@ -1392,7 +1587,7 @@ class TestSummarizeDocket:
 
         assert row is not None
         assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
-        persisted = store.get_docket_summary("us-v-doe", 1)
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
         assert persisted["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
         # And the warning fired so the operator can find the docket.
         assert any(
@@ -1951,19 +2146,24 @@ class TestExtraDocuments:
         assert [d["entry_id"] for d in patch_llm[0]["primary_documents"]] == [10]
         assert patch_llm[0]["extra_documents"] == []
 
-    def test_only_extras_for_target_docket_are_fetched(
+    def test_only_extras_for_target_group_are_fetched(
         self,
         store,
         patch_llm,
         patch_pdf,
         monkeypatch,
     ):
-        # extra_documents scope to ONE docket via the `docket` field. When
-        # summarize_docket runs on docket A, extras pointing at docket B
-        # must NOT be fetched / folded in.
-        _seed_docket_meta(store, 1)
-        _seed_docket_meta(store, 2)
-        patch_pdf["texts"] = {500: "DOCKET 1 INDICTMENT"}
+        # extra_documents scope to one LOGICAL PACER docket via the
+        # `docket` field. When summarize_docket runs on group A, extras
+        # pointing at a docket_id in a DIFFERENT group must NOT be
+        # fetched. An extra pinned to a sibling CL docket_id in the SAME
+        # group applies (the canonical Akhter-style CL-split case).
+        # Group A: docket_id 1 + 2 share (docket_number, court_id) (CL split).
+        _seed_docket_meta(store, 1)  # 1:24-cr-100 / dcd
+        _seed_docket_meta(store, 2)  # 1:24-cr-100 / dcd (same group)
+        # Group B: docket_id 3 is a separate logical docket.
+        _seed_docket_meta(store, 3, docket_number="1:24-cr-200", court_id="dcd")
+        patch_pdf["texts"] = {500: "INDICTMENT"}
         fetched: list[str] = []
 
         def _fake_fetch(url, allow_ocr=True):
@@ -1982,24 +2182,35 @@ class TestExtraDocuments:
                     }
                 ],
                 (1, "-date_filed"): [],
+                (2, "date_filed"): [],
+                (2, "-date_filed"): [],
             }
         )
         case = _Case(
             case_id="us-v-x",
             name="US v. X",
-            dockets=[1, 2],
+            dockets=[1, 2, 3],
             calendar="cyber",
             extra_documents=[
+                # Pinned to docket_id 3 (different group) — NOT fetched.
                 ExtraDocument(
-                    docket=2, url="https://x.com/wrong.pdf", note="wrong docket"
+                    docket=3, url="https://x.com/wrong.pdf", note="wrong group"
                 ),
+                # Pinned to docket_id 1 (target group) — fetched.
                 ExtraDocument(
-                    docket=1, url="https://x.com/right.pdf", note="right docket"
+                    docket=1, url="https://x.com/right.pdf", note="right group"
+                ),
+                # Pinned to docket_id 2 (sibling in target group) — also fetched.
+                ExtraDocument(
+                    docket=2, url="https://x.com/sibling.pdf", note="sibling in group"
                 ),
             ],
         )
         summarize_docket(cl=cl, store=store, case=case, docket_id=1)
-        assert fetched == ["https://x.com/right.pdf"]
+        assert sorted(fetched) == [
+            "https://x.com/right.pdf",
+            "https://x.com/sibling.pdf",
+        ]
 
     def test_extras_alone_satisfy_content_gate(
         self,
@@ -2045,12 +2256,26 @@ class TestExtraDocuments:
 
 
 class TestRefreshStale:
+    def test_skips_dockets_with_no_metadata_yet(self, store, patch_llm, patch_pdf):
+        # case.dockets references a CL docket_id that has no `dockets`
+        # row yet (sync hasn't run, or interrupted before
+        # upsert_docket_meta). _group_dockets_on_case can't resolve the
+        # group key, so the docket is skipped with a warning.
+        # No _seed_docket_meta — store has no metadata for docket_id 1.
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        written = refresh_stale(cl=cl, store=store, cases=[case])
+        assert written == {}
+        assert patch_llm == []
+
     def test_skips_dockets_that_are_not_stale(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         # Pre-seed a fresh (non-stale) summary row.
         store.upsert_case_summary(
             "us-v-doe",
-            1,
+            *_DEFAULT_GROUP,
             summary="existing",
             model="prev/model",
             source_entry_ids=[],
@@ -2085,18 +2310,18 @@ class TestRefreshStale:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case])
-        assert written == {"us-v-doe": {1}}
+        assert written == {"us-v-doe": {_DEFAULT_GROUP}}
 
     def test_regenerates_when_stale_flag_set(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         store.upsert_case_summary(
             "us-v-doe",
-            1,
+            *_DEFAULT_GROUP,
             summary="old",
             model="prev/model",
             source_entry_ids=[],
         )
-        store.mark_summary_stale("us-v-doe", 1)
+        store.mark_summary_stale("us-v-doe", *_DEFAULT_GROUP)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
         cl = _FakeCourtListener(
             {
@@ -2115,7 +2340,7 @@ class TestRefreshStale:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case])
-        assert written == {"us-v-doe": {1}}
+        assert written == {"us-v-doe": {_DEFAULT_GROUP}}
 
     def test_only_case_ids_scopes_the_walk(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
@@ -2142,7 +2367,7 @@ class TestRefreshStale:
             cases=[case_a, case_b],
             only_case_ids={"a"},
         )
-        assert written == {"a": {1}}
+        assert written == {"a": {_DEFAULT_GROUP}}
 
     def test_force_regenerates_non_stale_rows(self, store, patch_llm, patch_pdf):
         # Default behavior is to skip non-stale rows. force=True bypasses
@@ -2152,13 +2377,13 @@ class TestRefreshStale:
         _seed_docket_meta(store, 1)
         store.upsert_case_summary(
             "us-v-doe",
-            1,
+            *_DEFAULT_GROUP,
             summary="old",
             model="prev/model",
             source_entry_ids=[],
         )
         # Row is fresh — is_summary_stale would return False.
-        assert not store.is_summary_stale("us-v-doe", 1)
+        assert not store.is_summary_stale("us-v-doe", *_DEFAULT_GROUP)
         patch_pdf["texts"] = {500: "INDICTMENT body"}
         cl = _FakeCourtListener(
             {
@@ -2177,7 +2402,7 @@ class TestRefreshStale:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case], force=True)
-        assert written == {"us-v-doe": {1}}
+        assert written == {"us-v-doe": {_DEFAULT_GROUP}}
         assert len(patch_llm) == 1
 
     def test_uses_aggregation_note_override(self, store, patch_llm, patch_pdf):
@@ -2248,7 +2473,7 @@ class TestSummarizeCase:
         _seed_docket_meta(store, 1)
         store.upsert_case_summary(
             "us-v-doe",
-            1,
+            *_DEFAULT_GROUP,
             summary="old",
             model="prev/model",
             source_entry_ids=[],
@@ -2271,9 +2496,9 @@ class TestSummarizeCase:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
-        assert [r["docket_id"] for r in rows] == [1]
+        assert [(r["docket_number"], r["court_id"]) for r in rows] == [_DEFAULT_GROUP]
         assert (
-            store.get_docket_summary("us-v-doe", 1)["summary"]
+            store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)["summary"]
             == "A two-sentence summary of the matter."
         )
 
@@ -2286,7 +2511,7 @@ class TestSummarizeCase:
         _seed_docket_meta(store, 1)
         store.upsert_case_summary(
             "us-v-doe",
-            1,
+            *_DEFAULT_GROUP,
             summary="existing",
             model="prev/model",
             source_entry_ids=[],

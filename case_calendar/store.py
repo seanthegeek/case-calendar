@@ -25,11 +25,14 @@ Keeps:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
+
+log = logging.getLogger(__name__)
 
 
 def compact_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
@@ -163,15 +166,24 @@ CREATE TABLE IF NOT EXISTS deadlines (
 );
 
 CREATE TABLE IF NOT EXISTS case_summaries (
+    -- Keyed by logical PACER docket, NOT by CourtListener docket_id.
+    -- CourtListener's reconciler can split one PACER docket across multiple
+    -- docket_id rows when the upstream pacer_case_id changed mid-life (see
+    -- the matching design decision in AGENTS.md and the canonical Akhter
+    -- example at 1:25-cr-00307 / vaed). The summary pipeline pools entries
+    -- across every docket_id in the (docket_number, court_id) group and
+    -- writes one summary for the group, so subscribers see one paragraph
+    -- per logical docket instead of N near-duplicate slices.
     case_id TEXT NOT NULL,
-    docket_id INTEGER NOT NULL,
+    docket_number TEXT NOT NULL,
+    court_id TEXT NOT NULL,
     summary TEXT NOT NULL,
     model TEXT,
-    source_entry_ids TEXT,         -- JSON list of CourtListener entry IDs fed to the LLM
+    source_entry_ids TEXT,         -- JSON list of CourtListener entry IDs fed to the LLM (union across group)
     stale INTEGER NOT NULL DEFAULT 0,  -- 1 when sync saw a new primary document or disposition that may invalidate the prose
     stale_since TEXT,              -- ISO timestamp of the most recent stale-flagging entry; used by the webhook debounce so a burst of PACER uploads coalesces into one regeneration
     generated_at TEXT NOT NULL,
-    PRIMARY KEY (case_id, docket_id)
+    PRIMARY KEY (case_id, docket_number, court_id)
 );
 
 CREATE TABLE IF NOT EXISTS webhook_events (
@@ -303,6 +315,12 @@ class Store:
         # they may be real docket text that happens to be bracketed, so a
         # blanket move is unsafe. Those rows get hand-cleanup.
         self._migrate_audit_segments()
+        # Re-key case_summaries from (case_id, docket_id) to
+        # (case_id, docket_number, court_id) so that CourtListener's
+        # per-pacer_case_id docket splits collapse into one summary per
+        # logical PACER docket. Non-destructive — the old table is renamed
+        # to case_summaries_pre_group_migration as a rollback escape hatch.
+        self._migrate_case_summaries_to_group_key()
 
     def _migrate_audit_segments(self) -> None:
         """Split existing [verify-pass] / [dedupe] paragraphs out of `notes`
@@ -334,6 +352,115 @@ class Store:
                         row[key_col],
                     ),
                 )
+
+    def _migrate_case_summaries_to_group_key(self) -> None:
+        """Re-key case_summaries from docket_id to (docket_number, court_id).
+
+        CourtListener's reconciler can store the same logical PACER docket
+        as multiple docket_id rows with different pacer_case_id values (see
+        the AGENTS.md design decision and the canonical Akhter example at
+        1:25-cr-00307 / vaed). Pre-migration, each CL docket_id got its own
+        case_summaries row, producing N near-duplicate paragraphs in the
+        index. Post-migration, the table is keyed by (case_id,
+        docket_number, court_id) so the summary pipeline can write one
+        pooled row per logical PACER docket.
+
+        Non-destructive: the old table is renamed to
+        ``case_summaries_pre_group_migration`` rather than dropped, so an
+        operator can roll back by dropping the new table and renaming the
+        old one back. Idempotent: detects the new shape by inspecting the
+        column list and returns immediately on subsequent runs.
+        """
+        cols = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(case_summaries)").fetchall()
+        }
+        if "docket_id" not in cols:
+            # New shape already in place — fresh DB or migration already ran.
+            return
+
+        # If a previous run died mid-migration we may have a half-built temp
+        # table. Drop it so this run starts from a known state.
+        self.conn.execute("DROP TABLE IF EXISTS case_summaries_new")
+        self.conn.execute(
+            """
+            CREATE TABLE case_summaries_new (
+                case_id TEXT NOT NULL,
+                docket_number TEXT NOT NULL,
+                court_id TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                model TEXT,
+                source_entry_ids TEXT,
+                stale INTEGER NOT NULL DEFAULT 0,
+                stale_since TEXT,
+                generated_at TEXT NOT NULL,
+                PRIMARY KEY (case_id, docket_number, court_id)
+            )
+            """
+        )
+        # Backfill: join each old row against `dockets` to resolve
+        # (docket_number, court_id). Order by generated_at ASC so the
+        # ON CONFLICT UPDATE keeps the newest summary on collision (e.g.,
+        # three CL dockets sharing one (docket_number, court_id) → the most
+        # recent generated_at wins).
+        rows = self.conn.execute(
+            """
+            SELECT cs.case_id, cs.docket_id, d.docket_number, d.court_id,
+                   cs.summary, cs.model, cs.source_entry_ids,
+                   cs.stale, cs.stale_since, cs.generated_at
+            FROM case_summaries cs
+            LEFT JOIN dockets d ON d.docket_id = cs.docket_id
+            ORDER BY cs.generated_at ASC
+            """
+        ).fetchall()
+        skipped = 0
+        for r in rows:
+            if not r["docket_number"] or not r["court_id"]:
+                skipped += 1
+                continue
+            self.conn.execute(
+                """
+                INSERT INTO case_summaries_new
+                  (case_id, docket_number, court_id, summary, model,
+                   source_entry_ids, stale, stale_since, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(case_id, docket_number, court_id) DO UPDATE SET
+                  summary=excluded.summary,
+                  model=excluded.model,
+                  source_entry_ids=excluded.source_entry_ids,
+                  stale=excluded.stale,
+                  stale_since=excluded.stale_since,
+                  generated_at=excluded.generated_at
+                """,
+                (
+                    r["case_id"],
+                    r["docket_number"],
+                    r["court_id"],
+                    r["summary"],
+                    r["model"],
+                    r["source_entry_ids"],
+                    r["stale"],
+                    r["stale_since"],
+                    r["generated_at"],
+                ),
+            )
+        if skipped:
+            log.warning(
+                "case_summaries migration: skipped %d row(s) whose docket_id "
+                "had no matching dockets metadata (orphan summary). Run sync "
+                "to populate the dockets row and the next start-up will "
+                "preserve the orphan in case_summaries_pre_group_migration.",
+                skipped,
+            )
+
+        # Rename the old table aside as a rollback escape hatch; promote
+        # the new one. If a previous failed run already renamed it, drop
+        # the stale aside first so this rename can succeed.
+        self.conn.execute("DROP TABLE IF EXISTS case_summaries_pre_group_migration")
+        self.conn.execute(
+            "ALTER TABLE case_summaries RENAME TO case_summaries_pre_group_migration"
+        )
+        self.conn.execute("ALTER TABLE case_summaries_new RENAME TO case_summaries")
 
     def close(self) -> None:
         self.conn.close()
@@ -477,6 +604,27 @@ class Store:
             row["docket_id"]
             for row in self.conn.execute("SELECT docket_id FROM dockets")
         }
+
+    def get_docket_group_ids(self, docket_number: str, court_id: str) -> list[int]:
+        """Every CourtListener docket_id with the given (docket_number, court_id).
+
+        CourtListener's reconciler can split one logical PACER docket
+        across multiple ``docket_id`` rows when the upstream pacer_case_id
+        changed mid-life. Callers in the summary pipeline use this to pool
+        entries across every CL docket in the group, so the summary LLM
+        sees the union rather than a partial slice.
+
+        Sorted by ``date_modified`` descending so the most-recently-seen
+        CL docket is the natural "canonical" pick when one is needed
+        (e.g., for picking metadata).
+        """
+        rows = self.conn.execute(
+            "SELECT docket_id FROM dockets "
+            "WHERE docket_number=? AND court_id=? "
+            "ORDER BY date_modified DESC, docket_id DESC",
+            (docket_number, court_id),
+        ).fetchall()
+        return [int(r["docket_id"]) for r in rows]
 
     # --- courts ---
 
@@ -1028,7 +1176,8 @@ class Store:
     def upsert_case_summary(
         self,
         case_id: str,
-        docket_id: int,
+        docket_number: str,
+        court_id: str,
         *,
         summary: str,
         model: Optional[str],
@@ -1038,10 +1187,10 @@ class Store:
             self.conn.execute(
                 """
                 INSERT INTO case_summaries
-                  (case_id, docket_id, summary, model, source_entry_ids,
-                   stale, stale_since, generated_at)
-                VALUES (?, ?, ?, ?, ?, 0, NULL, ?)
-                ON CONFLICT(case_id, docket_id) DO UPDATE SET
+                  (case_id, docket_number, court_id, summary, model,
+                   source_entry_ids, stale, stale_since, generated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?)
+                ON CONFLICT(case_id, docket_number, court_id) DO UPDATE SET
                   summary=excluded.summary,
                   model=excluded.model,
                   source_entry_ids=excluded.source_entry_ids,
@@ -1051,7 +1200,8 @@ class Store:
                 """,
                 (
                     case_id,
-                    docket_id,
+                    docket_number,
+                    court_id,
                     summary,
                     model,
                     json.dumps(source_entry_ids or []),
@@ -1059,8 +1209,10 @@ class Store:
                 ),
             )
 
-    def mark_summary_stale(self, case_id: str, docket_id: int) -> None:
-        """Flag the case_summaries row for ``(case_id, docket_id)`` as stale.
+    def mark_summary_stale(
+        self, case_id: str, docket_number: str, court_id: str
+    ) -> None:
+        """Flag the case_summaries row for the logical PACER docket as stale.
 
         Also bumps ``stale_since`` to NOW so the webhook debounce can tell
         "burst still arriving" from "burst settled." Each new stale-flagging
@@ -1077,14 +1229,15 @@ class Store:
         with self.tx():
             self.conn.execute(
                 "UPDATE case_summaries SET stale=1, stale_since=? "
-                "WHERE case_id=? AND docket_id=?",
-                (_now(), case_id, docket_id),
+                "WHERE case_id=? AND docket_number=? AND court_id=?",
+                (_now(), case_id, docket_number, court_id),
             )
 
     def get_summary_stale_since(
         self,
         case_id: str,
-        docket_id: int,
+        docket_number: str,
+        court_id: str,
     ) -> Optional[str]:
         """Return the ISO timestamp of the most recent stale-flagging event,
         or None if the row isn't stale (or doesn't exist).
@@ -1095,15 +1248,15 @@ class Store:
         """
         row = self.conn.execute(
             "SELECT stale_since FROM case_summaries "
-            "WHERE case_id=? AND docket_id=? AND stale=1",
-            (case_id, docket_id),
+            "WHERE case_id=? AND docket_number=? AND court_id=? AND stale=1",
+            (case_id, docket_number, court_id),
         ).fetchone()
         if row is None:
             return None
         return row["stale_since"]
 
-    def is_summary_stale(self, case_id: str, docket_id: int) -> bool:
-        """Return True if the docket needs a (re)generated summary.
+    def is_summary_stale(self, case_id: str, docket_number: str, court_id: str) -> bool:
+        """Return True if the logical PACER docket needs a (re)generated summary.
 
         Two equivalent signals: no row exists (new case / new docket
         hasn't been summarized yet) OR a row exists with ``stale=1``
@@ -1111,8 +1264,9 @@ class Store:
         after the last generation).
         """
         row = self.conn.execute(
-            "SELECT stale FROM case_summaries WHERE case_id=? AND docket_id=?",
-            (case_id, docket_id),
+            "SELECT stale FROM case_summaries "
+            "WHERE case_id=? AND docket_number=? AND court_id=?",
+            (case_id, docket_number, court_id),
         ).fetchone()
         if row is None:
             return True
@@ -1120,7 +1274,8 @@ class Store:
 
     def get_case_summaries(self, case_id: str) -> list[dict[str, Any]]:
         rows = self.conn.execute(
-            "SELECT docket_id, summary, model, source_entry_ids, generated_at "
+            "SELECT docket_number, court_id, summary, model, "
+            "source_entry_ids, generated_at "
             "FROM case_summaries WHERE case_id=?",
             (case_id,),
         ).fetchall()
@@ -1135,12 +1290,13 @@ class Store:
         return out
 
     def get_docket_summary(
-        self, case_id: str, docket_id: int
+        self, case_id: str, docket_number: str, court_id: str
     ) -> Optional[dict[str, Any]]:
         row = self.conn.execute(
-            "SELECT docket_id, summary, model, source_entry_ids, generated_at "
-            "FROM case_summaries WHERE case_id=? AND docket_id=?",
-            (case_id, docket_id),
+            "SELECT docket_number, court_id, summary, model, "
+            "source_entry_ids, generated_at "
+            "FROM case_summaries WHERE case_id=? AND docket_number=? AND court_id=?",
+            (case_id, docket_number, court_id),
         ).fetchone()
         if not row:
             return None
@@ -1171,11 +1327,14 @@ class Store:
 
     # --- prune helpers ---
 
-    # Tables that carry a docket_id FK. Order matters for delete_docket: the
-    # `dockets` row must be removed last so a mid-DELETE crash leaves the
+    # Tables that carry a docket_id column. Order matters for delete_docket:
+    # the `dockets` row must be removed last so a mid-DELETE crash leaves the
     # parent row pointing at no children rather than child rows pointing at
-    # a parent that has already been deleted.
-    _DOCKET_CHILD_TABLES = ("entries", "hearings", "deadlines", "case_summaries")
+    # a parent that has already been deleted. `case_summaries` is keyed by
+    # (case_id, docket_number, court_id) and intentionally not in this list;
+    # delete_docket handles it separately because its lifetime is tied to
+    # the LOGICAL PACER docket, not to any single CourtListener docket_id.
+    _DOCKET_CHILD_TABLES = ("entries", "hearings", "deadlines")
     _DOCKET_TABLES = _DOCKET_CHILD_TABLES + ("dockets",)
 
     def list_all_docket_ids(self) -> list[int]:
@@ -1195,7 +1354,13 @@ class Store:
         return sorted(ids)
 
     def count_docket_rows(self, docket_id: int) -> dict[str, int]:
-        """Per-table row count for a single docket — feeds the ``prune`` preview."""
+        """Per-table row count for a single docket — feeds the ``prune`` preview.
+
+        The ``case_summaries`` count reflects rows for the LOGICAL PACER
+        docket this CL docket_id belongs to (joined via the ``dockets``
+        metadata), so the prune preview correctly shows what would be
+        orphaned if this were the last CL docket_id in the group.
+        """
         counts: dict[str, int] = {}
         for table in self._DOCKET_TABLES:
             row = self.conn.execute(
@@ -1203,15 +1368,40 @@ class Store:
                 (docket_id,),
             ).fetchone()
             counts[table] = int(row["n"])
+        # case_summaries: count rows tied to the group, but only if this CL
+        # docket_id is the last one in the group (i.e., would be orphaned by
+        # the prune). Otherwise the summary stays alongside its surviving
+        # sibling docket and we report 0.
+        meta = self.get_docket_meta(docket_id)
+        cs_count = 0
+        if meta and meta.get("docket_number") and meta.get("court_id"):
+            group_size = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM dockets "
+                "WHERE docket_number=? AND court_id=? AND docket_id != ?",
+                (meta["docket_number"], meta["court_id"], docket_id),
+            ).fetchone()["n"]
+            if group_size == 0:
+                cs_count = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM case_summaries "
+                    "WHERE docket_number=? AND court_id=?",
+                    (meta["docket_number"], meta["court_id"]),
+                ).fetchone()["n"]
+        counts["case_summaries"] = int(cs_count)
         return counts
 
     def delete_docket(self, docket_id: int) -> dict[str, int]:
         """Cascade-delete every row tied to a docket_id. Returns per-table counts.
 
+        ``case_summaries`` is cleaned only when this CL docket_id is the
+        last one in its (docket_number, court_id) group — otherwise the
+        summary stays alongside the surviving sibling docket_id.
+
         Caller is responsible for backing up the DB first — there are no
         FOREIGN KEY constraints, so this is the only delete path.
         """
         counts: dict[str, int] = {}
+        # Capture group metadata BEFORE the dockets row goes away.
+        meta = self.get_docket_meta(docket_id)
         with self.tx():
             for table in self._DOCKET_TABLES:
                 cur = self.conn.execute(
@@ -1219,4 +1409,23 @@ class Store:
                     (docket_id,),
                 )
                 counts[table] = cur.rowcount
+            cs_count = 0
+            if meta and meta.get("docket_number") and meta.get("court_id"):
+                # After the dockets DELETE above: if no sibling docket_id
+                # remains in the group, the case_summaries rows are orphan
+                # and we delete them. Otherwise leave them — they belong to
+                # the surviving sibling.
+                survivors = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM dockets "
+                    "WHERE docket_number=? AND court_id=?",
+                    (meta["docket_number"], meta["court_id"]),
+                ).fetchone()["n"]
+                if survivors == 0:
+                    cur = self.conn.execute(
+                        "DELETE FROM case_summaries "
+                        "WHERE docket_number=? AND court_id=?",
+                        (meta["docket_number"], meta["court_id"]),
+                    )
+                    cs_count = cur.rowcount
+            counts["case_summaries"] = cs_count
         return counts

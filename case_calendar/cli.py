@@ -637,15 +637,27 @@ def cmd_serve(args: argparse.Namespace) -> int:
         only fires after ``debounce_seconds`` of webhook quiet."""
         if not summary_enabled:
             return
-        # Cheap check: is any (case_id, docket_id) in these calendars stale?
-        # Avoids arming the timer on deliveries that didn't touch any
-        # primary-document or disposition entry.
+        # Cheap check: is any (case_id, docket_number, court_id) group on
+        # these calendars stale? Avoids arming the timer on deliveries
+        # that didn't touch any primary-document or disposition entry.
+        # Resolving docket_id → group via Store dedupes the inner loop so
+        # CourtListener splits sharing one logical PACER docket count once.
         any_stale = False
         for case in cases:
             if case.calendar not in only_calendars:
                 continue
+            seen_groups: set[tuple[str, str]] = set()
             for docket_id in case.dockets:
-                if store.is_summary_stale(case.case_id, docket_id):
+                meta = store.get_docket_meta(docket_id) or {}
+                docket_number = meta.get("docket_number")
+                court_id = meta.get("court_id")
+                if not docket_number or not court_id:
+                    continue
+                group_key = (docket_number, court_id)
+                if group_key in seen_groups:
+                    continue
+                seen_groups.add(group_key)
+                if store.is_summary_stale(case.case_id, docket_number, court_id):
                     any_stale = True
                     break
             if any_stale:
@@ -837,7 +849,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
             )
             for row in written:
                 print(
-                    f"  docket {row['docket_id']}: "
+                    f"  {row['docket_number']} ({row['court_id']}): "
                     f"{len(row['summary'])} chars (model={row['model']})"
                 )
             if written:
