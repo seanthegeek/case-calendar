@@ -2241,6 +2241,31 @@ class TestCmdWebhookUrl:
         assert "forbidden" in err
 
 
+class TestRedactSecret:
+    """Direct coverage of `cli._redact_secret`.
+
+    The helper is exercised end-to-end by the health-check failure
+    tests above, but the empty-secret short-circuit branch isn't hit
+    by those tests (every fixture sets a non-empty secret). Pin it
+    here so future refactors don't silently drop the guard.
+    """
+
+    def test_empty_secret_returns_text_unchanged(self):
+        # The defensive guard: when no secret is configured, redaction
+        # is a no-op. Without this branch a caller passing `secret=""`
+        # would try `text.replace("", "<REDACTED>")`, which str.replace
+        # treats as inserting between every character.
+        assert cli._redact_secret("hello world", "") == "hello world"
+
+    def test_replaces_every_occurrence(self):
+        # Idempotent multi-occurrence replace — bodies that echo the
+        # URL multiple times still get cleaned.
+        secret = "topsecret"
+        out = cli._redact_secret(f"path/{secret}/and/{secret}/again", secret)
+        assert secret not in out
+        assert out.count("<REDACTED>") == 2
+
+
 class TestMain:
     def test_dispatches_to_subcommand(self, cfg_file, monkeypatch):
         calls: list[argparse.Namespace] = []
