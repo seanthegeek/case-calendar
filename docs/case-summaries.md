@@ -140,9 +140,11 @@ also told:
 
 ## Multi-docket aggregation
 
-For cases that span multiple dockets (district + appellate; co-defendants
-on separate dockets; parallel filings), the AI summary is generated **per
-docket**, then rendered as a labeled paragraph block on the index page:
+For cases that span multiple LOGICAL PACER dockets (district + appellate;
+co-defendants on separate dockets; parallel filings in different venues),
+the AI summary is generated **per logical docket** — one summary per
+distinct `(docket_number, court_id)` pair — then rendered as a labeled
+paragraph block on the index page:
 
 > **3:24-cv-00100 (N.D. Cal.):** The district court suit alleges …
 >
@@ -165,6 +167,22 @@ on the case:
 The note is *only* shown to the summarizer. It's not rendered to
 subscribers. Keep it short and factual — the model uses it as framing,
 not as text to copy.
+
+### CourtListener sibling dockets pool into one summary
+
+When multiple CourtListener `docket_id` values resolve to the **same**
+`(docket_number, court_id)` — typically because the upstream
+`pacer_case_id` changed mid-life and CourtListener stored the docket
+under two or more IDs — Case Calendar treats them as one logical PACER
+docket. The summary pipeline pools entries across every sibling
+`docket_id` in the group (deduplicating by PACER `entry_number`),
+generates a single summary, and renders one paragraph in the index. So
+the Akhter case listed as `dockets: [71989485, 73333500, 73320754]`
+where all three share docket number `1:25-cr-00307` in E.D. Va. produces
+one Sonnet call, one stored summary, and one paragraph — not three
+near-duplicate slices. See
+[CourtListener sibling dockets](configuration.md#courtlistener-sibling-dockets-same-docket-number-different-docket_ids)
+for how to spot when this is happening and how to list them in `config.yaml`.
 
 ## extra_documents
 

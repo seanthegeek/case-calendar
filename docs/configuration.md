@@ -114,6 +114,46 @@ generated prose read like it was written by someone who understands the
 litigation strategy rather than describing each docket in isolation. If
 summaries are off, leave it out.
 
+#### CourtListener sibling dockets (same docket number, different docket\_ids)
+
+A subtler case: CourtListener sometimes stores a SINGLE logical PACER
+docket as MULTIPLE `docket_id` rows. The trigger is upstream: the
+`pacer_case_id` for the docket changed at some point (CourtListener's
+reconciler couldn't merge them — see
+[CourtListener issue #7345](https://github.com/freelawproject/courtlistener/issues/7345)),
+and each `docket_id` carries a partial slice of the entries. List every
+sibling `docket_id` so the AI summary pools entries across the slices
+into one complete view; if you list only one, you get a partial summary
+based on whichever slice that `docket_id` happens to hold.
+
+```yaml
+- id: us-v-akhter
+  name: "United States v. Akhter"
+  calendar: cybercrime
+  dockets: [71989485, 73333500, 73320754]
+  # Same docket: 1:25-cr-00307 (E.D. Va.) — three CL docket_id rows
+  # because the upstream pacer_case_id changed mid-life. Each carries
+  # a different slice of the entries; the AI summary needs all three
+  # to see the indictment, motions, and judgment together.
+```
+
+Case Calendar detects sibling docket\_ids by comparing each
+`docket_id`'s `(docket_number, court_id)` pair and treats matches as
+one logical PACER docket: one summary, one paragraph in the rendered
+index, one link to a CourtListener docket page. **The link goes to
+whichever `docket_id` you listed first in `dockets:`**, so put your
+preferred CourtListener page first (typically the one with the most
+content visible on the CL side).
+
+To know whether to list one or multiple `docket_id`s, check each on
+the CourtListener docket page (`courtlistener.com/docket/<id>/...`):
+if they have the same docket number under the same court, list them
+all. If the docket numbers differ — district vs appellate, parallel
+suits in different courts — list them all too; Case Calendar treats
+different `(docket_number, court_id)` pairs as parallel proceedings
+and renders one labeled paragraph per logical docket (the Anthropic
+v. DOW shape above).
+
 ### Deadline tracking auto-detect
 
 Case Calendar decides whether to track filing deadlines based on the docket
