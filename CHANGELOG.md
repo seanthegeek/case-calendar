@@ -8,6 +8,52 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.0] - 2026-05-17
+
+### Added
+
+- Extractor pattern coverage for appellate deadlines: petitions for
+  rehearing (FRAP 40), mandate issuance (FRAP 41), joint appendix due
+  dates, the "MOTION by [Party] to extend" appellate filing convention,
+  and `argued` / `calendared` post-argument and scheduling vocabulary.
+- Extractor pattern coverage for federal civil deadlines: answer due
+  (FRCP 12(a)), initial / expert / pretrial disclosures (FRCP 26(a)),
+  discovery cutoffs (FRCP 16(b)(3)(A)), motions in limine, class
+  certification (FRCP 23(c)(1)(A)), joint status reports, mediation
+  (28 U.S.C. § 651 et seq.), pretrial orders (FRCP 16(d)), and
+  Markman / claim-construction briefing milestones.
+- Extractor pattern coverage for federal criminal deadlines: presentence
+  reports (FRCrP 32), CIPA filings (18 U.S.C. App. III), Jencks material
+  (18 U.S.C. § 3500), notice of appeal (FRAP 4(b)), plus generic
+  `notice` / `report` / `memo` / `material` "is due" patterns that
+  catch Rule 404(b) notices, Brady / Giglio material, and sentencing
+  memoranda.
+- Disposition-detection coverage for guilty-plea events: factual proffer
+  statements, magistrate's report-and-recommendation on plea of guilty
+  or change of plea, paperless minute orders documenting a defendant's
+  plea ("pled guilty" / "pleads guilty" / "plea of guilty"), and the
+  trial court's adoption order. Negative coverage ensures arraignment
+  "NOT GUILTY PLEA" entries and non-plea R&Rs (suppression, § 2255,
+  IFP, discovery) do not falsely register as dispositions.
+- Disposition-detection coverage for civil-judgment variants:
+  `CONSENT JUDGMENT`, `DEFAULT JUDGMENT`, `CONSENT DECREE`, and
+  `decrees?` as a body keyword.
+- `AGENTS.md` convention forbidding unsupportable empirical claims
+  ("most-missed", "foundational", "most common") in comments,
+  docstrings, and PR descriptions, with an exception that allows
+  priority directives ("the imposed sentence is the most important
+  fact about the case") inside LLM prompt templates.
+
+### Changed
+
+- LLM prompts: removed frequency-claim rationale text ("typically",
+  "often", "in most cases", "reflexively", "in nearly every case")
+  from classification and summary prompts, while preserving priority
+  directives. No behavior change — these were rationale phrasings,
+  not classification rules.
+
+[0.2.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.0
+
 ## [0.1.1] - 2026-05-17
 
 ### Changed

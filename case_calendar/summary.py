@@ -87,6 +87,9 @@ _DISPOSITION_RE = re.compile(
         | STIPULATED\sDISMISSAL
         | NOTICE\sOF\sVOLUNTARY\sDISMISSAL
         | PLEA\sAGREEMENT
+        | (?:FACTUAL\s+)?PROFFER\s+STATEMENT
+        | (?:AMENDED\s+)?REPORT\s+AND\s+RECOMMENDATIONS?\s+ON\s+
+          (?:PLEA\s+OF\s+GUILTY|CHANGE\s+OF\s+PLEA)
         | SENTENCING\sJUDGMENT
         | SENTENCE
         | SETTLEMENT\sAGREEMENT
@@ -116,6 +119,22 @@ _DISPOSITION_KEYWORD_RE = re.compile(
     r"|forfeitures?"
     r"|nolle\s+prosequi"
     r"|nolle\s+prossed"
+    # Guilty-plea phrasings — paperless minute orders for change-of-plea
+    # hearings and R&Rs that document the plea typically say "pled guilty"
+    # or "plea of guilty" rather than carrying any of the head-anchored
+    # disposition vocabulary. We avoid bare "guilty plea" because the
+    # arraignment phrase "not guilty plea entered" would slip through.
+    r"|pled\s+guilty"
+    r"|pleads?\s+guilty"
+    r"|plea\s+of\s+guilty"
+    # The trial-court order adopting the magistrate's R&R on the plea is
+    # a disposition-class doc but its head is just "ORDER ADOPTING REPORT
+    # AND RECOMMENDATION" — the plea-specific phrasing only appears in
+    # the body. Match the R&R-on-plea reference there. Scoped to
+    # plea/change-of-plea R&Rs so adoption of procedural R&Rs (IFP,
+    # discovery sanctions) doesn't slip through as a disposition doc.
+    r"|(?:report\s+and\s+recommendations?|r&r)\s+on\s+"
+    r"(?:plea\s+of\s+guilty|change\s+of\s+plea)"
     # Civil — class action, removal, default, and injunctive relief.
     r"|class\s+certification"
     r"|remand(?:ed)?"
@@ -125,6 +144,7 @@ _DISPOSITION_KEYWORD_RE = re.compile(
     r"|injunctions?"
     # Cross-domain — judgments, dismissals, appellate dispositions.
     r"|judg(?:e)?ments?"
+    r"|decrees?"
     r"|dismiss(?:al|als|ed)"
     r"|mandates?"
     r"|affirm(?:s|ed|ance|ances)?"
@@ -189,8 +209,8 @@ _DISPOSITION_DOCUMENT_HEAD_RE = re.compile(
     # PRELIMINARY INJUNCTION ORDER, STIPULATED INJUNCTION, etc.).
     (?:
         (?:PAPERLESS|TEXT[\s-]?ONLY|TEXT|AMENDED|FINAL|PRELIMINARY|
-           STIPULATED|CORRECTED|REDACTED|SEALED|UNSEALED|SUPERSEDING|
-           INTERIM|TEMPORARY|PERMANENT)\s+
+           STIPULATED|CONSENT|DEFAULT|CORRECTED|REDACTED|SEALED|UNSEALED|
+           SUPERSEDING|INTERIM|TEMPORARY|PERMANENT)\s+
     )*
     (?:
         ORDER

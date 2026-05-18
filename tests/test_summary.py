@@ -244,6 +244,57 @@ class TestDispositionDetection:
     @pytest.mark.parametrize(
         "description",
         [
+            # Plea documents themselves — head-anchored, including the
+            # "FACTUAL " variant clerks prefix in the S.D. Fla. and elsewhere.
+            "FACTUAL PROFFER STATEMENT as to Angelo Martino",
+            "PROFFER STATEMENT as to John Doe",
+            # The magistrate's R&R after a change-of-plea colloquy. Other
+            # R&Rs (suppression, 2255, IFP) must NOT match — covered below
+            # in the negative test.
+            "REPORT AND RECOMMENDATIONS on Plea of Guilty as to Angelo Martino",
+            "REPORT AND RECOMMENDATION on Change of Plea",
+            "AMENDED REPORT AND RECOMMENDATION on Plea of Guilty",
+            # Paperless minute orders that record the plea event. Head is
+            # "PAPERLESS Minute Order" / "Minute Order"; the keyword that
+            # tips it into disposition territory is "pled guilty".
+            "Minute Order for proceedings held before Magistrate Judge X: "
+            "Change of Plea Hearing as to John Doe held on 4/14/2026. "
+            "The defendant pled guilty to Count 1 of the Information.",
+            "PAPERLESS Minute Order: defendant pleads guilty to Count 1",
+        ],
+    )
+    def test_matches_plea_documents(self, description):
+        assert is_disposition({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # The arraignment phrasing must NOT trip the plea-of-guilty
+            # keyword — defendants enter "not guilty" pleas at arraignment
+            # all the time, and that is the opposite of a disposition.
+            "NOT GUILTY PLEA entered as to John Doe",
+            "Defendant entered a not guilty plea at arraignment",
+            # Other R&Rs aren't plea R&Rs — they're rulings on procedural
+            # motions and must not match. (The motions themselves do flip
+            # the case_summaries row stale via other keywords; this is
+            # specifically about the plea-R&R-only addition.)
+            "REPORT AND RECOMMENDATIONS on Motion to Suppress",
+            "REPORT AND RECOMMENDATION on 2255 motion",
+            "REPORT AND RECOMMENDATIONS on Application to Proceed In Forma Pauperis",
+            # Adoption of non-plea R&Rs must not slip into the plea
+            # branch — the LLM would otherwise treat a discovery-sanctions
+            # adoption as a disposition document.
+            "PAPERLESS ORDER ADOPTING REPORT AND RECOMMENDATION on "
+            "Application to Proceed In Forma Pauperis",
+            "ORDER ADOPTING REPORT AND RECOMMENDATION on Discovery Dispute",
+        ],
+    )
+    def test_plea_keywords_do_not_overmatch(self, description):
+        assert not is_disposition({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
             # Conference is the negative keyword — scheduling entries that
             # mention disposition vocabulary must NOT trip the keyword match.
             "Notice of Settlement Conference",
@@ -315,6 +366,22 @@ class TestDispositionDocumentDetection:
             "Imprisonment for a total term of 36 months...",
             "PAPERLESS Minute Entry for proceedings held before Judge Y: "
             "Sentencing held on 5/6/2026 as to ERICK PRINCE...",
+            # Plea documents — head-anchored variants accepted directly.
+            "FACTUAL PROFFER STATEMENT as to Angelo Martino",
+            "PROFFER STATEMENT as to John Doe",
+            "REPORT AND RECOMMENDATIONS on Plea of Guilty as to Angelo Martino",
+            "AMENDED REPORT AND RECOMMENDATION on Change of Plea",
+            # Trial-court adoption order — head is just ORDER, the
+            # plea-specific R&R phrasing lives in the body.
+            "PAPERLESS ORDER ADOPTING REPORT AND RECOMMENDATION. THIS "
+            "CAUSE is before the Court on the Amended Report and "
+            "Recommendation on Change of Plea issued by United States "
+            "Magistrate Judge X.",
+            # Civil judgment variants that previously fell through the
+            # strict doc-head adjective slot.
+            "CONSENT JUDGMENT entered as to all defendants",
+            "DEFAULT JUDGMENT in favor of plaintiff",
+            "CONSENT DECREE entered between the parties",
         ],
     )
     def test_accepts_actual_disposition_documents(self, description):
