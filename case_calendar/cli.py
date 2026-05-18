@@ -991,9 +991,7 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
             status = resp.status
             body = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
-        body = _redact_secret(
-            e.read().decode("utf-8", errors="replace"), secret
-        )
+        body = _redact_secret(e.read().decode("utf-8", errors="replace"), secret)
         print(
             f"\nhealth check FAILED: HTTP {e.code} from {safe_endpoint}\n{body}",
             file=sys.stderr,

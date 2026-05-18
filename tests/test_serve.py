@@ -666,9 +666,7 @@ class TestNoIdempotencyKey:
     a manual curl POST (operator smoke test) might not. The receiver must
     process the entry once and not crash trying to mark a missing key."""
 
-    def test_post_without_idempotency_key_processes_normally(
-        self, base_url, store
-    ):
+    def test_post_without_idempotency_key_processes_normally(self, base_url, store):
         url, secret, _ = base_url
         body = _docket_alert([_sample_entry()])
         # Note: NO Idempotency-Key header passed in.

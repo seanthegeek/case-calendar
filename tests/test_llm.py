@@ -101,9 +101,7 @@ class TestParseActions:
             '{"actions": [{"type": "RESCHEDULE", "hearing_key": "x"}]}\n'
             '{"actions": [{"type": "CANCEL", "hearing_key": "y"}]}'
         )
-        assert llm._parse_actions(text) == [
-            {"type": "RESCHEDULE", "hearing_key": "x"}
-        ]
+        assert llm._parse_actions(text) == [{"type": "RESCHEDULE", "hearing_key": "x"}]
 
     def test_trailing_prose_after_json_is_ignored(self):
         # Same fix covers the "valid JSON + trailing commentary" case:

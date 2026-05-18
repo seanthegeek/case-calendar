@@ -1494,7 +1494,6 @@ class TestCmdServe:
         # No Timer was created because no stale row existed.
         assert timers == []
 
-
     def test_debounce_arm_handles_missing_meta_and_sibling_dockets(
         self,
         cfg_file,
@@ -2058,9 +2057,7 @@ class TestCmdWebhookUrl:
         # generic endpoint label that doesn't flow from the secret —
         # CodeQL's data-flow analysis required severing the chain
         # entirely rather than masking via `.replace()`).
-        monkeypatch.setenv(
-            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
-        )
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak")
 
         def _fake_urlopen(req, timeout=10):
             raise urllib.error.HTTPError(
@@ -2087,9 +2084,7 @@ class TestCmdWebhookUrl:
 
     def test_check_unreachable_host(self, monkeypatch, capsys):
         # DNS failure / connection refused — print the reason and exit 1.
-        monkeypatch.setenv(
-            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
-        )
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak")
 
         def _fake_urlopen(req, timeout=10):
             raise urllib.error.URLError("nodename nor servname known")
@@ -2113,9 +2108,7 @@ class TestCmdWebhookUrl:
         # rewrites status codes, or a misconfigured Caddy returning a
         # bare 301 from the receiver path. The status-check branch
         # after the try/except surfaces the failure too.
-        monkeypatch.setenv(
-            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
-        )
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak")
 
         class _Resp:
             status = 301
@@ -2146,9 +2139,7 @@ class TestCmdWebhookUrl:
         # This is the Cloudflare-intercept signature we ran into in
         # production — 200 with an empty body. The check has to flag it,
         # not silently call it healthy.
-        monkeypatch.setenv(
-            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
-        )
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak")
 
         class _Resp:
             status = 200
@@ -2180,9 +2171,7 @@ class TestCmdWebhookUrl:
     def test_check_200_wrong_service_is_failure(self, monkeypatch, capsys):
         # A 200 with valid JSON but missing/wrong "service" marker = the
         # request reached something, but not us.
-        monkeypatch.setenv(
-            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
-        )
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak")
 
         class _Resp:
             status = 200
@@ -2390,9 +2379,7 @@ class TestEmitCalendarsCoverage:
         text = Path(results["cyber"]["ics_path"]).read_text()
         assert "d-no-date" not in text
 
-    def test_hearing_without_docket_id_renders_without_decoration(
-        self, store, cfg
-    ):
+    def test_hearing_without_docket_id_renders_without_decoration(self, store, cfg):
         # Legacy row pre-dating the docket_id column: the docket lookup is
         # skipped entirely (no docket_number / court citation in the body).
         store.upsert_hearing(
@@ -2446,9 +2433,7 @@ class TestEmitCalendarsCoverage:
         # Configure both notify_emails and reminders at the calendar level
         # so the True side of each guard fires.
         cfg["calendars"]["cyber"]["notify_emails"] = ["a@example.com"]
-        cfg["calendars"]["cyber"]["reminders"] = [
-            {"method": "popup", "minutes": 30}
-        ]
+        cfg["calendars"]["cyber"]["reminders"] = [{"method": "popup", "minutes": 30}]
         store.upsert_hearing(
             {
                 "case_id": "us-v-x",
@@ -2832,8 +2817,12 @@ class TestDebounceLifecycleBranches:
             },
         )
         s.upsert_case_summary(
-            "us-v-x", "1:25-cr-1", "mad",
-            summary="old", model="m", source_entry_ids=[],
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="old",
+            model="m",
+            source_entry_ids=[],
         )
         s.mark_summary_stale("us-v-x", "1:25-cr-1", "mad")
         s.conn.commit()
@@ -2912,8 +2901,12 @@ class TestDebounceLifecycleBranches:
             },
         )
         s.upsert_case_summary(
-            "us-v-x", "1:25-cr-1", "mad",
-            summary="old", model="m", source_entry_ids=[],
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="old",
+            model="m",
+            source_entry_ids=[],
         )
         s.mark_summary_stale("us-v-x", "1:25-cr-1", "mad")
         s.conn.commit()
@@ -2988,8 +2981,12 @@ class TestDebounceLifecycleBranches:
             },
         )
         s.upsert_case_summary(
-            "us-v-x", "1:25-cr-1", "mad",
-            summary="old", model="m", source_entry_ids=[],
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="old",
+            model="m",
+            source_entry_ids=[],
         )
         s.mark_summary_stale("us-v-x", "1:25-cr-1", "mad")
         s.conn.commit()
@@ -3060,12 +3057,20 @@ class TestDebounceLifecycleBranches:
                 },
             )
         s.upsert_case_summary(
-            "us-v-x", "1:25-cr-1", "mad",
-            summary="x", model="m", source_entry_ids=[],
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="x",
+            model="m",
+            source_entry_ids=[],
         )
         s.upsert_case_summary(
-            "acme", "1:25-cv-2", "mad",
-            summary="y", model="m", source_entry_ids=[],
+            "acme",
+            "1:25-cv-2",
+            "mad",
+            summary="y",
+            model="m",
+            source_entry_ids=[],
         )
         s.conn.commit()
         s.close()
@@ -3135,8 +3140,12 @@ class TestDebounceLifecycleBranches:
             },
         )
         s.upsert_case_summary(
-            "us-v-x", "1:25-cr-1", "mad",
-            summary="old", model="m", source_entry_ids=[],
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="old",
+            model="m",
+            source_entry_ids=[],
         )
         s.mark_summary_stale("us-v-x", "1:25-cr-1", "mad")
         s.conn.commit()

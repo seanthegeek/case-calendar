@@ -1377,8 +1377,7 @@ class CaseSyncer:
                 out.append(text)
             elif not rd.get("is_available"):
                 log.info(
-                    "recap_doc %s not yet on PACER (entry %s); "
-                    "will retry next sync",
+                    "recap_doc %s not yet on PACER (entry %s); will retry next sync",
                     doc_id,
                     entry.get("id"),
                 )

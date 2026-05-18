@@ -757,9 +757,7 @@ class TestRenderSubscribeEdgeCases:
         # No Subscribe anchor (webcal absent), but the Copy-feed-URL
         # button still renders against the https URL.
         assert ">Subscribe</a>" not in html
-        assert (
-            'class="copy-feed" data-url="https://example.invalid/c.ics"' in html
-        )
+        assert 'class="copy-feed" data-url="https://example.invalid/c.ics"' in html
 
 
 class TestRenderSummariesNoCourtCitation:

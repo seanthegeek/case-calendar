@@ -272,9 +272,7 @@ class TestMaybeFetchPdfs:
         with caplog.at_level("INFO", logger="case_calendar.sync"):
             out = syncer._maybe_fetch_pdfs(entry)
         assert out == []
-        assert any(
-            "text extraction yielded" in r.message for r in caplog.records
-        )
+        assert any("text extraction yielded" in r.message for r in caplog.records)
 
     def test_skips_recap_doc_without_id(self, syncer, monkeypatch):
         # A recap_document row missing its `id` is skipped silently; the
