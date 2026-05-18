@@ -122,11 +122,15 @@ def _request_with_retry(
     the LLM) is also treated as a flake rather than crashing validation.
     """
     backoff = _VALIDATE_RETRY_INITIAL_BACKOFF
-    for attempt in range(1, _VALIDATE_RETRY_TOTAL + 1):
+    # `while True` instead of `for attempt in range(...)` so every exit
+    # is an explicit `return` — no loop-fall-off branch for coverage to
+    # flag as unreachable.
+    attempt = 1
+    while True:
         try:
             return client.request(method, url)
         except _VALIDATE_RETRYABLE_EXCEPTIONS as e:
-            if attempt == _VALIDATE_RETRY_TOTAL:
+            if attempt >= _VALIDATE_RETRY_TOTAL:
                 log.info(
                     "URL validate transport error budget exhausted for %s %s: %s",
                     method,
@@ -136,9 +140,9 @@ def _request_with_retry(
                 return None
             time.sleep(backoff)
             backoff = min(backoff * 2, 4)
+            attempt += 1
         except httpx.RequestError:
             return None
-    return None  # unreachable: every path inside the loop returns
 
 
 def _check(url: str, client: httpx.Client) -> str:

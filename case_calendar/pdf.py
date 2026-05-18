@@ -103,11 +103,15 @@ def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
     """
     backoff = _PDF_RETRY_INITIAL_BACKOFF
     last_response: Optional[httpx.Response] = None
-    for attempt in range(1, _PDF_RETRY_TOTAL + 1):
+    # `while True` instead of `for attempt in range(...)` so every exit is
+    # an explicit `return` — no loop-fall-off path for coverage to flag as
+    # an unreachable branch.
+    attempt = 1
+    while True:
         try:
             r = client.get(url)
         except _PDF_RETRYABLE_EXCEPTIONS as e:
-            if attempt == _PDF_RETRY_TOTAL:
+            if attempt >= _PDF_RETRY_TOTAL:
                 log.warning(
                     "pdf fetch transport error budget exhausted for %s: %s",
                     url,
@@ -124,11 +128,12 @@ def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
             )
             time.sleep(backoff)
             backoff = min(backoff * 2, 16)
+            attempt += 1
             continue
         last_response = r
         if r.status_code not in _PDF_RETRYABLE_STATUSES:
             return r
-        if attempt == _PDF_RETRY_TOTAL:
+        if attempt >= _PDF_RETRY_TOTAL:
             return r
         log.info(
             "pdf fetch %s -> %s (attempt %d/%d); retrying in %.1fs",
@@ -140,7 +145,7 @@ def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
         )
         time.sleep(backoff)
         backoff = min(backoff * 2, 16)
-    return last_response
+        attempt += 1
 
 
 def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
