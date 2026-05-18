@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 from pathlib import Path
+from urllib.parse import urlparse
 
 from case_calendar import pdf
 
@@ -275,7 +276,8 @@ class TestFetchPdfBytes:
 
             def get(self, url):
                 seen.append(url)
-                if "archive.org" in url:
+                host = (urlparse(url).hostname or "").lower()
+                if host == "archive.org" or host.endswith(".archive.org"):
                     return _Resp(404, b"")
                 return _Resp(200, b"%PDF cl bytes")
 
