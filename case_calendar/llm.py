@@ -668,7 +668,19 @@ def _call_anthropic(
     import anthropic
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
-    client = anthropic.Anthropic(timeout=120.0)
+    # Bump from the SDK default of 2 retries to 8. The default gives up
+    # after ~1.5s of cumulative backoff (0.5s + 1s), which is not enough
+    # for the 529 Overloaded condition the API returns when capacity is
+    # tight — overload events routinely last tens of seconds, so the
+    # SDK gives up before the API clears and the per-entry call falls
+    # through to the IGNORE-on-failure path in `extract_actions`. With
+    # max_retries=8 the cumulative backoff ceiling is ~127s (0.5 + 1 +
+    # 2 + 4 + 8 + 16 + 32 + 64) before honoring any Retry-After header
+    # the server sends, which covers nearly every transient overload.
+    # The SDK uses exponential backoff with jitter and honors
+    # Retry-After, so steady-state cost is minimal — this just buys
+    # headroom for the worst case.
+    client = anthropic.Anthropic(timeout=120.0, max_retries=8)
     resp = client.messages.create(
         model=chosen,
         max_tokens=max_tokens,
@@ -698,7 +710,11 @@ def _call_openai(
     import openai
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["openai"])
-    client = openai.OpenAI(timeout=120.0)
+    # See the matching comment on `_call_anthropic`: bump max_retries
+    # from the SDK default of 2 to give the cumulative backoff enough
+    # headroom to ride out a multi-second provider overload (~127s
+    # ceiling before any Retry-After header is honored).
+    client = openai.OpenAI(timeout=120.0, max_retries=8)
     kwargs: dict[str, Any] = {
         "model": chosen,
         "max_tokens": max_tokens,
