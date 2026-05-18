@@ -1,19 +1,11 @@
 """Tests for HTTP-validated URL repair.
 
-We monkey-patch ``urllib.request.urlopen`` so no real network calls
-happen, but the rest of the production pipeline (HEAD → GET fallback,
-retry-on-transport-error, parent-path walk, fail-open semantics) runs
-for real.
+We use httpx.MockTransport so no real network calls happen.
 """
 
 from __future__ import annotations
 
-import http.client
-import io
-import socket
-import urllib.error
-import urllib.request
-
+import httpx
 import pytest
 
 from case_calendar import url_validator
@@ -29,130 +21,118 @@ def _clear_cache():
 @pytest.fixture(autouse=True)
 def _no_real_sleep(monkeypatch):
     # `_request_with_retry` calls `time.sleep` between attempts on
-    # retryable transport errors. Tests that raise a timeout or
-    # protocol error would otherwise stall on the backoff window.
+    # retryable transport errors. Tests that raise ConnectError or
+    # ReadTimeout would otherwise stall on the backoff window.
     monkeypatch.setattr(url_validator.time, "sleep", lambda _s: None)
 
 
-class _FakeResp:
-    """Stand-in for ``http.client.HTTPResponse`` (what urlopen returns)."""
-
-    def __init__(self, status: int):
-        self.status = status
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _http_error(url: str, status: int) -> urllib.error.HTTPError:
-    return urllib.error.HTTPError(
-        url,
-        status,
-        f"HTTP {status}",
-        hdrs=None,  # type: ignore[arg-type]
-        fp=io.BytesIO(b""),
-    )
-
-
-def _install_urlopen(monkeypatch, handler):
-    """Patch ``urllib.request.urlopen`` (the symbol the ``url_validator``
-    module resolves through) with a function that calls the test's
-    handler with the incoming ``Request``.
-    """
-
-    def fake_urlopen(req, timeout=None):
-        return handler(req)
-
-    monkeypatch.setattr(url_validator.urllib.request, "urlopen", fake_urlopen)
+def _client(handler):
+    return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
 
 class TestValidateURL:
-    def test_ok_url_passes_through(self, monkeypatch):
+    def test_ok_url_passes_through(self):
         def handler(req):
-            assert req.full_url == "https://example.com/foo/bar/"
-            return _FakeResp(200)
+            assert str(req.url) == "https://example.com/foo/bar/"
+            return httpx.Response(200)
 
-        _install_urlopen(monkeypatch, handler)
-        assert url_validator.validate_url("https://example.com/foo/bar/") == (
-            "https://example.com/foo/bar/"
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
-
-    def test_truncates_one_path_component_on_404(self, monkeypatch):
-        # /foo/bar/junk → 404; parent /foo/bar/ → 200. Should return parent.
-        def handler(req):
-            if req.full_url.endswith("/junk"):
-                raise _http_error(req.full_url, 404)
-            return _FakeResp(200)
-
-        _install_urlopen(monkeypatch, handler)
-        out = url_validator.validate_url("https://example.com/foo/bar/junk")
         assert out == "https://example.com/foo/bar/"
 
-    def test_does_not_truncate_to_bare_domain(self, monkeypatch):
+    def test_truncates_one_path_component_on_404(self):
+        # /foo/bar/junk → 404; parent /foo/bar/ → 200. Should return parent.
+        def handler(req):
+            if str(req.url).endswith("/junk"):
+                return httpx.Response(404)
+            return httpx.Response(200)
+
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/junk",
+            client=_client(handler),
+        )
+        assert out == "https://example.com/foo/bar/"
+
+    def test_does_not_truncate_to_bare_domain(self):
         # /typo only has one path segment. We don't fall back to the domain
         # root — the home page is a meaningless "valid" answer.
         def handler(req):
-            raise _http_error(req.full_url, 404)
+            return httpx.Response(404)
 
-        _install_urlopen(monkeypatch, handler)
-        assert url_validator.validate_url("https://example.com/typo") is None
+        out = url_validator.validate_url(
+            "https://example.com/typo",
+            client=_client(handler),
+        )
+        assert out is None
 
-    def test_both_paths_404_returns_none(self, monkeypatch):
+    def test_both_paths_404_returns_none(self):
         def handler(req):
-            raise _http_error(req.full_url, 404)
+            return httpx.Response(404)
 
-        _install_urlopen(monkeypatch, handler)
-        assert url_validator.validate_url("https://example.com/a/b/c") is None
+        out = url_validator.validate_url(
+            "https://example.com/a/b/c",
+            client=_client(handler),
+        )
+        assert out is None
 
-    def test_falls_back_to_get_on_405(self, monkeypatch):
+    def test_falls_back_to_get_on_405(self):
         # Some servers don't implement HEAD.
         calls = {"head": 0, "get": 0}
 
         def handler(req):
-            if req.get_method() == "HEAD":
+            if req.method == "HEAD":
                 calls["head"] += 1
-                raise _http_error(req.full_url, 405)
+                return httpx.Response(405)
             calls["get"] += 1
-            return _FakeResp(200)
+            return httpx.Response(200)
 
-        _install_urlopen(monkeypatch, handler)
-        out = url_validator.validate_url("https://example.com/foo/bar/")
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
+        )
         assert out == "https://example.com/foo/bar/"
         assert calls == {"head": 1, "get": 1}
 
-    def test_network_error_fails_open(self, monkeypatch):
-        # urllib.error.URLError without HTTPError shape — non-retryable
-        # path returns None immediately, _walk_candidates sees no 4xx,
-        # validate_url fails open.
+    def test_network_error_fails_open(self):
         def handler(req):
-            raise urllib.error.URLError("simulated network down")
+            raise httpx.ConnectError("simulated network down")
 
-        _install_urlopen(monkeypatch, handler)
-        # Fail-open: return the input rather than dropping the field.
-        assert url_validator.validate_url("https://example.com/foo/bar/") == (
-            "https://example.com/foo/bar/"
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
         )
+        # Fail-open: return the input rather than dropping the field.
+        assert out == "https://example.com/foo/bar/"
 
     def test_retries_transport_error_then_succeeds(self, monkeypatch):
-        # End-to-end: `_check` calls `_request_with_retry`, which retries
-        # on socket timeout / HTTPException / ConnectionError. First
-        # attempt raises socket.timeout, second returns 200. Recovery
+        # End-to-end: validate_url constructs its own httpx.Client and
+        # `_check` calls `_request_with_retry`, which retries on
+        # ReadTimeout / ConnectError / RemoteProtocolError. Intercept
+        # the Client constructor to swap in our MockTransport; first
+        # attempt raises ReadTimeout, second returns 200. Recovery
         # means no `dial_in` field gets blanked over a transient blip.
+        monkeypatch.setattr(url_validator.time, "sleep", lambda _s: None)
+
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
             if attempts[0] == 1:
-                raise socket.timeout("slow host")
-            return _FakeResp(200)
+                raise httpx.ReadTimeout("slow host", request=req)
+            return httpx.Response(200)
 
-        _install_urlopen(monkeypatch, handler)
-        assert url_validator.validate_url("https://example.com/foo/bar/") == (
-            "https://example.com/foo/bar/"
-        )
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        out = url_validator.validate_url("https://example.com/foo/bar/")
+        assert out == "https://example.com/foo/bar/"
         # Two transport-level calls: the failed first attempt then the
         # retry that succeeded.
         assert attempts[0] == 2
@@ -163,49 +143,57 @@ class TestValidateURL:
         out = url_validator.validate_url("")
         assert out is None
 
-    def test_successful_results_cached(self, monkeypatch):
+    def test_successful_results_cached(self):
         calls = [0]
 
         def handler(req):
             calls[0] += 1
-            return _FakeResp(200)
+            return httpx.Response(200)
 
-        _install_urlopen(monkeypatch, handler)
-        url_validator.validate_url("https://example.com/foo/bar/")
-        url_validator.validate_url("https://example.com/foo/bar/")
+        url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
+        )
+        url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
+        )
         # Second call hits the cache, so only one HTTP request was made.
         assert calls[0] == 1
 
-    def test_failures_not_cached_so_transient_errors_retry(self, monkeypatch):
-        # First validate_url call: parent + child both 404 → returns
-        # None (definite 4xx). Second call: child is 200 → returns the URL.
-        # Failures are NOT cached, so the second call hits the network.
-        outcomes = iter([404, 404, 200])
+    def test_failures_not_cached_so_transient_errors_retry(self):
+        outcomes = iter(
+            [404, 404, 200, 200]
+        )  # first call: bad URL + bad parent; second: ok + ok
 
         def handler(req):
-            code = next(outcomes)
-            if code >= 400:
-                raise _http_error(req.full_url, code)
-            return _FakeResp(code)
+            return httpx.Response(next(outcomes))
 
-        _install_urlopen(monkeypatch, handler)
-        first = url_validator.validate_url("https://example.com/a/b/c")
-        second = url_validator.validate_url("https://example.com/a/b/c")
+        first = url_validator.validate_url(
+            "https://example.com/a/b/c",
+            client=_client(handler),
+        )
+        second = url_validator.validate_url(
+            "https://example.com/a/b/c",
+            client=_client(handler),
+        )
         assert first is None
         assert second == "https://example.com/a/b/c"
 
-    def test_strips_query_and_fragment_from_truncated_parent(self, monkeypatch):
+    def test_strips_query_and_fragment_from_truncated_parent(self):
         # If the original URL has ?query, the parent fallback drops it —
         # the query was probably attached to the broken final segment.
         def handler(req):
-            url = req.full_url
+            url = str(req.url)
             if "junk" in url:
-                raise _http_error(url, 404)
+                return httpx.Response(404)
             assert "?" not in url
-            return _FakeResp(200)
+            return httpx.Response(200)
 
-        _install_urlopen(monkeypatch, handler)
-        out = url_validator.validate_url("https://example.com/foo/junk?id=1")
+        out = url_validator.validate_url(
+            "https://example.com/foo/junk?id=1",
+            client=_client(handler),
+        )
         assert out == "https://example.com/foo/"
 
 
@@ -252,7 +240,34 @@ class TestSyncIntegration:
         assert action == {"notes": "n"}
 
 
-class TestValidateUrlEdgeCases:
+class TestImplicitClient:
+    """Covers the own_client branch in validate_url where the caller
+    doesn't pass an httpx.Client and we build/close one ourselves."""
+
+    def test_owns_client_when_not_passed(self, monkeypatch):
+        # Use httpx's MockTransport-aware Client by patching httpx.Client
+        # to return a transport-mock-backed instance.
+        from unittest.mock import MagicMock
+
+        closed = MagicMock()
+
+        class _MockClient:
+            def __init__(self, *a, **k):
+                pass
+
+            def head(self, url):
+                r = MagicMock()
+                r.status_code = 200
+                return r
+
+            def close(self):
+                closed()
+
+        monkeypatch.setattr(httpx, "Client", _MockClient)
+        out = url_validator.validate_url("https://example.com/foo/")
+        assert out == "https://example.com/foo/"
+        closed.assert_called_once()
+
     def test_unexpected_exception_returns_input(self, monkeypatch):
         # If something inside _walk_candidates raises a non-RequestError
         # exception (e.g. a programming error), validate_url logs and
@@ -261,102 +276,65 @@ class TestValidateUrlEdgeCases:
             raise ValueError("unexpected boom")
 
         monkeypatch.setattr(url_validator, "_walk_candidates", _boom)
-        assert url_validator.validate_url("https://example.com/foo/") == (
-            "https://example.com/foo/"
-        )
-
-    def test_malformed_url_returns_none_fast(self, monkeypatch):
-        # ``urllib.request.Request`` rejects URLs that contain literal
-        # newlines, tabs, etc. via a ValueError. The validator catches
-        # that and treats the URL as a flake — fail-open returns the
-        # input rather than dropping the field.
-        attempts = [0]
-
-        def handler(req):
-            attempts[0] += 1
-            # Force `Request(url)` to fail before urlopen is invoked.
-            raise ValueError("invalid URL")
-
-        # Patch Request itself so we exercise the ValueError-catch path.
-        def boom_request(*args, **kwargs):
-            raise ValueError("invalid URL")
-
-        monkeypatch.setattr(url_validator.urllib.request, "Request", boom_request)
-
-        out = url_validator.validate_url("https://example.com/only/")
-        # Non-retryable: handled by the ValueError branch in
-        # `_request_with_retry`, which returns None immediately. No
-        # retries because there's nothing transient to retry.
-        assert attempts[0] == 0
-        # Fail-open: keep the input URL.
-        assert out == "https://example.com/only/"
+        out = url_validator.validate_url("https://example.com/foo/")
+        assert out == "https://example.com/foo/"
 
 
 class TestCheckHttpCodes:
-    def test_5xx_is_flake_not_404(self, monkeypatch):
+    def test_5xx_is_flake_not_404(self):
         # A 5xx response is "couldn't tell", not "URL gone". The result
         # bubbles up as fail-open (return the URL unchanged) when every
         # candidate flakes.
         def handler(req):
-            raise _http_error(req.full_url, 503)
+            return httpx.Response(503)
 
-        _install_urlopen(monkeypatch, handler)
-        # No 4xx ever observed → fail-open: keep the input URL.
-        assert url_validator.validate_url("https://example.com/a/b/c") == (
-            "https://example.com/a/b/c"
+        out = url_validator.validate_url(
+            "https://example.com/a/b/c",
+            client=_client(handler),
         )
+        # No 4xx ever observed → fail-open: keep the input URL.
+        assert out == "https://example.com/a/b/c"
 
-    def test_get_fallback_network_error_returns_flake(self, monkeypatch):
+    def test_get_fallback_network_error_returns_flake(self):
         # HEAD returns 405; the GET fallback then errors out — overall
         # outcome is "flake", and fail-open returns the input URL.
         def handler(req):
-            if req.get_method() == "HEAD":
-                raise _http_error(req.full_url, 405)
-            raise urllib.error.URLError("GET fallback down")
+            if req.method == "HEAD":
+                return httpx.Response(405)
+            raise httpx.ConnectError("GET fallback down")
 
-        _install_urlopen(monkeypatch, handler)
-        out = url_validator.validate_url("https://example.com/foo/bar/")
+        out = url_validator.validate_url(
+            "https://example.com/foo/bar/",
+            client=_client(handler),
+        )
         assert out == "https://example.com/foo/bar/"
 
-    def test_transport_budget_exhausted_returns_flake(self, monkeypatch):
-        # When every attempt raises a retryable transport class,
-        # ``_request_with_retry`` exhausts its budget and returns None.
-        # _check reads that as "flake", _walk_candidates sees no 4xx,
-        # validate_url returns the URL (fail-open).
-        attempts = [0]
-
-        def handler(req):
-            attempts[0] += 1
-            raise socket.timeout("perpetually slow")
-
-        _install_urlopen(monkeypatch, handler)
-        # Single-segment URL so handler is hit once per attempt within
-        # the budget — easier to count.
-        out = url_validator.validate_url("https://example.com/only/")
-        # Budget exhausted on HEAD → _check returns "flake" → fail-open
-        # returns the input.
-        assert out == "https://example.com/only/"
-        assert attempts[0] == url_validator._VALIDATE_RETRY_TOTAL
-
-    def test_non_retryable_request_error_returns_flake_immediately(self, monkeypatch):
+    def test_non_retryable_request_error_returns_flake_immediately(self):
         # `_request_with_retry` retries narrow transport classes
-        # (socket.timeout / HTTPException / ConnectionError) but the
-        # wider `urllib.error.URLError` catch returns None immediately
-        # for any non-retryable network-class error. The outcome should
-        # still be "flake" → fail-open returns the input.
+        # (TimeoutException / NetworkError / RemoteProtocolError) but
+        # catches the wider `httpx.RequestError` parent and returns None
+        # immediately for anything outside that set — e.g. a malformed
+        # response that fails decoding. The outcome should still be
+        # "flake" → fail-open returns the input.
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
-            # URLError without HTTPError shape and not in the retryable
-            # set — exercises the fall-through path that returns None
-            # on the first hit.
-            raise urllib.error.URLError("unreachable host")
+            # Not a TimeoutException / NetworkError / RemoteProtocolError,
+            # but still a RequestError subclass — exercises the wider
+            # `except httpx.RequestError` fall-through path.
+            raise httpx.LocalProtocolError("malformed request")
 
-        _install_urlopen(monkeypatch, handler)
         # Single-segment URL so `_candidates` returns just one entry
-        # and the handler is hit exactly once.
-        out = url_validator.validate_url("https://example.com/only/")
+        # and the handler is hit exactly once per attempt (no parent
+        # fallback to muddy the retry count).
+        out = url_validator.validate_url(
+            "https://example.com/only/",
+            client=_client(handler),
+        )
+        # Single call: non-retryable RequestError returns None on first
+        # hit, no retries; the narrow retryable set was deliberately
+        # bypassed.
         assert attempts[0] == 1
         # Fail-open: keep the input URL.
         assert out == "https://example.com/only/"

@@ -8,6 +8,33 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.7] - 2026-05-18
+
+### Changed
+
+- Reverted the 0.2.6 stdlib-HTTP migration. `case_calendar.courtlistener`,
+  `case_calendar.pdf`, and `case_calendar.url_validator` are back on
+  `httpx`, and `httpx>=0.28.1` is restored as a direct dependency. The
+  ergonomic-API + connection-pooling benefits of `httpx` won out over
+  the "one fewer direct dep" simplification the 0.2.6 entry traded
+  them for; the project's HTTP layer is small enough that the
+  trade-off can go either way, and `httpx` was the original choice.
+- The 0.2.6 `HTTPStatusError` shim in `case_calendar.courtlistener` is
+  gone; callers catch `httpx.HTTPStatusError` again, as they did
+  before 0.2.6.
+- The MockTransport-based test infrastructure for the three migrated
+  modules is restored, replacing the temporary
+  `urllib.request.urlopen` monkey-patch shape that shipped in 0.2.6.
+
+### Removed
+
+- The `urllib`-based HTTP code paths introduced in 0.2.6 (the
+  `_Response` / `_FetchResult` / `_ValidateResponse` duck-typed
+  wrappers, the `_RETRYABLE_TRANSPORT_EXCEPTIONS` tuples, and the
+  hand-rolled retry loops built around `urllib.request.urlopen`).
+
+[0.2.7]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.7
+
 ## [0.2.6] - 2026-05-18
 
 ### Changed

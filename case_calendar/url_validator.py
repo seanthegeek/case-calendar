@@ -11,22 +11,16 @@ so the human reader can salvage it.
 Fail-open on network errors — a court site being briefly unreachable should
 not blank the field. Successful validations are cached per process; failures
 are not (so a transient flake gets retried on the next sync).
-
-Uses ``urllib.request`` from the stdlib — no third-party HTTP dependency.
-``urlopen`` follows redirects by default via its ``HTTPRedirectHandler``,
-matching the prior httpx ``follow_redirects=True`` setting.
 """
 
 from __future__ import annotations
 
-import http.client
 import logging
-import socket
 import time
-import urllib.error
-import urllib.request
 from typing import Optional
 from urllib.parse import urlparse
+
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -41,14 +35,10 @@ _TIMEOUT = 5.0
 # URL unchanged — same as the pre-retry behavior.
 _VALIDATE_RETRY_TOTAL = 3
 _VALIDATE_RETRY_INITIAL_BACKOFF = 0.25
-# Transport-level exceptions the retry loop should retry. Mirrors the
-# narrow set used in `courtlistener.py` and `pdf.py` — transient
-# network blips only, not malformed URLs or unsupported schemes (those
-# return None on first hit to avoid hammering a hopeless input).
 _VALIDATE_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
-    socket.timeout,
-    http.client.HTTPException,
-    ConnectionError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
 )
 _cache: dict[str, str] = {}
 
@@ -58,19 +48,7 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-class _ValidateResponse:
-    """Minimal duck-typed response from ``_request_with_retry``.
-
-    ``_check`` only reads ``status_code``, so that's all we expose.
-    """
-
-    __slots__ = ("status_code",)
-
-    def __init__(self, status_code: int) -> None:
-        self.status_code = status_code
-
-
-def validate_url(url: str) -> Optional[str]:
+def validate_url(url: str, *, client: Optional[httpx.Client] = None) -> Optional[str]:
     """Return a working URL (the original or a one-step parent) or None.
 
     Returns the original URL unchanged on network failure (fail-open).
@@ -83,8 +61,11 @@ def validate_url(url: str) -> Optional[str]:
     if url in _cache:
         return _cache[url]
 
+    own_client = client is None
+    if own_client:
+        client = httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
     try:
-        result, definite_failure = _walk_candidates(url)
+        result, definite_failure = _walk_candidates(url, client)
     except Exception as e:
         log.warning(
             "URL validation unexpected error for %r (%s); keeping URL as-is",
@@ -92,6 +73,9 @@ def validate_url(url: str) -> Optional[str]:
             e,
         )
         return url
+    finally:
+        if own_client:
+            client.close()
 
     if result is not None:
         _cache[url] = result
@@ -107,7 +91,7 @@ def validate_url(url: str) -> Optional[str]:
     return None
 
 
-def _walk_candidates(url: str) -> tuple[Optional[str], bool]:
+def _walk_candidates(url: str, client: httpx.Client) -> tuple[Optional[str], bool]:
     """Returns (working_url_or_None, saw_definite_4xx).
 
     ``saw_definite_4xx`` is True if at least one candidate returned a 4xx
@@ -117,7 +101,7 @@ def _walk_candidates(url: str) -> tuple[Optional[str], bool]:
     """
     saw_4xx = False
     for cand in _candidates(url):
-        outcome = _check(cand)
+        outcome = _check(cand, client)
         if outcome == "ok":
             return cand, saw_4xx
         if outcome == "4xx":
@@ -125,19 +109,17 @@ def _walk_candidates(url: str) -> tuple[Optional[str], bool]:
     return None, saw_4xx
 
 
-def _request_with_retry(method: str, url: str) -> Optional[_ValidateResponse]:
+def _request_with_retry(
+    method: str, url: str, client: httpx.Client
+) -> Optional[httpx.Response]:
     """Issue ``method`` against ``url`` with retry on transport errors.
 
-    Returns a response carrying the final status code on any HTTP
-    response (success or failure), or ``None`` when every attempt
-    raised a transport error. ``urllib.error.URLError`` covers the
-    same NetworkError class we retry elsewhere; non-retryable malformed
-    URLs (``ValueError`` from `Request` construction) are also treated
-    as a flake rather than crashing validation.
-
-    urllib raises ``HTTPError`` (a subclass of ``URLError``) for 4xx /
-    5xx responses; we catch that explicitly to surface the status code
-    instead of treating those as transport flakes.
+    Returns the response on success (any status), or ``None`` when every
+    attempt raised a transport error. ``httpx.RequestError`` covers the
+    same NetworkError / TimeoutException / RemoteProtocolError set we
+    retry elsewhere in the codebase; we catch the wider parent here so a
+    less common protocol-level error (e.g. an invalid URL synthesized by
+    the LLM) is also treated as a flake rather than crashing validation.
     """
     backoff = _VALIDATE_RETRY_INITIAL_BACKOFF
     # `while True` instead of `for attempt in range(...)` so every exit
@@ -146,12 +128,7 @@ def _request_with_retry(method: str, url: str) -> Optional[_ValidateResponse]:
     attempt = 1
     while True:
         try:
-            req = urllib.request.Request(url, method=method)
-            with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
-                return _ValidateResponse(status_code=resp.status)
-        except urllib.error.HTTPError as e:
-            # 4xx / 5xx — definite HTTP response, surface the status.
-            return _ValidateResponse(status_code=e.code)
+            return client.request(method, url)
         except _VALIDATE_RETRYABLE_EXCEPTIONS as e:
             if attempt >= _VALIDATE_RETRY_TOTAL:
                 log.info(
@@ -164,24 +141,17 @@ def _request_with_retry(method: str, url: str) -> Optional[_ValidateResponse]:
             time.sleep(backoff)
             backoff = min(backoff * 2, 4)
             attempt += 1
-        except urllib.error.URLError:
-            # Non-retryable URLError (e.g. unsupported scheme, refused
-            # connection that isn't worth retrying). Same fail-open
-            # behavior as the prior httpx.RequestError fallthrough.
-            return None
-        except ValueError:
-            # `Request(url)` raises ValueError on malformed URLs (the
-            # LLM-synthesized garbage case the validator exists to catch).
+        except httpx.RequestError:
             return None
 
 
-def _check(url: str) -> str:
+def _check(url: str, client: httpx.Client) -> str:
     """Returns 'ok', '4xx', or 'flake'."""
-    r = _request_with_retry("HEAD", url)
+    r = _request_with_retry("HEAD", url, client)
     if r is None:
         return "flake"
     if r.status_code == 405:  # some servers don't implement HEAD
-        r = _request_with_retry("GET", url)
+        r = _request_with_retry("GET", url, client)
         if r is None:
             return "flake"
     if r.status_code < 400:

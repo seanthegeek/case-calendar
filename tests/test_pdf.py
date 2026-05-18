@@ -2,66 +2,15 @@
 
 We don't actually fetch PDFs in tests; we monkey-patch ``fetch_pdf_bytes``
 and ``ocr_with_tesseract`` to control each branch.
-
-HTTP fetches monkey-patch ``urllib.request.urlopen`` at the module level
-that ``pdf.py`` imports from, so the production retry loop in
-``pdf._get_with_retry`` runs against a controlled backend without
-hitting the network.
 """
 
 from __future__ import annotations
 
 import io
-import socket
-import urllib.error
 from pathlib import Path
 from urllib.parse import urlparse
 
 from case_calendar import pdf
-
-
-class _FakeResp:
-    """Stand-in for ``http.client.HTTPResponse`` (what urlopen returns).
-
-    Implements the context-manager protocol and ``status`` / ``read()`` —
-    the only attributes ``_get_with_retry`` reads off a urlopen response.
-    """
-
-    def __init__(self, status: int, body: bytes = b""):
-        self.status = status
-        self._body = body
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _http_error(url: str, status: int, body: bytes = b"") -> urllib.error.HTTPError:
-    """Build the ``urllib.error.HTTPError`` urlopen raises on 4xx/5xx."""
-    return urllib.error.HTTPError(
-        url,
-        status,
-        f"HTTP {status}",
-        hdrs=None,  # type: ignore[arg-type]
-        fp=io.BytesIO(body),
-    )
-
-
-def _install_urlopen(monkeypatch, handler):
-    """Patch ``urllib.request.urlopen`` (the symbol the ``pdf`` module
-    resolves through) with a function that ignores its kwargs and calls
-    the test's handler with the incoming ``Request``.
-    """
-
-    def fake_urlopen(req, timeout=None):
-        return handler(req)
-
-    monkeypatch.setattr(pdf.urllib.request, "urlopen", fake_urlopen)
 
 
 class TestLooksGarbled:
@@ -280,52 +229,93 @@ class TestFetchPdfBytes:
         assert pdf.fetch_pdf_bytes(rd) is None
 
     def test_returns_bytes_on_200(self, monkeypatch):
-        def handler(req):
-            return _FakeResp(200, b"%PDF-1.4 bytes")
+        # Stub httpx.Client to return a successful response on the IA URL.
+        import httpx
 
-        _install_urlopen(monkeypatch, handler)
+        class _Resp:
+            status_code = 200
+            content = b"%PDF-1.4 bytes"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         rd = {"filepath_ia": "https://archive.org/x.pdf"}
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF-1.4 bytes"
 
     def test_falls_through_to_cl_storage_url(self, monkeypatch):
         # IA returns 404; CourtListener storage URL returns 200 — second branch in the loop.
+        import httpx
+
         seen: list[str] = []
 
-        def handler(req):
-            seen.append(req.full_url)
-            host = (urlparse(req.full_url).hostname or "").lower()
-            if host == "archive.org" or host.endswith(".archive.org"):
-                raise _http_error(req.full_url, 404)
-            return _FakeResp(200, b"%PDF cl bytes")
+        class _Resp:
+            def __init__(self, status, content):
+                self.status_code = status
+                self.content = content
 
-        _install_urlopen(monkeypatch, handler)
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                seen.append(url)
+                host = (urlparse(url).hostname or "").lower()
+                if host == "archive.org" or host.endswith(".archive.org"):
+                    return _Resp(404, b"")
+                return _Resp(200, b"%PDF cl bytes")
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         rd = {
             "filepath_ia": "https://archive.org/x.pdf",
             "filepath_local": "recap/foo.pdf",
         }
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF cl bytes"
-        assert any(
-            (urlparse(u).hostname or "").lower() == "storage.courtlistener.com"
-            for u in seen
-        )
+        assert any("storage.courtlistener.com" in u for u in seen)
 
     def test_network_error_falls_through(self, monkeypatch):
         # First URL throws; second URL succeeds. Tests the try/except path.
-        # The retry loop will try the transport-failure URL up to
-        # _PDF_RETRY_TOTAL times before returning None and falling through
-        # to the next URL.
-        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+        import httpx
+
+        class _Resp:
+            status_code = 200
+            content = b"%PDF cl bytes"
 
         attempts = {"count": 0}
 
-        def handler(req):
-            attempts["count"] += 1
-            host = (urlparse(req.full_url).hostname or "").lower()
-            if host == "archive.org" or host.endswith(".archive.org"):
-                raise urllib.error.URLError("connection refused")
-            return _FakeResp(200, b"%PDF cl bytes")
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
 
-        _install_urlopen(monkeypatch, handler)
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                attempts["count"] += 1
+                if attempts["count"] == 1:
+                    raise httpx.RequestError("connection refused")
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         rd = {
             "filepath_ia": "https://archive.org/x.pdf",
             "filepath_local": "recap/foo.pdf",
@@ -333,27 +323,57 @@ class TestFetchPdfBytes:
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF cl bytes"
 
     def test_all_urls_fail_returns_none(self, monkeypatch):
-        def handler(req):
-            raise _http_error(req.full_url, 404)
+        import httpx
 
-        _install_urlopen(monkeypatch, handler)
+        class _Resp:
+            status_code = 404
+            content = b""
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         assert pdf.fetch_pdf_bytes({"filepath_ia": "https://x.com/y.pdf"}) is None
 
     def test_retries_read_timeout_then_succeeds(self, monkeypatch):
-        # A single read timeout (the in-production symptom we observed on
+        # A single ReadTimeout (the in-production symptom we observed on
         # CourtListener; the same class of failure can hit the IA mirror
         # too) is retried by `_get_with_retry` before falling through to
         # the next-URL fallback.
+        import httpx
+
+        # Sleep would otherwise stall the test for the backoff window.
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
             if attempts[0] == 1:
-                raise socket.timeout("read timed out")
-            return _FakeResp(200, b"%PDF retried bytes")
+                raise httpx.ReadTimeout("read timed out", request=req)
+            return httpx.Response(200, content=b"%PDF retried bytes")
 
-        _install_urlopen(monkeypatch, handler)
+        # Replace httpx.Client with a wrapper that swaps the production
+        # transport for our MockTransport while preserving every other
+        # production setting (follow_redirects, timeout, etc.).
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         result = pdf.fetch_pdf_bytes({"filepath_ia": "https://archive.org/x.pdf"})
         assert result == b"%PDF retried bytes"
         # Two transport-level calls: the failing first attempt then the
@@ -364,52 +384,29 @@ class TestFetchPdfBytes:
         # 502/503/504 responses are retryable status codes (gateway /
         # proxy / CDN transient unavailability); a single 503 should not
         # push us to the next-URL fallback.
+        import httpx
+
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
             if attempts[0] == 1:
-                raise _http_error(req.full_url, 503)
-            return _FakeResp(200, b"%PDF after 503")
+                return httpx.Response(503)
+            return httpx.Response(200, content=b"%PDF after 503")
 
-        _install_urlopen(monkeypatch, handler)
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         result = pdf.fetch_pdf_bytes({"filepath_ia": "https://archive.org/x.pdf"})
         assert result == b"%PDF after 503"
         assert attempts[0] == 2
-
-    def test_non_retryable_exception_caught_by_outer_handler(self, monkeypatch):
-        # ``_get_with_retry`` catches the retryable transport set and
-        # ``urllib.error.HTTPError``. Anything else (programmer error,
-        # surprise stdlib exception) bubbles out and is caught by the
-        # outer ``except Exception`` in ``fetch_pdf_bytes``, which logs
-        # and falls through to the next URL. Tests the outer-handler
-        # branch end-to-end.
-        seen: list[str] = []
-
-        def handler(req):
-            seen.append(req.full_url)
-            host = (urlparse(req.full_url).hostname or "").lower()
-            if host == "archive.org":
-                raise TypeError("synthetic bug from upstream lib")
-            return _FakeResp(200, b"%PDF cl bytes")
-
-        _install_urlopen(monkeypatch, handler)
-        result = pdf.fetch_pdf_bytes(
-            {
-                "filepath_ia": "https://archive.org/x.pdf",
-                "filepath_local": "recap/foo.pdf",
-            }
-        )
-        # IA branch raised a non-retryable exception, outer handler
-        # logged and fell through to the CL storage URL which served
-        # the bytes.
-        assert result == b"%PDF cl bytes"
-        assert (urlparse(seen[0]).hostname or "").lower() == "archive.org"
-        assert any(
-            (urlparse(u).hostname or "").lower() == "storage.courtlistener.com"
-            for u in seen
-        )
 
     def test_transport_error_budget_exhausted_falls_through_to_next_url(
         self, monkeypatch
@@ -419,17 +416,27 @@ class TestFetchPdfBytes:
         # `fetch_pdf_bytes` falls through to the CourtListener storage
         # fallback. Without that fallthrough, a flaky IA mirror would
         # masquerade as a missing PDF.
+        import httpx
+
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
-        urls_seen: list[str] = []
+
+        urls_seen: list[httpx.URL] = []
 
         def handler(req):
-            urls_seen.append(req.full_url)
-            host = (urlparse(req.full_url).hostname or "").lower()
+            urls_seen.append(req.url)
+            host = req.url.host or ""
             if host == "archive.org" or host.endswith(".archive.org"):
-                raise socket.timeout("flaky IA")
-            return _FakeResp(200, b"%PDF from CL storage")
+                raise httpx.ReadTimeout("flaky IA", request=req)
+            return httpx.Response(200, content=b"%PDF from CL storage")
 
-        _install_urlopen(monkeypatch, handler)
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         result = pdf.fetch_pdf_bytes(
             {
                 "filepath_ia": "https://archive.org/x.pdf",
@@ -438,16 +445,19 @@ class TestFetchPdfBytes:
         )
         assert result == b"%PDF from CL storage"
         # IA was retried up to the budget, then CL storage succeeded
-        # first try. Use exact hostname match (CodeQL flags
-        # substring / endswith comparisons as
-        # `py/incomplete-url-substring-sanitization` because
-        # `evil-archive.org` would otherwise pass).
-        def _host(url: str) -> str:
-            return (urlparse(url).hostname or "").lower()
-
-        ia_hits = sum(1 for u in urls_seen if _host(u) == "archive.org")
-        assert ia_hits == pdf._PDF_RETRY_TOTAL
-        assert any(_host(u) == "storage.courtlistener.com" for u in urls_seen)
+        # first try.
+        assert (
+            sum(
+                1
+                for u in urls_seen
+                if (u.host == "archive.org" or (u.host or "").endswith(".archive.org"))
+            )
+            == pdf._PDF_RETRY_TOTAL
+        )
+        assert any(
+            u.host == "storage.courtlistener.com" or (u.host or "").endswith(".storage.courtlistener.com")
+            for u in urls_seen
+        )
 
 
 class TestExtractWithPypdfHappyPath:
@@ -642,47 +652,97 @@ class TestFetchUrlBytes:
     by `extract_text_from_url` for `extra_documents` URLs."""
 
     def test_returns_bytes_on_200(self, monkeypatch):
-        def handler(req):
-            return _FakeResp(200, b"%PDF-1.4 doj-pr-attachment")
+        import httpx
 
-        _install_urlopen(monkeypatch, handler)
+        class _Resp:
+            status_code = 200
+            content = b"%PDF-1.4 doj-pr-attachment"
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         out = pdf.fetch_url_bytes("https://www.justice.gov/opa/media/x/dl")
         assert out == b"%PDF-1.4 doj-pr-attachment"
 
     def test_returns_none_on_non_200(self, monkeypatch):
-        def handler(req):
-            raise _http_error(req.full_url, 404)
+        import httpx
 
-        _install_urlopen(monkeypatch, handler)
+        class _Resp:
+            status_code = 404
+            content = b""
+
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                return _Resp()
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         assert pdf.fetch_url_bytes("https://x.com/missing.pdf") is None
 
     def test_returns_none_on_network_error(self, monkeypatch):
-        # DNS failure / connection refused — exhausts the retry budget
-        # and `_get_with_retry` returns None.
-        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+        import httpx
 
-        def handler(req):
-            raise urllib.error.URLError("dns failure")
+        class _Client:
+            def __init__(self, *a, **k):
+                pass
 
-        _install_urlopen(monkeypatch, handler)
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def get(self, url):
+                raise httpx.RequestError("dns failure")
+
+        monkeypatch.setattr(httpx, "Client", _Client)
         assert pdf.fetch_url_bytes("https://nowhere.invalid/x.pdf") is None
 
     def test_retries_read_timeout_then_succeeds(self, monkeypatch):
         # Operator-supplied extra_documents URLs (e.g. DoJ press-release
         # attachments) get the same transport-error retry as the
-        # CourtListener PDF fetch — a single read timeout on a slow DoJ
+        # CourtListener PDF fetch — a single ReadTimeout on a slow DoJ
         # server shouldn't lose the only public copy of an unsealed
         # indictment.
+        import httpx
+
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
             if attempts[0] == 1:
-                raise socket.timeout("read timed out")
-            return _FakeResp(200, b"%PDF doj attachment retried")
+                raise httpx.ReadTimeout("read timed out", request=req)
+            return httpx.Response(200, content=b"%PDF doj attachment retried")
 
-        _install_urlopen(monkeypatch, handler)
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         result = pdf.fetch_url_bytes("https://www.justice.gov/opa/media/x/dl")
         assert result == b"%PDF doj attachment retried"
         assert attempts[0] == 2
@@ -696,42 +756,50 @@ class TestFetchUrlBytes:
         # The 200-only check in `fetch_url_bytes` then logs the bad
         # status and falls through to `return None`. Exercises the
         # last-attempt status-retry branch.
+        import httpx
+
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
-            raise _http_error(req.full_url, 503)
+            return httpx.Response(503)
 
-        _install_urlopen(monkeypatch, handler)
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         assert pdf.fetch_url_bytes("https://example.com/perma503.pdf") is None
         # Tried up to the budget, then gave up rather than looping
         # forever on the retryable status.
         assert attempts[0] == pdf._PDF_RETRY_TOTAL
-
-    def test_non_retryable_exception_caught_by_outer_handler(self, monkeypatch):
-        # Same outer-handler branch as ``fetch_pdf_bytes`` — a
-        # non-retryable surprise exception is logged and converted to
-        # a None return so callers don't crash on a bad operator URL.
-        def handler(req):
-            raise TypeError("synthetic surprise")
-
-        _install_urlopen(monkeypatch, handler)
-        assert pdf.fetch_url_bytes("https://example.com/x.pdf") is None
 
     def test_returns_none_when_transport_budget_exhausted(self, monkeypatch):
         # When every retry attempt against an operator-supplied URL
         # raises a transport error, `_get_with_retry` returns None and
         # `fetch_url_bytes` returns None — the caller (the case-summary
         # pipeline) treats the document as unavailable.
+        import httpx
+
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
         attempts = [0]
 
         def handler(req):
             attempts[0] += 1
-            raise socket.timeout("perpetually slow")
+            raise httpx.ReadTimeout("perpetually slow", request=req)
 
-        _install_urlopen(monkeypatch, handler)
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
         assert pdf.fetch_url_bytes("https://example.com/never.pdf") is None
         assert attempts[0] == pdf._PDF_RETRY_TOTAL
 

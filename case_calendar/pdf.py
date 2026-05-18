@@ -15,18 +15,16 @@ text or the user installs OCR tools.
 
 from __future__ import annotations
 
-import http.client
 import io
 import logging
 import shutil
-import socket
 import subprocess
 import tempfile
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Optional
+
+import httpx
 
 log = logging.getLogger(__name__)
 
@@ -35,21 +33,10 @@ log = logging.getLogger(__name__)
 # straight to the CourtListener storage fallback (which has stricter
 # rate limits and is more likely to fail too), and a blip on both would
 # surface as a permanent fetch failure for the entry.
-#
-# Stdlib equivalents of the prior httpx exception classes:
-#   - ``urllib.error.URLError`` covers most network failures (DNS,
-#     connection refused, TLS errors).
-#   - ``socket.timeout`` (== ``TimeoutError`` in 3.10+) covers read /
-#     connect timeouts.
-#   - ``http.client.HTTPException`` covers ``BadStatusLine``,
-#     ``RemoteDisconnected``, etc.
-#   - ``ConnectionError`` catches OS-level socket resets that some
-#     paths surface without wrapping in URLError.
 _PDF_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
-    urllib.error.URLError,
-    socket.timeout,
-    http.client.HTTPException,
-    ConnectionError,
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
 )
 # Transient HTTP status codes worth retrying — same set httpx-retries'
 # default ``status_forcelist`` covered (429 + the gateway/proxy 5xxs).
@@ -105,24 +92,7 @@ def looks_garbled(text: str) -> bool:
     return (alpha / len(nonws)) < _MIN_ALPHA_RATIO
 
 
-class _FetchResult:
-    """Minimal duck-typed response carrier for ``_get_with_retry``.
-
-    Mirrors the subset of ``httpx.Response`` that ``fetch_pdf_bytes`` /
-    ``fetch_url_bytes`` read: ``status_code`` and ``content``. Built so
-    the caller doesn't need to branch on whether the urlopen call
-    succeeded (returning an ``HTTPResponse``) or raised ``HTTPError``
-    (which also carries the body via ``.read()``).
-    """
-
-    __slots__ = ("status_code", "content")
-
-    def __init__(self, *, status_code: int, content: bytes) -> None:
-        self.status_code = status_code
-        self.content = content
-
-
-def _get_with_retry(url: str, *, timeout: float) -> Optional[_FetchResult]:
+def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
     """GET with retry on transient transport errors and retryable status codes.
 
     Returns the final response (which may still be non-200 if all attempts
@@ -130,25 +100,16 @@ def _get_with_retry(url: str, *, timeout: float) -> Optional[_FetchResult]:
     a transport error. Callers treat ``None`` and non-200 the same way —
     fall through to the next URL or give up — so the distinction is only
     in the log.
-
-    Uses ``urllib.request.urlopen`` for transport; redirects are followed
-    automatically by the default ``HTTPRedirectHandler``.
     """
     backoff = _PDF_RETRY_INITIAL_BACKOFF
-    last_response: Optional[_FetchResult] = None
+    last_response: Optional[httpx.Response] = None
     # `while True` instead of `for attempt in range(...)` so every exit is
     # an explicit `return` — no loop-fall-off path for coverage to flag as
     # an unreachable branch.
     attempt = 1
     while True:
         try:
-            req = urllib.request.Request(url, method="GET")
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                r = _FetchResult(status_code=resp.status, content=resp.read())
-        except urllib.error.HTTPError as e:
-            # urlopen raises on 4xx/5xx; capture so we can branch on
-            # status the same way the success path does.
-            r = _FetchResult(status_code=e.code, content=e.read())
+            r = client.get(url)
         except _PDF_RETRYABLE_EXCEPTIONS as e:
             if attempt >= _PDF_RETRY_TOTAL:
                 log.warning(
@@ -204,12 +165,13 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
 
     for url in urls:
         try:
-            r = _get_with_retry(url, timeout=timeout)
-            if r is None:
-                continue
-            if r.status_code == 200 and r.content:
-                return r.content
-            log.warning("pdf fetch %s -> %s", url, r.status_code)
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                r = _get_with_retry(client, url)
+                if r is None:
+                    continue
+                if r.status_code == 200 and r.content:
+                    return r.content
+                log.warning("pdf fetch %s -> %s", url, r.status_code)
         except Exception as e:
             log.warning("pdf fetch %s failed: %s", url, e)
     return None
@@ -296,12 +258,13 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
     open the same way they do on a missing recap_document.
     """
     try:
-        r = _get_with_retry(url, timeout=timeout)
-        if r is None:
-            return None
-        if r.status_code == 200 and r.content:
-            return r.content
-        log.warning("url fetch %s -> %s", url, r.status_code)
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            r = _get_with_retry(client, url)
+            if r is None:
+                return None
+            if r.status_code == 200 and r.content:
+                return r.content
+            log.warning("url fetch %s -> %s", url, r.status_code)
     except Exception as e:
         log.warning("url fetch %s failed: %s", url, e)
     return None

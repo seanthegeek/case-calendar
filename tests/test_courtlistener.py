@@ -1,87 +1,33 @@
 """Tests for the CourtListener REST client.
 
-Monkey-patches ``urllib.request.urlopen`` so no network calls happen.
-Every other layer of the production pipeline (URL building, auth header
-threading, JSON decoding, the 429 / 5xx / transport retry loop, the
-``_no_request_before`` cooldown) runs for real.
+Uses ``httpx.MockTransport`` so no network calls happen, but the rest of the
+httpx pipeline (auth header, JSON decoding, retry-on-429) runs for real.
 """
 
 from __future__ import annotations
 
-import http.client
-import io
-import json
-import socket
-import urllib.error
-import urllib.request
-
+import httpx
 import pytest
 
 import case_calendar.courtlistener as clmod
-from case_calendar.courtlistener import CourtListener, HTTPStatusError
-
-
-class _FakeResponse:
-    """Stand-in for the ``http.client.HTTPResponse`` urlopen returns.
-
-    Implements the context-manager protocol + ``status``, ``headers``,
-    and ``read()`` — the only attributes ``_get`` reads. ``headers`` is
-    a real ``http.client.HTTPMessage`` so case-insensitive lookups and
-    ``.items()`` iteration behave the same as in production.
-    """
-
-    def __init__(self, status: int, body: bytes = b"", headers: dict | None = None):
-        self.status = status
-        self._body = body
-        msg = http.client.HTTPMessage()
-        for k, v in (headers or {}).items():
-            msg[k] = v
-        self.headers = msg
-
-    def read(self) -> bytes:
-        return self._body
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *a):
-        return False
-
-
-def _resp(status: int, json_body: dict | None = None, *, headers: dict | None = None) -> _FakeResponse:
-    body = json.dumps(json_body or {}).encode()
-    return _FakeResponse(status, body, headers)
-
-
-def _http_error(req_url: str, status: int, json_body: dict | None = None, *, headers: dict | None = None) -> urllib.error.HTTPError:
-    """Build the urllib.error.HTTPError urlopen raises on 4xx/5xx responses."""
-    body = json.dumps(json_body or {}).encode()
-    msg = http.client.HTTPMessage()
-    for k, v in (headers or {}).items():
-        msg[k] = v
-    return urllib.error.HTTPError(
-        req_url,
-        status,
-        f"HTTP {status}",
-        hdrs=msg,  # type: ignore[arg-type]
-        fp=io.BytesIO(body),
-    )
+from case_calendar.courtlistener import CourtListener
 
 
 @pytest.fixture
-def make_client(monkeypatch):
-    """Build a CourtListener client with urlopen monkey-patched to invoke
-    a per-test handler that receives the ``urllib.request.Request`` and
-    returns either a ``_FakeResponse`` or raises an exception.
-    """
+def make_client():
+    """Return a function that builds a CourtListener client with a programmable transport."""
 
     def _make(handler):
-        cl = CourtListener(token="test")
-
-        def fake_urlopen(req, timeout=None):
-            return handler(req)
-
-        monkeypatch.setattr(clmod.urllib.request, "urlopen", fake_urlopen)
+        transport = httpx.MockTransport(handler)
+        cl = CourtListener.__new__(CourtListener)
+        cl.client = httpx.Client(
+            transport=transport,
+            headers={"Authorization": "Token test"},
+        )
+        # Mirror the attribute __init__ sets — _wait_for_window reads it on
+        # every request, so without an explicit reset the bypass fails on
+        # the first call.
+        cl._no_request_before = 0.0
         return cl
 
     return _make
@@ -89,9 +35,9 @@ def make_client(monkeypatch):
 
 class TestSimpleGets:
     def test_get_docket(self, make_client):
-        def handler(req):
-            assert "/api/rest/v4/dockets/42/" in req.full_url
-            return _resp(200, {"id": 42, "case_name": "X"})
+        def handler(req: httpx.Request) -> httpx.Response:
+            assert req.url.path == "/api/rest/v4/dockets/42/"
+            return httpx.Response(200, json={"id": 42, "case_name": "X"})
 
         cl = make_client(handler)
         assert cl.get_docket(42)["id"] == 42
@@ -100,8 +46,8 @@ class TestSimpleGets:
         seen = []
 
         def handler(req):
-            seen.append(req.get_header("Authorization"))
-            return _resp(200, {})
+            seen.append(req.headers.get("Authorization"))
+            return httpx.Response(200, json={})
 
         cl = make_client(handler)
         cl.get_docket(1)
@@ -109,16 +55,18 @@ class TestSimpleGets:
 
     def test_get_court(self, make_client):
         def handler(req):
-            assert "/api/rest/v4/courts/mad/" in req.full_url
-            return _resp(200, {"id": "mad", "citation_string": "D. Mass."})
+            assert req.url.path == "/api/rest/v4/courts/mad/"
+            return httpx.Response(
+                200, json={"id": "mad", "citation_string": "D. Mass."}
+            )
 
         cl = make_client(handler)
         assert cl.get_court("mad")["citation_string"] == "D. Mass."
 
     def test_get_recap_document(self, make_client):
         def handler(req):
-            assert "/api/rest/v4/recap-documents/99/" in req.full_url
-            return _resp(200, {"id": 99, "plain_text": "hi"})
+            assert req.url.path == "/api/rest/v4/recap-documents/99/"
+            return httpx.Response(200, json={"id": 99, "plain_text": "hi"})
 
         cl = make_client(handler)
         assert cl.get_recap_document(99)["plain_text"] == "hi"
@@ -134,8 +82,8 @@ class TestRetryLogic:
         def handler(req):
             calls[0] += 1
             if calls[0] == 1:
-                raise _http_error(req.full_url, 429, {}, headers={"Retry-After": "3"})
-            return _resp(200, {"ok": True})
+                return httpx.Response(429, headers={"Retry-After": "3"}, json={})
+            return httpx.Response(200, json={"ok": True})
 
         cl = make_client(handler)
         assert cl._get("https://x/y").json() == {"ok": True}
@@ -158,8 +106,8 @@ class TestRetryLogic:
         def handler(req):
             calls[0] += 1
             if calls[0] < 3:
-                raise _http_error(req.full_url, 503, {})
-            return _resp(200, {"ok": True})
+                return httpx.Response(503, json={})
+            return httpx.Response(200, json={"ok": True})
 
         cl = make_client(handler)
         assert cl._get("https://x/y").json() == {"ok": True}
@@ -168,12 +116,11 @@ class TestRetryLogic:
 
     def test_4xx_other_than_429_raises(self, make_client):
         def handler(req):
-            raise _http_error(req.full_url, 404, {"error": "no"})
+            return httpx.Response(404, json={"error": "no"})
 
         cl = make_client(handler)
-        with pytest.raises(HTTPStatusError) as exc_info:
+        with pytest.raises(httpx.HTTPStatusError):
             cl._get("https://x/y")
-        assert exc_info.value.status_code == 404
 
     def test_429_with_long_retry_after_sleeps_through(self, monkeypatch, make_client):
         # CourtListener's daily 300/day bucket can return Retry-After of nearly 24h.
@@ -187,8 +134,8 @@ class TestRetryLogic:
         def handler(req):
             calls[0] += 1
             if calls[0] == 1:
-                raise _http_error(req.full_url, 429, {}, headers={"Retry-After": "85774"})
-            return _resp(200, {"ok": True})
+                return httpx.Response(429, headers={"Retry-After": "85774"}, json={})
+            return httpx.Response(200, json={"ok": True})
 
         cl = make_client(handler)
         assert cl._get("https://x/y").json() == {"ok": True}
@@ -204,12 +151,11 @@ class TestRetryLogic:
 
         def handler(req):
             calls[0] += 1
-            raise _http_error(req.full_url, 429, {}, headers={"Retry-After": "1"})
+            return httpx.Response(429, headers={"Retry-After": "1"}, json={})
 
         cl = make_client(handler)
-        with pytest.raises(HTTPStatusError) as exc_info:
+        with pytest.raises(httpx.HTTPStatusError):
             cl._get("https://x/y")
-        assert exc_info.value.status_code == 429
         # Implementation does up to 6 attempts then re-raises.
         assert calls[0] >= 6
 
@@ -231,7 +177,7 @@ class TestPagination:
         responses = iter([page1, page2])
 
         def handler(req):
-            return _resp(200, next(responses))
+            return httpx.Response(200, json=next(responses))
 
         cl = make_client(handler)
         ids = [e["id"] for e in cl.iter_entries(42)]
@@ -265,7 +211,7 @@ class TestPagination:
 
         def handler(req):
             page_count[0] += 1
-            return _resp(200, next(pages))
+            return httpx.Response(200, json=next(pages))
 
         cl = make_client(handler)
         ids = [
@@ -283,22 +229,33 @@ class TestInit:
         with pytest.raises(RuntimeError, match="COURTLISTENER_TOKEN"):
             CourtListener()
 
-    def test_context_manager(self):
-        # `close()` is a no-op now (no persistent client state), but the
-        # context-manager idiom is preserved so call sites
-        # (cmd_sync, cmd_serve) don't need to change.
+    def test_context_manager_closes_client(self):
         with CourtListener(token="x") as cl:
-            assert cl.token == "x"
+            assert cl.client is not None
+
+    def test_client_follows_redirects(self):
+        # httpx defaults follow_redirects=False (unlike requests). The
+        # rest of the project's httpx clients (pdf.fetch_pdf_bytes,
+        # pdf.fetch_url_bytes, url_validator) all set it True; the
+        # CourtListener client must match so a hostname migration,
+        # trailing-slash normalization, or similar 301/302 from
+        # CourtListener doesn't become a failing request. Pin the
+        # attribute so a future refactor of __init__ doesn't quietly
+        # regress it.
+        with CourtListener(token="x") as cl:
+            assert cl.client.follow_redirects is True
 
 
 class TestTransportErrorRetry:
-    """`_get` retries transient transport errors (socket timeout,
-    connection refused, protocol errors) in the same loop that handles
-    429 / 5xx. Before in-house retry, a single read timeout mid-sync —
-    the CourtListener server going quiet for a few seconds — propagated
-    all the way up through `iter_entries` and killed the whole run.
-    These tests monkey-patch ``urllib.request.urlopen`` to raise the
-    same stdlib transport exceptions production would see.
+    """`_get` retries transient transport errors (ReadTimeout, ConnectError,
+    RemoteProtocolError) in the same loop that handles 429 / 5xx. Before
+    in-house retry, a single ReadTimeout mid-sync — the CourtListener
+    server going quiet for a few seconds — propagated all the way up
+    through `iter_entries` and killed the whole run (the production
+    traceback we observed: `httpx.ReadTimeout: The read operation timed
+    out`). These tests go through the real `__init__` and swap the
+    httpx.Client's transport with a MockTransport so the retry layer
+    being exercised IS the production layer.
     """
 
     @pytest.fixture(autouse=True)
@@ -307,64 +264,61 @@ class TestTransportErrorRetry:
         # skip it so tests run at memory speed.
         monkeypatch.setattr(clmod.time, "sleep", lambda _s: None)
 
-    def test_retries_read_timeout_then_succeeds(self, make_client):
+    @staticmethod
+    def _install_mock_backend(cl: CourtListener, handler) -> None:
+        """Swap the client's transport with a MockTransport so requests go
+        through `_get`'s retry loop with a controlled backend.
+        """
+        cl.client._transport = httpx.MockTransport(handler)
+
+    def test_retries_read_timeout_then_succeeds(self):
         attempts = [0]
 
-        def handler(req):
+        def handler(req: httpx.Request) -> httpx.Response:
             attempts[0] += 1
             if attempts[0] == 1:
-                raise socket.timeout("timed out")
-            return _resp(200, {"id": 42})
+                raise httpx.ReadTimeout("timed out", request=req)
+            return httpx.Response(200, json={"id": 42})
 
-        cl = make_client(handler)
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
         assert cl.get_docket(42)["id"] == 42
         assert attempts[0] == 2
 
-    def test_retries_connection_refused_then_succeeds(self, make_client):
+    def test_retries_connect_error_then_succeeds(self):
         attempts = [0]
 
-        def handler(req):
+        def handler(req: httpx.Request) -> httpx.Response:
             attempts[0] += 1
             if attempts[0] < 3:
-                raise urllib.error.URLError("Connection refused")
-            return _resp(200, {"id": 7})
+                raise httpx.ConnectError("refused", request=req)
+            return httpx.Response(200, json={"id": 7})
 
-        cl = make_client(handler)
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
         assert cl.get_docket(7)["id"] == 7
         assert attempts[0] == 3
 
-    def test_retries_remote_disconnected(self, make_client):
-        # http.client.RemoteDisconnected fires when the server closes a
-        # keep-alive connection mid-request; we want the same retry
-        # behavior as a socket timeout.
-        attempts = [0]
-
-        def handler(req):
-            attempts[0] += 1
-            if attempts[0] == 1:
-                raise http.client.RemoteDisconnected("server hung up")
-            return _resp(200, {"id": 11})
-
-        cl = make_client(handler)
-        assert cl.get_docket(11)["id"] == 11
-        assert attempts[0] == 2
-
-    def test_exhausted_retries_propagate_last_transport_error(self, make_client):
+    def test_exhausted_retries_propagate_last_transport_error(self):
         # When every attempt fails, the last TransportError surfaces.
         # `sync_case`'s linear-control-flow shape means this propagation
         # does NOT advance the docket's date_last_modified cutoff, so
         # the next sync re-walks the docket — exactly what we want.
-        def handler(req):
-            raise socket.timeout("perpetual timeout")
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=req)
 
-        cl = make_client(handler)
-        with pytest.raises(socket.timeout):
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        with pytest.raises(httpx.ReadTimeout):
             cl.get_docket(42)
 
-    def test_429_response_reaches_get_logging_and_cooldown(self, monkeypatch, caplog, make_client):
-        """Regression: 429 responses must reach ``_get``'s logging and
-        cooldown machinery instead of being silently slept-through by a
-        lower layer. Three signals fire on every 429:
+    def test_429_response_reaches_get_logging_and_cooldown(self, monkeypatch, caplog):
+        """Regression: when an external retry library handled 429 at the
+        transport layer (the prior httpx-retries setup), the response
+        never reached ``_get``'s logging or cooldown machinery, and
+        operators saw "hang" instead of "rate limited" for the
+        ~24h-Retry-After daily-bucket case. With retry now inline in
+        ``_get``, three signals must fire on every 429:
           1. ``_get``'s "courtlistener 429" warning (URL / body /
              rate-limit headers — operator visibility into which bucket
              fired).
@@ -378,18 +332,18 @@ class TestTransportErrorRetry:
 
         calls = [0]
 
-        def handler(req):
+        def handler(req: httpx.Request) -> httpx.Response:
             calls[0] += 1
             if calls[0] == 1:
-                raise _http_error(
-                    req.full_url,
+                return httpx.Response(
                     429,
-                    {"detail": "Throttled"},
                     headers={"Retry-After": "7", "X-RateLimit-Remaining": "0"},
+                    json={"detail": "Throttled"},
                 )
-            return _resp(200, {"id": 42})
+            return httpx.Response(200, json={"id": 42})
 
-        cl = make_client(handler)
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
 
         with caplog.at_level("WARNING", logger="case_calendar.courtlistener"):
             assert cl.get_docket(42)["id"] == 42
@@ -401,21 +355,58 @@ class TestTransportErrorRetry:
         assert slept, "expected at least one sleep call from _get"
         assert slept[0] == 7.0 + clmod._RETRY_AFTER_BUFFER_SECONDS
 
-    def test_transport_retry_budget_caps_attempts(self, make_client):
+    def test_transport_retry_budget_caps_attempts(self, monkeypatch):
         # `_TRANSPORT_RETRY_BUDGET` is a separate counter from the
         # response-status retry loop, so a long stretch of transport
         # errors gives up after `_TRANSPORT_RETRY_BUDGET + 1` attempts
         # instead of consuming the 429-handling budget.
+        monkeypatch.setattr(clmod.time, "sleep", lambda _s: None)
         attempts = [0]
 
-        def handler(req):
+        def handler(req: httpx.Request) -> httpx.Response:
             attempts[0] += 1
-            raise socket.timeout("timed out")
+            raise httpx.ReadTimeout("timed out", request=req)
 
-        cl = make_client(handler)
-        with pytest.raises(socket.timeout):
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        with pytest.raises(httpx.ReadTimeout):
             cl.get_docket(42)
         # The first attempt counts as 1; subsequent attempts up to the
         # budget cap then a final raise. Exact count: budget + 1 (the
         # attempt that exhausts the budget is the one that re-raises).
         assert attempts[0] == clmod._TRANSPORT_RETRY_BUDGET + 1
+
+
+class TestFollowsRedirects:
+    def test_get_follows_302_to_final_response(self):
+        # Behavior-level confirmation that goes through the real
+        # `__init__`: a CourtListener endpoint that serves a 302
+        # redirect (e.g. a future hostname migration or a
+        # trailing-slash normalization layer) lands on the final
+        # response transparently rather than turning into a status
+        # error and tripping the _get retry path.
+        #
+        # The MockTransport is swapped into the client built by the
+        # real constructor — that way the test fails if the
+        # constructor stops setting follow_redirects=True, not just
+        # if httpx itself breaks.
+        call_count = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            call_count[0] += 1
+            if req.url.path == "/api/rest/v4/dockets/42/":
+                return httpx.Response(
+                    302,
+                    headers={"Location": "https://www.courtlistener.com/api/rest/v4/dockets/42/new/"},
+                )
+            assert req.url.path == "/api/rest/v4/dockets/42/new/"
+            return httpx.Response(200, json={"id": 42, "case_name": "Redirected"})
+
+        cl = CourtListener(token="test")
+        # Replace the network transport with our mock while keeping
+        # every other client setting the real constructor produced —
+        # crucially `follow_redirects=True`.
+        cl.client._transport = httpx.MockTransport(handler)
+        assert cl.get_docket(42)["case_name"] == "Redirected"
+        # Two transport calls: the 302 then the redirected 200.
+        assert call_count[0] == 2
