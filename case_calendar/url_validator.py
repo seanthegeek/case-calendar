@@ -13,8 +13,7 @@ not blank the field. Successful validations are cached per process; failures
 are not (so a transient flake gets retried on the next sync).
 
 Uses ``urllib.request`` from the stdlib — no third-party HTTP dependency.
-``urlopen`` follows redirects by default via its ``HTTPRedirectHandler``,
-matching the prior httpx ``follow_redirects=True`` setting.
+``urlopen`` follows redirects by default via its ``HTTPRedirectHandler``.
 """
 
 from __future__ import annotations
@@ -166,8 +165,8 @@ def _request_with_retry(method: str, url: str) -> Optional[_ValidateResponse]:
             attempt += 1
         except urllib.error.URLError:
             # Non-retryable URLError (e.g. unsupported scheme, refused
-            # connection that isn't worth retrying). Same fail-open
-            # behavior as the prior httpx.RequestError fallthrough.
+            # connection that isn't worth retrying). Fail open so a
+            # transient transport blip never blanks a valid `dial_in`.
             return None
         except ValueError:
             # `Request(url)` raises ValueError on malformed URLs (the

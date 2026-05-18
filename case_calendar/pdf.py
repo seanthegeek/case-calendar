@@ -36,7 +36,7 @@ log = logging.getLogger(__name__)
 # rate limits and is more likely to fail too), and a blip on both would
 # surface as a permanent fetch failure for the entry.
 #
-# Stdlib equivalents of the prior httpx exception classes:
+# What each branch covers:
 #   - ``urllib.error.URLError`` covers most network failures (DNS,
 #     connection refused, TLS errors).
 #   - ``socket.timeout`` (== ``TimeoutError`` in 3.10+) covers read /
@@ -51,13 +51,12 @@ _PDF_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
     http.client.HTTPException,
     ConnectionError,
 )
-# Transient HTTP status codes worth retrying — same set httpx-retries'
-# default ``status_forcelist`` covered (429 + the gateway/proxy 5xxs).
-# A 500 from the origin probably won't fix itself; a 502 / 503 / 504
-# from a CDN or rate limiter often will.
+# Transient HTTP status codes worth retrying — 429 plus the gateway /
+# proxy 5xxs. A 500 from the origin probably won't fix itself; a 502 /
+# 503 / 504 from a CDN or rate limiter often will.
 _PDF_RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
 # Up to four retry attempts with 0.5s / 1s / 2s / 4s backoff before
-# giving up — matches the prior httpx-retries `total=4, backoff_factor=0.5`.
+# giving up.
 _PDF_RETRY_TOTAL = 4
 _PDF_RETRY_INITIAL_BACKOFF = 0.5
 
@@ -108,11 +107,11 @@ def looks_garbled(text: str) -> bool:
 class _FetchResult:
     """Minimal duck-typed response carrier for ``_get_with_retry``.
 
-    Mirrors the subset of ``httpx.Response`` that ``fetch_pdf_bytes`` /
-    ``fetch_url_bytes`` read: ``status_code`` and ``content``. Built so
-    the caller doesn't need to branch on whether the urlopen call
-    succeeded (returning an ``HTTPResponse``) or raised ``HTTPError``
-    (which also carries the body via ``.read()``).
+    Exposes ``status_code`` and ``content`` — the subset
+    ``fetch_pdf_bytes`` / ``fetch_url_bytes`` read. Built so the caller
+    doesn't need to branch on whether the urlopen call succeeded
+    (returning an ``HTTPResponse``) or raised ``HTTPError`` (which also
+    carries the body via ``.read()``).
     """
 
     __slots__ = ("status_code", "content")

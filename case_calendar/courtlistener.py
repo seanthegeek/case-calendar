@@ -72,8 +72,7 @@ class HTTPStatusError(RuntimeError):
 
     Carries the HTTP status code, the response body (decoded as best
     effort), and the request URL so callers can branch on the failure
-    shape — same audit trail the prior ``httpx.HTTPStatusError`` gave
-    us. Subclasses ``RuntimeError`` to fit the project convention.
+    shape. Subclasses ``RuntimeError`` to fit the project convention.
     """
 
     def __init__(self, status_code: int, body: str, url: str):
@@ -86,10 +85,8 @@ class HTTPStatusError(RuntimeError):
 class _Response:
     """Tiny duck-typed response wrapper for ``_get``'s return value.
 
-    Mirrors the subset of ``httpx.Response`` the rest of the project
-    used: ``status_code``, ``headers``, ``text``, ``content``, and
-    ``json()``. Keeping the same attribute names means call sites don't
-    need to change beyond the import boundary.
+    Exposes ``status_code``, ``headers``, ``text``, ``content``, and
+    ``json()`` — the subset call sites in the rest of the project read.
     """
 
     __slots__ = ("status_code", "headers", "_body", "url")
@@ -137,9 +134,9 @@ class CourtListener:
     def _build_url(self, url: str, params: Optional[dict[str, Any]] = None) -> str:
         """Return ``url`` with ``params`` appended as a query string.
 
-        Mirrors httpx's behavior: if the URL already has a query string,
-        the new params are appended with `&`; otherwise they start the
-        query with `?`. Empty / None params are a no-op.
+        If the URL already has a query string, the new params are
+        appended with ``&``; otherwise they start the query with ``?``.
+        Empty / None params are a no-op.
         """
         if not params:
             return url
@@ -170,9 +167,8 @@ class CourtListener:
         429/5xx retry budget that may still be needed for response-status
         handling on the same call.
 
-        ``urllib.request.urlopen`` follows 3xx redirects automatically via
-        its default ``HTTPRedirectHandler`` — matches the previous
-        ``follow_redirects=True`` setting on the httpx client.
+        ``urllib.request.urlopen`` follows 3xx redirects automatically
+        via its default ``HTTPRedirectHandler``.
         """
         full_url = self._build_url(url, params)
         delay = 2.0

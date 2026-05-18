@@ -100,7 +100,7 @@ class FakeCourtListener(CourtListener):
 
     Subclasses the real client so type-checkers accept it wherever a
     `CourtListener` is expected, but deliberately skips the real
-    `__init__` (which opens an httpx client and demands a real token).
+    `__init__` (which demands a real token).
     """
 
     def __init__(

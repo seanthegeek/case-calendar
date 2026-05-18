@@ -116,7 +116,7 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 ## Tech Stack
 
 - Python 3.13, uv for dependency management
-- httpx (CourtListener), pypdf (embedded text), poppler + tesseract (optional system deps for OCR fallback)
+- `urllib.request` from the stdlib (CourtListener + PDF fetch + URL validation — no third-party HTTP dep), pypdf (embedded text), poppler + tesseract (optional system deps for OCR fallback)
 - tzdata (Python package — keeps `zoneinfo` lookups consistent across hosts where the system tz database is incomplete)
 - anthropic / openai / google-genai SDKs (LLM providers, lazy-imported)
 - google-api-python-client + google-auth-oauthlib (Google Calendar)

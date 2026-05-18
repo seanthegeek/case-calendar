@@ -8,6 +8,37 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.7] - 2026-05-18
+
+### Changed
+
+- Cleaned up stale `httpx` references in source comments, docstrings,
+  and `AGENTS.md` left over after the 0.2.6 stdlib migration. Comments
+  describing project code in terms of what `httpx` / `httpx-retries`
+  used to do had aged into rot — useful to the migration reviewer at
+  the time, dead weight to anyone reading the code today. Each comment
+  was rewritten to describe what the code DOES, not what some prior
+  library version did:
+  - `case_calendar.courtlistener` — `HTTPStatusError`, `_Response`,
+    `_build_url`, and `_get` docstrings/comments.
+  - `case_calendar.pdf` — `_PDF_RETRYABLE_EXCEPTIONS` /
+    `_PDF_RETRYABLE_STATUSES` / `_PDF_RETRY_TOTAL` comment block and
+    `_FetchResult` docstring.
+  - `case_calendar.url_validator` — module docstring and the
+    non-retryable-`URLError` handler comment.
+  - `tests/conftest.py` and `tests/test_summary.py` — `FakeCourtListener`
+    docstring stubs that explained why the real `__init__` was skipped.
+- `AGENTS.md` Tech Stack now names `urllib.request` (stdlib) as the
+  HTTP layer instead of `httpx`, matching the actual code.
+- `CHANGELOG.md` is left alone — it's a historical record of the
+  migration itself, and rewriting it would obscure what shipped in
+  0.2.6.
+- `uv.lock` is left alone — `httpx` remains a transitive dep pulled in
+  by `anthropic`, `openai`, `google-genai`, and `msgraph-sdk` for their
+  own HTTP needs.
+
+[0.2.7]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.7
+
 ## [0.2.6] - 2026-05-18
 
 ### Changed

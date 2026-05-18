@@ -41,7 +41,7 @@ class _BoomCourtListenerBase(CourtListener):
     """
 
     def __init__(self) -> None:
-        # Deliberately skip the real `__init__` (no httpx client, no token).
+        # Deliberately skip the real `__init__` (no real token required).
         pass
 
 
@@ -61,7 +61,7 @@ class _FakeCourtListener(CourtListener):
     page payload is the raw CourtListener response shape: ``{"results": [...], "next": ...}``.
 
     Subclasses the real client so it's accepted wherever a `CourtListener`
-    is expected, but skips the real `__init__` (no httpx, no token).
+    is expected, but skips the real `__init__` (no real token required).
     """
 
     def __init__(self, pages: dict[tuple[int, str], list[dict[str, Any]]]):
