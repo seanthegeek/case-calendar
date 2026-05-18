@@ -2212,6 +2212,132 @@ class TestExtraDocuments:
             "https://x.com/sibling.pdf",
         ]
 
+    def test_extra_deduped_when_cl_surfaces_same_text(
+        self,
+        store,
+        patch_llm,
+        patch_pdf,
+        monkeypatch,
+        caplog,
+    ):
+        # The CourtListener-bug-#7345 follow-up case: the operator added
+        # an extra_documents entry to work around a CourtListener data
+        # gap, and CourtListener later started surfacing the same
+        # document naturally (someone re-uploaded the PDF to PACER under
+        # the new pacer_case_id, or the upstream reconciler caught up).
+        # Without dedup, the same document body reaches the summary LLM
+        # twice — once via the primary slot, once via the extras block —
+        # wasting tokens and giving that document outsized influence.
+        # The fingerprint-based filter drops the duplicate extra and
+        # warns the operator to remove the now-redundant config entry.
+        _seed_docket_meta(store, 1)
+        body = (
+            "INDICTMENT against Xu Zewei, charging conspiracy to commit "
+            "computer fraud and abuse under 18 U.S.C. § 1030. Count One "
+            "alleges that beginning in or about February 2021, the "
+            "defendants conspired to access protected computers without "
+            "authorization. Count Two alleges aggravated identity theft "
+            "under 18 U.S.C. § 1028A." * 4
+        )
+        patch_pdf["texts"] = {500: body}
+        monkeypatch.setattr(
+            summary.pdf,
+            "extract_text_from_url",
+            lambda url, allow_ocr=True: body,
+        )
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-zewei",
+            name="US v. Zewei",
+            dockets=[1],
+            calendar="cyber",
+            extra_documents=[
+                ExtraDocument(
+                    docket=1,
+                    url="https://storage.courtlistener.com/recap/gov.uscourts.txsd.OLD/indictment.pdf",
+                    note="Pre-fix workaround for the old pacer_case_id; "
+                    "CourtListener's reconciler couldn't find this entry.",
+                )
+            ],
+        )
+        with caplog.at_level("WARNING", logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert [d["entry_id"] for d in patch_llm[0]["primary_documents"]] == [10]
+        # The extras block is empty — the duplicate was dropped.
+        assert patch_llm[0]["extra_documents"] == []
+        # And the operator gets a loud warning naming the URL to remove.
+        assert any(
+            "dropping extra_documents entry" in r.message
+            and "storage.courtlistener.com/recap/gov.uscourts.txsd.OLD" in r.message
+            for r in caplog.records
+        )
+
+    def test_extra_kept_when_text_differs_from_cl(
+        self,
+        store,
+        patch_llm,
+        patch_pdf,
+        monkeypatch,
+    ):
+        # Negative case for the fingerprint dedup: when the extra's
+        # extracted text doesn't match any CourtListener-surfaced doc,
+        # the extra stays. Whitespace-only differences DO dedup (see
+        # the _text_fingerprint normalization), but substantive content
+        # differences (different PDFs, different documents) do not.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "CourtListener INDICTMENT body, count one alleges..."}
+        monkeypatch.setattr(
+            summary.pdf,
+            "extract_text_from_url",
+            lambda url, allow_ocr=True: (
+                "Operator-supplied SENTENCING MEMORANDUM, different document"
+            ),
+        )
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-x",
+            name="US v. X",
+            dockets=[1],
+            calendar="cyber",
+            extra_documents=[
+                ExtraDocument(
+                    docket=1,
+                    url="https://example.gov/memo.pdf",
+                    note="distinct document, should not be deduped",
+                )
+            ],
+        )
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert len(patch_llm[0]["extra_documents"]) == 1
+        assert patch_llm[0]["extra_documents"][0]["source_url"] == (
+            "https://example.gov/memo.pdf"
+        )
+
     def test_extras_alone_satisfy_content_gate(
         self,
         store,

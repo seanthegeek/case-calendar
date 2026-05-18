@@ -22,6 +22,7 @@ the extractor's storage shape unchanged.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 from typing import TYPE_CHECKING, Any, Iterable, Optional
@@ -787,6 +788,83 @@ def _deadlines_for_group(
     return [d for d in store.get_deadlines(case_id) if d.get("docket_id") in group_set]
 
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _text_fingerprint(text: Optional[str]) -> Optional[str]:
+    """Stable fingerprint of an extracted document body for dedup.
+
+    Normalizes to lowercase and collapses runs of whitespace before
+    hashing, so minor extraction-pipeline variation (one path returning
+    CourtListener's ``plain_text``, another running pypdf locally on
+    the same bytes) doesn't break equality. Returns ``None`` for empty /
+    trivially-short input so callers can skip dedup on it.
+
+    Hash is sha256 of the full normalized text — full-body match is
+    what we want here. The cost is negligible (sha256 on tens of KB) and
+    it's the most precise signal that an ``extra_documents`` entry is
+    serving the same content as something the CourtListener walk
+    already surfaced.
+    """
+    if not text:
+        return None
+    normalized = _WS_RE.sub(" ", text.strip().lower())
+    if len(normalized) < 100:
+        # Too short to fingerprint meaningfully; many short PDFs share
+        # the same boilerplate. The summary LLM's extra_documents budget
+        # is large enough that any sub-100-char body is noise anyway.
+        return None
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _filter_extras_already_in_cl(
+    extras: list[dict[str, Any]],
+    cl_documents: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Drop ``extra_documents`` whose extracted text already appears in
+    the CourtListener-walk results for this docket.
+
+    Workaround for the closed-without-fix CourtListener bug #7345 (and
+    similar): an ``extra_documents`` URL the operator added to work
+    around a CourtListener data gap can later become naturally
+    findable through CourtListener — either because someone re-uploaded
+    the same PDF to PACER under the new ``pacer_case_id`` that
+    CourtListener's reconciler recognizes, or because the upstream
+    gap closes on its own. When that happens the SAME document text
+    reaches the summary LLM twice: once as a primary/disposition doc,
+    once as an extras-block doc. That wastes tokens and gives that
+    document outsized influence on the summary.
+
+    Dedup is on a normalized-text fingerprint (see
+    :func:`_text_fingerprint`) — robust to URL differences and re-upload
+    paths because we compare what the LLM would actually read, not
+    where the bytes came from. The drop is logged loudly (one WARN per
+    dropped extra) so the operator notices and can remove the now-
+    redundant entry from ``config.yaml``.
+    """
+    cl_fingerprints: set[str] = set()
+    for doc in cl_documents:
+        fp = _text_fingerprint(doc.get("text"))
+        if fp:
+            cl_fingerprints.add(fp)
+    if not cl_fingerprints:
+        return extras
+    out: list[dict[str, Any]] = []
+    for extra in extras:
+        fp = _text_fingerprint(extra.get("text"))
+        if fp and fp in cl_fingerprints:
+            log.warning(
+                "summary: dropping extra_documents entry %s — its extracted "
+                "text matches a CourtListener-surfaced document on the same "
+                "docket (the upstream gap that justified this entry has "
+                "likely closed; consider removing it from config.yaml)",
+                extra.get("source_url"),
+            )
+            continue
+        out.append(extra)
+    return out
+
+
 def _fetch_extra_documents(
     case: CaseConfig,
     group_docket_ids: Iterable[int],
@@ -1016,6 +1094,16 @@ def summarize_docket(
     # describing what it is. Pinned to any docket_id in the group.
     extra_documents = _fetch_extra_documents(
         case, group_docket_ids, allow_ocr=allow_ocr
+    )
+    # Drop any extras whose extracted text matches a CourtListener-
+    # surfaced doc on the same docket — the upstream gap that justified
+    # the entry has likely closed (someone re-uploaded the PDF to PACER,
+    # or CourtListener's reconciler caught up). Without this, the same
+    # document body would reach the summary LLM twice and exert
+    # outsized influence. The dedup logs a warning so the operator
+    # knows to remove the now-redundant config entry.
+    extra_documents = _filter_extras_already_in_cl(
+        extra_documents, primary_documents + disposition_documents
     )
 
     if not primary_documents and len(case.dockets) > 1:
