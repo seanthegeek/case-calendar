@@ -12,20 +12,25 @@ adheres to [Semantic Versioning][semver].
 
 ### Security
 
-- The `webhook-url --check` health probe now redacts the webhook
-  secret from every operator-facing failure message via a new
-  `_redact_secret` helper. The previous diagnostics interpolated the
-  full URL (and any echoed body) into stderr on HTTPError / URLError
-  / non-200 / non-JSON / wrong-service paths, so an operator who
-  pasted a failing run into a bug report or chat would expose the
-  receiver secret. Now the URL appears as
-  `.../webhooks/case-calendar/<REDACTED>/health` in those messages
-  and the secret is also stripped from response bodies before
-  display. The `webhook-url` command's primary stdout output of the
-  full URL is unchanged — that's the command's contract (operator
-  pastes it into the CourtListener webhook dashboard) — but a
-  stderr banner now flags the line as sensitive so it doesn't end
-  up in screenshots or bug reports by accident. Resolves the five
+- The `webhook-url --check` health probe no longer interpolates the
+  secret-bearing URL into operator-facing failure messages. Previous
+  diagnostics included the full URL (and any echoed body) on stderr
+  for HTTPError / URLError / non-200 / non-JSON / wrong-service
+  paths, so an operator who pasted a failing run into a bug report
+  or chat would expose the receiver secret. The 5 health-check
+  prints now use a generic `webhook health endpoint` label that
+  doesn't flow from the secret at all (CodeQL's `py/clear-text-
+  logging-sensitive-data` data-flow analysis flags any string
+  derived from the secret-named local, so masking via `.replace()`
+  doesn't sanitize — severing the chain via a literal placeholder
+  does). Response bodies are still passed through a new
+  `_redact_secret` helper so an upstream proxy that echoes the
+  request path can't leak the secret through that channel either.
+  The `webhook-url` command's primary stdout output of the full URL
+  is unchanged — that's the command's contract (operator pastes it
+  into the CourtListener webhook dashboard) — but a stderr banner
+  now flags the line as sensitive so it doesn't end up in
+  screenshots or bug reports by accident. Resolves the five
   `py/clear-text-logging-sensitive-data` CodeQL alerts on the
   health-check paths (alerts #2-#6); the remaining alert on the
   primary `print(url)` (alert #1) is intended functionality and was

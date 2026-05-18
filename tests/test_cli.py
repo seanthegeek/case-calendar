@@ -2053,8 +2053,11 @@ class TestCmdWebhookUrl:
     def test_check_wrong_secret_403(self, monkeypatch, capsys):
         # 403 from origin = secret mismatch; surface it loudly.
         # Use a long-enough secret that incidental short-string overlap
-        # with diagnostic text is unlikely; assert the secret is
-        # redacted to `<REDACTED>` in the operator-facing error.
+        # with diagnostic text is unlikely; assert the secret is absent
+        # from the operator-facing error (the URL is replaced with a
+        # generic endpoint label that doesn't flow from the secret —
+        # CodeQL's data-flow analysis required severing the chain
+        # entirely rather than masking via `.replace()`).
         monkeypatch.setenv(
             "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
         )
@@ -2076,7 +2079,11 @@ class TestCmdWebhookUrl:
         # Diagnostic must NOT contain the secret — operators may copy
         # this into bug reports / chat.
         assert "secret-abc123-do-not-leak" not in err
-        assert "<REDACTED>" in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_unreachable_host(self, monkeypatch, capsys):
         # DNS failure / connection refused — print the reason and exit 1.
@@ -2094,7 +2101,11 @@ class TestCmdWebhookUrl:
         assert "cannot reach" in err
         assert "nodename" in err
         assert "secret-abc123-do-not-leak" not in err
-        assert "<REDACTED>" in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_non_200_no_exception_path(self, monkeypatch, capsys):
         # urlopen returns a Response object with status != 200 WITHOUT
@@ -2125,7 +2136,11 @@ class TestCmdWebhookUrl:
         assert "HTTP 301" in err
         assert "redirect to login" in err
         assert "secret-abc123-do-not-leak" not in err
-        assert "<REDACTED>" in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_200_empty_body_is_failure(self, monkeypatch, capsys):
         # This is the Cloudflare-intercept signature we ran into in
@@ -2156,7 +2171,11 @@ class TestCmdWebhookUrl:
         err = capsys.readouterr().err
         assert "non-JSON" in err
         assert "secret-abc123-do-not-leak" not in err
-        assert "<REDACTED>" in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_200_wrong_service_is_failure(self, monkeypatch, capsys):
         # A 200 with valid JSON but missing/wrong "service" marker = the
@@ -2186,7 +2205,11 @@ class TestCmdWebhookUrl:
         err = capsys.readouterr().err
         assert "doesn't identify as case-calendar" in err
         assert "secret-abc123-do-not-leak" not in err
-        assert "<REDACTED>" in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_redacts_secret_echoed_in_response_body(self, monkeypatch, capsys):
         # A misconfigured proxy or upstream may echo the request URL back

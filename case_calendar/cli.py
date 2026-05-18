@@ -1009,7 +1009,7 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
     body = _redact_secret(body, secret)
     if status != 200:
         print(
-            f"\nhealth check FAILED: HTTP {status} from {safe_url}\n{body}",
+            f"\nhealth check FAILED: HTTP {status} from {safe_endpoint}\n{body}",
             file=sys.stderr,
         )
         return 1
@@ -1018,7 +1018,7 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
         payload = _json.loads(body)
     except _json.JSONDecodeError:
         print(
-            f"\nhealth check FAILED: non-JSON 200 from {safe_url} — "
+            f"\nhealth check FAILED: non-JSON 200 from {safe_endpoint} — "
             f"something between you and the receiver is intercepting "
             f"requests. Body was:\n{body}",
             file=sys.stderr,
@@ -1027,7 +1027,7 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
 
     if payload.get("service") != "case-calendar":
         print(
-            f"\nhealth check FAILED: 200 from {safe_url} but body "
+            f"\nhealth check FAILED: 200 from {safe_endpoint} but body "
             f"doesn't identify as case-calendar:\n{body}",
             file=sys.stderr,
         )
