@@ -127,7 +127,7 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 
 - Formatter/linter: **Ruff**
   - All code must be linted and formatted
-  - Always use the latest version of ruff. CI runs `uv run --with ruff ruff check` / `ruff format --check` so the format opinion tracks upstream; when a new ruff release reformats code, run `uv run --with ruff ruff format` locally and commit the diff in the same PR
+  - Ruff is version-pinned in `pyproject.toml` under the `lint` extra so CI and contributors share one format opinion. `uv sync --extra lint` installs the pinned version; `uv run ruff check` / `uv run ruff format --check` are what CI runs. When you want to roll forward, bump the pin in `pyproject.toml`, run `uv sync --extra lint`, run `uv run ruff format`, and commit the version bump + reformat in the same PR — never let CI and local drift
 - Type annotations use `TypedDict` for structured results
 - Supports all currently supported Python versions
 - Modern type annotations across the entire project

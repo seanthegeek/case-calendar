@@ -26,21 +26,16 @@ jobs:
           enable-cache: true
 
       - name: Install Python and dependencies
-        # Pyright resolves project + test imports, so it needs the same
-        # synced env the test job uses (otherwise it flags every
-        # `import pytest` / `import yaml` as missing).
-        run: uv sync --extra test
+        # ``--extra lint`` pins ruff; ``--extra test`` gives pyright the
+        # same import-resolution env the test job uses (otherwise it
+        # flags every `import pytest` / `import yaml` as missing).
+        run: uv sync --extra lint --extra test
 
       - name: Ruff lint
-        # ``--with ruff`` pulls the newest ruff release every run, matching
-        # the "latest pyright" rule below: tracking upstream avoids letting
-        # a stale pin drift away from the format opinion contributors hit
-        # in their editors. When a new ruff release changes formatting,
-        # run ``uv run --with ruff ruff format`` and commit the diff.
-        run: uv run --with ruff ruff check case_calendar tests
+        run: uv run ruff check case_calendar tests
 
       - name: Ruff format check
-        run: uv run --with ruff ruff format --check case_calendar tests
+        run: uv run ruff format --check case_calendar tests
 
       - name: Pyright
         # PYRIGHT_PYTHON_FORCE_VERSION=latest pulls the newest pyright

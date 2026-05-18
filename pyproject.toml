@@ -20,6 +20,12 @@ dependencies = [
 
 [project.optional-dependencies]
 test = ["pytest>=8.0", "pytest-cov>=5.0"]
+# Lint extras live alongside ``test`` so a single ``uv sync --extra lint
+# --extra test`` set up everything CI runs. Ruff is version-pinned so
+# contributors and CI agree on format opinion — bump this version (and
+# re-run ``ruff format``) in the same PR whenever you want to roll
+# forward.
+lint = ["ruff==0.15.13"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
