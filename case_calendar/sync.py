@@ -583,21 +583,28 @@ class CaseSyncer:
             self._ensure_court(docket.get("court_id") or "")
             cutoff = self.store.latest_entry_modified(docket_id)
 
-            iterated_ok = True
-            try:
-                for entry in self.cl.iter_entries(docket_id, modified_after=cutoff):
-                    stats["entries_seen"] += 1
-                    self.process_entry(case, docket_id, entry, stats=stats)
-                    with self.store.tx() as _:
-                        pass  # commit per entry so partial progress sticks
-            except Exception:
-                iterated_ok = False
-                raise
-            finally:
-                if iterated_ok and docket_mod:
-                    self.store.set_docket_last_modified(docket_id, docket_mod)
-                    with self.store.tx() as _:
-                        pass
+            for entry in self.cl.iter_entries(docket_id, modified_after=cutoff):
+                stats["entries_seen"] += 1
+                self.process_entry(case, docket_id, entry, stats=stats)
+                with self.store.tx() as _:
+                    pass  # commit per entry so partial progress sticks
+
+            # Reached only on a clean iteration through every entry. Any
+            # exception that escapes the loop — including BaseException
+            # subclasses like KeyboardInterrupt (Ctrl+C) and SystemExit —
+            # propagates past this point without advancing the cutoff,
+            # so the next sync re-walks the docket from its prior
+            # last-modified value. The earlier try/except/finally form
+            # only caught `Exception`, which silently let Ctrl+C bump
+            # the cutoff to the docket's current value and made the
+            # docket-level short-circuit on the next sync skip the
+            # unprocessed entries entirely (the documented "cutoff is
+            # only advanced on a clean run" invariant was broken in the
+            # implementation).
+            if docket_mod:
+                self.store.set_docket_last_modified(docket_id, docket_mod)
+                with self.store.tx() as _:
+                    pass
 
         # End-of-case sweeps:
         #   1. Confidence pass — for each future scheduled hearing, ask the

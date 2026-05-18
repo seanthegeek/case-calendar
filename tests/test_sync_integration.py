@@ -12,7 +12,7 @@ import pytest
 
 from case_calendar import llm as llm_mod
 from case_calendar.store import Store
-from case_calendar.sync import CaseConfig, CaseSyncer
+from case_calendar.sync import CaseConfig, CaseSyncer, fingerprint_entry
 
 from .conftest import FakeCourtListener, must
 
@@ -405,6 +405,200 @@ class TestShortCircuits:
         syncer.sync_case(case)
         # Entry fingerprint hasn't changed, so the LLM stays at the same count.
         assert called[0] == first
+
+
+class TestInterruptDoesNotAdvanceCutoff:
+    """Mid-sync interrupts must not advance the docket's date_last_modified.
+
+    The docket-level short-circuit at the top of `sync_case` skips a
+    docket entirely on the next run when its stored `date_last_modified`
+    matches what CourtListener returns. AGENTS.md documents the
+    invariant ``the docket last-modified cutoff is only advanced on a
+    clean run, so a mid-sync error retries the whole docket on the next
+    run`` — without it, an interrupt mid-iteration would mark the docket
+    as caught-up and the unprocessed entries past the interrupt point
+    would be permanently invisible until CourtListener bumped the
+    docket again.
+
+    The original implementation used ``except Exception: iterated_ok =
+    False; raise; finally: if iterated_ok: bump_cutoff()``, which
+    correctly handled Exception subclasses but silently let
+    ``KeyboardInterrupt`` (Ctrl+C) and ``SystemExit`` — both
+    ``BaseException`` subclasses, not caught by ``except Exception`` —
+    fall through with ``iterated_ok=True``, advancing the cutoff
+    despite the interrupted iteration. The fix removes the
+    try/except/finally; the cutoff bump now sits after the loop in
+    linear control flow, so any escaping exception (Exception or
+    BaseException) leaves the cutoff at the prior value.
+    """
+
+    # The CL-side date_modified for the docket — well past every
+    # individual entry's date_modified seeded in the tests. This is the
+    # value the OLD buggy `finally` block would have set on the docket
+    # row, causing the next sync's docket-level short-circuit to fire
+    # and skip the unprocessed entries entirely.
+    _CL_DOCKET_MODIFIED = "2026-06-01T12:00:00-07:00"
+
+    def _make_cl_that_blows_up_on_second_entry(self, exc_type):
+        """FakeCourtListener subclass whose iter_entries yields one entry then raises."""
+
+        class _Boom(FakeCourtListener):
+            def iter_entries(self, docket_id, *, modified_after=None, **_):
+                self.calls.append(("entries", docket_id))
+                entries = self._entries.get(docket_id, [])
+                for e in entries[:1]:
+                    yield e
+                raise exc_type("interrupted mid-iteration")
+
+        return _Boom
+
+    def _seed_prior_clean_sync(self, store, prior_cutoff: str) -> None:
+        """Simulate a previous clean sync that left the cutoff at prior_cutoff."""
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-00001-X",
+                "case_name": "United States v. X",
+                "absolute_url": "/d/100/",
+            },
+        )
+        store.set_docket_last_modified(100, prior_cutoff)
+
+    def _two_entries_well_before_cl_docket_modified(self):
+        # Both entries' date_modified are strictly LESS than _CL_DOCKET_MODIFIED.
+        # That gap is the assertion target: after an interrupt mid-iteration,
+        # the docket cutoff must stay below the docket's CL-side
+        # date_modified, so the next sync's short-circuit doesn't fire.
+        return [
+            _entry(1, "first entry", date_filed="2026-01-15"),
+            _entry(2, "should never reach", date_filed="2026-01-20"),
+        ]
+
+    def test_keyboard_interrupt_mid_iteration_keeps_cutoff_below_docket_modified(
+        self, store, case, monkeypatch
+    ):
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        cls = self._make_cl_that_blows_up_on_second_entry(KeyboardInterrupt)
+        cl = cls(
+            dockets={100: _docket(date_modified=self._CL_DOCKET_MODIFIED)},
+            entries={100: self._two_entries_well_before_cl_docket_modified()},
+        )
+        syncer = CaseSyncer(cl, store)
+
+        with pytest.raises(KeyboardInterrupt):
+            syncer.sync_case(case)
+
+        # Entry 1's per-entry commit ran before the interrupt — durable.
+        assert (
+            store.entry_seen(
+                100,
+                1,
+                fingerprint_entry(_entry(1, "first entry", date_filed="2026-01-15")),
+            )
+            is True
+        )
+        # Critical invariant: the docket cutoff is strictly less than
+        # the CL-side date_modified. The next sync's docket-level
+        # short-circuit will NOT fire (because they're unequal), so it
+        # will iterate the docket again and pick up the entries the
+        # interrupt left behind. The old buggy `finally` would have
+        # equated them.
+        assert store.docket_last_modified(100) is not None
+        assert store.docket_last_modified(100) < self._CL_DOCKET_MODIFIED
+
+    def test_system_exit_mid_iteration_keeps_cutoff_below_docket_modified(
+        self, store, case, monkeypatch
+    ):
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        cls = self._make_cl_that_blows_up_on_second_entry(SystemExit)
+        cl = cls(
+            dockets={100: _docket(date_modified=self._CL_DOCKET_MODIFIED)},
+            entries={100: self._two_entries_well_before_cl_docket_modified()},
+        )
+        syncer = CaseSyncer(cl, store)
+
+        with pytest.raises(SystemExit):
+            syncer.sync_case(case)
+
+        assert store.docket_last_modified(100) is not None
+        assert store.docket_last_modified(100) < self._CL_DOCKET_MODIFIED
+
+    def test_regular_exception_mid_iteration_keeps_cutoff_below_docket_modified(
+        self, store, case, monkeypatch
+    ):
+        # Exception subclasses were already handled by the old
+        # ``except Exception`` path. Pin the behavior so the refactor
+        # doesn't quietly regress it.
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        cls = self._make_cl_that_blows_up_on_second_entry(RuntimeError)
+        cl = cls(
+            dockets={100: _docket(date_modified=self._CL_DOCKET_MODIFIED)},
+            entries={100: self._two_entries_well_before_cl_docket_modified()},
+        )
+        syncer = CaseSyncer(cl, store)
+
+        with pytest.raises(RuntimeError, match="interrupted"):
+            syncer.sync_case(case)
+
+        assert store.docket_last_modified(100) is not None
+        assert store.docket_last_modified(100) < self._CL_DOCKET_MODIFIED
+
+    def test_clean_iteration_does_advance_cutoff_to_docket_modified(
+        self, store, case, monkeypatch
+    ):
+        # The fix must not break the happy path — a clean iteration
+        # still bumps the cutoff all the way to the docket's CL-side
+        # date_modified at end-of-loop.
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        cl = FakeCourtListener(
+            dockets={100: _docket(date_modified=self._CL_DOCKET_MODIFIED)},
+            entries={100: self._two_entries_well_before_cl_docket_modified()},
+        )
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+
+        assert store.docket_last_modified(100) == self._CL_DOCKET_MODIFIED
+
+    def test_empty_docket_modified_skips_cutoff_write(
+        self, store, case, monkeypatch
+    ):
+        # Defensive case: CourtListener should always populate
+        # `date_modified` on a docket record, but the code guards
+        # against an empty / missing value anyway. Writing "" as the
+        # cutoff would let the next docket-level short-circuit
+        # misbehave on a string-vs-empty compare, so the explicit
+        # skip is the documented contract. This pins the falsy path
+        # of `if docket_mod:` after the iteration loop — without it
+        # codecov sees the post-fix region as having a partial branch.
+        prior_cutoff = "2026-01-01T00:00:00-07:00"
+        self._seed_prior_clean_sync(store, prior_cutoff)
+        make_llm_stub(monkeypatch, by_entry={})
+
+        # CourtListener returns a docket without `date_modified` — coerced to "".
+        cl = FakeCourtListener(
+            dockets={100: _docket(date_modified="")},
+            entries={100: []},
+        )
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+
+        # The end-of-loop cutoff bump did NOT fire (its guard saw an
+        # empty `docket_mod`), so the stored value is still the prior
+        # clean cutoff — not blank.
+        assert store.docket_last_modified(100) == prior_cutoff
 
 
 class TestDocketMetaCaching:
