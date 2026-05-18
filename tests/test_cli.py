@@ -1495,6 +1495,107 @@ class TestCmdServe:
         assert timers == []
 
 
+    def test_debounce_arm_handles_missing_meta_and_sibling_dockets(
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
+    ):
+        # _arm_debounce iterates each docket on the affected calendars to
+        # decide whether to start the summary-refresh timer. PR #3's group
+        # dedup added two `continue` branches that weren't being hit:
+        #
+        #   1. Docket id in the case's list but with no `dockets` metadata
+        #      (sync interrupted before upsert_docket_meta, or operator
+        #      added a docket that hasn't been synced yet) — skipped via
+        #      ``if not docket_number or not court_id: continue``.
+        #   2. Sibling CL docket_ids on the same logical PACER docket
+        #      (the Akhter shape) — the second sibling skips via
+        #      ``if group_key in seen_groups: continue`` so we don't
+        #      double-query `is_summary_stale` for the same logical
+        #      docket.
+        #
+        # Expand the configured case to cover both: dockets=[100, 101, 999]
+        # where 100 and 101 share `(1:25-cr-1, mad)` (sibling) and 999 has
+        # no metadata at all. None of them are stale, so any_stale stays
+        # False and the timer never arms — we're not testing the timer,
+        # we're confirming the two `continue` branches don't crash and
+        # the function reaches the `if not any_stale: return` path with
+        # the same answer it would have given on the single-docket case.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg["cases"][0]["dockets"] = [100, 101, 999]
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET",
+            "this-is-a-sufficiently-long-secret",
+        )
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+
+        s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
+        for did in (100, 101):
+            s.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-1",
+                    "case_name": "X",
+                    "absolute_url": f"/x/{did}/",
+                },
+            )
+        # NON-stale summary so any_stale stays False — the two `continue`
+        # branches fire on the second sibling and the no-meta docket
+        # before the loop ends naturally.
+        s.upsert_case_summary(
+            "us-v-x",
+            "1:25-cr-1",
+            "mad",
+            summary="existing",
+            model="m",
+            source_entry_ids=[],
+        )
+        s.conn.commit()
+        s.close()
+
+        timers: list[Any] = []
+
+        class _FakeTimer:
+            def __init__(self, *a, **k):
+                timers.append(self)
+
+            def start(self):
+                timers.append("started")
+
+            def cancel(self):
+                pass
+
+        monkeypatch.setattr("threading.Timer", _FakeTimer)
+
+        def _fake_serve(**kw):
+            kw["emit_fn"]({"cyber"})
+
+        monkeypatch.setattr("case_calendar.serve.serve", _fake_serve)
+        monkeypatch.setattr(
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: {
+                "cyber": {
+                    "events": 0,
+                    "ics_path": None,
+                    "gcal_pushed": False,
+                    "m365_pushed": False,
+                }
+            },
+        )
+
+        args = Namespace(config=str(cfg_file), host="127.0.0.1", port=9000)
+        assert cmd_serve(args) == 0
+        # No timer created — the loop traversed every docket including
+        # the sibling-dedup `continue` and the no-meta `continue`, then
+        # returned early because any_stale stayed False.
+        assert timers == []
+
+
 class TestCmdSetup:
     def test_gcal_without_credentials_path_errors(
         self,

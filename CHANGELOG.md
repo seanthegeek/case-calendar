@@ -8,6 +8,66 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.1] - 2026-05-18
+
+### Fixed
+
+- `case-calendar sync` no longer silently drops entries when the
+  process is interrupted by Ctrl+C or `SystemExit` mid-iteration on
+  a docket. The per-docket entry loop was wrapped in
+  `try / except Exception / finally` where the finally advanced
+  `dockets.date_last_modified` to the docket's CourtListener-side
+  `date_modified` whenever `iterated_ok` stayed True.
+  `KeyboardInterrupt` and `SystemExit` are `BaseException`
+  subclasses, not `Exception` subclasses, so the `except Exception`
+  clause never caught them — the finally fired with the flag still
+  True and advanced the cutoff even though only some of the new
+  entries had been processed. The next sync's docket-level
+  short-circuit then saw `stored_last_modified == cl_date_modified`,
+  skipped the docket, and the unprocessed entries past the
+  interrupt point became permanently invisible until CourtListener
+  bumped the docket again (a future filing or metadata change).
+  AGENTS.md documented the invariant (`the docket last-modified
+  cutoff is only advanced on a clean run`) — the implementation now
+  matches it. The try/except/finally is gone; the cutoff bump sits
+  in linear control flow after the loop so any exception, including
+  BaseException subclasses, propagates past it without advancing
+  the cutoff. **Operator recovery for a previously-interrupted
+  sync:** the in-progress docket's cutoff may have been bumped under
+  the old code; if you suspect entries were dropped, identify the
+  in-progress docket from the previous run's logs (last
+  `Syncing docket N for case Y` line) and roll its cutoff back with
+  `UPDATE dockets SET date_last_modified = NULL WHERE docket_id = N;`
+  — the next sync will re-walk it. Fingerprint dedup ensures
+  already-processed entries cost nothing on re-walk; only the
+  genuinely-unprocessed new entries pay LLM tokens. (#4)
+
+### Changed
+
+- Codecov `patch` target tightened from `90%` to `auto` (matches
+  the base commit's project coverage). The 90% threshold was loose
+  enough that PR #3 merged with patch coverage of 93.83% and left
+  14 uncovered branches in newly-added code; `auto` catches that
+  class of gap at PR time instead of in follow-up work. Trade-off:
+  very small PRs are forced toward 100% diff coverage — the
+  AGENTS.md "unreachable defensive code is a test smell"
+  convention is the documented escape hatch. (#5)
+
+### Internal
+
+- Coverage cleanup pinning the lines Codecov flagged on PR #3 that
+  weren't addressed before merge: `_group_dockets_on_case`
+  sibling-dedup branch (`summary.py` line 1246); group-aware
+  `case_summaries` handling in `count_docket_rows` and
+  `delete_docket` (`store.py` 1447→1453 and 1487→1494); sibling
+  merge in `build_calendar_models` (`index.py` 848-850);
+  `_arm_debounce` no-metadata and sibling-dedup `continue`
+  branches (`cli.py` 657 and 660). Nine new tests across
+  `tests/test_summary.py`, `tests/test_store.py`,
+  `tests/test_index.py`, and `tests/test_cli.py`. (#5)
+
+[0.2.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.1
+
 ## [0.2.0] - 2026-05-17
 
 ### Changed

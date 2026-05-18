@@ -2424,6 +2424,75 @@ class TestExtraDocuments:
 # ---------------------------------------------------------------------------
 
 
+class TestGroupDocketsOnCase:
+    """Direct coverage for `summary._group_dockets_on_case`'s sibling dedup.
+
+    When `case.dockets` lists multiple CL docket_ids that map to the same
+    logical PACER docket `(docket_number, court_id)` — the Akhter
+    `1:25-cr-00307` shape where one PACER docket lives under three CL
+    docket_ids — the loop must yield ONE group entry, not N. Without
+    the dedup we'd run `summarize_docket` once per CL sibling and write
+    near-duplicate summary rows for the same logical docket.
+    """
+
+    def test_collapses_sibling_docket_ids_to_one_group_entry(self, store):
+        # Three CL docket_ids share `(docket_number, court_id)`.
+        for did in (100, 101, 102):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "vaed",
+                    "docket_number": "1:25-cr-00307",
+                    "case_name": "United States v. Akhter",
+                    "absolute_url": f"/d/{did}/",
+                },
+            )
+        case = _Case(
+            case_id="us-v-akhter",
+            name="US v. Akhter",
+            dockets=[100, 101, 102],
+            calendar="cyber",
+        )
+        groups = summary._group_dockets_on_case(store, case)
+        # ONE group entry across all three sibling docket_ids.
+        assert len(groups) == 1
+        docket_number, court_id, canonical = groups[0]
+        assert (docket_number, court_id) == ("1:25-cr-00307", "vaed")
+        # Canonical is the first sibling in config order (the second + third
+        # iterations hit the "key in seen — skip" branch at line 1246).
+        assert canonical == 100
+
+    def test_mixes_distinct_and_sibling_dockets(self, store):
+        # Two CL docket_ids on a 1:25-cr-00307 group + one standalone
+        # docket on a different group. The standalone gets its own entry;
+        # the siblings collapse to one. Distinct group order matches
+        # config order (100 first, then 200).
+        for did, dn in [
+            (100, "1:25-cr-00307"),
+            (101, "1:25-cr-00307"),
+            (200, "1:24-cv-12345"),
+        ]:
+            court_id = "vaed" if dn.endswith("00307") else "nyed"
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": court_id,
+                    "docket_number": dn,
+                    "case_name": "test",
+                    "absolute_url": f"/d/{did}/",
+                },
+            )
+        case = _Case(
+            case_id="us-v-test",
+            name="test",
+            dockets=[100, 101, 200],
+            calendar="cyber",
+        )
+        groups = summary._group_dockets_on_case(store, case)
+        assert len(groups) == 2
+        assert [g[0] for g in groups] == ["1:25-cr-00307", "1:24-cv-12345"]
+
+
 class TestRefreshStale:
     def test_skips_dockets_with_no_metadata_yet(self, store, patch_llm, patch_pdf):
         # case.dockets references a CL docket_id that has no `dockets`
