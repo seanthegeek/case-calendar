@@ -661,6 +661,21 @@ class TestServerWide500Handler:
             server.server_close()
 
 
+class TestNoIdempotencyKey:
+    """CourtListener always supplies Idempotency-Key on real deliveries, but
+    a manual curl POST (operator smoke test) might not. The receiver must
+    process the entry once and not crash trying to mark a missing key."""
+
+    def test_post_without_idempotency_key_processes_normally(self, base_url, store):
+        url, secret, _ = base_url
+        body = _docket_alert([_sample_entry()])
+        # Note: NO Idempotency-Key header passed in.
+        status, resp = _post(f"{url}/webhooks/case-calendar/{secret}", body)
+        assert status == 200
+        assert resp["status"] == "ok"
+        assert len(store.get_hearings("us-v-x")) == 1
+
+
 class TestServeFunction:
     def test_keyboard_interrupt_shuts_down_cleanly(
         self,

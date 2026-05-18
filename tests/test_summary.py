@@ -15,6 +15,8 @@ import pytest
 from case_calendar import summary
 from case_calendar.courtlistener import CourtListener
 from case_calendar.summary import (
+    _entry_description_head,
+    _entry_doc_text,
     _is_disposition_document,
     find_primary_documents,
     find_primary_documents_for_group,
@@ -2789,3 +2791,55 @@ class TestSummarizeCase:
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
         # No row added because summarize_docket returned None.
         assert rows == []
+
+
+class TestEntryDescriptionHeadFallback:
+    """``_entry_description_head`` prefers the entry's short_description /
+    description; only if both are empty does it walk the recap_documents.
+    Inside that walk, an empty recap_document description is skipped."""
+
+    def test_skips_empty_recap_doc_descriptions_and_returns_first_populated(self):
+        entry = {
+            "short_description": "",
+            "description": "",
+            "recap_documents": [
+                {"description": ""},  # skipped — branch under test
+                {"description": "Real description"},
+            ],
+        }
+        assert _entry_description_head(entry) == "Real description"
+
+    def test_returns_empty_when_every_source_is_empty(self):
+        entry = {
+            "short_description": "",
+            "description": "",
+            "recap_documents": [
+                {"description": ""},
+                {"description": ""},
+            ],
+        }
+        assert _entry_description_head(entry) == ""
+
+
+class TestEntryDocTextAttachmentFallback:
+    """When the main recap_document yields no text, ``_entry_doc_text``
+    falls back to scanning attachments. Inside that fallback, the empty
+    attachment is skipped and the next-attachment loop continues."""
+
+    def test_attachment_with_empty_extract_is_skipped(self, monkeypatch):
+        # Patch pdf.extract_text to return empty for the first attachment
+        # and real text for the second.
+        from case_calendar import pdf as pdf_mod
+
+        rds = [
+            {"id": 1, "attachment_number": None},  # main, returns ""
+            {"id": 2, "attachment_number": 1},  # attachment 1, returns ""
+            {"id": 3, "attachment_number": 2},  # attachment 2, returns text
+        ]
+
+        def fake_extract(rd, **_):
+            return {1: "", 2: "", 3: "exhibit text"}[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text({"recap_documents": rds})
+        assert "exhibit text" in out
