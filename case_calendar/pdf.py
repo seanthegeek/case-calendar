@@ -24,8 +24,20 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
+from httpx_retries import Retry, RetryTransport
 
 log = logging.getLogger(__name__)
+
+# Retry transient network errors (ReadTimeout, ConnectError,
+# RemoteProtocolError) and transient HTTP status codes (429, 502, 503,
+# 504 — httpx-retries' default ``status_forcelist``) when fetching
+# PDFs. Without retry a single mid-fetch read timeout on the IA mirror
+# would push us straight to the CourtListener storage fallback (which
+# has stricter rate limits and is more likely to fail too), and a blip
+# on both would surface as a permanent fetch failure for the entry.
+# `backoff_factor=0.5` gives 0.5s / 1s / 2s / 4s waits before giving up;
+# the library adds jitter automatically.
+_PDF_FETCH_RETRY = Retry(total=4, backoff_factor=0.5)
 
 # Heuristic: a 2-page+ document with under 100 chars of text probably failed
 # extraction. Don't burn OCR cycles on one-pagers though.
@@ -88,7 +100,11 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
 
     for url in urls:
         try:
-            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            with httpx.Client(
+                timeout=timeout,
+                follow_redirects=True,
+                transport=RetryTransport(retry=_PDF_FETCH_RETRY),
+            ) as client:
                 r = client.get(url)
                 if r.status_code == 200 and r.content:
                     return r.content
@@ -179,7 +195,11 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
     open the same way they do on a missing recap_document.
     """
     try:
-        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=timeout,
+            follow_redirects=True,
+            transport=RetryTransport(retry=_PDF_FETCH_RETRY),
+        ) as client:
             r = client.get(url)
             if r.status_code == 200 and r.content:
                 return r.content

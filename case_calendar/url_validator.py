@@ -20,10 +20,20 @@ from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
+from httpx_retries import Retry, RetryTransport
 
 log = logging.getLogger(__name__)
 
 _TIMEOUT = 5.0
+# Short retry budget — validation runs once per LLM-extracted `dial_in`
+# URL on the sync hot path. Three attempts with 0.25s / 0.5s / 1s
+# backoff bound the worst case at roughly the validator's existing
+# per-URL timeout × 4 ~ 20s, which keeps a flaky host from stalling
+# sync without abandoning a real transient blip too eagerly. The
+# validator already fails open when every attempt yields a transport
+# error, so the only cost of retry exhaustion is keeping the original
+# URL unchanged — same as the pre-retry behavior.
+_VALIDATE_RETRY = Retry(total=3, backoff_factor=0.25)
 _cache: dict[str, str] = {}
 
 
@@ -47,7 +57,11 @@ def validate_url(url: str, *, client: Optional[httpx.Client] = None) -> Optional
 
     own_client = client is None
     if own_client:
-        client = httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
+        client = httpx.Client(
+            timeout=_TIMEOUT,
+            follow_redirects=True,
+            transport=RetryTransport(retry=_VALIDATE_RETRY),
+        )
     try:
         result, definite_failure = _walk_candidates(url, client)
     except Exception as e:

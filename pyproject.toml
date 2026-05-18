@@ -1,6 +1,6 @@
 [project]
 name = "case-calendar"
-version = "0.2.2"
+version = "0.2.3"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.40",
@@ -16,6 +16,7 @@ dependencies = [
     "python-dotenv>=1.0",
     "pyyaml>=6.0.3",
     "tzdata>=2024.1; sys_platform == 'win32' or sys_platform == 'linux'",
+    "httpx-retries>=0.5.0",
 ]
 
 [project.optional-dependencies]
