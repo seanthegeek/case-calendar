@@ -969,18 +969,18 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
     operator needs to see.
 
     ``secret`` is the same value embedded in ``webhook_url``; it is used
-    only to redact the URL (and any response body that echoes it) in
-    operator-facing failure messages, never to log or transmit the
-    secret beyond the GET request itself.
+    only to redact any response body that echoes it in operator-facing
+    failure messages, never to log or transmit the secret beyond the GET
+    request itself.
     """
     import json as _json
     import urllib.error
     import urllib.request
 
     health_url = f"{webhook_url}/health"
-    # Pre-compute the redacted form once; every operator-facing message
-    # below uses it instead of `health_url`.
-    safe_url = _redact_secret(health_url, secret)
+    # Do not log URL values derived from the secret-bearing webhook path.
+    # Use a stable, non-sensitive endpoint label in diagnostics.
+    safe_endpoint = "webhook health endpoint"
     req = urllib.request.Request(
         health_url,
         method="GET",
@@ -995,13 +995,13 @@ def _check_webhook_health(webhook_url: str, secret: str) -> int:
             e.read().decode("utf-8", errors="replace"), secret
         )
         print(
-            f"\nhealth check FAILED: HTTP {e.code} from {safe_url}\n{body}",
+            f"\nhealth check FAILED: HTTP {e.code} from {safe_endpoint}\n{body}",
             file=sys.stderr,
         )
         return 1
     except urllib.error.URLError as e:
         print(
-            f"\nhealth check FAILED: cannot reach {safe_url}: {e.reason}",
+            f"\nhealth check FAILED: cannot reach {safe_endpoint}: {e.reason}",
             file=sys.stderr,
         )
         return 1
