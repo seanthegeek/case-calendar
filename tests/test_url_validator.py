@@ -18,6 +18,14 @@ def _clear_cache():
     url_validator.clear_cache()
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    # `_request_with_retry` calls `time.sleep` between attempts on
+    # retryable transport errors. Tests that raise ConnectError or
+    # ReadTimeout would otherwise stall on the backoff window.
+    monkeypatch.setattr(url_validator.time, "sleep", lambda _s: None)
+
+
 def _client(handler):
     return httpx.Client(transport=httpx.MockTransport(handler), follow_redirects=True)
 
@@ -99,12 +107,13 @@ class TestValidateURL:
         assert out == "https://example.com/foo/bar/"
 
     def test_retries_transport_error_then_succeeds(self, monkeypatch):
-        # End-to-end: validate_url constructs its own httpx.Client with
-        # the production RetryTransport wrapping. We intercept the Client
-        # constructor to swap the RetryTransport's inner backend with
-        # our MockTransport — first attempt raises ReadTimeout, second
-        # returns 200. The retry layer above should recover.
-        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+        # End-to-end: validate_url constructs its own httpx.Client and
+        # `_check` calls `_request_with_retry`, which retries on
+        # ReadTimeout / ConnectError / RemoteProtocolError. Intercept
+        # the Client constructor to swap in our MockTransport; first
+        # attempt raises ReadTimeout, second returns 200. Recovery
+        # means no `dial_in` field gets blanked over a transient blip.
+        monkeypatch.setattr(url_validator.time, "sleep", lambda _s: None)
 
         attempts = [0]
 
@@ -116,14 +125,9 @@ class TestValidateURL:
 
         real_client = httpx.Client
 
-        def patched_client(*args, transport=None, **kwargs):
-            if transport is not None:
-                setattr(
-                    transport,
-                    "_sync_transport",
-                    httpx.MockTransport(handler),
-                )
-            return real_client(*args, transport=transport, **kwargs)
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
 
         monkeypatch.setattr(httpx, "Client", patched_client)
 
@@ -304,3 +308,33 @@ class TestCheckHttpCodes:
             client=_client(handler),
         )
         assert out == "https://example.com/foo/bar/"
+
+    def test_non_retryable_request_error_returns_flake_immediately(self):
+        # `_request_with_retry` retries narrow transport classes
+        # (TimeoutException / NetworkError / RemoteProtocolError) but
+        # catches the wider `httpx.RequestError` parent and returns None
+        # immediately for anything outside that set — e.g. a malformed
+        # response that fails decoding. The outcome should still be
+        # "flake" → fail-open returns the input.
+        attempts = [0]
+
+        def handler(req):
+            attempts[0] += 1
+            # Not a TimeoutException / NetworkError / RemoteProtocolError,
+            # but still a RequestError subclass — exercises the wider
+            # `except httpx.RequestError` fall-through path.
+            raise httpx.LocalProtocolError("malformed request")
+
+        # Single-segment URL so `_candidates` returns just one entry
+        # and the handler is hit exactly once per attempt (no parent
+        # fallback to muddy the retry count).
+        out = url_validator.validate_url(
+            "https://example.com/only/",
+            client=_client(handler),
+        )
+        # Single call: non-retryable RequestError returns None on first
+        # hit, no retries; the narrow retryable set was deliberately
+        # bypassed.
+        assert attempts[0] == 1
+        # Fail-open: keep the input URL.
+        assert out == "https://example.com/only/"

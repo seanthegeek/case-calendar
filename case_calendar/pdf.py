@@ -20,24 +20,33 @@ import logging
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
 import httpx
-from httpx_retries import Retry, RetryTransport
 
 log = logging.getLogger(__name__)
 
-# Retry transient network errors (ReadTimeout, ConnectError,
-# RemoteProtocolError) and transient HTTP status codes (429, 502, 503,
-# 504 — httpx-retries' default ``status_forcelist``) when fetching
-# PDFs. Without retry a single mid-fetch read timeout on the IA mirror
-# would push us straight to the CourtListener storage fallback (which
-# has stricter rate limits and is more likely to fail too), and a blip
-# on both would surface as a permanent fetch failure for the entry.
-# `backoff_factor=0.5` gives 0.5s / 1s / 2s / 4s waits before giving up;
-# the library adds jitter automatically.
-_PDF_FETCH_RETRY = Retry(total=4, backoff_factor=0.5)
+# Transport-level exceptions worth retrying when fetching a PDF. Without
+# retry, a single mid-fetch read timeout on the IA mirror would push us
+# straight to the CourtListener storage fallback (which has stricter
+# rate limits and is more likely to fail too), and a blip on both would
+# surface as a permanent fetch failure for the entry.
+_PDF_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+# Transient HTTP status codes worth retrying — same set httpx-retries'
+# default ``status_forcelist`` covered (429 + the gateway/proxy 5xxs).
+# A 500 from the origin probably won't fix itself; a 502 / 503 / 504
+# from a CDN or rate limiter often will.
+_PDF_RETRYABLE_STATUSES: frozenset[int] = frozenset({429, 502, 503, 504})
+# Up to four retry attempts with 0.5s / 1s / 2s / 4s backoff before
+# giving up — matches the prior httpx-retries `total=4, backoff_factor=0.5`.
+_PDF_RETRY_TOTAL = 4
+_PDF_RETRY_INITIAL_BACKOFF = 0.5
 
 # Heuristic: a 2-page+ document with under 100 chars of text probably failed
 # extraction. Don't burn OCR cycles on one-pagers though.
@@ -83,6 +92,62 @@ def looks_garbled(text: str) -> bool:
     return (alpha / len(nonws)) < _MIN_ALPHA_RATIO
 
 
+def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
+    """GET with retry on transient transport errors and retryable status codes.
+
+    Returns the final response (which may still be non-200 if all attempts
+    landed on a retryable error code), or ``None`` if every attempt raised
+    a transport error. Callers treat ``None`` and non-200 the same way —
+    fall through to the next URL or give up — so the distinction is only
+    in the log.
+    """
+    backoff = _PDF_RETRY_INITIAL_BACKOFF
+    last_response: Optional[httpx.Response] = None
+    # `while True` instead of `for attempt in range(...)` so every exit is
+    # an explicit `return` — no loop-fall-off path for coverage to flag as
+    # an unreachable branch.
+    attempt = 1
+    while True:
+        try:
+            r = client.get(url)
+        except _PDF_RETRYABLE_EXCEPTIONS as e:
+            if attempt >= _PDF_RETRY_TOTAL:
+                log.warning(
+                    "pdf fetch transport error budget exhausted for %s: %s",
+                    url,
+                    e,
+                )
+                return last_response
+            log.info(
+                "pdf fetch transport error (attempt %d/%d) for %s: %s; retrying in %.1fs",
+                attempt,
+                _PDF_RETRY_TOTAL,
+                url,
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 16)
+            attempt += 1
+            continue
+        last_response = r
+        if r.status_code not in _PDF_RETRYABLE_STATUSES:
+            return r
+        if attempt >= _PDF_RETRY_TOTAL:
+            return r
+        log.info(
+            "pdf fetch %s -> %s (attempt %d/%d); retrying in %.1fs",
+            url,
+            r.status_code,
+            attempt,
+            _PDF_RETRY_TOTAL,
+            backoff,
+        )
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 16)
+        attempt += 1
+
+
 def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
     """Try to download the PDF for a recap_document. Returns None if no source.
 
@@ -100,12 +165,10 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
 
     for url in urls:
         try:
-            with httpx.Client(
-                timeout=timeout,
-                follow_redirects=True,
-                transport=RetryTransport(retry=_PDF_FETCH_RETRY),
-            ) as client:
-                r = client.get(url)
+            with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                r = _get_with_retry(client, url)
+                if r is None:
+                    continue
                 if r.status_code == 200 and r.content:
                     return r.content
                 log.warning("pdf fetch %s -> %s", url, r.status_code)
@@ -195,12 +258,10 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
     open the same way they do on a missing recap_document.
     """
     try:
-        with httpx.Client(
-            timeout=timeout,
-            follow_redirects=True,
-            transport=RetryTransport(retry=_PDF_FETCH_RETRY),
-        ) as client:
-            r = client.get(url)
+        with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+            r = _get_with_retry(client, url)
+            if r is None:
+                return None
             if r.status_code == 200 and r.content:
                 return r.content
             log.warning("url fetch %s -> %s", url, r.status_code)

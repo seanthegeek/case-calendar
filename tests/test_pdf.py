@@ -346,16 +346,14 @@ class TestFetchPdfBytes:
         assert pdf.fetch_pdf_bytes({"filepath_ia": "https://x.com/y.pdf"}) is None
 
     def test_retries_read_timeout_then_succeeds(self, monkeypatch):
-        # The whole point of wiring httpx-retries onto the PDF fetch
-        # client: a single ReadTimeout (the in-production symptom we
-        # observed on CourtListener; the same class of failure can hit
-        # the IA mirror too) is retried at the transport layer instead
-        # of immediately falling through to the next-URL fallback.
+        # A single ReadTimeout (the in-production symptom we observed on
+        # CourtListener; the same class of failure can hit the IA mirror
+        # too) is retried by `_get_with_retry` before falling through to
+        # the next-URL fallback.
         import httpx
 
-        # Sleep would otherwise stall the test for whatever
-        # backoff_factor produces; bypass it.
-        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+        # Sleep would otherwise stall the test for the backoff window.
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
 
         attempts = [0]
 
@@ -365,22 +363,14 @@ class TestFetchPdfBytes:
                 raise httpx.ReadTimeout("read timed out", request=req)
             return httpx.Response(200, content=b"%PDF retried bytes")
 
-        # Replace httpx.Client with a wrapper that swaps the
-        # RetryTransport's inner backend with our MockTransport while
-        # preserving every other production setting (follow_redirects,
-        # timeout, etc.). The production code path through
-        # fetch_pdf_bytes is unchanged — we just intercept the
-        # transport's inner layer.
+        # Replace httpx.Client with a wrapper that swaps the production
+        # transport for our MockTransport while preserving every other
+        # production setting (follow_redirects, timeout, etc.).
         real_client = httpx.Client
 
-        def patched_client(*args, transport=None, **kwargs):
-            if transport is not None:
-                setattr(
-                    transport,
-                    "_sync_transport",
-                    httpx.MockTransport(handler),
-                )
-            return real_client(*args, transport=transport, **kwargs)
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
 
         monkeypatch.setattr(httpx, "Client", patched_client)
 
@@ -389,6 +379,85 @@ class TestFetchPdfBytes:
         # Two transport-level calls: the failing first attempt then the
         # retry that succeeded.
         assert attempts[0] == 2
+
+    def test_retries_503_then_succeeds(self, monkeypatch):
+        # 502/503/504 responses are retryable status codes (gateway /
+        # proxy / CDN transient unavailability); a single 503 should not
+        # push us to the next-URL fallback.
+        import httpx
+
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+
+        attempts = [0]
+
+        def handler(req):
+            attempts[0] += 1
+            if attempts[0] == 1:
+                return httpx.Response(503)
+            return httpx.Response(200, content=b"%PDF after 503")
+
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        result = pdf.fetch_pdf_bytes({"filepath_ia": "https://archive.org/x.pdf"})
+        assert result == b"%PDF after 503"
+        assert attempts[0] == 2
+
+    def test_transport_error_budget_exhausted_falls_through_to_next_url(
+        self, monkeypatch
+    ):
+        # When every retry attempt against the IA mirror raises a
+        # transport error, `_get_with_retry` returns None and
+        # `fetch_pdf_bytes` falls through to the CourtListener storage
+        # fallback. Without that fallthrough, a flaky IA mirror would
+        # masquerade as a missing PDF.
+        import httpx
+
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+
+        urls_seen: list[httpx.URL] = []
+
+        def handler(req):
+            urls_seen.append(req.url)
+            host = req.url.host or ""
+            if host == "archive.org" or host.endswith(".archive.org"):
+                raise httpx.ReadTimeout("flaky IA", request=req)
+            return httpx.Response(200, content=b"%PDF from CL storage")
+
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        result = pdf.fetch_pdf_bytes(
+            {
+                "filepath_ia": "https://archive.org/x.pdf",
+                "filepath_local": "recap/cand/x.pdf",
+            }
+        )
+        assert result == b"%PDF from CL storage"
+        # IA was retried up to the budget, then CL storage succeeded
+        # first try.
+        assert (
+            sum(
+                1
+                for u in urls_seen
+                if (u.host == "archive.org" or (u.host or "").endswith(".archive.org"))
+            )
+            == pdf._PDF_RETRY_TOTAL
+        )
+        assert any(
+            u.host == "storage.courtlistener.com" or (u.host or "").endswith(".storage.courtlistener.com")
+            for u in urls_seen
+        )
 
 
 class TestExtractWithPypdfHappyPath:
@@ -656,7 +725,7 @@ class TestFetchUrlBytes:
         # indictment.
         import httpx
 
-        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
 
         attempts = [0]
 
@@ -668,20 +737,71 @@ class TestFetchUrlBytes:
 
         real_client = httpx.Client
 
-        def patched_client(*args, transport=None, **kwargs):
-            if transport is not None:
-                setattr(
-                    transport,
-                    "_sync_transport",
-                    httpx.MockTransport(handler),
-                )
-            return real_client(*args, transport=transport, **kwargs)
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
 
         monkeypatch.setattr(httpx, "Client", patched_client)
 
         result = pdf.fetch_url_bytes("https://www.justice.gov/opa/media/x/dl")
         assert result == b"%PDF doj attachment retried"
         assert attempts[0] == 2
+
+    def test_persistent_503_returns_status_response_not_retried_forever(
+        self, monkeypatch
+    ):
+        # When every retry attempt returns a retryable status (e.g. 503
+        # for the duration), `_get_with_retry` gives up after
+        # `_PDF_RETRY_TOTAL` attempts and returns the last response.
+        # The 200-only check in `fetch_url_bytes` then logs the bad
+        # status and falls through to `return None`. Exercises the
+        # last-attempt status-retry branch.
+        import httpx
+
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+        attempts = [0]
+
+        def handler(req):
+            attempts[0] += 1
+            return httpx.Response(503)
+
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        assert pdf.fetch_url_bytes("https://example.com/perma503.pdf") is None
+        # Tried up to the budget, then gave up rather than looping
+        # forever on the retryable status.
+        assert attempts[0] == pdf._PDF_RETRY_TOTAL
+
+    def test_returns_none_when_transport_budget_exhausted(self, monkeypatch):
+        # When every retry attempt against an operator-supplied URL
+        # raises a transport error, `_get_with_retry` returns None and
+        # `fetch_url_bytes` returns None — the caller (the case-summary
+        # pipeline) treats the document as unavailable.
+        import httpx
+
+        monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
+        attempts = [0]
+
+        def handler(req):
+            attempts[0] += 1
+            raise httpx.ReadTimeout("perpetually slow", request=req)
+
+        real_client = httpx.Client
+
+        def patched_client(*args, **kwargs):
+            kwargs["transport"] = httpx.MockTransport(handler)
+            return real_client(*args, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        assert pdf.fetch_url_bytes("https://example.com/never.pdf") is None
+        assert attempts[0] == pdf._PDF_RETRY_TOTAL
 
 
 class TestExtractTextFromUrl:

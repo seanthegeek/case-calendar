@@ -925,14 +925,40 @@ def cmd_webhook_url(args: argparse.Namespace) -> int:
         )
 
     url = f"{host}{WEBHOOK_PATH_PREFIX}{secret}"
+    # Primary output of the `webhook-url` command — operator pastes this
+    # into the CourtListener webhook dashboard. The URL embeds the
+    # webhook secret by design, so the operator should treat the line
+    # as sensitive (don't paste into bug reports / chat). Stderr banner
+    # makes that explicit. CodeQL flags this as
+    # `py/clear-text-logging-sensitive-data`; the alert is dismissed
+    # with rationale because the command's contract IS to emit the URL.
+    print(
+        "# The URL below embeds your webhook secret. Treat it as sensitive — "
+        "paste it into the CourtListener webhook dashboard, not into bug "
+        "reports / chat / commit messages.",
+        file=sys.stderr,
+    )
     print(url)
 
     if args.check:
-        return _check_webhook_health(url)
+        return _check_webhook_health(url, secret)
     return 0
 
 
-def _check_webhook_health(webhook_url: str) -> int:
+def _redact_secret(text: str, secret: str) -> str:
+    """Replace every occurrence of ``secret`` in ``text`` with ``<REDACTED>``.
+
+    Used by health-check error messages so an operator can copy/paste a
+    failing diagnostic into a bug report or chat without leaking the
+    receiver secret. Idempotent; safe to call with an empty secret (the
+    redaction becomes a no-op).
+    """
+    if not secret:
+        return text
+    return text.replace(secret, "<REDACTED>")
+
+
+def _check_webhook_health(webhook_url: str, secret: str) -> int:
     """Probe the secret-gated health endpoint and report.
 
     Returns 0 on a healthy 200 with the expected service identifier, 1
@@ -941,12 +967,20 @@ def _check_webhook_health(webhook_url: str) -> int:
     else (200-empty from a stale proxy, 403 from a wrong secret, a
     CF-served HTML error page) signals a real misconfiguration the
     operator needs to see.
+
+    ``secret`` is the same value embedded in ``webhook_url``; it is used
+    only to redact any response body that echoes it in operator-facing
+    failure messages, never to log or transmit the secret beyond the GET
+    request itself.
     """
     import json as _json
     import urllib.error
     import urllib.request
 
     health_url = f"{webhook_url}/health"
+    # Do not log URL values derived from the secret-bearing webhook path.
+    # Use a stable, non-sensitive endpoint label in diagnostics.
+    safe_endpoint = "webhook health endpoint"
     req = urllib.request.Request(
         health_url,
         method="GET",
@@ -957,22 +991,25 @@ def _check_webhook_health(webhook_url: str) -> int:
             status = resp.status
             body = resp.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", errors="replace")
+        body = _redact_secret(
+            e.read().decode("utf-8", errors="replace"), secret
+        )
         print(
-            f"\nhealth check FAILED: HTTP {e.code} from {health_url}\n{body}",
+            f"\nhealth check FAILED: HTTP {e.code} from {safe_endpoint}\n{body}",
             file=sys.stderr,
         )
         return 1
     except urllib.error.URLError as e:
         print(
-            f"\nhealth check FAILED: cannot reach {health_url}: {e.reason}",
+            f"\nhealth check FAILED: cannot reach {safe_endpoint}: {e.reason}",
             file=sys.stderr,
         )
         return 1
 
+    body = _redact_secret(body, secret)
     if status != 200:
         print(
-            f"\nhealth check FAILED: HTTP {status} from {health_url}\n{body}",
+            f"\nhealth check FAILED: HTTP {status} from {safe_endpoint}\n{body}",
             file=sys.stderr,
         )
         return 1
@@ -981,7 +1018,7 @@ def _check_webhook_health(webhook_url: str) -> int:
         payload = _json.loads(body)
     except _json.JSONDecodeError:
         print(
-            f"\nhealth check FAILED: non-JSON 200 from {health_url} — "
+            f"\nhealth check FAILED: non-JSON 200 from {safe_endpoint} — "
             f"something between you and the receiver is intercepting "
             f"requests. Body was:\n{body}",
             file=sys.stderr,
@@ -990,7 +1027,7 @@ def _check_webhook_health(webhook_url: str) -> int:
 
     if payload.get("service") != "case-calendar":
         print(
-            f"\nhealth check FAILED: 200 from {health_url} but body "
+            f"\nhealth check FAILED: 200 from {safe_endpoint} but body "
             f"doesn't identify as case-calendar:\n{body}",
             file=sys.stderr,
         )

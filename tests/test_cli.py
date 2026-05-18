@@ -1960,8 +1960,11 @@ class TestCmdWebhookUrl:
         assert out.out.strip() == (
             "https://webhook.example.com/webhooks/case-calendar/abc123"
         )
-        # No stderr hint when --host is supplied — the URL is ready to paste.
-        assert out.err == ""
+        # No `--host` hint when --host is supplied — the URL is ready
+        # to paste — but the sensitive-data banner still fires so the
+        # operator knows not to paste this into bug reports / chat.
+        assert "--host" not in out.err
+        assert "sensitive" in out.err
 
     def test_explicit_scheme_respected(self, monkeypatch, capsys):
         # Useful for local curl testing against the receiver on 127.0.0.1.
@@ -2049,7 +2052,15 @@ class TestCmdWebhookUrl:
 
     def test_check_wrong_secret_403(self, monkeypatch, capsys):
         # 403 from origin = secret mismatch; surface it loudly.
-        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        # Use a long-enough secret that incidental short-string overlap
+        # with diagnostic text is unlikely; assert the secret is absent
+        # from the operator-facing error (the URL is replaced with a
+        # generic endpoint label that doesn't flow from the secret —
+        # CodeQL's data-flow analysis required severing the chain
+        # entirely rather than masking via `.replace()`).
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
+        )
 
         def _fake_urlopen(req, timeout=10):
             raise urllib.error.HTTPError(
@@ -2065,10 +2076,20 @@ class TestCmdWebhookUrl:
         assert cli.cmd_webhook_url(args) == 1
         err = capsys.readouterr().err
         assert "HTTP 403" in err
+        # Diagnostic must NOT contain the secret — operators may copy
+        # this into bug reports / chat.
+        assert "secret-abc123-do-not-leak" not in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_unreachable_host(self, monkeypatch, capsys):
         # DNS failure / connection refused — print the reason and exit 1.
-        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
+        )
 
         def _fake_urlopen(req, timeout=10):
             raise urllib.error.URLError("nodename nor servname known")
@@ -2079,6 +2100,12 @@ class TestCmdWebhookUrl:
         err = capsys.readouterr().err
         assert "cannot reach" in err
         assert "nodename" in err
+        assert "secret-abc123-do-not-leak" not in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_non_200_no_exception_path(self, monkeypatch, capsys):
         # urlopen returns a Response object with status != 200 WITHOUT
@@ -2086,7 +2113,9 @@ class TestCmdWebhookUrl:
         # rewrites status codes, or a misconfigured Caddy returning a
         # bare 301 from the receiver path. The status-check branch
         # after the try/except surfaces the failure too.
-        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
+        )
 
         class _Resp:
             status = 301
@@ -2106,12 +2135,20 @@ class TestCmdWebhookUrl:
         err = capsys.readouterr().err
         assert "HTTP 301" in err
         assert "redirect to login" in err
+        assert "secret-abc123-do-not-leak" not in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_200_empty_body_is_failure(self, monkeypatch, capsys):
         # This is the Cloudflare-intercept signature we ran into in
         # production — 200 with an empty body. The check has to flag it,
         # not silently call it healthy.
-        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
+        )
 
         class _Resp:
             status = 200
@@ -2131,12 +2168,21 @@ class TestCmdWebhookUrl:
         )
         args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
-        assert "non-JSON" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "non-JSON" in err
+        assert "secret-abc123-do-not-leak" not in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
 
     def test_check_200_wrong_service_is_failure(self, monkeypatch, capsys):
         # A 200 with valid JSON but missing/wrong "service" marker = the
         # request reached something, but not us.
-        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", "abc123")
+        monkeypatch.setenv(
+            "CASE_CALENDAR_WEBHOOK_SECRET", "secret-abc123-do-not-leak"
+        )
 
         class _Resp:
             status = 200
@@ -2156,7 +2202,68 @@ class TestCmdWebhookUrl:
         )
         args = Namespace(host="webhook.example.com", check=True)
         assert cli.cmd_webhook_url(args) == 1
-        assert "doesn't identify as case-calendar" in capsys.readouterr().err
+        err = capsys.readouterr().err
+        assert "doesn't identify as case-calendar" in err
+        assert "secret-abc123-do-not-leak" not in err
+        # Diagnostic uses a non-sensitive endpoint label rather than the
+        # secret-bearing URL — CodeQL's data-flow analysis flags any
+        # string derived from the secret, so the diagnostic was severed
+        # entirely from the secret-bearing URL chain.
+        assert "webhook health endpoint" in err
+
+    def test_check_redacts_secret_echoed_in_response_body(self, monkeypatch, capsys):
+        # A misconfigured proxy or upstream may echo the request URL back
+        # in its response body (e.g. a 403 page that includes the path).
+        # The body is shown to the operator in the FAILED message, so we
+        # must redact the secret from the body too — not just from the
+        # rendered URL.
+        secret = "secret-abc123-do-not-leak"
+        monkeypatch.setenv("CASE_CALENDAR_WEBHOOK_SECRET", secret)
+
+        def _fake_urlopen(req, timeout=10):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                403,
+                "Forbidden",
+                hdrs=None,  # type: ignore[arg-type]
+                fp=io.BytesIO(
+                    f'{{"error":"forbidden","path":"/webhooks/case-calendar/{secret}/health"}}'.encode()
+                ),
+            )
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+        args = Namespace(host="webhook.example.com", check=True)
+        assert cli.cmd_webhook_url(args) == 1
+        err = capsys.readouterr().err
+        assert secret not in err
+        # The body still surfaces (so the operator can debug), just with
+        # the secret swapped out.
+        assert "forbidden" in err
+
+
+class TestRedactSecret:
+    """Direct coverage of `cli._redact_secret`.
+
+    The helper is exercised end-to-end by the health-check failure
+    tests above, but the empty-secret short-circuit branch isn't hit
+    by those tests (every fixture sets a non-empty secret). Pin it
+    here so future refactors don't silently drop the guard.
+    """
+
+    def test_empty_secret_returns_text_unchanged(self):
+        # The defensive guard: when no secret is configured, redaction
+        # is a no-op. Without this branch a caller passing `secret=""`
+        # would try `text.replace("", "<REDACTED>")`, which str.replace
+        # treats as inserting between every character.
+        assert cli._redact_secret("hello world", "") == "hello world"
+
+    def test_replaces_every_occurrence(self):
+        # Idempotent multi-occurrence replace — bodies that echo the
+        # URL multiple times still get cleaned.
+        secret = "topsecret"
+        out = cli._redact_secret(f"path/{secret}/and/{secret}/again", secret)
+        assert secret not in out
+        assert out.count("<REDACTED>") == 2
 
 
 class TestMain:
