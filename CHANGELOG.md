@@ -8,6 +8,25 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.2] - 2026-05-18
+
+### Fixed
+
+- The CourtListener HTTP client now follows redirects. httpx
+  defaults to `follow_redirects=False` (unlike `requests`), and the
+  CourtListener client was the only one of the project's four
+  httpx clients that hadn't overridden the default — so a 301/302
+  from CourtListener would surface as an
+  `httpx.HTTPStatusError: Redirect response '302 Found'` instead of
+  transparently landing on the redirected URL. The CourtListener
+  endpoints we currently use don't redirect, but a future hostname
+  migration, HTTPS upgrade, trailing-slash normalization, or path
+  reshape would otherwise silently break the whole sync flow. The
+  PDF fetch chain in `pdf.py` and the URL validator already set
+  `follow_redirects=True`; the CourtListener client now matches. (#6)
+
+[0.2.2]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.2
+
 ## [0.2.1] - 2026-05-18
 
 ### Fixed
