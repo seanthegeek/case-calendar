@@ -127,10 +127,11 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 
 - Formatter/linter: **Ruff**
   - All code must be linted and formatted
+  - Ruff is version-pinned in `pyproject.toml` under the `lint` extra so CI and contributors share one format opinion. `uv sync --extra lint` installs the pinned version; `uv run ruff check` / `uv run ruff format --check` are what CI runs. When you want to roll forward, bump the pin in `pyproject.toml`, run `uv sync --extra lint`, run `uv run ruff format`, and commit the version bump + reformat in the same PR — never let CI and local drift
 - Type annotations use `TypedDict` for structured results
 - Supports all currently supported Python versions
 - Modern type annotations across the entire project
-  - Always use the the latest version of pywright for static type checking
+  - Always use the latest version of pyright for static type checking. Run with `PYRIGHT_PYTHON_FORCE_VERSION=latest` to override the pyright-python wrapper's pinned release; CI sets this env var on the pyright step
 - Testing framework: **pytest**
 - Every bit of code should have a test
 - Build backend: **hatchling**
