@@ -171,7 +171,7 @@ wheels = [
 
 [[package]]
 name = "case-calendar"
-version = "0.2.2"
+version = "0.2.3"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -181,6 +181,7 @@ dependencies = [
     { name = "google-auth-oauthlib" },
     { name = "google-genai" },
     { name = "httpx" },
+    { name = "httpx-retries" },
     { name = "msgraph-sdk" },
     { name = "openai" },
     { name = "pypdf" },
@@ -204,6 +205,7 @@ requires-dist = [
     { name = "google-auth-oauthlib", specifier = ">=1.4.0" },
     { name = "google-genai", specifier = ">=1.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "httpx-retries", specifier = ">=0.5.0" },
     { name = "msgraph-sdk", specifier = ">=1.57.0" },
     { name = "openai", specifier = ">=1.50" },
     { name = "pypdf", specifier = ">=4.0" },
@@ -731,6 +733,18 @@ wheels = [
 [package.optional-dependencies]
 http2 = [
     { name = "h2" },
+]
+
+[[package]]
+name = "httpx-retries"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/fb/f5/046cac13877ce9b55aebdbb3999e0e45b19b989a95c5fd1040fa04bd1f92/httpx_retries-0.5.0.tar.gz", hash = "sha256:d8c8e1e0852d84be3837aba0bcf78aeb89a4b77db95e8cc988c8c058830b3044", size = 15647, upload_time = "2026-04-20T01:21:47.154Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c5/a8/aadeaa9a28510727d538636ee8688f0782a98523147852b29404ce696f1b/httpx_retries-0.5.0-py3-none-any.whl", hash = "sha256:d3124592979a9dc6197e666d1f02e9ab996a0c58fce59fad8db6201a6a87304e", size = 8908, upload_time = "2026-04-20T01:21:46.157Z" },
 ]
 
 [[package]]

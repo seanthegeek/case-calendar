@@ -8,6 +8,41 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.3] - 2026-05-18
+
+### Fixed
+
+- HTTP clients now retry transient transport-level failures
+  (`httpx.ReadTimeout`, `ConnectError`, `RemoteProtocolError`,
+  etc.) at the transport layer via the `httpx-retries` package's
+  `RetryTransport`. Before this, a single read timeout on a
+  CourtListener API call mid-`sync` would propagate up through
+  `iter_entries` and kill the whole run (the production traceback:
+  `httpx.ReadTimeout: The read operation timed out` aborting
+  `sync_case`). The same class of failure could also blow away PDF
+  fetches and `extra_documents` URL fetches without retry. Now
+  applied to all four httpx clients in the project — `CourtListener`,
+  `pdf.fetch_pdf_bytes`, `pdf.fetch_url_bytes`, and
+  `url_validator` — with per-client retry budgets sized to the
+  call site (5 attempts with 0.5s base backoff on the CourtListener
+  and PDF fetches; 3 attempts with 0.25s base on the
+  hot-path URL validator). The library handles jitter automatically.
+  CourtListener's existing 429 / 5xx retry loop in `_get` is
+  preserved unchanged — the library is configured with
+  `status_forcelist=[]` on that client so its retry covers
+  transport errors only, leaving the cross-request cooldown and
+  multi-hour `Retry-After` honoring intact. LLM SDKs (anthropic,
+  openai, google-genai) already retry transient network errors
+  via their own `max_retries` settings, so no change there.
+
+### Added
+
+- New dependency: `httpx-retries>=0.5.0` — narrow-scope library
+  wrapping `httpx.BaseTransport` with configurable retry policy
+  for transient errors.
+
+[0.2.3]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.3
+
 ## [0.2.2] - 2026-05-18
 
 ### Fixed

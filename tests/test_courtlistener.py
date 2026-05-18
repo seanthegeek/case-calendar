@@ -246,6 +246,81 @@ class TestInit:
             assert cl.client.follow_redirects is True
 
 
+class TestTransportErrorRetry:
+    """The httpx-retries `RetryTransport` configured in `__init__` retries
+    transient network failures (ReadTimeout, ConnectError,
+    RemoteProtocolError) at the transport layer. Before this, a single
+    ReadTimeout mid-sync — the CourtListener server going quiet for a
+    few seconds — propagated all the way up through `iter_entries` and
+    killed the whole run (the production traceback we observed:
+    `httpx.ReadTimeout: The read operation timed out`).
+
+    Tests go through the real `__init__` and swap the RetryTransport's
+    inner transport with a MockTransport, so the retry layer above is
+    the production layer — a future refactor that drops the
+    RetryTransport wrapping will fail these tests.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_real_sleep(self, monkeypatch):
+        # httpx-retries calls time.sleep between retries; skip it so
+        # tests run at memory speed. String-path setattr because
+        # `time` isn't a public re-export from httpx_retries.retry.
+        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+
+    @staticmethod
+    def _install_mock_backend(cl: CourtListener, handler) -> None:
+        """Swap the RetryTransport's inner transport with a MockTransport
+        so requests go through the production retry layer with a
+        controlled backend. `_sync_transport` is the documented inner
+        attribute on httpx-retries' RetryTransport; setattr bypasses
+        pyright's BaseTransport-attribute check.
+        """
+        setattr(cl.client._transport, "_sync_transport", httpx.MockTransport(handler))
+
+    def test_retries_read_timeout_then_succeeds(self):
+        attempts = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            attempts[0] += 1
+            if attempts[0] == 1:
+                raise httpx.ReadTimeout("timed out", request=req)
+            return httpx.Response(200, json={"id": 42})
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        assert cl.get_docket(42)["id"] == 42
+        assert attempts[0] == 2
+
+    def test_retries_connect_error_then_succeeds(self):
+        attempts = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            attempts[0] += 1
+            if attempts[0] < 3:
+                raise httpx.ConnectError("refused", request=req)
+            return httpx.Response(200, json={"id": 7})
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        assert cl.get_docket(7)["id"] == 7
+        assert attempts[0] == 3
+
+    def test_exhausted_retries_propagate_last_transport_error(self):
+        # When every attempt fails, the last TransportError surfaces.
+        # `sync_case`'s new linear-control-flow shape (PR #4) means
+        # this propagation does NOT advance the docket's
+        # date_last_modified cutoff, so the next sync re-walks the
+        # docket — exactly what we want.
+        def handler(req: httpx.Request) -> httpx.Response:
+            raise httpx.ReadTimeout("timed out", request=req)
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        with pytest.raises(httpx.ReadTimeout):
+            cl.get_docket(42)
+
+
 class TestFollowsRedirects:
     def test_get_follows_302_to_final_response(self):
         # Behavior-level confirmation that goes through the real

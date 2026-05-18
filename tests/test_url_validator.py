@@ -98,6 +98,41 @@ class TestValidateURL:
         # Fail-open: return the input rather than dropping the field.
         assert out == "https://example.com/foo/bar/"
 
+    def test_retries_transport_error_then_succeeds(self, monkeypatch):
+        # End-to-end: validate_url constructs its own httpx.Client with
+        # the production RetryTransport wrapping. We intercept the Client
+        # constructor to swap the RetryTransport's inner backend with
+        # our MockTransport — first attempt raises ReadTimeout, second
+        # returns 200. The retry layer above should recover.
+        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+
+        attempts = [0]
+
+        def handler(req):
+            attempts[0] += 1
+            if attempts[0] == 1:
+                raise httpx.ReadTimeout("slow host", request=req)
+            return httpx.Response(200)
+
+        real_client = httpx.Client
+
+        def patched_client(*args, transport=None, **kwargs):
+            if transport is not None:
+                setattr(
+                    transport,
+                    "_sync_transport",
+                    httpx.MockTransport(handler),
+                )
+            return real_client(*args, transport=transport, **kwargs)
+
+        monkeypatch.setattr(httpx, "Client", patched_client)
+
+        out = url_validator.validate_url("https://example.com/foo/bar/")
+        assert out == "https://example.com/foo/bar/"
+        # Two transport-level calls: the failed first attempt then the
+        # retry that succeeded.
+        assert attempts[0] == 2
+
     def test_non_http_returned_as_is(self):
         out = url_validator.validate_url("tel:+15551234567")
         assert out == "tel:+15551234567"

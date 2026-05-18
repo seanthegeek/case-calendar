@@ -11,6 +11,7 @@ import time
 from typing import Any, Iterator, Optional
 
 import httpx
+from httpx_retries import Retry, RetryTransport
 
 API_BASE = "https://www.courtlistener.com/api/rest/v4"
 
@@ -47,6 +48,24 @@ class CourtListener:
             # hostname migration, trailing-slash normalization, or
             # similar reshape doesn't break the API client.
             follow_redirects=True,
+            # Retry transport-level failures (ReadTimeout, ConnectError,
+            # RemoteProtocolError, etc.) at the transport layer via the
+            # httpx-retries library. A single ReadTimeout mid-sync —
+            # the CourtListener server going quiet for a few seconds —
+            # previously propagated up through `iter_entries` and
+            # killed the whole run. `status_forcelist=[]` is deliberate:
+            # the `_get` loop below already handles 429 / 5xx with
+            # custom logging and a cross-request cooldown
+            # (`_no_request_before`) that the library's per-call retry
+            # can't express, so we let the library handle ONLY transport
+            # errors and keep the response-status retries on this side.
+            transport=RetryTransport(
+                retry=Retry(
+                    total=5,
+                    backoff_factor=0.5,
+                    status_forcelist=[],
+                ),
+            ),
         )
         # Earliest monotonic time at which the next request may be issued —
         # set when any call hits a 429, so subsequent calls on the same
