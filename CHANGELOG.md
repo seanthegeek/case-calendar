@@ -54,6 +54,15 @@ adheres to [Semantic Versioning][semver].
   processed) still re-renders the ICS — otherwise a same-slot
   duplicate flipped to cancelled would linger in the cached feed
   until the next sync touched an entry.
+- Anthropic and OpenAI SDK clients are now constructed with
+  `max_retries=8` instead of the SDK default of 2. The default's
+  ~1.5s cumulative backoff was not enough to ride out an Anthropic
+  529 Overloaded condition, which routinely lasts tens of seconds
+  and was leaking through as `IGNORE` actions that silently dropped
+  entries. The new ceiling is ~127s before any server-supplied
+  `Retry-After` is honored. Failures past that remain possible but
+  are now rare enough to surface in the logs for manual rerun via
+  `scripts/reprocess_entries.py`.
 
 ### Added
 
@@ -103,6 +112,20 @@ adheres to [Semantic Versioning][semver].
   docstrings, and PR descriptions, with an exception that allows
   priority directives ("the imposed sentence is the most important
   fact about the case") inside LLM prompt templates.
+- Text-hash dedup for `extra_documents` against CourtListener-surfaced
+  docs on the same docket. When an operator-added `extra_documents`
+  URL becomes naturally findable via CourtListener — typically because
+  someone re-uploads the PDF to PACER under the docket's current
+  `pacer_case_id`, working around the
+  [CourtListener bug #7345](https://github.com/freelawproject/courtlistener/issues/7345)
+  reconciler shape FLP closed without committing to a fix —
+  `summary._filter_extras_already_in_cl` compares a normalized-text
+  sha256 of each extra against every CourtListener-surfaced primary /
+  disposition doc on the same docket group and drops the duplicate
+  before it reaches the summary LLM, logging a WARN naming the URL
+  so the operator can remove the now-redundant entry from
+  `config.yaml`. Previously the same body would reach the LLM twice
+  and exert outsized influence on the summary.
 
 ### Changed
 
