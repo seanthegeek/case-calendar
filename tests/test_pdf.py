@@ -418,11 +418,12 @@ class TestFetchPdfBytes:
 
         monkeypatch.setattr(pdf.time, "sleep", lambda _s: None)
 
-        urls_seen: list[str] = []
+        urls_seen: list[httpx.URL] = []
 
         def handler(req):
-            urls_seen.append(str(req.url))
-            if "archive.org" in str(req.url):
+            urls_seen.append(req.url)
+            host = req.url.host or ""
+            if host == "archive.org" or host.endswith(".archive.org"):
                 raise httpx.ReadTimeout("flaky IA", request=req)
             return httpx.Response(200, content=b"%PDF from CL storage")
 
@@ -443,8 +444,18 @@ class TestFetchPdfBytes:
         assert result == b"%PDF from CL storage"
         # IA was retried up to the budget, then CL storage succeeded
         # first try.
-        assert sum(1 for u in urls_seen if "archive.org" in u) == pdf._PDF_RETRY_TOTAL
-        assert any("storage.courtlistener.com" in u for u in urls_seen)
+        assert (
+            sum(
+                1
+                for u in urls_seen
+                if (u.host == "archive.org" or (u.host or "").endswith(".archive.org"))
+            )
+            == pdf._PDF_RETRY_TOTAL
+        )
+        assert any(
+            u.host == "storage.courtlistener.com" or (u.host or "").endswith(".storage.courtlistener.com")
+            for u in urls_seen
+        )
 
 
 class TestExtractWithPypdfHappyPath:
