@@ -10,6 +10,25 @@ adheres to [Semantic Versioning][semver].
 
 ## [0.2.5] - 2026-05-18
 
+### Security
+
+- The `webhook-url --check` health probe now redacts the webhook
+  secret from every operator-facing failure message via a new
+  `_redact_secret` helper. The previous diagnostics interpolated the
+  full URL (and any echoed body) into stderr on HTTPError / URLError
+  / non-200 / non-JSON / wrong-service paths, so an operator who
+  pasted a failing run into a bug report or chat would expose the
+  receiver secret. Now the URL appears as
+  `.../webhooks/case-calendar/<REDACTED>/health` in those messages
+  and the secret is also stripped from response bodies before
+  display. The `webhook-url` command's primary stdout output of the
+  full URL is unchanged — that's the command's contract (operator
+  pastes it into the CourtListener webhook dashboard) — but a
+  stderr banner now flags the line as sensitive so it doesn't end
+  up in screenshots or bug reports by accident. Resolves the
+  `py/clear-text-logging-sensitive-data` CodeQL alerts on
+  `case_calendar/cli.py`.
+
 ### Fixed
 
 - `CourtListener._get` now sees and logs 429 responses instead of
