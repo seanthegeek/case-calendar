@@ -177,6 +177,27 @@ class TestIsDeadlineRelevant:
             make(desc="Notice of appeal must be filed within 14 days of judgment")
         )
 
+    def test_plural_forms_match(self):
+        # Verbatim from D.N.J. docket 1:24-cr-00234 entry 9 (Schmitz) —
+        # "Deadlines" plural blocks the trailing word boundary on the
+        # original singular `deadline` pattern.
+        assert is_deadline_relevant(
+            make(
+                desc="MOTION for Continuance of Speedy Trial Deadlines by USA "
+                "as to PATRICK SCHMITZ"
+            )
+        )
+        # Sibling pluralizations that the same `?`-pass picks up.
+        assert is_deadline_relevant(make(desc="MANDATES issued as to both appellants"))
+        assert is_deadline_relevant(
+            make(desc="MOTIONS to extend filed by both parties")
+        )
+        assert is_deadline_relevant(make(desc="Joint Status Reports due monthly"))
+        assert is_deadline_relevant(make(desc="Pretrial orders entered in both cases"))
+        assert is_deadline_relevant(make(desc="Stipulations entered as to all parties"))
+        assert is_deadline_relevant(make(desc="Briefing schedules entered"))
+        assert is_deadline_relevant(make(desc="Extensions of time granted"))
+
     def test_generic_x_is_due_patterns(self):
         # The "<X> is due" generics catch many criminal-specific deadlines
         # (404(b) notices, Brady/Giglio material, sentencing memoranda, etc.)
