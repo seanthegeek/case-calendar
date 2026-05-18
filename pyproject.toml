@@ -1,6 +1,6 @@
 [project]
 name = "case-calendar"
-version = "0.2.5"
+version = "0.2.6"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.40",
@@ -11,7 +11,6 @@ dependencies = [
     "google-auth-oauthlib>=1.4.0",
     "msgraph-sdk>=1.57.0",
     "azure-identity>=1.19.0",
-    "httpx>=0.28.1",
     "pypdf>=4.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0.3",
