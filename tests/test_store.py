@@ -2086,6 +2086,153 @@ class TestPruneHelpers:
         finally:
             s2.close()
 
+    def _seed_docket_in_group(
+        self,
+        store: Store,
+        docket_id: int,
+        *,
+        docket_number: str,
+        case_id: str = "us-v-akhter",
+    ) -> None:
+        # Sibling docket variant of _seed_docket — sibling CL docket_ids
+        # share `(docket_number, court_id)` so they belong to one logical
+        # PACER docket group. Used for the case-summaries-stay-with-
+        # surviving-siblings tests.
+        store.upsert_docket_meta(
+            docket_id,
+            {
+                "court_id": "vaed",
+                "docket_number": docket_number,
+                "case_name": "United States v. Akhter",
+                "absolute_url": None,
+                "date_last_filing": None,
+            },
+        )
+        entry_id = docket_id * 100 + 1
+        store.mark_entry(
+            docket_id=docket_id,
+            entry_id=entry_id,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="Indictment",
+            short_description="Indictment",
+            recap_documents=[],
+        )
+        store.conn.commit()
+
+    def test_count_docket_rows_skips_case_summaries_when_group_has_siblings(
+        self, store: Store
+    ):
+        # Two CL docket_ids share one logical PACER docket — case_summaries
+        # is keyed by (docket_number, court_id), so deleting docket_id=100
+        # alone would NOT orphan the summary (docket_id=101 is still in the
+        # group). count_docket_rows therefore reports case_summaries=0 for
+        # the non-last sibling — the prune preview correctly shows nothing
+        # would be lost. Without this skip the count would double-count.
+        docket_number = "1:25-cr-00307"
+        self._seed_docket_in_group(store, 100, docket_number=docket_number)
+        self._seed_docket_in_group(store, 101, docket_number=docket_number)
+        store.upsert_case_summary(
+            case_id="us-v-akhter",
+            docket_number=docket_number,
+            court_id="vaed",
+            summary="indictment text",
+            model="anthropic/test",
+            source_entry_ids=[10001],
+        )
+        store.conn.commit()
+        # 100 has a sibling (101) — case_summaries=0 because deleting 100
+        # alone wouldn't orphan the summary.
+        counts = store.count_docket_rows(100)
+        assert counts["case_summaries"] == 0
+        # 101 also still has a sibling (100) — same answer.
+        assert store.count_docket_rows(101)["case_summaries"] == 0
+
+    def test_count_docket_rows_for_docket_id_without_metadata(self, store: Store):
+        # A child-only orphan row (mark_entry was called but
+        # upsert_docket_meta wasn't, e.g. sync interrupted between the
+        # two) has no `dockets` metadata. The case_summaries count
+        # branch must short-circuit cleanly to 0 instead of running the
+        # group-size query with NULL docket_number / court_id.
+        store.mark_entry(
+            docket_id=500,
+            entry_id=50001,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="orphan",
+            short_description="orphan",
+            recap_documents=[],
+        )
+        store.conn.commit()
+        counts = store.count_docket_rows(500)
+        assert counts["entries"] == 1
+        assert counts["dockets"] == 0
+        assert counts["case_summaries"] == 0
+
+    def test_delete_docket_preserves_case_summary_when_group_has_siblings(
+        self, store: Store
+    ):
+        # Same shape as the count test: deleting one CL docket_id out of a
+        # multi-sibling group must NOT delete the case_summaries row,
+        # because the summary belongs to the LOGICAL PACER docket and a
+        # surviving sibling still references it. Deleting the LAST
+        # sibling then DOES delete the summary (group is empty).
+        docket_number = "1:25-cr-00307"
+        self._seed_docket_in_group(store, 100, docket_number=docket_number)
+        self._seed_docket_in_group(store, 101, docket_number=docket_number)
+        store.upsert_case_summary(
+            case_id="us-v-akhter",
+            docket_number=docket_number,
+            court_id="vaed",
+            summary="indictment text",
+            model="anthropic/test",
+            source_entry_ids=[10001],
+        )
+        store.conn.commit()
+
+        # Delete the first sibling — the case_summary survives because
+        # docket_id=101 is still in the group.
+        deleted_first = store.delete_docket(100)
+        assert deleted_first["dockets"] == 1
+        assert deleted_first["case_summaries"] == 0
+        assert (
+            store.get_docket_summary("us-v-akhter", docket_number, "vaed") is not None
+        )
+
+        # Delete the last sibling — now the case_summary IS removed
+        # because the group has no surviving members.
+        deleted_last = store.delete_docket(101)
+        assert deleted_last["case_summaries"] == 1
+        assert store.get_docket_summary("us-v-akhter", docket_number, "vaed") is None
+
+    def test_delete_docket_with_no_metadata_skips_case_summary_logic(
+        self, store: Store
+    ):
+        # The other partial branch on delete_docket: an orphan docket_id
+        # with no `dockets` metadata. The case_summaries cleanup is
+        # gated on `meta and meta.get("docket_number") and
+        # meta.get("court_id")`, so this path skips the cleanup
+        # entirely without crashing on missing fields.
+        store.mark_entry(
+            docket_id=600,
+            entry_id=60001,
+            date_modified="2026-01-01T00:00:00+00:00",
+            fingerprint="fp",
+            entry_number=1,
+            date_filed="2026-01-01",
+            description="orphan",
+            short_description="orphan",
+            recap_documents=[],
+        )
+        store.conn.commit()
+        deleted = store.delete_docket(600)
+        assert deleted["entries"] == 1
+        assert deleted["case_summaries"] == 0
+
     def test_delete_docket_handles_child_only_orphan(self, store: Store):
         # No dockets row, only a child entry — delete still cleans it up
         # and reports dockets=0 for the row that wasn't there.

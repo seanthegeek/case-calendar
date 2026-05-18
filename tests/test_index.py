@@ -645,6 +645,53 @@ class TestBuildCalendarModels:
         assert case["dockets"][0]["docket_number"] == "1:24-cr-12345"
         assert case["dockets"][0]["court_citation"] == "S.D.N.Y."
 
+    def test_collapses_sibling_docket_ids_into_one_dockets_meta_entry(self, store):
+        # When `case.dockets` lists multiple CL docket_ids that share
+        # (docket_number, court_id) — the Akhter-shape PR #3 case where
+        # one logical PACER docket lives under three CL docket_ids —
+        # build_calendar_models must emit ONE entry in `dockets_meta`
+        # with the other docket_ids in a `sibling_docket_ids` list,
+        # NOT three near-duplicate entries. This exercises the
+        # collapse branch (`if group_key in group_index: append to
+        # siblings; continue`) — line 848-850 of index.py.
+        for did in (71989485, 73333500, 73320754):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "vaed",
+                    "docket_number": "1:25-cr-00307",
+                    "case_name": "United States v. Akhter",
+                    "absolute_url": f"/docket/{did}/akhter/",
+                    "date_last_filing": "2026-04-01",
+                },
+            )
+            store.set_docket_last_modified(did, "2026-04-01T12:00:00Z")
+        store.upsert_court("vaed", "E.D. Va.", "vaed", "E.D. Virginia")
+        cfg = {
+            "calendars": {"cyber": {"name": "Cybercrime", "ics_path": "out/cyber.ics"}},
+            "cases": [
+                {
+                    "id": "us-v-akhter",
+                    "name": "US v. Akhter",
+                    "calendar": "cyber",
+                    "dockets": [71989485, 73333500, 73320754],
+                },
+            ],
+        }
+        models = build_calendar_models(cfg, store)
+        case = models[0]["cases"][0]
+        # ONE dockets_meta entry, not three.
+        assert len(case["dockets"]) == 1
+        d = case["dockets"][0]
+        # First config docket id wins as the canonical (its absolute_url
+        # rides into the rendered link).
+        assert d["docket_id"] == 71989485
+        assert d["docket_number"] == "1:25-cr-00307"
+        assert d["court_citation"] == "E.D. Va."
+        # The two siblings are listed under `sibling_docket_ids` (order
+        # is config order).
+        assert d.get("sibling_docket_ids") == [73333500, 73320754]
+
     def test_handles_unseen_docket(self, store):
         # Case configured but no sync has happened yet — every aggregate
         # is None and the docket metadata is empty. The renderer still
