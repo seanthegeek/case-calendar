@@ -25,9 +25,13 @@ adheres to [Semantic Versioning][semver].
   full URL is unchanged — that's the command's contract (operator
   pastes it into the CourtListener webhook dashboard) — but a
   stderr banner now flags the line as sensitive so it doesn't end
-  up in screenshots or bug reports by accident. Resolves the
-  `py/clear-text-logging-sensitive-data` CodeQL alerts on
-  `case_calendar/cli.py`.
+  up in screenshots or bug reports by accident. Resolves the five
+  `py/clear-text-logging-sensitive-data` CodeQL alerts on the
+  health-check paths (alerts #2-#6); the remaining alert on the
+  primary `print(url)` (alert #1) is intended functionality and was
+  dismissed with rationale "false positive — primary stdout output
+  of the webhook-url command; the URL embeds the secret by design
+  so it can be pasted into the CourtListener webhook dashboard."
 
 ### Fixed
 
@@ -84,10 +88,27 @@ adheres to [Semantic Versioning][semver].
   `_no_request_before` cooldown advances, and the first sleep equals
   `Retry-After + _RETRY_AFTER_BUFFER_SECONDS`. Confirmed to fail on
   the 0.2.4 codebase before the fix.
+- Five tests in `tests/test_cli.py` pin the secret-redaction
+  contract on every `webhook-url --check` failure path (HTTPError,
+  URLError, non-200, non-JSON 200, wrong-service 200, and a
+  body-echoes-URL path that proves the secret is redacted from the
+  response body even when an upstream proxy echoes the request URL
+  back). Each test uses a distinctive non-trivial secret
+  (`secret-abc123-do-not-leak`) and asserts the exact string is
+  absent from stderr while `<REDACTED>` is present.
 
 ### Removed
 
 - Dependency on `httpx-retries`.
+
+### Refactor
+
+- `pdf._get_with_retry` and `url_validator._request_with_retry`
+  switched from `for attempt in range(N+1):` to `while True` with an
+  explicit attempt counter, so every exit is a `return` and there's
+  no loop-fall-off branch for coverage to flag as unreachable.
+  Behavior unchanged; patch coverage on both files rises from
+  partial-branch to 100%.
 
 [0.2.5]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.5
 
