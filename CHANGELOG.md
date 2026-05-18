@@ -8,6 +8,26 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.4] - 2026-05-18
+
+### Fixed
+
+- `_parse_actions` no longer fails with
+  `json.JSONDecodeError: Extra data: line 21 column 1` when the LLM
+  returns a valid actions object followed by trailing content
+  (a second JSON object, narrative commentary, or stray braces in
+  prose). The previous implementation sliced the response from the
+  first `{` to the LAST `}` and fed that to `json.loads`, which
+  swept any trailing JSON or punctuation into the parse input and
+  blew it up. Switched to `json.JSONDecoder().raw_decode()` so we
+  parse exactly one JSON object starting at the first `{` and
+  ignore anything past its closing brace. Observed in production
+  logs on a Ding motion-hearing extraction; the parse failure
+  caused the entry to fall through to the IGNORE-on-failure path
+  and the reschedule was silently dropped. (#8)
+
+[0.2.4]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.4
+
 ## [0.2.3] - 2026-05-18
 
 ### Fixed

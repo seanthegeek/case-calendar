@@ -89,6 +89,42 @@ class TestParseActions:
     def test_missing_actions_key_returns_empty(self):
         assert llm._parse_actions('{"other": "stuff"}') == []
 
+    def test_two_json_objects_uses_first(self):
+        # Observed in production: the LLM returned the actions object
+        # followed by a second JSON object, producing
+        # `json.JSONDecodeError: Extra data: line 21 column 1`.
+        # The old `text[find('{') : rfind('}') + 1]` slice greedily
+        # included BOTH objects in the parse input and failed.
+        # `raw_decode` parses just the first object and ignores the
+        # rest.
+        text = (
+            '{"actions": [{"type": "RESCHEDULE", "hearing_key": "x"}]}\n'
+            '{"actions": [{"type": "CANCEL", "hearing_key": "y"}]}'
+        )
+        assert llm._parse_actions(text) == [
+            {"type": "RESCHEDULE", "hearing_key": "x"}
+        ]
+
+    def test_trailing_prose_after_json_is_ignored(self):
+        # Same fix covers the "valid JSON + trailing commentary" case:
+        # the LLM emits the object then narrates what it did.
+        text = (
+            '{"actions": [{"type": "ADD", "hearing_key": "x"}]}\n\n'
+            "I extracted one hearing from the entry above."
+        )
+        assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
+
+    def test_trailing_brace_in_prose_does_not_corrupt_parse(self):
+        # The old `rfind('}')` strategy would have captured a stray `}`
+        # in trailing prose and tried to parse the slice through it.
+        # `raw_decode` is bounded to the first valid JSON value, so
+        # punctuation in chatter past the object can't poison the parse.
+        text = (
+            '{"actions": [{"type": "IGNORE"}]}\n'
+            "Note: see also section { 3 } of the order."
+        )
+        assert llm._parse_actions(text) == [{"type": "IGNORE"}]
+
 
 # --- build_user_message ---
 

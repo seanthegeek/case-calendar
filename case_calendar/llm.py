@@ -771,12 +771,21 @@ def _parse_actions(raw: str) -> list[dict[str, Any]]:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE)
     start = text.find("{")
-    end = text.rfind("}")
-    if start == -1 or end == -1:
+    if start == -1:
         logger.warning("LLM returned no JSON object; raw=%r", text[:500])
         return [{"type": "IGNORE", "reason": "no JSON in response"}]
+    # Use `raw_decode` instead of slicing to the last `}` — the LLM
+    # sometimes returns two JSON objects in sequence (the actions
+    # object followed by a stray repetition or a commentary object),
+    # or valid JSON followed by trailing prose. Slicing
+    # ``text[start : rfind('}') + 1]`` swept the trailing content into
+    # the parse input and produced
+    # ``json.JSONDecodeError: Extra data: line 21 column 1`` —
+    # observed in production logs on a Ding motion-hearing extraction.
+    # `raw_decode` parses one JSON value starting at ``text[start:]``
+    # and ignores anything past its closing brace.
     try:
-        data = json.loads(text[start : end + 1])
+        data, _ = json.JSONDecoder().raw_decode(text[start:])
     except json.JSONDecodeError as e:
         logger.warning("LLM returned malformed JSON: %s; raw=%r", e, text[:500])
         return [{"type": "IGNORE", "reason": f"json parse error: {e}"}]
