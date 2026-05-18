@@ -247,36 +247,29 @@ class TestInit:
 
 
 class TestTransportErrorRetry:
-    """The httpx-retries `RetryTransport` configured in `__init__` retries
-    transient network failures (ReadTimeout, ConnectError,
-    RemoteProtocolError) at the transport layer. Before this, a single
-    ReadTimeout mid-sync — the CourtListener server going quiet for a
-    few seconds — propagated all the way up through `iter_entries` and
-    killed the whole run (the production traceback we observed:
-    `httpx.ReadTimeout: The read operation timed out`).
-
-    Tests go through the real `__init__` and swap the RetryTransport's
-    inner transport with a MockTransport, so the retry layer above is
-    the production layer — a future refactor that drops the
-    RetryTransport wrapping will fail these tests.
+    """`_get` retries transient transport errors (ReadTimeout, ConnectError,
+    RemoteProtocolError) in the same loop that handles 429 / 5xx. Before
+    in-house retry, a single ReadTimeout mid-sync — the CourtListener
+    server going quiet for a few seconds — propagated all the way up
+    through `iter_entries` and killed the whole run (the production
+    traceback we observed: `httpx.ReadTimeout: The read operation timed
+    out`). These tests go through the real `__init__` and swap the
+    httpx.Client's transport with a MockTransport so the retry layer
+    being exercised IS the production layer.
     """
 
     @pytest.fixture(autouse=True)
     def _no_real_sleep(self, monkeypatch):
-        # httpx-retries calls time.sleep between retries; skip it so
-        # tests run at memory speed. String-path setattr because
-        # `time` isn't a public re-export from httpx_retries.retry.
-        monkeypatch.setattr("httpx_retries.retry.time.sleep", lambda _s: None)
+        # _get's transport-error path calls time.sleep between attempts;
+        # skip it so tests run at memory speed.
+        monkeypatch.setattr(clmod.time, "sleep", lambda _s: None)
 
     @staticmethod
     def _install_mock_backend(cl: CourtListener, handler) -> None:
-        """Swap the RetryTransport's inner transport with a MockTransport
-        so requests go through the production retry layer with a
-        controlled backend. `_sync_transport` is the documented inner
-        attribute on httpx-retries' RetryTransport; setattr bypasses
-        pyright's BaseTransport-attribute check.
+        """Swap the client's transport with a MockTransport so requests go
+        through `_get`'s retry loop with a controlled backend.
         """
-        setattr(cl.client._transport, "_sync_transport", httpx.MockTransport(handler))
+        cl.client._transport = httpx.MockTransport(handler)
 
     def test_retries_read_timeout_then_succeeds(self):
         attempts = [0]
@@ -308,10 +301,9 @@ class TestTransportErrorRetry:
 
     def test_exhausted_retries_propagate_last_transport_error(self):
         # When every attempt fails, the last TransportError surfaces.
-        # `sync_case`'s new linear-control-flow shape (PR #4) means
-        # this propagation does NOT advance the docket's
-        # date_last_modified cutoff, so the next sync re-walks the
-        # docket — exactly what we want.
+        # `sync_case`'s linear-control-flow shape means this propagation
+        # does NOT advance the docket's date_last_modified cutoff, so
+        # the next sync re-walks the docket — exactly what we want.
         def handler(req: httpx.Request) -> httpx.Response:
             raise httpx.ReadTimeout("timed out", request=req)
 
@@ -319,6 +311,70 @@ class TestTransportErrorRetry:
         self._install_mock_backend(cl, handler)
         with pytest.raises(httpx.ReadTimeout):
             cl.get_docket(42)
+
+    def test_429_response_reaches_get_logging_and_cooldown(self, monkeypatch, caplog):
+        """Regression: when an external retry library handled 429 at the
+        transport layer (the prior httpx-retries setup), the response
+        never reached ``_get``'s logging or cooldown machinery, and
+        operators saw "hang" instead of "rate limited" for the
+        ~24h-Retry-After daily-bucket case. With retry now inline in
+        ``_get``, three signals must fire on every 429:
+          1. ``_get``'s "courtlistener 429" warning (URL / body /
+             rate-limit headers — operator visibility into which bucket
+             fired).
+          2. The cross-request cooldown barrier ``_no_request_before`` is
+             advanced.
+          3. The first sleep equals ``Retry-After + _RETRY_AFTER_BUFFER_SECONDS``.
+        """
+        slept: list[float] = []
+        # Override the autouse no-op sleep with one that records.
+        monkeypatch.setattr(clmod.time, "sleep", lambda s: slept.append(s))
+
+        calls = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            calls[0] += 1
+            if calls[0] == 1:
+                return httpx.Response(
+                    429,
+                    headers={"Retry-After": "7", "X-RateLimit-Remaining": "0"},
+                    json={"detail": "Throttled"},
+                )
+            return httpx.Response(200, json={"id": 42})
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+
+        with caplog.at_level("WARNING", logger="case_calendar.courtlistener"):
+            assert cl.get_docket(42)["id"] == 42
+
+        warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        assert any("courtlistener 429" in m for m in warning_messages), warning_messages
+        assert any("Retry-After" in m for m in warning_messages), warning_messages
+        assert cl._no_request_before > 0.0
+        assert slept, "expected at least one sleep call from _get"
+        assert slept[0] == 7.0 + clmod._RETRY_AFTER_BUFFER_SECONDS
+
+    def test_transport_retry_budget_caps_attempts(self, monkeypatch):
+        # `_TRANSPORT_RETRY_BUDGET` is a separate counter from the
+        # response-status retry loop, so a long stretch of transport
+        # errors gives up after `_TRANSPORT_RETRY_BUDGET + 1` attempts
+        # instead of consuming the 429-handling budget.
+        monkeypatch.setattr(clmod.time, "sleep", lambda _s: None)
+        attempts = [0]
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            attempts[0] += 1
+            raise httpx.ReadTimeout("timed out", request=req)
+
+        cl = CourtListener(token="x")
+        self._install_mock_backend(cl, handler)
+        with pytest.raises(httpx.ReadTimeout):
+            cl.get_docket(42)
+        # The first attempt counts as 1; subsequent attempts up to the
+        # budget cap then a final raise. Exact count: budget + 1 (the
+        # attempt that exhausts the budget is the one that re-raises).
+        assert attempts[0] == clmod._TRANSPORT_RETRY_BUDGET + 1
 
 
 class TestFollowsRedirects:

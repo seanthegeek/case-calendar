@@ -11,7 +11,6 @@ import time
 from typing import Any, Iterator, Optional
 
 import httpx
-from httpx_retries import Retry, RetryTransport
 
 API_BASE = "https://www.courtlistener.com/api/rest/v4"
 
@@ -31,6 +30,24 @@ log = logging.getLogger(__name__)
 # `_no_request_before` solve both. Tune up if 429 cascades come back.
 _RETRY_AFTER_BUFFER_SECONDS = 5.0
 
+# Transport-level exceptions worth retrying inside `_get`. A single
+# ReadTimeout / ConnectError / RemoteProtocolError mid-sync (the
+# CourtListener server going briefly quiet, a DNS blip, a TLS reset) used
+# to propagate up through `iter_entries` and kill the whole run. We retry
+# them in the same loop that handles 429 / 5xx so there's exactly one
+# place to reason about backoff and the cross-request cooldown.
+_RETRYABLE_TRANSPORT_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
+# Cap on transport-exception retries within a single `_get` call. Picked
+# to roughly match the prior httpx-retries `total=5` budget; the cap
+# applies independently of the response-status retry budget so a stretch
+# of transient transport errors followed by a real 429 still has the
+# whole 429-handling budget available.
+_TRANSPORT_RETRY_BUDGET = 5
+
 
 class CourtListener:
     def __init__(self, token: Optional[str] = None, timeout: float = 30.0):
@@ -48,24 +65,6 @@ class CourtListener:
             # hostname migration, trailing-slash normalization, or
             # similar reshape doesn't break the API client.
             follow_redirects=True,
-            # Retry transport-level failures (ReadTimeout, ConnectError,
-            # RemoteProtocolError, etc.) at the transport layer via the
-            # httpx-retries library. A single ReadTimeout mid-sync —
-            # the CourtListener server going quiet for a few seconds —
-            # previously propagated up through `iter_entries` and
-            # killed the whole run. `status_forcelist=[]` is deliberate:
-            # the `_get` loop below already handles 429 / 5xx with
-            # custom logging and a cross-request cooldown
-            # (`_no_request_before`) that the library's per-call retry
-            # can't express, so we let the library handle ONLY transport
-            # errors and keep the response-status retries on this side.
-            transport=RetryTransport(
-                retry=Retry(
-                    total=5,
-                    backoff_factor=0.5,
-                    status_forcelist=[],
-                ),
-            ),
         )
         # Earliest monotonic time at which the next request may be issued —
         # set when any call hits a 429, so subsequent calls on the same
@@ -80,7 +79,9 @@ class CourtListener:
             time.sleep(self._no_request_before - now)
 
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
-        """GET with retry on 429 (Retry-After) and 5xx (exponential backoff).
+        """GET with retry on 429 (Retry-After), 5xx (exponential backoff), and
+        transient transport exceptions (ReadTimeout / ConnectError /
+        RemoteProtocolError).
 
         Honors any Retry-After value, even multi-hour ones — CourtListener's free tier
         caps at 300/day and the daily bucket can legitimately ask for a wait
@@ -95,12 +96,41 @@ class CourtListener:
         the resulting cooldown is recorded on the client so subsequent
         calls also wait — without that, one call honors the backoff, the
         next call immediately re-trips it.
+
+        Transport-exception retries use a separate budget (``_TRANSPORT_RETRY_BUDGET``)
+        so a stretch of transient transport errors doesn't consume the
+        429/5xx retry budget that may still be needed for response-status
+        handling on the same call.
         """
         delay = 2.0
+        transport_delay = 0.5
+        transport_attempts = 0
         last_response: Optional[httpx.Response] = None
         for attempt in range(6):
             self._wait_for_window()
-            r = self.client.get(url, params=params)
+            try:
+                r = self.client.get(url, params=params)
+            except _RETRYABLE_TRANSPORT_EXCEPTIONS as e:
+                transport_attempts += 1
+                if transport_attempts > _TRANSPORT_RETRY_BUDGET:
+                    log.warning(
+                        "courtlistener transport error budget exhausted (%d attempts) for %s: %s",
+                        transport_attempts,
+                        url,
+                        e,
+                    )
+                    raise
+                log.warning(
+                    "courtlistener transport error (attempt %d/%d) for %s: %s; retrying in %.1fs",
+                    transport_attempts,
+                    _TRANSPORT_RETRY_BUDGET,
+                    url,
+                    e,
+                    transport_delay,
+                )
+                time.sleep(transport_delay)
+                transport_delay = min(transport_delay * 2, 30)
+                continue
             last_response = r
             if r.status_code == 429:
                 base_wait = float(r.headers.get("Retry-After", delay))

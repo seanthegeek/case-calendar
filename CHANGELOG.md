@@ -8,6 +8,70 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.5] - 2026-05-18
+
+### Fixed
+
+- `CourtListener._get` now sees and logs 429 responses instead of
+  silently sleeping at the transport layer. The 0.2.3 wiring of
+  `httpx-retries` was configured with `Retry(status_forcelist=[])`
+  intending to disable status-code retries — but the library treats
+  an empty list as falsy and falls back to its default
+  `{429, 502, 503, 504}`, so `RetryTransport` was intercepting 429
+  responses (including the daily-bucket Retry-After ~24h case) and
+  running its own `time.sleep` before the response ever reached
+  `_get`. That bypassed `_get`'s 429 warning log (URL / body /
+  rate-limit headers), the cross-request `_no_request_before`
+  cooldown barrier, and the `_RETRY_AFTER_BUFFER_SECONDS`
+  clock-drift buffer — operators saw "hang" instead of "rate
+  limited" and could not see which bucket fired. The hang reproduced
+  on a fresh-DB backfill that exhausted the daily quota mid-sync;
+  symptom was the sync producing no log output for hours, and the
+  index page rendering with no case summaries and naked docket-id
+  numbers (without links) for cases whose dockets were never
+  fetched.
+
+### Changed
+
+- Dropped the `httpx-retries` dependency entirely. The decision in
+  0.2.3 was to use the library for transport-error retries; the
+  silent-429 bug above made it clear the library's API edge
+  (the `or RETRYABLE_STATUS_CODES` fallback) was a sharp tool for
+  the CourtListener client specifically, where `_get` already has
+  its own response-status retry loop, and using both layers risked
+  cascade misconfiguration. Replaced with inline retries handled by
+  the same code paths that already retry 429 / 5xx:
+  - `courtlistener._get` now catches
+    `(httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError)`
+    inside its existing for-loop, with a separate
+    `_TRANSPORT_RETRY_BUDGET` of 5 attempts.
+  - `pdf.fetch_pdf_bytes` and `pdf.fetch_url_bytes` go through a
+    new `_get_with_retry` helper that retries transport exceptions
+    AND the same gateway-style status set (`429, 502, 503, 504`)
+    that the library's default covered.
+  - `url_validator._check` calls a new `_request_with_retry` that
+    retries the narrow transport-exception set; non-retryable
+    `httpx.RequestError` subclasses fail through to "flake" on
+    the first hit as before.
+  Behavior on transient transport blips is preserved across all
+  three call sites; the visible change is the missing 429
+  silent-sleep regression and one fewer dependency.
+
+### Added
+
+- `tests/test_courtlistener.py::TestTransportErrorRetry::test_429_response_reaches_get_logging_and_cooldown`
+  pins the 429-visibility regression: the test exercises the
+  production transport stack and asserts the warning log fires, the
+  `_no_request_before` cooldown advances, and the first sleep equals
+  `Retry-After + _RETRY_AFTER_BUFFER_SECONDS`. Confirmed to fail on
+  the 0.2.4 codebase before the fix.
+
+### Removed
+
+- Dependency on `httpx-retries`.
+
+[0.2.5]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.5
+
 ## [0.2.4] - 2026-05-18
 
 ### Fixed

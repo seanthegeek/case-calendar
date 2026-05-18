@@ -16,11 +16,11 @@ are not (so a transient flake gets retried on the next sync).
 from __future__ import annotations
 
 import logging
+import time
 from typing import Optional
 from urllib.parse import urlparse
 
 import httpx
-from httpx_retries import Retry, RetryTransport
 
 log = logging.getLogger(__name__)
 
@@ -33,7 +33,13 @@ _TIMEOUT = 5.0
 # validator already fails open when every attempt yields a transport
 # error, so the only cost of retry exhaustion is keeping the original
 # URL unchanged — same as the pre-retry behavior.
-_VALIDATE_RETRY = Retry(total=3, backoff_factor=0.25)
+_VALIDATE_RETRY_TOTAL = 3
+_VALIDATE_RETRY_INITIAL_BACKOFF = 0.25
+_VALIDATE_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.TimeoutException,
+    httpx.NetworkError,
+    httpx.RemoteProtocolError,
+)
 _cache: dict[str, str] = {}
 
 
@@ -57,11 +63,7 @@ def validate_url(url: str, *, client: Optional[httpx.Client] = None) -> Optional
 
     own_client = client is None
     if own_client:
-        client = httpx.Client(
-            timeout=_TIMEOUT,
-            follow_redirects=True,
-            transport=RetryTransport(retry=_VALIDATE_RETRY),
-        )
+        client = httpx.Client(timeout=_TIMEOUT, follow_redirects=True)
     try:
         result, definite_failure = _walk_candidates(url, client)
     except Exception as e:
@@ -107,16 +109,46 @@ def _walk_candidates(url: str, client: httpx.Client) -> tuple[Optional[str], boo
     return None, saw_4xx
 
 
+def _request_with_retry(
+    method: str, url: str, client: httpx.Client
+) -> Optional[httpx.Response]:
+    """Issue ``method`` against ``url`` with retry on transport errors.
+
+    Returns the response on success (any status), or ``None`` when every
+    attempt raised a transport error. ``httpx.RequestError`` covers the
+    same NetworkError / TimeoutException / RemoteProtocolError set we
+    retry elsewhere in the codebase; we catch the wider parent here so a
+    less common protocol-level error (e.g. an invalid URL synthesized by
+    the LLM) is also treated as a flake rather than crashing validation.
+    """
+    backoff = _VALIDATE_RETRY_INITIAL_BACKOFF
+    for attempt in range(1, _VALIDATE_RETRY_TOTAL + 1):
+        try:
+            return client.request(method, url)
+        except _VALIDATE_RETRYABLE_EXCEPTIONS as e:
+            if attempt == _VALIDATE_RETRY_TOTAL:
+                log.info(
+                    "URL validate transport error budget exhausted for %s %s: %s",
+                    method,
+                    url,
+                    e,
+                )
+                return None
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 4)
+        except httpx.RequestError:
+            return None
+    return None  # unreachable: every path inside the loop returns
+
+
 def _check(url: str, client: httpx.Client) -> str:
     """Returns 'ok', '4xx', or 'flake'."""
-    try:
-        r = client.head(url)
-    except httpx.RequestError:
+    r = _request_with_retry("HEAD", url, client)
+    if r is None:
         return "flake"
     if r.status_code == 405:  # some servers don't implement HEAD
-        try:
-            r = client.get(url)
-        except httpx.RequestError:
+        r = _request_with_retry("GET", url, client)
+        if r is None:
             return "flake"
     if r.status_code < 400:
         return "ok"
