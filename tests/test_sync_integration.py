@@ -2986,6 +2986,75 @@ class TestDedupeConcurrentHeldHearings:
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats.get("deduped_held", 0) == 0
 
+    def test_merges_dedup_overlapping_source_entry_ids(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        # When the canonical row and the duplicate share one or more
+        # source_entry_ids (common when both CL siblings cite the same
+        # PACER minute-entry as the source for their respective held
+        # rows), the merge must dedup those ids — emitting [10, 11, 99]
+        # instead of [10, 11, 10, 99]. Exercises the "sid already in
+        # seen, skip" path inside the per-cluster merge loop.
+        # Use the same docket_number / court_id as `_docket()` so the
+        # CL re-fetch during sync_case doesn't overwrite our seed under
+        # a different group key (which would split the cluster).
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "United States v. X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        slot = "2026-03-04T15:30:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                # Canonical: more sources, picked as target.
+                "source_entry_ids": [10, 11],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x-2",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 101,
+                # Duplicate: 10 overlaps with canonical; 99 is new.
+                "source_entry_ids": [10, 99],
+            }
+        )
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("LLM should not be consulted for held cluster")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_held"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # 10 appears once, not twice — the dedup branch fired.
+        assert rows["sentencing-x"]["source_entry_ids"] == [10, 11, 99]
+
     def test_scheduled_rows_at_same_slot_are_not_picked_up(
         self,
         store,

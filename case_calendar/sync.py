@@ -1010,8 +1010,13 @@ class CaseSyncer:
                 case.case_id,
             )
 
-        if n_cancelled:
-            self.store.conn.commit()
+        # Unconditional commit: the early-return at the top of this
+        # function guarantees we only reach here when `clusters` was
+        # non-empty, which means at least one row was cancelled.
+        # Guarding on `n_cancelled` would be dead code (the AGENTS.md
+        # testing philosophy treats unreachable defensive code as a
+        # test smell).
+        self.store.conn.commit()
         return n_cancelled
 
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:

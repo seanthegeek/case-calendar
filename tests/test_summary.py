@@ -2297,14 +2297,29 @@ class TestExtraDocuments:
         # the extra stays. Whitespace-only differences DO dedup (see
         # the _text_fingerprint normalization), but substantive content
         # differences (different PDFs, different documents) do not.
+        # Both bodies are intentionally well above the 100-char
+        # fingerprint threshold so the dedup compare actually runs
+        # end-to-end (and falls through to the keep-the-extra branch).
         _seed_docket_meta(store, 1)
-        patch_pdf["texts"] = {500: "CourtListener INDICTMENT body, count one alleges..."}
+        cl_body = (
+            "CourtListener INDICTMENT body, charging conspiracy to commit "
+            "computer fraud and abuse under 18 U.S.C. § 1030. Count One "
+            "alleges that the defendant accessed protected computers "
+            "without authorization. Count Two alleges aggravated identity "
+            "theft under 18 U.S.C. § 1028A."
+        )
+        op_body = (
+            "Operator-supplied SENTENCING MEMORANDUM in aid of sentencing. "
+            "The Government submits this memorandum to assist the Court in "
+            "fashioning a sentence under 18 U.S.C. § 3553(a). The defendant "
+            "stands convicted of one count of wire fraud and faces a "
+            "guidelines range of 24-30 months."
+        )
+        patch_pdf["texts"] = {500: cl_body}
         monkeypatch.setattr(
             summary.pdf,
             "extract_text_from_url",
-            lambda url, allow_ocr=True: (
-                "Operator-supplied SENTENCING MEMORANDUM, different document"
-            ),
+            lambda url, allow_ocr=True: op_body,
         )
         cl = _FakeCourtListener(
             {
@@ -2336,6 +2351,34 @@ class TestExtraDocuments:
         assert len(patch_llm[0]["extra_documents"]) == 1
         assert patch_llm[0]["extra_documents"][0]["source_url"] == (
             "https://example.gov/memo.pdf"
+        )
+
+    def test_text_fingerprint_short_circuits_on_falsy_or_short_input(self):
+        # Direct unit test for the two short-circuits in _text_fingerprint:
+        # falsy input returns None outright (we never call sha256 on
+        # nothing), and too-short normalized text also returns None (short
+        # bodies are mostly boilerplate, false-positive matches would be
+        # noisy). Both branches matter for `_filter_extras_already_in_cl`
+        # — without the falsy short-circuit it would crash on docs whose
+        # text key is missing, and without the length floor it would
+        # treat any two short PDFs that share a caption as duplicates.
+        assert summary._text_fingerprint(None) is None
+        assert summary._text_fingerprint("") is None
+        assert summary._text_fingerprint("   \n\t  ") is None
+        # Whitespace-only but long enough to survive normalization is
+        # still falsy after `.strip()`, so we fall into the length check
+        # and bail.
+        assert summary._text_fingerprint("a short string") is None
+        # Identical-after-normalization inputs produce identical hashes,
+        # which is what makes the dedup tolerant of pypdf-vs-CourtListener
+        # extraction nits. Bodies are well over 100 chars.
+        body = (
+            "This is an INDICTMENT against John Doe charging one count of "
+            "conspiracy to commit wire fraud in violation of 18 U.S.C. § 1349 "
+            "and one count of aggravated identity theft."
+        )
+        assert summary._text_fingerprint(body) == summary._text_fingerprint(
+            "  " + body.upper() + "  \n"
         )
 
     def test_extras_alone_satisfy_content_gate(
