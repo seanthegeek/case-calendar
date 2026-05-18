@@ -304,7 +304,10 @@ class TestFetchPdfBytes:
             "filepath_local": "recap/foo.pdf",
         }
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF cl bytes"
-        assert any("storage.courtlistener.com" in u for u in seen)
+        assert any(
+            (urlparse(u).hostname or "").lower() == "storage.courtlistener.com"
+            for u in seen
+        )
 
     def test_network_error_falls_through(self, monkeypatch):
         # First URL throws; second URL succeeds. Tests the try/except path.
@@ -402,8 +405,11 @@ class TestFetchPdfBytes:
         # logged and fell through to the CL storage URL which served
         # the bytes.
         assert result == b"%PDF cl bytes"
-        assert seen[0].startswith("https://archive.org/")
-        assert any("storage.courtlistener.com" in u for u in seen)
+        assert (urlparse(seen[0]).hostname or "").lower() == "archive.org"
+        assert any(
+            (urlparse(u).hostname or "").lower() == "storage.courtlistener.com"
+            for u in seen
+        )
 
     def test_transport_error_budget_exhausted_falls_through_to_next_url(
         self, monkeypatch
@@ -432,14 +438,16 @@ class TestFetchPdfBytes:
         )
         assert result == b"%PDF from CL storage"
         # IA was retried up to the budget, then CL storage succeeded
-        # first try.
-        ia_hits = sum(
-            1
-            for u in urls_seen
-            if (urlparse(u).hostname or "").lower().endswith("archive.org")
-        )
+        # first try. Use exact hostname match (CodeQL flags
+        # substring / endswith comparisons as
+        # `py/incomplete-url-substring-sanitization` because
+        # `evil-archive.org` would otherwise pass).
+        def _host(url: str) -> str:
+            return (urlparse(url).hostname or "").lower()
+
+        ia_hits = sum(1 for u in urls_seen if _host(u) == "archive.org")
         assert ia_hits == pdf._PDF_RETRY_TOTAL
-        assert any("storage.courtlistener.com" in u for u in urls_seen)
+        assert any(_host(u) == "storage.courtlistener.com" for u in urls_seen)
 
 
 class TestExtractWithPypdfHappyPath:
