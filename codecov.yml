@@ -12,11 +12,18 @@ coverage:
         threshold: 1%
     patch:
       default:
-        # New code (the diff) should be 90%+ covered. This is where
-        # gaps actually matter — a PR that adds an uncovered branch
-        # is the failure mode worth catching, even when overall
-        # project coverage is still healthy.
-        target: 90%
+        # New code (the diff) must be covered at the project's current
+        # level — `auto` resolves to the base commit's overall coverage
+        # (~97% at the time of writing). The earlier 90% target was
+        # loose enough that PR #3 merged with patch=93.83% and left 14
+        # uncovered branches in newly-added code, which we then had to
+        # clean up in PR #5. `auto` catches that class of gap at PR
+        # time instead. Trade-off: very small PRs (a handful of lines)
+        # are forced toward 100% diff coverage; if that ever bites a
+        # legitimate defensive branch, the right escape hatch is to
+        # either delete the branch (AGENTS.md treats unreachable
+        # defensive code as a test smell) or write the test.
+        target: auto
 
 # Show inline annotations on the PR diff so uncovered lines are
 # visible right where they were added, not just in the summary.
