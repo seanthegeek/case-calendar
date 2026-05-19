@@ -39,6 +39,21 @@ adheres to [Semantic Versioning][semver].
   `_entry_looks_stale`. Only the entries that look stale are dropped
   from the cache view; fresh ones stay so the CL fallthrough doesn't
   re-fetch their text unnecessarily.
+- `pdf.looks_garbled` now also flags PACER-page-header-only output,
+  not just font-encoding gibberish. Image-only scans with a thin OCR
+  overlay on the page-header band let pypdf read several KB of clean
+  ASCII off every page, but the document body never reaches the
+  caller — the alpha-ratio gate passed trivially (page stamps are
+  mostly letters and digits) and the OCR fallback never ran. The
+  us-v-schmitz indictment was the canonical case: pypdf returned 1538
+  chars of pure header stamps from an 18-page scan that OCRs cleanly
+  to 20 KB of real body text. The detector now strips the standard
+  PACER stamp pattern (`Case <docket> Document <n> [Filed <date>]
+  [Page <i> of <n>] [PageID:/Page ID #: <id>]`) and treats the result
+  as useless if less than 100 chars of body survive — same caller
+  contract as the gibberish check, fall through to the next stage.
+  The two failure modes are now documented side-by-side in the
+  expanded AGENTS.md "Garbled `plain_text`" design note.
 
 ### Changed
 
