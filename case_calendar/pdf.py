@@ -74,9 +74,6 @@ _MIN_USEFUL_CHARS = 100
 # #:305") still come in over 50% alpha. Garbled extracts reliably land
 # under 10%. 0.4 leaves a comfortable margin on both sides.
 _MIN_ALPHA_RATIO = 0.4
-# The ratio is too noisy on tiny strings; trust short extracts at face
-# value (a real document would fail ``_MIN_USEFUL_CHARS`` anyway).
-_GARBLED_MIN_LEN = 100
 
 
 # PACER page-header boilerplate. Every page in every PACER-source PDF
@@ -93,7 +90,7 @@ _GARBLED_MIN_LEN = 100
 # clean ASCII — passes the alpha-ratio gate — but the document body
 # (which lives only in the page images, not in any text layer) never
 # reaches the caller. The document itself has full content; the
-# EXTRACTION is the part that's stamps-only. ``looks_garbled`` flags
+# EXTRACTION is the part that's stamps-only. ``is_usable_text`` rejects
 # both this case and font-encoding gibberish so callers fall through
 # to the OCR stage.
 _PACER_PAGE_HEADER_RE = re.compile(
@@ -106,39 +103,47 @@ _PACER_PAGE_HEADER_RE = re.compile(
 )
 
 
-def looks_garbled(text: str) -> bool:
-    """Detect extracted text that's useless content, not real document body.
+def is_usable_text(text: str) -> bool:
+    """Return True when ``text`` is long enough and clean enough to use.
 
-    Catches two failure modes that callers treat the same way (fall
-    through to the next extraction stage):
+    Single positive predicate that callers in the extraction chain use
+    to decide whether to keep an extraction result or fall through to
+    the next stage (CourtListener ``plain_text`` → local pypdf → OCR).
+    Bundles three checks the callers used to do separately:
 
-    1. **Font-encoding gibberish** — PDFs using custom font subsets
+    1. **Length** — at least ``_MIN_USEFUL_CHARS``. A 2-page+ document
+       extracting to under 100 chars almost certainly failed; don't
+       burn the cost of feeding it to the summary LLM.
+    2. **Font-encoding gibberish** — PDFs using custom font subsets
        without a `/ToUnicode` map produce text whose alpha-character
-       ratio falls below ``_MIN_ALPHA_RATIO``. This is the original
-       signal the function was written for (us-v-dubranova case).
-    2. **PACER stamps with no body** — image-only scans with a thin OCR
+       ratio falls below ``_MIN_ALPHA_RATIO`` (us-v-dubranova case).
+    3. **PACER stamps with no body** — image-only scans with a thin OCR
        overlay covering just the page-header band let pypdf read clean
        ASCII headers off every page but the document body never
        reaches the caller. The text passes the alpha-ratio gate
        trivially (page stamps are mostly letters and digits) but
        contains nothing the summary LLM can use. Strip the stamps; if
-       less than ``_MIN_USEFUL_CHARS`` of residue remains, treat as
-       useless. The us-v-schmitz indictment was the canonical case.
+       less than ``_MIN_USEFUL_CHARS`` of residue remains, reject. The
+       us-v-schmitz indictment was the canonical case.
 
-    Returns False for short inputs (under ``_GARBLED_MIN_LEN`` / under
-    ``_MIN_USEFUL_CHARS``); the upstream length gate already covers
-    that and applying either ratio test to a snippet misfires.
+    The function was historically named ``looks_garbled`` and returned
+    True for unusable text. Inverted so callers read positively
+    (``if is_usable_text(text): return text`` reads more naturally than
+    the old ``len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text)``
+    pairing) and so the name reflects every check, not just the original
+    garbled-detection one.
     """
+    if len(text) < _MIN_USEFUL_CHARS:
+        return False
     nonws = "".join(text.split())
-    if len(nonws) >= _GARBLED_MIN_LEN:
+    if nonws:
         alpha = sum(1 for c in nonws if c.isascii() and c.isalpha())
         if (alpha / len(nonws)) < _MIN_ALPHA_RATIO:
-            return True
-    if len(text) >= _MIN_USEFUL_CHARS:
-        residue = _PACER_PAGE_HEADER_RE.sub("", text).strip()
-        if len(residue) < _MIN_USEFUL_CHARS:
-            return True
-    return False
+            return False
+    residue = _PACER_PAGE_HEADER_RE.sub("", text).strip()
+    if len(residue) < _MIN_USEFUL_CHARS:
+        return False
+    return True
 
 
 def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
@@ -330,11 +335,11 @@ def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
     if not pdf_bytes:
         return None
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
+    if is_usable_text(text):
         return text
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
+        if is_usable_text(ocr):
             return ocr
     return text or None
 
@@ -343,23 +348,23 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 
     Order of operations:
-      1. Use ``plain_text`` from CourtListener if non-empty AND not
-         garbled. ``looks_garbled`` rejects both font-encoding
-         gibberish and PACER-stamps-only extractions (see its
-         docstring), so this catches both upstream-failed-encoding
-         and upstream-failed-image-OCR cases the same way.
+      1. Use ``plain_text`` from CourtListener if ``is_usable_text``
+         passes — that bundles length, font-encoding gibberish, and
+         PACER-stamps-only detection in one check, so this catches
+         upstream-failed-encoding, upstream-failed-image-OCR, and
+         short-stub cases the same way.
       2. If the PDF is sealed, return None — never going to be available.
       3. If not is_available, return None — not on RECAP yet; we'll retry
          on next sync once the fingerprint changes.
-      4. Download the PDF, try pypdf (rejecting garbled output), then
-         optionally tesseract OCR (also rejecting garbled output).
+      4. Download the PDF, try pypdf (gated by ``is_usable_text``), then
+         optionally tesseract OCR (also gated by ``is_usable_text``).
     """
     plain = (rd.get("plain_text") or "").strip()
-    if plain and not looks_garbled(plain):
+    if is_usable_text(plain):
         return plain
     if plain:
         log.info(
-            "extract_text: CourtListener plain_text looks garbled (len=%d), "
+            "extract_text: CourtListener plain_text not usable (len=%d), "
             "falling through to local extraction",
             len(plain),
         )
@@ -371,19 +376,19 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
 
     pdf_bytes = fetch_pdf_bytes(rd)
     if not pdf_bytes:
-        # Couldn't fetch a fresh copy — better to return the garbled plain
+        # Couldn't fetch a fresh copy — better to return the unusable plain
         # text than nothing at all so callers can at least see the entry
         # was attempted; the summary LLM is briefed to refuse synthesis on
         # nonsense input.
         return plain or None
 
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
+    if is_usable_text(text):
         return text
 
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
+        if is_usable_text(ocr):
             return ocr
 
     return text or plain or None
