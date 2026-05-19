@@ -237,6 +237,21 @@ docket text doesn't say it, it doesn't go in `notes`. Pipeline reasoning
 belongs in the separate audit-trail column the system maintains; it is
 not your job to write there, and you do not have a way to.
 
+`notes` formatting rules (these are JSON safety rules — violating them
+breaks the parser):
+- One short sentence, at most ~200 characters. Long quotes from the
+  entry belong in the PDF text the verify pass already reads from the
+  docket, not duplicated into `notes`.
+- DO NOT include unescaped double-quote characters (`"`) inside the
+  notes string. If a docket entry phrase needs to be cited, paraphrase
+  it or use single quotes — e.g. write
+  `Court denied 'motion to compel'` not
+  `Court denied "motion to compel"`. Unescaped `"` terminates the JSON
+  string early, the next entry's fields parse against the wrong grammar,
+  and the whole actions object becomes unrecoverable.
+- DO NOT include literal newlines, tabs, or other control characters.
+  Stay on one line.
+
 If the user message includes a "RELATED DOCKET ENTRIES" block, those are
 recent entries on the same docket — either explicitly cited by the new
 entry ("granting 65 Motion ...") or just the last few hearing-relevant
@@ -374,7 +389,7 @@ Return ONLY a JSON object, no markdown fences, no explanation:
       "location": "string" | null,     // courtroom/courthouse/"video"/"telephonic"
       "judge": "string" | null,
       "dial_in": "string" | null,      // phone, Zoom link, etc.
-      "notes": "string" | null,        // anything else useful
+      "notes": "string" | null,        // ≤200 chars, no embedded `"`, no newlines
       "reason": "string"               // 1-sentence justification
     }
   ]
@@ -507,11 +522,13 @@ within 21 days after resolution of [the related case]", "responses due
 complaint due 30 days after the court issues its order on the motion to
 dismiss". You MUST NOT estimate a calendar date for these. Instead:
 - Emit ADD_DEADLINE with `local_date: null` and `conditional: true`.
-- Put the court's VERBATIM trigger language in `notes` (e.g. "Appellants
-  must file a motion for appropriate relief within 21 days after
-  resolution of Anthropic PBC v. U.S. Department of War, No. 26-1049
-  (D.C. Cir.)"). The case-summary renderer reads `notes` directly and
-  describes the deadline in the court's own words.
+- Put the court's trigger language in `notes`, as close to verbatim as
+  the JSON-safety rules allow — paraphrase only when the original text
+  contains an unescaped `"`, a newline, or runs past ~200 chars (e.g.
+  "Appellants must file a motion for appropriate relief within 21 days
+  after resolution of Anthropic PBC v. U.S. Department of War, No.
+  26-1049 (D.C. Cir.)"). The case-summary renderer reads `notes`
+  directly and describes the deadline in the court's own words.
 - The calendar layer skips rows with `local_date: null`, so no fake
   date will appear. The deadline still flows into the audit trail and
   the case summary — just not the ICS feeds.
@@ -549,7 +566,10 @@ deadline actions:
                                     // is null because the deadline runs from
                                     // an unknown future event
       "significance": "major" | "minor",
-      "notes": "string" | null,     // verbatim court text on conditional deadlines
+      "notes": "string" | null,     // verbatim trigger language on conditional
+                                    // deadlines; ≤200 chars, no embedded `"`,
+                                    // no newlines (same JSON-safety rules as
+                                    // the hearing-action `notes` field)
       "reason": "string"
     }
   ]
@@ -820,13 +840,54 @@ def _parse_actions(raw: str) -> list[dict[str, Any]]:
     # observed in production logs on a Ding motion-hearing extraction.
     # `raw_decode` parses one JSON value starting at ``text[start:]``
     # and ignores anything past its closing brace.
+    payload = text[start:]
     try:
-        data, _ = json.JSONDecoder().raw_decode(text[start:])
+        data, _ = json.JSONDecoder().raw_decode(payload)
     except json.JSONDecodeError as e:
-        logger.warning("LLM returned malformed JSON: %s; raw=%r", e, text[:500])
-        return [{"type": "IGNORE", "reason": f"json parse error: {e}"}]
+        # Prompt rules forbid unescaped quotes / newlines inside `notes`,
+        # but Haiku occasionally violates them on long notes — observed
+        # in production logs on a Ding Daubert-hearing MARK_HELD where
+        # the notes field contained the entry text with embedded quotes.
+        # `json_repair` recovers the common shapes (unescaped quotes,
+        # stray newlines, missing commas) before we give up and IGNORE.
+        # The OutputTruncatedError path catches truncation at the
+        # provider level, so this fallback only runs on responses that
+        # completed but happened to be malformed.
+        data = _try_json_repair(payload)
+        if data is None:
+            logger.warning(
+                "LLM returned malformed JSON unrecoverable by repair: %s; raw=%r",
+                e,
+                text[:500],
+            )
+            return [{"type": "IGNORE", "reason": f"json parse error: {e}"}]
+        logger.warning(
+            "LLM returned malformed JSON; recovered via json_repair "
+            "(original parse error: %s)",
+            e,
+        )
     actions = data.get("actions", [])
     return actions if isinstance(actions, list) else []
+
+
+def _try_json_repair(payload: str) -> dict[str, Any] | None:
+    """Run ``json_repair`` against a payload that the stdlib parser
+    couldn't decode. Returns the repaired dict when it carries an
+    ``actions`` key, otherwise None so the caller falls through to the
+    IGNORE-on-failure path. Repair output without an ``actions`` key
+    is treated as unrecoverable — a successful repair that produced a
+    different shape would still leave us with no usable actions and
+    would only obscure the failure mode in logs.
+    """
+    from json_repair import repair_json
+
+    try:
+        repaired = repair_json(payload, return_objects=True)
+    except Exception:
+        return None
+    if not isinstance(repaired, dict) or "actions" not in repaired:
+        return None
+    return repaired
 
 
 # ---------------------------------------------------------------------------

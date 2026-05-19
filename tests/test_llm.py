@@ -78,11 +78,6 @@ class TestParseActions:
         assert len(result) == 1
         assert result[0]["type"] == "IGNORE"
 
-    def test_malformed_json_returns_ignore(self):
-        result = llm._parse_actions('{"actions": [{...broken}]}')
-        assert len(result) == 1
-        assert result[0]["type"] == "IGNORE"
-
     def test_actions_not_list_returns_empty(self):
         assert llm._parse_actions('{"actions": "not a list"}') == []
 
@@ -122,6 +117,78 @@ class TestParseActions:
             "Note: see also section { 3 } of the order."
         )
         assert llm._parse_actions(text) == [{"type": "IGNORE"}]
+
+    def test_unescaped_quote_in_notes_recovers_via_repair(self, caplog):
+        # Production failure shape (us-v-ding, 2026-05-19): Haiku emitted
+        # an unescaped `"` inside a long `notes` string, terminating
+        # the value early and producing
+        # `json.JSONDecodeError: Expecting ',' delimiter`. The prompt
+        # rules now forbid this, but as a belt-and-suspenders fallback
+        # `_parse_actions` runs json_repair on parse failure. The
+        # MARK_HELD action's identity fields (type, hearing_key,
+        # local_date) are well-formed and recoverable; the notes field
+        # may come back truncated or with the inner quotes flattened —
+        # acceptable, the action's downstream effect doesn't depend on
+        # notes content.
+        text = (
+            '{"actions": [{"type": "MARK_HELD", "hearing_key": "daubert-segal-ding", '
+            '"local_date": "2025-12-05", "notes": "Minute entry shows "Daubert" '
+            'hearing held; court ruled from the bench."}]}'
+        )
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            actions = llm._parse_actions(text)
+        assert len(actions) == 1
+        assert actions[0]["type"] == "MARK_HELD"
+        assert actions[0]["hearing_key"] == "daubert-segal-ding"
+        assert actions[0]["local_date"] == "2025-12-05"
+        # Operator-visible WARNING names the repair path and the
+        # original parse error so log greps can track frequency without
+        # the entry being silently dropped.
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "recovered via json_repair" in msg
+
+    def test_unrecoverable_malformed_json_returns_ignore(self, caplog):
+        # When json_repair can't produce a dict with an `actions` key
+        # we fall through to the IGNORE-on-failure path with a clear
+        # WARNING — distinct from the repair-success path so the two
+        # outcomes are filterable in logs.
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            result = llm._parse_actions("{not even close to valid")
+        assert len(result) == 1
+        assert result[0]["type"] == "IGNORE"
+        assert "json parse error" in result[0]["reason"]
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "unrecoverable by repair" in msg
+
+    def test_repair_returning_non_dict_falls_through_to_ignore(self, monkeypatch):
+        # json_repair occasionally returns `""` / `[]` / scalars when it
+        # can't make sense of the input. `_try_json_repair` returns None
+        # in that case so the caller's IGNORE fallback fires instead of
+        # a silent empty-actions success.
+        monkeypatch.setattr("json_repair.repair_json", lambda *a, **kw: "not a dict")
+        out = llm._try_json_repair('{"actions":')
+        assert out is None
+
+    def test_repair_returning_dict_without_actions_falls_through(self, monkeypatch):
+        # A dict without the `actions` key is unusable — repair found
+        # SOMETHING valid but not the shape we need, treat as failure.
+        monkeypatch.setattr(
+            "json_repair.repair_json", lambda *a, **kw: {"other": "stuff"}
+        )
+        out = llm._try_json_repair('{"oops":')
+        assert out is None
+
+    def test_repair_raising_exception_falls_through(self, monkeypatch):
+        # Defensive: if json_repair itself raises, `_try_json_repair`
+        # swallows it and returns None so the caller's IGNORE fallback
+        # is reached cleanly — we never propagate an unrelated library
+        # exception out of the parse path.
+        def boom(*a, **kw):
+            raise ValueError("repair internals exploded")
+
+        monkeypatch.setattr("json_repair.repair_json", boom)
+        out = llm._try_json_repair('{"oops":')
+        assert out is None
 
 
 # --- build_user_message ---
