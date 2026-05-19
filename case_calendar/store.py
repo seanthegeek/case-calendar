@@ -200,6 +200,20 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _decode_source_entry_ids(value: Optional[str]) -> list[int]:
+    """JSON-decode a ``source_entry_ids`` column with a corruption-tolerant
+    fallback. A manually-edited or partially-written row shouldn't crash
+    every caller that reads it — fall back to an empty list so the row's
+    provenance is lost but the sync continues. Used by ``_row_to_hearing``,
+    ``_row_to_deadline``, and the case-summary getters; previously
+    open-coded identically at six sites across store.py + sync.py.
+    """
+    try:
+        return json.loads(value or "[]")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return []
+
+
 _AUDIT_PARAGRAPH_PREFIXES = ("[verify-pass]", "[dedupe]")
 
 
@@ -1128,15 +1142,7 @@ class Store:
     @staticmethod
     def _row_to_hearing(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        # source_entry_ids is JSON; a corrupted column (manual SQL edit,
-        # aborted migration, partial write) shouldn't crash every caller
-        # that reads the row. Fall back to an empty list and keep going —
-        # the verify sweeps and any downstream LLM context just lose one
-        # row's provenance, not the whole sync.
-        try:
-            d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            d["source_entry_ids"] = []
+        d["source_entry_ids"] = _decode_source_entry_ids(d.get("source_entry_ids"))
         return d
 
     # --- deadlines ---
@@ -1228,11 +1234,7 @@ class Store:
     @staticmethod
     def _row_to_deadline(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
-        # Same corruption-tolerant fallback as `_row_to_hearing`.
-        try:
-            d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
-        except (json.JSONDecodeError, TypeError):
-            d["source_entry_ids"] = []
+        d["source_entry_ids"] = _decode_source_entry_ids(d.get("source_entry_ids"))
         return d
 
     # --- case summaries ---
@@ -1346,10 +1348,7 @@ class Store:
         out = []
         for r in rows:
             d = dict(r)
-            try:
-                d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
-            except (TypeError, ValueError):
-                d["source_entry_ids"] = []
+            d["source_entry_ids"] = _decode_source_entry_ids(d.get("source_entry_ids"))
             out.append(d)
         return out
 
@@ -1365,10 +1364,7 @@ class Store:
         if not row:
             return None
         d = dict(row)
-        try:
-            d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
-        except (TypeError, ValueError):
-            d["source_entry_ids"] = []
+        d["source_entry_ids"] = _decode_source_entry_ids(d.get("source_entry_ids"))
         return d
 
     # --- webhook idempotency ---

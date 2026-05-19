@@ -12,7 +12,6 @@ For each case we:
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -768,13 +767,7 @@ class CaseSyncer:
 
         n_changed = 0
         for r in rows:
-            hearing = dict(r)
-            try:
-                hearing["source_entry_ids"] = json.loads(
-                    hearing.get("source_entry_ids") or "[]"
-                )
-            except (json.JSONDecodeError, TypeError):
-                hearing["source_entry_ids"] = []
+            hearing = Store._row_to_hearing(r)
 
             docket_id = hearing.get("docket_id")
             if not docket_id:
@@ -1119,11 +1112,7 @@ class CaseSyncer:
 
         n_changed = 0
         for r in rows:
-            d = dict(r)
-            try:
-                d["source_entry_ids"] = json.loads(d.get("source_entry_ids") or "[]")
-            except (json.JSONDecodeError, TypeError):
-                d["source_entry_ids"] = []
+            d = Store._row_to_deadline(r)
 
             docket_id = d.get("docket_id")
             if not docket_id:

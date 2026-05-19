@@ -21,7 +21,7 @@ from typing import Iterable
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from ..courts import DEFAULT_TZ
-from .description import build as build_description
+from .description import build_description_for_row, is_calendar_visible, has_no_time
 
 
 def _tz_is_known(tz: str) -> bool:
@@ -82,13 +82,9 @@ def render_ics(*, calendar_name: str, hearings: Iterable[dict]) -> str:
         f"X-WR-CALNAME:{_escape(calendar_name)}",
     ]
     for h in hearings:
-        if not h.get("starts_at_utc"):
-            continue  # nothing to put on a calendar without a date
-        if h.get("significance") == "minor":
-            # Procedural-only events (phone calls to grant a continuance,
-            # scheduling-only conferences) are stored for the audit trail
-            # but kept off the calendar. The user only wants major moments
-            # — substantive proceedings and dialable events.
+        if not is_calendar_visible(h):
+            # No date, or significance='minor' (procedural-only events
+            # stay in the DB for audit but off the calendar).
             continue
         if h.get("status") == "cancelled":
             # A trial cancelled by a plea (or any other cancellation) is
@@ -98,21 +94,11 @@ def render_ics(*, calendar_name: str, hearings: Iterable[dict]) -> str:
             continue
         uid = f"{h['case_id']}--{h['hearing_key']}@case-calendar"
         title = h["title"]
-        no_time = not (h.get("duration_minutes") and h["duration_minutes"] > 0)
+        no_time = has_no_time(h)
 
         location = h.get("location") or ""
 
-        description = build_description(
-            notes=h.get("notes"),
-            dial_in=h.get("dial_in"),
-            docket_number=h.get("docket_number"),
-            court_citation=h.get("court_citation"),
-            docket_absolute_url=h.get("docket_absolute_url"),
-            source_entry_ids=h.get("source_entry_ids"),
-            docket_entry_numbers=h.get("docket_entry_numbers"),
-            judge=h.get("judge"),
-            documents=h.get("documents"),
-        )
+        description = build_description_for_row(h)
 
         lines.append("BEGIN:VEVENT")
         lines.append(_fold(f"UID:{uid}"))

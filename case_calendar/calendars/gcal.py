@@ -25,7 +25,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from ..courts import DEFAULT_TZ
-from .description import build as build_description
+from .description import build_description_for_row, is_calendar_visible, has_no_time
 
 log = logging.getLogger(__name__)
 
@@ -94,12 +94,9 @@ class GoogleCalendarSync:
         send_updates: str = "externalOnly",
     ) -> None:
         for h in hearings:
-            if not h.get("starts_at_utc"):
-                continue
-            if h.get("significance") == "minor":
-                # Procedural-only events (phone calls to grant a continuance,
-                # scheduling-only conferences) stay in the DB for audit but
-                # are kept off the user-facing calendar.
+            if not is_calendar_visible(h):
+                # No date, or significance='minor' (procedural-only events
+                # stay in the DB for audit but off the user-facing calendar).
                 continue
             if h.get("status") == "cancelled":
                 # Cancelled trials (e.g. via a plea) are no longer events
@@ -163,19 +160,9 @@ class GoogleCalendarSync:
     def _event_body(eid: str, h: dict) -> dict:
         title = h["title"]
         status = "confirmed"
-        no_time = not (h.get("duration_minutes") and h["duration_minutes"] > 0)
+        no_time = has_no_time(h)
 
-        description = build_description(
-            notes=h.get("notes"),
-            dial_in=h.get("dial_in"),
-            docket_number=h.get("docket_number"),
-            court_citation=h.get("court_citation"),
-            docket_absolute_url=h.get("docket_absolute_url"),
-            source_entry_ids=h.get("source_entry_ids"),
-            docket_entry_numbers=h.get("docket_entry_numbers"),
-            judge=h.get("judge"),
-            documents=h.get("documents"),
-        )
+        description = build_description_for_row(h)
 
         body: dict = {
             "summary": title,
