@@ -145,6 +145,33 @@ adheres to [Semantic Versioning][semver].
   `case-calendar sync --sumarize`), then the error, then exits with
   code 2 — same exit semantics as before, much more useful UX.
 
+### Internal
+
+- **Verify / dedupe LLM call+parse and recent-entries format
+  centralized.** The single-action LLM call + JSON parse + actions-
+  unwrap + type-validate sequence in `verify_hearing`,
+  `verify_deadline`, and `resolve_duplicate_hearings` was ~30 lines
+  of copy-paste per caller. Now in one `_call_lm_and_parse(provider,
+  system_prompt, user_message, max_tokens, label)` helper that
+  guarantees the returned dict carries a `type` field (UNCLEAR
+  fallback on any failure). The "RECENT DOCKET ENTRIES (newest
+  last)" block in the three corresponding message builders was
+  also identical line-for-line; extracted to
+  `_format_recent_entries(recent_entries) -> list[str]`. The
+  llm.py module shrunk by ~130 lines net; future LLM-call changes
+  (token tracking, retry shapes, new model quirks) land in one
+  place.
+- **Line-number anchors in `docs/architecture.md` refreshed.** The
+  internal refactors shifted line numbers inside `llm.py`; the four
+  affected `#L<n>` deep-links into the prompt-constants section
+  (`VERIFY_SYSTEM_PROMPT`, `VERIFY_DEADLINE_SYSTEM_PROMPT`,
+  `DEDUPE_HEARING_SYSTEM_PROMPT`, `SUMMARY_SYSTEM_PROMPT`) updated
+  to their new lines.
+- **100% line + branch coverage restored.** The abstractions and
+  new helpers left 10 lines and 5 branches uncovered; 20 new tests
+  across the touched modules close every gap (full suite at 1169
+  tests, all green).
+
 ## [0.3.0] - 2026-05-18
 
 ### Added
