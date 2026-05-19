@@ -336,27 +336,26 @@ def _list_entries_ordered(
     return out
 
 
-def _cached_primary_recap_documents_look_stale(
-    primary_entries: Iterable[dict[str, Any]],
-) -> bool:
-    """Detect a stale local-cache row.
+def _entry_looks_stale(entry: dict[str, Any]) -> bool:
+    """True if ``entry``'s stored recap_documents look stale.
 
-    Returns True when ANY cached primary entry has a non-sealed,
-    available MAIN recap_document whose ``plain_text`` is empty in the
-    stored copy. That's the signature of an entry whose row in the local
-    store was written by a sync that predates the
+    The signature: a non-sealed, available MAIN recap_document whose
+    ``plain_text`` is empty in the local copy. That's an entry whose row
+    in the local store was written by a sync that predates the
     `plain_text`-as-stored-field feature (or any future change to the
-    set of fields we keep locally with the same effect): the structural
-    fields are present, but the extracted text body the summary
-    pipeline relies on is absent.
+    set of fields we keep locally with the same effect): structural
+    fields are present, but the extracted text body the summary pipeline
+    relies on is absent.
 
-    The us-v-moucka regression that drove this detector had
+    The us-v-moucka regression that drove the original detector had
     CourtListener holding 39 KB of clean ``plain_text`` for the
     indictment recap_document while the local store's copy had
     ``plain_text`` empty. The entry-fingerprint check ignores
-    ``plain_text`` *content* (only `bool` presence — which was the same
-    then and now), so a regular sync couldn't naturally refresh the
-    stored copy.
+    ``plain_text`` *content* (only ``bool`` presence — which was the
+    same then and now), so a regular sync couldn't naturally refresh
+    the stored copy. The same shape can occur on disposition entries
+    (judgments, plea agreements, verdicts), so the check is generic
+    over entry type.
 
     Detection is intentionally conservative — sealed and unavailable
     recap_documents have legitimately empty ``plain_text`` and don't
@@ -364,17 +363,27 @@ def _cached_primary_recap_documents_look_stale(
     (attachments often have empty ``plain_text`` on purpose; the
     summary cares about the main doc).
     """
-    for entry in primary_entries:
-        for rd in entry.get("recap_documents") or []:
-            if rd.get("attachment_number"):
-                continue
-            if not rd.get("is_available"):
-                continue
-            if rd.get("is_sealed"):
-                continue
-            if not (rd.get("plain_text") or "").strip():
-                return True
+    for rd in entry.get("recap_documents") or []:
+        if rd.get("attachment_number"):
+            continue
+        if not rd.get("is_available"):
+            continue
+        if rd.get("is_sealed"):
+            continue
+        if not (rd.get("plain_text") or "").strip():
+            return True
     return False
+
+
+def _cached_entries_look_stale(entries: Iterable[dict[str, Any]]) -> bool:
+    """True if any entry in the iterable looks stale.
+
+    Applies to both primary documents (indictments, complaints) and
+    disposition documents (judgments, plea agreements, verdicts) — the
+    failure shape is the same regardless of how the entry is
+    classified.
+    """
+    return any(_entry_looks_stale(e) for e in entries)
 
 
 def find_primary_documents(
@@ -397,11 +406,13 @@ def find_primary_documents(
     for primary/disp matches alongside hearing-relevant ones precisely
     so this short-circuit lands. Falls back to CourtListener for cold dockets
     (first ever sync on this docket or pre-fix data lacking
-    primary/disp body text), AND when the cached primary recap_documents
-    look stale (see `_cached_primary_recap_documents_look_stale`) —
-    in that case we also rewrite the local store's cached
-    recap_documents with the fresh CourtListener data so the cache is rebuilt from fresh data and
-    subsequent calls short-circuit normally.
+    primary/disp body text), AND when any cached entry — primary or
+    disposition — looks stale (see `_cached_entries_look_stale`). In
+    that case we also rewrite the local store's cached recap_documents
+    with the fresh CourtListener data so the cache is rebuilt from
+    fresh data and subsequent calls short-circuit normally. The
+    staleness sweep covers both classifications because the same
+    empty-plain_text shape can hit indictments and judgments alike.
     """
     primary: list[dict[str, Any]] = []
     dispositions: list[dict[str, Any]] = []
@@ -415,37 +426,42 @@ def find_primary_documents(
             elif _is_disposition_document(entry):
                 dispositions.append(entry)
         # Short-circuit only when the cache yielded a primary document
-        # AND the cached recap_documents look complete on their main
-        # entries. A primary-document hit is the strong signal that this
-        # docket has been (re)synced under the post-fix code path that
+        # AND no cached entry (primary OR disposition) looks stale. A
+        # primary-document hit is the strong signal that this docket
+        # has been (re)synced under the post-fix code path that
         # persists primary/disp bodies — at which point we trust the
         # rest of the cache too. If only dispositions came back, the
         # cache may be holding post-fix judgment bodies alongside a
         # pre-fix indictment stub (NULL description) — exactly the
         # us-v-chapman / us-v-mcgonigal shape — and the summary
-        # pipeline needs CourtListener to recover the primary document text. If
-        # the cached primary recap_documents look stale (empty plain_text
-        # on an available main doc — the us-v-moucka shape), we ALSO
-        # fall through to CourtListener and rewrite the local copy below so the
-        # cache is rebuilt from fresh data.
-        if primary and not _cached_primary_recap_documents_look_stale(primary):
+        # pipeline needs CourtListener to recover the primary document
+        # text. If any cached entry looks stale (empty plain_text on an
+        # available main doc — the us-v-moucka / us-v-schmitz shape),
+        # we ALSO fall through to CourtListener and rewrite the local
+        # copy below so the cache is rebuilt from fresh data. The
+        # staleness check covers both classifications: the same empty-
+        # plain_text shape that hits indictments can hit judgments too.
+        cached_stale = _cached_entries_look_stale(primary + dispositions)
+        if primary and not cached_stale:
             primary.sort(key=lambda e: e.get("date_filed") or "")
             dispositions.sort(key=lambda e: e.get("date_filed") or "")
             return primary, dispositions
-        if primary:
+        if cached_stale:
             cache_was_stale = True
             log.info(
-                "summary: docket %s — cached primary recap_documents look "
-                "stale (available main doc has empty plain_text); falling "
-                "through to CourtListener and refreshing the local cache",
+                "summary: docket %s — cached recap_documents look stale "
+                "(available main doc has empty plain_text on at least one "
+                "primary or disposition entry); falling through to "
+                "CourtListener and refreshing the local cache",
                 docket_id,
             )
-            # Drop the stale cached primaries; we'll rebuild from CourtListener.
-            # Dispositions stay (they were body-bearing entries from a
-            # later sync and the same staleness signature doesn't
-            # generalize — refreshing them is future work if a similar
-            # bug surfaces there).
-            primary = []
+            # Drop ONLY the stale cached entries — keep the fresh ones
+            # so we don't re-fetch their text from CourtListener
+            # unnecessarily. The CL walk below will surface the missing
+            # bodies and ``refresh_entry_recap_documents`` rewrites the
+            # local copy from fresh data.
+            primary = [e for e in primary if not _entry_looks_stale(e)]
+            dispositions = [e for e in dispositions if not _entry_looks_stale(e)]
 
     # Cold cache OR cached primary looked stale — fall back to CourtListener.
     # Prime documents are almost always at entry #1 (criminal) or within
@@ -480,16 +496,22 @@ def find_primary_documents(
     for entry in oldest + newest:
         if is_primary_document(entry):
             _dedup_add(primary, entry)
-            # Rebuild the local cache from fresh data: when we detected stale cached
-            # data above and have just pulled fresh CourtListener data for a
-            # primary entry, rewrite the stored recap_documents so the
-            # next summary call short-circuits normally. The fingerprint
-            # is intentionally not touched — see
-            # `Store.refresh_entry_recap_documents`.
+            # Rebuild the local cache from fresh data: when we detected
+            # stale cached data above and have just pulled fresh
+            # CourtListener data for a primary entry, rewrite the
+            # stored recap_documents so the next summary call short-
+            # circuits normally. The fingerprint is intentionally not
+            # touched — see `Store.refresh_entry_recap_documents`.
             if cache_was_stale and store is not None:
                 store.refresh_entry_recap_documents(entry, docket_id=docket_id)
         elif _is_disposition_document(entry):
             _dedup_add(dispositions, entry)
+            # Same cache-rebuild logic for dispositions: a stale
+            # judgment row gets the same treatment as a stale
+            # indictment so the next call short-circuits on the
+            # populated copy.
+            if cache_was_stale and store is not None:
+                store.refresh_entry_recap_documents(entry, docket_id=docket_id)
 
     if cache_was_stale and store is not None:
         # Commit the cache refreshes — `refresh_entry_recap_documents`
@@ -541,28 +563,63 @@ def find_primary_documents_for_group(
     :meth:`Store.get_docket_group_ids` already does via
     ``date_modified DESC``) so first-seen-wins prefers the most-recently-
     ingested CL row when a logical entry appears on multiple siblings.
-    """
-    primary: list[dict[str, Any]] = []
-    dispositions: list[dict[str, Any]] = []
-    seen: set[tuple] = set()
 
-    def _take(target: list[dict[str, Any]], entry: dict[str, Any]) -> None:
+    Exception: if a later sibling's copy of an already-seen entry carries
+    populated ``plain_text`` on its main recap_document and the
+    first-seen copy doesn't, the later copy wins. CourtListener can
+    leave one CL row's recap_document with an empty ``plain_text``
+    while another CL row in the same logical PACER group has the
+    extracted body — without this upgrade the summary LLM would be
+    fed an empty document. The us-v-schmitz indictment landed on the
+    freshest CL row with no ``plain_text`` while the older sibling had
+    20 KB of text; the dedup needs to pick the populated copy. This
+    doesn't add PDF reads (we choose between copies already in hand)
+    and still keeps the rule that each logical PACER entry is fed to
+    the LLM exactly once.
+    """
+    primary_by_key: dict[tuple, dict[str, Any]] = {}
+    dispositions_by_key: dict[tuple, dict[str, Any]] = {}
+
+    def _take(target: dict[tuple, dict[str, Any]], entry: dict[str, Any]) -> None:
         key = _logical_entry_dedup_key(entry)
-        if key in seen:
+        prior = target.get(key)
+        if prior is None:
+            target[key] = entry
             return
-        seen.add(key)
-        target.append(entry)
+        if not _entry_main_doc_has_plain_text(prior) and _entry_main_doc_has_plain_text(
+            entry
+        ):
+            target[key] = entry
 
     for did in group_docket_ids:
         p, d = find_primary_documents(cl, did, store=store)
         for e in p:
-            _take(primary, e)
+            _take(primary_by_key, e)
         for e in d:
-            _take(dispositions, e)
+            _take(dispositions_by_key, e)
 
-    primary.sort(key=lambda e: e.get("date_filed") or "")
-    dispositions.sort(key=lambda e: e.get("date_filed") or "")
+    primary = sorted(primary_by_key.values(), key=lambda e: e.get("date_filed") or "")
+    dispositions = sorted(
+        dispositions_by_key.values(), key=lambda e: e.get("date_filed") or ""
+    )
     return primary, dispositions
+
+
+def _entry_main_doc_has_plain_text(entry: dict[str, Any]) -> bool:
+    """True if ``entry`` carries non-empty ``plain_text`` on at least one
+    non-attachment recap_document.
+
+    Used by :func:`find_primary_documents_for_group` to choose between
+    two CL siblings' copies of the same logical PACER entry: a populated
+    main document beats an empty one regardless of which sibling's
+    ``date_modified`` is fresher.
+    """
+    for rd in entry.get("recap_documents") or []:
+        if rd.get("attachment_number"):
+            continue
+        if (rd.get("plain_text") or "").strip():
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
