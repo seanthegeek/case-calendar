@@ -457,7 +457,7 @@ def find_primary_documents(
             )
             # Drop ONLY the stale cached entries — keep the fresh ones
             # so we don't re-fetch their text from CourtListener
-            # unnecessarily. The CL walk below will surface the missing
+            # unnecessarily. The CourtListener walk below will surface the missing
             # bodies and ``refresh_entry_recap_documents`` rewrites the
             # local copy from fresh data.
             primary = [e for e in primary if not _entry_looks_stale(e)]
@@ -528,11 +528,11 @@ def _logical_entry_dedup_key(entry: dict[str, Any]) -> tuple:
     """Stable key for the same PACER entry across CourtListener docket siblings.
 
     CourtListener assigns its own ``id`` per docket_id, so the same logical
-    PACER entry on two CL dockets has different ``id`` values. Within a
+    PACER entry on two CourtListener dockets has different ``id`` values. Within a
     ``(docket_number, court_id)`` group the PACER ``entry_number`` is the
     same, so it's the natural dedup key. For paperless minute orders that
     have no entry_number, falls back to ``(date_filed, description prefix)``
-    — two CL dockets in the same group should agree on those fields for
+    — two CourtListener dockets in the same group should agree on those fields for
     the same paperless event.
     """
     enum = entry.get("entry_number")
@@ -549,29 +549,29 @@ def find_primary_documents_for_group(
     *,
     store: Optional[Store] = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Pool primary documents + dispositions across every CL docket in the group.
+    """Pool primary documents + dispositions across every CourtListener docket in the group.
 
     CourtListener can split one logical PACER docket into multiple
     docket_id rows when the upstream ``pacer_case_id`` changed mid-life;
-    each CL row carries a partial slice of the PACER entries. This helper
-    calls :func:`find_primary_documents` per CL docket_id and unions the
+    each CourtListener row carries a partial slice of the PACER entries. This helper
+    calls :func:`find_primary_documents` per CourtListener docket_id and unions the
     results, deduping with :func:`_logical_entry_dedup_key` so the same
-    PACER entry (different CL ``id``, same PACER ``entry_number``) is only
+    PACER entry (different CourtListener ``id``, same PACER ``entry_number``) is only
     returned once.
 
     ``group_docket_ids`` should be ordered freshest-first (which
     :meth:`Store.get_docket_group_ids` already does via
     ``date_modified DESC``) so first-seen-wins prefers the most-recently-
-    ingested CL row when a logical entry appears on multiple siblings.
+    ingested CourtListener row when a logical entry appears on multiple siblings.
 
     Exception: if a later sibling's copy of an already-seen entry carries
     populated ``plain_text`` on its main recap_document and the
     first-seen copy doesn't, the later copy wins. CourtListener can
-    leave one CL row's recap_document with an empty ``plain_text``
-    while another CL row in the same logical PACER group has the
+    leave one CourtListener row's recap_document with an empty ``plain_text``
+    while another CourtListener row in the same logical PACER group has the
     extracted body — without this upgrade the summary LLM would be
     fed an empty document. The us-v-schmitz indictment landed on the
-    freshest CL row with no ``plain_text`` while the older sibling had
+    freshest CourtListener row with no ``plain_text`` while the older sibling had
     20 KB of text; the dedup needs to pick the populated copy. This
     doesn't add PDF reads (we choose between copies already in hand)
     and still keeps the rule that each logical PACER entry is fed to
@@ -610,7 +610,7 @@ def _entry_main_doc_has_plain_text(entry: dict[str, Any]) -> bool:
     non-attachment recap_document.
 
     Used by :func:`find_primary_documents_for_group` to choose between
-    two CL siblings' copies of the same logical PACER entry: a populated
+    two CourtListener siblings' copies of the same logical PACER entry: a populated
     main document beats an empty one regardless of which sibling's
     ``date_modified`` is fresher.
     """
@@ -939,9 +939,9 @@ def _fetch_extra_documents(
     own "EXTRA DOCUMENTS PROVIDED BY OPERATOR" section, distinct from the
     primary-document and disposition slots that the CourtListener-walk fills.
 
-    Pins the operator-supplied ``extra.docket`` against any CL docket_id
+    Pins the operator-supplied ``extra.docket`` against any CourtListener docket_id
     in the group — when a logical PACER docket is split across multiple
-    CL siblings, an extra pinned to one of them applies to the group.
+    CourtListener siblings, an extra pinned to one of them applies to the group.
     """
     extras = getattr(case, "extra_documents", None) or []
     group_set = set(group_docket_ids)
@@ -1046,7 +1046,7 @@ def summarize_docket(
     """Generate, persist, and return the summary row for the LOGICAL PACER docket.
 
     Resolves ``docket_id`` to ``(docket_number, court_id)`` via the
-    ``dockets`` table, then pools entries across every CL ``docket_id``
+    ``dockets`` table, then pools entries across every CourtListener ``docket_id``
     in the same group (see :meth:`Store.get_docket_group_ids` and the
     matching AGENTS.md design decision). The summary row is keyed by
     ``(case_id, docket_number, court_id)``, so calling this multiple
@@ -1078,7 +1078,7 @@ def summarize_docket(
     }
 
     log.info(
-        "summary: scanning %s (%s) for primary documents across %d CL docket(s) %s",
+        "summary: scanning %s (%s) for primary documents across %d CourtListener docket(s) %s",
         docket_number,
         court_id,
         len(group_docket_ids),
@@ -1192,10 +1192,10 @@ def summarize_docket(
     deadlines = _deadlines_for_group(store, case.case_id, group_docket_ids)
 
     # Sealing detection runs on the canonical docket_id (the first in the
-    # group, which is the freshest-modified CL row). The advisory walks
+    # group, which is the freshest-modified CourtListener row). The advisory walks
     # ~one page of entries on that docket; running it across every sibling
-    # would multiply CL API calls without strengthening the signal — the
-    # sealing order is on the PACER docket itself, not per-CL-row, so
+    # would multiply CourtListener API calls without strengthening the signal — the
+    # sealing order is on the PACER docket itself, not per-CourtListener-row, so
     # whichever sibling is checked first will see it.
     sealing_advisory = detect_sealing(
         cl, group_docket_ids[0], dispositions=dispositions
@@ -1276,12 +1276,12 @@ def summarize_docket(
 def _group_dockets_on_case(
     store: Store, case: CaseConfig
 ) -> list[tuple[str, str, int]]:
-    """Map the case's CL docket_ids onto logical PACER docket groups.
+    """Map the case's CourtListener docket_ids onto logical PACER docket groups.
 
     Returns one ``(docket_number, court_id, canonical_docket_id)`` tuple
-    per group. The canonical CL docket_id is the freshest one in the
+    per group. The canonical CourtListener docket_id is the freshest one in the
     group (the head of :meth:`Store.get_docket_group_ids`), used as the
-    representative for :func:`summarize_docket` calls. CL docket_ids
+    representative for :func:`summarize_docket` calls. CourtListener docket_ids
     that have no ``dockets`` metadata yet (never synced) are skipped
     with a warning — the next sync populates the row and the next
     summarize call picks them up.
@@ -1302,7 +1302,7 @@ def _group_dockets_on_case(
         if key in seen:
             continue
         seen.add(key)
-        # The canonical docket_id can be any CL row in the group — pass
+        # The canonical docket_id can be any CourtListener row in the group — pass
         # this one through, and summarize_docket internally re-resolves
         # to the full group via Store.get_docket_group_ids.
         groups.append((key[0], key[1], docket_id))
@@ -1324,7 +1324,7 @@ def refresh_stale(
     """Regenerate any summaries that are missing or marked stale.
 
     Walks ``cases`` (the parsed CaseConfig list from cli), groups each
-    case's CL docket_ids by ``(docket_number, court_id)``, and for each
+    case's CourtListener docket_ids by ``(docket_number, court_id)``, and for each
     group checks :meth:`Store.is_summary_stale`. Stale groups get
     regenerated via :func:`summarize_docket`. Returns
     ``{case_id: {(docket_number, court_id), ...}}`` for the groups that
@@ -1395,7 +1395,7 @@ def summarize_case(
 ) -> list[dict[str, Any]]:
     """Summarize every logical PACER docket on a case.
 
-    CL docket_ids that resolve to the same ``(docket_number, court_id)``
+    CourtListener docket_ids that resolve to the same ``(docket_number, court_id)``
     group are summarized once — entries are pooled across siblings. With
     ``force=False`` (the default), groups that already have a summary
     row are skipped. Pass ``force=True`` after a model upgrade or prompt

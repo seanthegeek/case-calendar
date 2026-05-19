@@ -432,7 +432,7 @@ class TestInterruptDoesNotAdvanceCutoff:
     BaseException) leaves the cutoff at the prior value.
     """
 
-    # The CL-side date_modified for the docket — well past every
+    # The CourtListener-side date_modified for the docket — well past every
     # individual entry's date_modified seeded in the tests. This is the
     # value the OLD buggy `finally` block would have set on the docket
     # row, causing the next sync's docket-level short-circuit to fire
@@ -468,7 +468,7 @@ class TestInterruptDoesNotAdvanceCutoff:
     def _two_entries_well_before_cl_docket_modified(self):
         # Both entries' date_modified are strictly LESS than _CL_DOCKET_MODIFIED.
         # That gap is the assertion target: after an interrupt mid-iteration,
-        # the docket cutoff must stay below the docket's CL-side
+        # the docket cutoff must stay below the docket's CourtListener-side
         # date_modified, so the next sync's short-circuit doesn't fire.
         return [
             _entry(1, "first entry", date_filed="2026-01-15"),
@@ -502,7 +502,7 @@ class TestInterruptDoesNotAdvanceCutoff:
             is True
         )
         # Critical invariant: the docket cutoff is strictly less than
-        # the CL-side date_modified. The next sync's docket-level
+        # the CourtListener-side date_modified. The next sync's docket-level
         # short-circuit will NOT fire (because they're unequal), so it
         # will iterate the docket again and pick up the entries the
         # interrupt left behind. The old buggy `finally` would have
@@ -557,7 +557,7 @@ class TestInterruptDoesNotAdvanceCutoff:
         self, store, case, monkeypatch
     ):
         # The fix must not break the happy path — a clean iteration
-        # still bumps the cutoff all the way to the docket's CL-side
+        # still bumps the cutoff all the way to the docket's CourtListener-side
         # date_modified at end-of-loop.
         prior_cutoff = "2026-01-01T00:00:00-07:00"
         self._seed_prior_clean_sync(store, prior_cutoff)
@@ -3017,7 +3017,7 @@ class TestDedupeConcurrentHearings:
         case,
         monkeypatch,
     ):
-        # The Akhter-shape OPEN-case scenario: two CL docket_ids in the
+        # The Akhter-shape OPEN-case scenario: two CourtListener docket_ids in the
         # same (docket_number, court_id) group each hold a future
         # scheduled hearing at the same UTC slot under different keys.
         # The cluster key is now group-aware, so the existing
@@ -3058,7 +3058,7 @@ class TestDedupeConcurrentHearings:
                 "timezone": "America/New_York",
                 "status": "scheduled",
                 "significance": "major",
-                "docket_id": 101,  # different CL docket_id, SAME group
+                "docket_id": 101,  # different CourtListener docket_id, SAME group
                 "source_entry_ids": [20],
             }
         )
@@ -3068,7 +3068,7 @@ class TestDedupeConcurrentHearings:
             action={
                 "type": "MERGE_INTO",
                 "target_key": "trial-x",
-                "reason": "Cross-CL-sibling drift on the same PACER docket.",
+                "reason": "Cross-CourtListener-sibling drift on the same PACER docket.",
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
@@ -3089,13 +3089,13 @@ class TestDedupeConcurrentHeldHearings:
     duplicates — no LLM call needed.
 
     Motivating case: didenko sentencing-didenko (from prior sync of one
-    CL docket) vs sentencing-didenko-2 (from today's sync of a sibling
-    CL docket with a different `pacer_case_id`) at the exact same UTC
+    CourtListener docket) vs sentencing-didenko-2 (from today's sync of a sibling
+    CourtListener docket with a different `pacer_case_id`) at the exact same UTC
     slot.
     """
 
     def _seed_cross_sibling_held_pair(self, store):
-        # Two CL docket_ids in the same (docket_number, court_id) group,
+        # Two CourtListener docket_ids in the same (docket_number, court_id) group,
         # both with a HELD hearing at the same UTC slot under different
         # keys. The canonical row (selected by source_entry_ids count)
         # is `sentencing-didenko` with [10, 11, 12]; the duplicate has
@@ -3185,13 +3185,13 @@ class TestDedupeConcurrentHeldHearings:
         monkeypatch,
     ):
         # When the canonical row and the duplicate share one or more
-        # source_entry_ids (common when both CL siblings cite the same
+        # source_entry_ids (common when both CourtListener siblings cite the same
         # PACER minute-entry as the source for their respective held
         # rows), the merge must dedup those ids — emitting [10, 11, 99]
         # instead of [10, 11, 10, 99]. Exercises the "sid already in
         # seen, skip" path inside the per-cluster merge loop.
         # Use the same docket_number / court_id as `_docket()` so the
-        # CL re-fetch during sync_case doesn't overwrite our seed under
+        # CourtListener re-fetch during sync_case doesn't overwrite our seed under
         # a different group key (which would split the cluster).
         for did in (100, 101):
             store.upsert_docket_meta(
@@ -3742,7 +3742,7 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         # Seed a non-stale summary row, then process an entry whose
         # description matches summary.is_primary_document. After
         # process_entry, the row should be flagged stale on the LOGICAL
-        # PACER docket key (docket_number, court_id), not on the CL
+        # PACER docket key (docket_number, court_id), not on the CourtListener
         # docket_id — see the docket grouping design decision in AGENTS.md.
         d = _docket()
         store.upsert_docket_meta(

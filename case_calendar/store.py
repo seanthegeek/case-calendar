@@ -359,7 +359,7 @@ class Store:
         CourtListener's reconciler can store the same logical PACER docket
         as multiple docket_id rows with different pacer_case_id values (see
         the AGENTS.md design decision and the canonical Akhter example at
-        1:25-cr-00307 / vaed). Pre-migration, each CL docket_id got its own
+        1:25-cr-00307 / vaed). Pre-migration, each CourtListener docket_id got its own
         case_summaries row, producing N near-duplicate paragraphs in the
         index. Post-migration, the table is keyed by (case_id,
         docket_number, court_id) so the summary pipeline can write one
@@ -401,7 +401,7 @@ class Store:
         # Backfill: join each old row against `dockets` to resolve
         # (docket_number, court_id). Order by generated_at ASC so the
         # ON CONFLICT UPDATE keeps the newest summary on collision (e.g.,
-        # three CL dockets sharing one (docket_number, court_id) → the most
+        # three CourtListener dockets sharing one (docket_number, court_id) → the most
         # recent generated_at wins).
         rows = self.conn.execute(
             """
@@ -611,11 +611,11 @@ class Store:
         CourtListener's reconciler can split one logical PACER docket
         across multiple ``docket_id`` rows when the upstream pacer_case_id
         changed mid-life. Callers in the summary pipeline use this to pool
-        entries across every CL docket in the group, so the summary LLM
+        entries across every CourtListener docket in the group, so the summary LLM
         sees the union rather than a partial slice.
 
         Sorted by ``date_modified`` descending so the most-recently-seen
-        CL docket is the natural "canonical" pick when one is needed
+        CourtListener docket is the natural "canonical" pick when one is needed
         (e.g., for picking metadata).
         """
         rows = self.conn.execute(
@@ -953,10 +953,10 @@ class Store:
         and time, so equal ``(docket_number, court_id, starts_at_utc)``
         across ``status='scheduled'`` rows is a signal that the
         per-entry extractor split one logical event across keys — either
-        the same CL docket's extractor used two vocabulary forms (e.g.
+        the same CourtListener docket's extractor used two vocabulary forms (e.g.
         a stipulation said "Hearing on Motion for Summary Judgment" and
-        the signed order called it "Motion Hearing") OR cross-CL-sibling
-        drift (the Akhter / Didenko shape, where two CL docket_ids in
+        the signed order called it "Motion Hearing") OR cross-CourtListener-sibling
+        drift (the Akhter / Didenko shape, where two CourtListener docket_ids in
         the same `(docket_number, court_id)` group each get their own
         copy of the same logical hearing under different keys). The
         end-of-sync dedupe sweep in :class:`CaseSyncer` resolves these
@@ -977,7 +977,7 @@ class Store:
         PACER docket, the same exact UTC slot. A court cannot have held
         two hearings simultaneously, so a same-slot held cluster is
         unambiguously a key-drift duplicate from the per-entry
-        extractor — typically cross-CL-sibling drift (the Didenko
+        extractor — typically cross-CourtListener-sibling drift (the Didenko
         sentencing-didenko vs sentencing-didenko-2 shape) where the
         per-entry extractor allocated a fresh key on the new sibling
         instead of reusing the existing key it was given in
@@ -1421,9 +1421,9 @@ class Store:
         """Per-table row count for a single docket — feeds the ``prune`` preview.
 
         The ``case_summaries`` count reflects rows for the LOGICAL PACER
-        docket this CL docket_id belongs to (joined via the ``dockets``
+        docket this CourtListener docket_id belongs to (joined via the ``dockets``
         metadata), so the prune preview correctly shows what would be
-        orphaned if this were the last CL docket_id in the group.
+        orphaned if this were the last CourtListener docket_id in the group.
         """
         counts: dict[str, int] = {}
         for table in self._DOCKET_TABLES:
@@ -1432,7 +1432,7 @@ class Store:
                 (docket_id,),
             ).fetchone()
             counts[table] = int(row["n"])
-        # case_summaries: count rows tied to the group, but only if this CL
+        # case_summaries: count rows tied to the group, but only if this CourtListener
         # docket_id is the last one in the group (i.e., would be orphaned by
         # the prune). Otherwise the summary stays alongside its surviving
         # sibling docket and we report 0.
@@ -1456,7 +1456,7 @@ class Store:
     def delete_docket(self, docket_id: int) -> dict[str, int]:
         """Cascade-delete every row tied to a docket_id. Returns per-table counts.
 
-        ``case_summaries`` is cleaned only when this CL docket_id is the
+        ``case_summaries`` is cleaned only when this CourtListener docket_id is the
         last one in its (docket_number, court_id) group — otherwise the
         summary stays alongside the surviving sibling docket_id.
 

@@ -148,7 +148,7 @@ class TestRenderSummaries:
         assert "Trial court matter." in html and "On appeal." in html
 
     def test_cl_docket_splits_collapse_to_one_paragraph(self):
-        # The Akhter shape: three CL docket_ids share one (docket_number,
+        # The Akhter shape: three CourtListener docket_ids share one (docket_number,
         # court_id) — the index renders a SINGLE paragraph for the group,
         # NOT three labeled near-duplicates.
         html = _render_summaries(
@@ -157,7 +157,7 @@ class TestRenderSummaries:
                     {
                         "docket_number": "1:25-cr-00307",
                         "court_id": "vaed",
-                        "summary": "Pooled summary across all three CL siblings.",
+                        "summary": "Pooled summary across all three CourtListener siblings.",
                     },
                 ]
             },
@@ -171,8 +171,8 @@ class TestRenderSummaries:
                 }
             ],
         )
-        # One summary → no docket label, even though three CL siblings.
-        assert "Pooled summary across all three CL siblings." in html
+        # One summary → no docket label, even though three CourtListener siblings.
+        assert "Pooled summary across all three CourtListener siblings." in html
         assert "docket-label" not in html
 
     def test_empty_summary_strings_are_skipped(self):
@@ -646,9 +646,9 @@ class TestBuildCalendarModels:
         assert case["dockets"][0]["court_citation"] == "S.D.N.Y."
 
     def test_collapses_sibling_docket_ids_into_one_dockets_meta_entry(self, store):
-        # When `case.dockets` lists multiple CL docket_ids that share
+        # When `case.dockets` lists multiple CourtListener docket_ids that share
         # (docket_number, court_id) — the Akhter-shape PR #3 case where
-        # one logical PACER docket lives under three CL docket_ids —
+        # one logical PACER docket lives under three CourtListener docket_ids —
         # build_calendar_models must emit ONE entry in `dockets_meta`
         # with the other docket_ids in a `sibling_docket_ids` list,
         # NOT three near-duplicate entries. This exercises the

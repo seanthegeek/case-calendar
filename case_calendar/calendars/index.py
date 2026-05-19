@@ -599,7 +599,7 @@ def _render_case(case: dict[str, Any]) -> str:
             {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y.",
              "absolute_url": "https://www.courtlistener.com/docket/...",
              "docket_id": 12345,
-             "sibling_docket_ids": [12346, 12347]},  # optional — other CL
+             "sibling_docket_ids": [12346, 12347]},  # optional — other CourtListener
                                                      # ids in the same group
             ...
         ],
@@ -863,13 +863,13 @@ def build_calendar_models(
             # empty when the operator hasn't run `case-calendar summarize`
             # for this case, which causes the renderer to skip the summary
             # block entirely. Rows are keyed by (docket_number, court_id),
-            # so a case with one logical docket spread across three CL
+            # so a case with one logical docket spread across three CourtListener
             # docket_ids gets ONE summary, not three.
             summaries: list[dict[str, Any]] = store.get_case_summaries(c["id"])
             # Preserve config-defined docket order in the rendered output
             # so multi-docket cases read in the order the operator listed.
             # We order by group (docket_number, court_id), since a single
-            # logical docket may map to multiple CL docket_ids in config.
+            # logical docket may map to multiple CourtListener docket_ids in config.
             order: dict[tuple[Any, Any], int] = {}
             for i, did in enumerate(docket_ids):
                 m = store.get_docket_meta(did) or {}

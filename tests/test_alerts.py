@@ -69,13 +69,13 @@ class TestEnsureDocketAlerts:
         assert status == {100: "exists", 200: "created"}
 
     def test_create_failure_is_logged_and_does_not_abort(self, caplog):
-        class _PartialFailureCL(FakeCourtListener):
+        class _PartialFailureCourtListener(FakeCourtListener):
             def create_docket_alert(self, docket_id, *, alert_type=1):
                 if docket_id == 200:
-                    raise RuntimeError("boom — 4xx from CL")
+                    raise RuntimeError("boom — 4xx from CourtListener")
                 return super().create_docket_alert(docket_id, alert_type=alert_type)
 
-        cl = _PartialFailureCL()
+        cl = _PartialFailureCourtListener()
         with caplog.at_level("WARNING", logger="case_calendar.alerts"):
             status = ensure_docket_alerts(cl, [100, 200, 300])
         # 100 and 300 created successfully; 200 marked failed.
@@ -86,7 +86,7 @@ class TestEnsureDocketAlerts:
         )
 
     def test_list_failure_returns_all_failed_and_skips_creates(self, caplog):
-        class _ListFailureCL(FakeCourtListener):
+        class _ListFailureCourtListener(FakeCourtListener):
             def iter_docket_alerts(self, **_):
                 raise RuntimeError("transport budget exhausted")
 
@@ -96,7 +96,7 @@ class TestEnsureDocketAlerts:
                     "either spam duplicates or skip blindly"
                 )
 
-        cl = _ListFailureCL()
+        cl = _ListFailureCourtListener()
         with caplog.at_level("WARNING", logger="case_calendar.alerts"):
             status = ensure_docket_alerts(cl, [100, 200])
         assert status == {100: "failed", 200: "failed"}
@@ -104,7 +104,7 @@ class TestEnsureDocketAlerts:
 
 
 class TestCourtListenerClientAlerts:
-    """Direct tests for the new CL client methods using ``httpx.MockTransport``.
+    """Direct tests for the new CourtListener client methods using ``httpx.MockTransport``.
 
     These verify the wire shape — URL, method, JSON body — without
     leaning on ``FakeCourtListener`` (which short-circuits before the
@@ -210,6 +210,6 @@ class TestCourtListenerClientAlerts:
 
 @pytest.fixture(autouse=True)
 def _no_sleep(monkeypatch):
-    """Skip the real sleeps inside the CL client's retry loop so tests
-    don't burn wall-clock seconds when exercising the retry path."""
+    """Skip the real sleeps inside the CourtListener client's retry loop
+    so tests don't burn wall-clock seconds when exercising the retry path."""
     monkeypatch.setattr("time.sleep", lambda *_a, **_kw: None)

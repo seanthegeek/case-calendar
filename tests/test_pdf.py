@@ -470,7 +470,7 @@ class TestFetchPdfBytes:
             host = req.url.host or ""
             if host == "archive.org" or host.endswith(".archive.org"):
                 raise httpx.ReadTimeout("flaky IA", request=req)
-            return httpx.Response(200, content=b"%PDF from CL storage")
+            return httpx.Response(200, content=b"%PDF from CourtListener storage")
 
         real_client = httpx.Client
 
@@ -486,8 +486,8 @@ class TestFetchPdfBytes:
                 "filepath_local": "recap/cand/x.pdf",
             }
         )
-        assert result == b"%PDF from CL storage"
-        # IA was retried up to the budget, then CL storage succeeded
+        assert result == b"%PDF from CourtListener storage"
+        # IA was retried up to the budget, then CourtListener storage succeeded
         # first try.
         assert (
             sum(

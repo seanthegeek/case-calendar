@@ -523,7 +523,7 @@ class CaseSyncer:
         # and judgments rarely match the hearing-relevance regex but are
         # the most important signals for the summary. The stale flag
         # targets the LOGICAL PACER docket (docket_number, court_id)
-        # rather than the CL docket_id — CourtListener can split one
+        # rather than the CourtListener docket_id — CourtListener can split one
         # PACER docket across multiple docket_id rows (see the docket
         # grouping design decision in AGENTS.md), and we want the next
         # refresh to regenerate the single pooled summary, not three
@@ -635,9 +635,9 @@ class CaseSyncer:
         # same logical PACER docket at the same UTC slot cannot be
         # legitimate (the court physically can't have held two hearings
         # simultaneously), so we merge them deterministically without an
-        # LLM call. The motivating case is cross-CL-sibling drift —
-        # didenko's `sentencing-didenko` (from CL docket A) and
-        # `sentencing-didenko-2` (from CL docket B) at the same UTC slot
+        # LLM call. The motivating case is cross-CourtListener-sibling drift —
+        # didenko's `sentencing-didenko` (from CourtListener docket A) and
+        # `sentencing-didenko-2` (from CourtListener docket B) at the same UTC slot
         # were created by the per-entry extractor allocating a fresh
         # key on the new sibling instead of reusing the existing key.
         stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
@@ -954,7 +954,7 @@ class CaseSyncer:
         court cannot have physically held two hearings simultaneously,
         so the per-entry extractor must have allocated two different
         ``hearing_key`` values for one logical event. Common cause:
-        cross-CL-sibling drift (the didenko sentencing-didenko vs
+        cross-CourtListener-sibling drift (the didenko sentencing-didenko vs
         sentencing-didenko-2 shape) where the per-entry extractor on
         the newly-synced sibling didn't reuse the existing key it was
         given in ``known_hearings``.
