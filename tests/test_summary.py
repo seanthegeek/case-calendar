@@ -1797,11 +1797,19 @@ class TestSummarizeDocket:
         assert call["docket"]["court_tz"] is not None
         assert [d["entry_id"] for d in call["primary_documents"]] == [10]
 
-    def test_returns_none_when_no_primary_text_extractable(
-        self, store, patch_llm, patch_pdf
+    def test_writes_not_available_message_when_primary_has_no_source(
+        self, store, patch_llm, patch_pdf, caplog
     ):
+        # us-v-lytvynenko shape: CourtListener returned a primary entry
+        # whose main recap_doc has NO source for text — no filepath_ia,
+        # no filepath_local, no plain_text, not sealed. Nothing for the
+        # extraction chain to fetch. Subscribers see the specific
+        # SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE message ("the primary
+        # document(s) are not yet available on RECAP"), distinct from
+        # the "sealed" and "could not be read" sibling messages.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+
         _seed_docket_meta(store, 1)
-        # Primary document present but PDF text is empty for every doc.
         patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
@@ -1809,6 +1817,157 @@ class TestSummarizeDocket:
                     {
                         "id": 10,
                         "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        # No filepath_ia, no filepath_local, no plain_text —
+                        # truly no source. Maps to "not-available".
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        # LLM is NOT called — we synthesize the message directly.
+        assert patch_llm == []
+        # Row IS returned and persisted with the "not yet available" message.
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+        # source_entry_ids preserves the entry we tried to summarize from
+        # so the audit trail captures it.
+        assert row["source_entry_ids"] == [10]
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert persisted["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+        # WARN fired with the per-doc breakdown showing not-available=1.
+        assert any(
+            "not-available=1" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_sealed_message_when_primary_is_sealed(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Primary entry whose main recap_doc has is_sealed=True. PACER
+        # blocks access; subscribers see the specific "currently sealed"
+        # message so they know it's a legal-posture wait, not a pipeline
+        # gap.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_SEALED
+
+        _seed_docket_meta(store, 1)
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "attachment_number": None,
+                                "is_sealed": True,
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert patch_llm == []
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_SEALED
+        # WARN breakdown shows sealed=1.
+        assert any(
+            "sealed=1" in r.message and "docket 1" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_unreadable_message_when_fetch_returns_no_usable_text(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Primary entry's main recap_doc had a fetchable URL (so it's
+        # neither sealed nor not-available), but the extraction chain
+        # couldn't produce usable text — typically an image-only PDF on
+        # a host without OCR tools installed, or a fetch that 4xx'd
+        # across all URLs. Subscribers see the "could not be read"
+        # catch-all message.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {}  # PDF text extracts to empty
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "attachment_number": None,
+                                "is_sealed": False,
+                                "filepath_local": "recap/x.pdf",  # has URL
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert patch_llm == []
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # WARN breakdown shows unreadable=1.
+        assert any(
+            "unreadable=1" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_refusal_when_no_primary_or_disposition_identified(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Truly cold docket: no entry on the docket matches
+        # is_primary_document or _is_disposition_document. The behavior
+        # matches the identified-but-no-text case — both write the
+        # canonical SUMMARY_INSUFFICIENT_DOCUMENTS refusal so subscribers
+        # always see SOMETHING under the docket link regardless of which
+        # failure mode produced the empty document set. The WARN log
+        # carries counts so the operator can still distinguish the two.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
+        _seed_docket_meta(store, 1)
+        cl = _FakeCourtListener(
+            {
+                # Only a procedural notice — neither primary nor disposition.
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "NOTICE of attorney appearance",
                         "date_filed": "2024-01-01",
                         "recap_documents": [{"id": 500}],
                     }
@@ -1820,9 +1979,25 @@ class TestSummarizeDocket:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
 
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
         assert patch_llm == []
-        assert store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP) is None
+        assert row is not None
+        assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        # source_entry_ids is empty because no primary/disposition entry
+        # was identified to attribute the refusal to.
+        assert row["source_entry_ids"] == []
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert persisted["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        # WARN log carries the "primary=0" signal so the operator can
+        # tell this is the matcher-missed-everything shape, not the
+        # identified-but-unreadable shape.
+        assert any(
+            "primary=0" in r.message and "docket 1" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
 
     def test_insufficient_documents_fallback_is_stored_and_warns(
         self,
@@ -2114,12 +2289,19 @@ class TestSummarizeDocket:
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
 
-    def test_returns_none_when_no_sibling_has_primary(
+    def test_writes_refusal_when_no_sibling_has_primary(
         self,
         store,
         patch_llm,
         patch_pdf,
     ):
+        # Multi-docket case where neither the canonical docket nor any
+        # sibling carries a primary-document entry — the borrow path
+        # produces nothing either. Under the unified refusal behavior we
+        # write SUMMARY_INSUFFICIENT_DOCUMENTS (no primary was identified
+        # anywhere) rather than dropping the docket from the index.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
         _seed_docket_meta(store, 1, docket_number="24-1", court_id="ca9")
         _seed_docket_meta(store, 2, docket_number="24-2", court_id="ca9")
         cl = _FakeCourtListener(
@@ -2132,7 +2314,9 @@ class TestSummarizeDocket:
         )
         case = _Case(case_id="case-x", name="X", dockets=[1, 2], calendar="cyber")
 
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
         assert patch_llm == []
 
     def test_attaches_dispositions_when_present(self, store, patch_llm, patch_pdf):
@@ -2212,7 +2396,7 @@ class TestSummarizeDocket:
         # The sentence figures must reach the LLM — that's the whole point.
         assert "92 months imprisonment" in dispositions[0]["text"]
 
-    def test_primary_document_without_pdf_is_still_dropped(
+    def test_primary_document_without_pdf_does_not_use_description_fallback(
         self,
         store,
         patch_llm,
@@ -2221,7 +2405,16 @@ class TestSummarizeDocket:
         # By design the description fallback is scoped to dispositions only.
         # Primary documents are indictments / complaints — a clerk's
         # minute-entry stub isn't an acceptable substitute, and feeding one
-        # in would produce a vacuous summary. Confirm the asymmetry.
+        # in would produce a vacuous summary. Confirm the asymmetry: when
+        # the PDF text is empty AND the recap_doc has no source for text,
+        # the primary entry's description is NOT used as a synthetic
+        # body — instead we write a fallback message directly without an
+        # LLM call. This specific setup (no URL fields, no plain_text,
+        # not sealed) maps to the NOT_AVAILABLE state; the asymmetry
+        # holds across all three failure states (none of them use the
+        # description-as-text fallback).
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {}  # no PDF text extracts
         cl = _FakeCourtListener(
@@ -2240,8 +2433,14 @@ class TestSummarizeDocket:
         case = _Case(
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        # LLM is NOT called — the description is NOT used as a fallback
+        # body to manufacture a summary. The asymmetry stands.
         assert patch_llm == []
+        # The fallback message is what gets persisted, not a
+        # description-derived synthetic summary.
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
 
     def test_falls_back_to_attachments_when_main_doc_has_no_text(
         self,
@@ -2958,25 +3157,27 @@ class TestRefreshStale:
         )
         assert patch_llm[0]["aggregation_note"] == "Parallel district + appellate."
 
-    def test_skipped_docket_not_added_to_written_set(
+    def test_truly_cold_docket_writes_refusal_and_is_in_written_set(
         self,
         store,
         patch_llm,
         patch_pdf,
     ):
-        # When `summarize_docket` returns None (no extractable primary
-        # document text), the row stays out of the `written` map so the
-        # caller's emit logic doesn't think the index needs re-rendering
-        # for that docket. Covers the `if row:` falsy branch.
+        # Under the unified refusal behavior, even a truly-cold docket
+        # (no entry matches is_primary_document or _is_disposition_document)
+        # produces a row — the SUMMARY_INSUFFICIENT_DOCUMENTS refusal —
+        # so the index never shows a docket link without a summary block
+        # underneath. refresh_stale therefore adds the group to the
+        # written set so the caller knows to re-render the index, the
+        # same way it would for any other newly-landed summary.
         _seed_docket_meta(store, 1)
-        # Empty PDF text → summarize_docket returns None.
-        patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
+                # Only a procedural notice — no primary or disposition match.
                 (1, "date_filed"): [
                     {
                         "id": 10,
-                        "description": "INDICTMENT",
+                        "description": "NOTICE of attorney appearance",
                         "date_filed": "2024-01-01",
                         "recap_documents": [{"id": 500}],
                     }
@@ -2988,8 +3189,9 @@ class TestRefreshStale:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case])
-        # Nothing summarized → empty written map (or no entry for this case).
-        assert "us-v-doe" not in written or written["us-v-doe"] == set()
+        # The refusal row landed in the store and refresh_stale flagged
+        # the group for re-emit.
+        assert written.get("us-v-doe") == {_DEFAULT_GROUP}
 
 
 class TestSummarizeCase:
@@ -3048,20 +3250,23 @@ class TestSummarizeCase:
         assert rows == []
         assert patch_llm == []
 
-    def test_skipped_docket_not_in_returned_rows(self, store, patch_llm, patch_pdf):
-        # `summarize_docket` returns None when no primary document text
-        # could be extracted. `summarize_case` must skip that docket
-        # rather than append None to the result list. Covers the
-        # `if row:` falsy branch.
+    def test_truly_cold_docket_returns_refusal_row(self, store, patch_llm, patch_pdf):
+        # Under the unified refusal behavior, even a truly-cold docket
+        # (no entry matches is_primary_document / _is_disposition_document)
+        # produces a row — the SUMMARY_INSUFFICIENT_DOCUMENTS refusal.
+        # summarize_case forwards the row through, so the caller still
+        # sees ONE row per docket on the case regardless of whether the
+        # documents were readable, identified-but-unreadable, or absent.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
         _seed_docket_meta(store, 1)
-        # Empty PDF text → summarize_docket returns None.
-        patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
+                # Only a procedural notice — no primary or disposition match.
                 (1, "date_filed"): [
                     {
                         "id": 10,
-                        "description": "INDICTMENT",
+                        "description": "NOTICE of attorney appearance",
                         "date_filed": "2024-01-01",
                         "recap_documents": [{"id": 500}],
                     }
@@ -3073,8 +3278,9 @@ class TestSummarizeCase:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
-        # No row added because summarize_docket returned None.
-        assert rows == []
+        # ONE row — the refusal — even on a truly-cold docket.
+        assert len(rows) == 1
+        assert rows[0]["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
 
 
 class TestEntryDescriptionHeadFallback:
@@ -3127,3 +3333,333 @@ class TestEntryDocTextAttachmentFallback:
         monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
         out = _entry_doc_text({"recap_documents": rds})
         assert "exhibit text" in out
+
+
+class TestIndictmentAttachedToProceduralParent:
+    """us-v-stryzhak shape: the indictment is attached to a "CONSENT TO
+    TRANSFER JURISDICTION (Rule 20)" parent entry. The parent's
+    ``description`` heads with the transfer notice and never matches
+    ``_PRIMARY_DOCUMENT_RE``, but the attachment's own description is
+    ``"Indictment"``. The matcher AND the extractor must both recognize
+    the attachment so the summary LLM gets the charging document body
+    rather than the transfer-procedural body.
+    """
+
+    def _stryzhak_rule20_entry(self):
+        # The literal CourtListener-returned shape for Stryzhak entry 1:
+        # parent description starts with "CONSENT TO TRANSFER JURISDICTION",
+        # main recap_doc carries "Rule 20 - Transfer In", indictment is
+        # attachment 1.
+        return {
+            "id": 446651345,
+            "description": (
+                "CONSENT TO TRANSFER JURISDICTION (Rule 20) from Middle "
+                "District of Florida by Artem Aleksandrovych Stryzhak. "
+                "(Attachments: # 1 Indictment) (AM) (Additional attachment "
+                "(MDFL Docket sheet) added on 12/9/2025: (AM))"
+            ),
+            "short_description": None,
+            "recap_documents": [
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "description": "Rule 20 - Transfer In",
+                },
+                {
+                    "id": 501,
+                    "document_number": "1",
+                    "attachment_number": 1,
+                    "description": "Indictment",
+                },
+                {
+                    "id": 502,
+                    "document_number": "1",
+                    "attachment_number": 2,
+                    "description": "MDFL Docket sheet",
+                },
+            ],
+        }
+
+    def test_is_primary_document_matches_via_attachment(self):
+        from case_calendar.summary import is_primary_document
+
+        # The parent description doesn't match _PRIMARY_DOCUMENT_RE,
+        # and the first recap_doc's description ("Rule 20 - Transfer In")
+        # doesn't either — but the matcher should still return True
+        # because attachment #1 carries description="Indictment".
+        assert is_primary_document(self._stryzhak_rule20_entry()) is True
+
+    def test_entry_doc_text_extracts_from_indictment_attachment(self, monkeypatch):
+        # When an attachment carries the primary-document signal, the
+        # extractor must pull text from THAT attachment in preference
+        # to the parent's main doc — otherwise the summary LLM sees the
+        # Rule 20 procedural text instead of the indictment body.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            500: "Rule 20 transfer notice procedural text " * 20,
+            501: "Real indictment body charging defendant with " * 20,
+            502: "MDFL docket sheet listing entries 1-42 " * 20,
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+
+        out = _entry_doc_text(self._stryzhak_rule20_entry())
+        # Indictment attachment is the priority; main + non-primary
+        # attachment are skipped.
+        assert "Real indictment body" in out
+        assert "Rule 20 transfer notice" not in out
+        assert "MDFL docket sheet" not in out
+
+    def test_entry_doc_text_falls_through_when_primary_attachment_empty(
+        self, monkeypatch
+    ):
+        # Defensive: if the primary-marked attachment's extraction
+        # produces nothing (PDF not on RECAP, etc.), we fall through
+        # to the main doc — better the procedural text than nothing,
+        # and the summary LLM is briefed to refuse on weak inputs.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            500: "Rule 20 transfer notice body that is at least usable",
+            501: "",  # indictment attachment extracts to nothing
+            502: "",
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._stryzhak_rule20_entry())
+        assert "Rule 20 transfer notice" in out
+
+
+class TestDispositionAttachedToProceduralParent:
+    """The disposition analogue of TestIndictmentAttachedToProceduralParent.
+
+    Rarer than the primary case but does occur: a "Notice of Filing
+    of Plea Agreement" parent entry with the actual plea agreement as
+    ``attachment_number=1``; a parent order with a memorandum opinion
+    filed as a separate attachment. The matcher AND the extractor
+    must both recognize the attachment so the summary LLM gets the
+    ruling document's body rather than the procedural wrapper.
+    """
+
+    def _notice_of_plea_entry(self):
+        # "Notice of Filing" with plea agreement as attachment 1. The
+        # parent description doesn't head-match disposition patterns
+        # (in fact "Notice of Filing" reads like a procedural notice),
+        # but attachment 1's description IS "Plea Agreement" which
+        # head-matches _DISPOSITION_RE.
+        return {
+            "id": 9001,
+            "description": (
+                "Notice of Filing of Plea Agreement by USA as to "
+                "Defendant Doe. (Attachments: # 1 Plea Agreement) (AM)"
+            ),
+            "short_description": None,
+            "recap_documents": [
+                {
+                    "id": 700,
+                    "document_number": "12",
+                    "attachment_number": None,
+                    "description": "Notice of Filing",
+                },
+                {
+                    "id": 701,
+                    "document_number": "12",
+                    "attachment_number": 1,
+                    "description": "Plea Agreement",
+                },
+            ],
+        }
+
+    def test_is_disposition_document_matches_via_attachment(self):
+        from case_calendar.summary import _is_disposition_document
+
+        # Parent description heads with "Notice of Filing" — the
+        # _DISPOSITION_DOCUMENT_NEGATIVE_RE rejects "notice of filing"
+        # at the entry level. But the attached "Plea Agreement"
+        # head-matches _DISPOSITION_RE, so the strict matcher must
+        # return True via the attachment.
+        assert _is_disposition_document(self._notice_of_plea_entry()) is True
+
+    def test_is_disposition_broad_matches_via_attachment(self):
+        from case_calendar.summary import is_disposition
+
+        # Broad version (stale-flag): same behavior — attachment
+        # carrying the broad signal flips the entry.
+        assert is_disposition(self._notice_of_plea_entry()) is True
+
+    def test_entry_doc_text_extracts_from_disposition_attachment(self, monkeypatch):
+        # Same priority as primaries: substance-marked attachment wins
+        # over the parent's procedural main doc.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            700: "Notice of Filing — procedural cover sheet " * 20,
+            701: "Plea Agreement body — defendant agrees to plead guilty " * 20,
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._notice_of_plea_entry())
+        assert "Plea Agreement body" in out
+        assert "Notice of Filing — procedural" not in out
+
+    def test_entry_doc_text_falls_through_when_disposition_attachment_empty(
+        self, monkeypatch
+    ):
+        # Symmetric to the primary fallthrough: when the substance-
+        # marked attachment extracts to nothing, fall through to the
+        # main doc.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            700: "Notice of Filing body that is at least usable",
+            701: "",  # plea agreement extracts to nothing
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._notice_of_plea_entry())
+        assert "Notice of Filing body" in out
+
+
+class TestPrimaryFailureStateEdgeCases:
+    """Coverage for the recap_doc-level state classifier's edge branches."""
+
+    def test_attachment_only_recap_documents_falls_through_to_no_main(self):
+        # If an entry's recap_documents are ALL attachments (no main
+        # doc), the per-rd loop skips all of them and the function
+        # falls through to the no-main-recap_document branch, which
+        # returns 'not-available'. This shape is uncommon but possible
+        # for entries where someone treated an attachment as primary
+        # via description-only matching.
+        from case_calendar.summary import _primary_failure_state
+
+        entry = {
+            "recap_documents": [
+                {"id": 1, "attachment_number": 1, "is_sealed": False},
+                {"id": 2, "attachment_number": 2, "is_sealed": False},
+            ],
+        }
+        assert _primary_failure_state(entry) == "not-available"
+
+    def test_entry_with_no_recap_documents_returns_not_available(self):
+        # The function defaults to 'not-available' when there are no
+        # recap_documents at all on the entry (paperless primary entry
+        # tagged by description text alone — rare). Documents the
+        # no-main-doc fallthrough.
+        from case_calendar.summary import _primary_failure_state
+
+        assert _primary_failure_state({}) == "not-available"
+        assert _primary_failure_state({"recap_documents": []}) == "not-available"
+
+
+class TestSubstanceRecapDocumentsDedup:
+    """Coverage for the dedup logic in _substance_recap_documents."""
+
+    def test_dedup_skips_same_id_seen_under_another_predicate(self):
+        # A recap_document whose description head-matches BOTH the
+        # primary regex AND the disposition regex (rare but possible
+        # — e.g. someone files something they call 'INDICTMENT AND
+        # JUDGMENT' on a single doc). The dedup loop sees it under
+        # the first predicate, marks the id seen, and skips on the
+        # second pass.
+        from case_calendar.summary import _substance_recap_documents
+
+        # Construct two recap_docs: one matches primary only, one
+        # would match BOTH primary and disposition (the dedup target).
+        # Note: this is a synthetic edge case — actual filings rarely
+        # have descriptions that hit both regexes. The point is to
+        # exercise the dedup branch even if natural data wouldn't.
+        entry = {
+            "recap_documents": [
+                {
+                    "id": 100,
+                    "attachment_number": None,
+                    "description": "INDICTMENT",
+                },
+            ],
+        }
+        # Patch the disposition predicate to claim the same recap_doc
+        # also looks dispositive, exercising the same-id-twice dedup
+        # branch.
+        import case_calendar.summary as s_mod
+
+        orig = s_mod._SUBSTANCE_PREDICATES
+        try:
+            s_mod._SUBSTANCE_PREDICATES = (
+                s_mod._matches_primary_document,
+                lambda text: "INDICTMENT" in text,  # also matches the same doc
+            )
+            out = _substance_recap_documents(entry)
+        finally:
+            s_mod._SUBSTANCE_PREDICATES = orig
+        # The single recap_doc appears exactly once despite matching
+        # both predicates.
+        assert [rd["id"] for rd in out] == [100]
+
+    def test_dedup_handles_recap_doc_without_id(self):
+        # Defensive: a recap_doc with no 'id' field — possible on
+        # malformed test fixtures or older entries — still ends up
+        # in the result (the dedup set tracks by id, so no-id docs
+        # can't deduplicate; they pass through). Exercises the
+        # 'if rid is not None' branch.
+        from case_calendar.summary import _substance_recap_documents
+
+        entry = {
+            "recap_documents": [
+                # No 'id' field at all.
+                {"attachment_number": None, "description": "INDICTMENT"},
+            ],
+        }
+        out = _substance_recap_documents(entry)
+        assert len(out) == 1
+
+
+class TestRefreshStaleSummarizeDocketReturnsNone:
+    """Coverage for the 'if row:' falsy branch in refresh_stale and
+    summarize_case. summarize_docket's None return is in principle
+    defensive (the no-metadata case is filtered by _group_dockets_on_case
+    before the call), but the check exists in case a future refactor
+    relaxes that invariant — we patch summarize_docket to return None
+    to exercise the branch."""
+
+    def test_refresh_stale_skips_falsy_row(self, store, monkeypatch):
+        from case_calendar import summary as summary_mod
+        from case_calendar.summary import refresh_stale
+
+        _seed_docket_meta(store, 1)
+        # Mark stale so the regen path runs.
+        store.mark_summary_stale("us-v-doe", *_DEFAULT_GROUP)
+        monkeypatch.setattr(summary_mod, "summarize_docket", lambda **kw: None)
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        written = refresh_stale(cl=cl, store=store, cases=[case])
+        # summarize_docket returned None → no entry added to written.
+        assert "us-v-doe" not in written or written["us-v-doe"] == set()
+
+    def test_summarize_case_skips_falsy_row(self, store, monkeypatch):
+        from case_calendar import summary as summary_mod
+        from case_calendar.summary import summarize_case
+
+        _seed_docket_meta(store, 1)
+        monkeypatch.setattr(summary_mod, "summarize_docket", lambda **kw: None)
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        rows = summarize_case(cl=cl, store=store, case=case, force=True)
+        assert rows == []

@@ -29,6 +29,69 @@ from .store import Store
 from .sync import CaseConfig, CaseSyncer, ExtraDocument
 
 
+class _HelpfulArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that prints full --help text on every parse error.
+
+    Stock ``argparse.ArgumentParser.error`` writes a one-line usage
+    summary plus the error message ("unrecognized arguments: ..." /
+    "the following arguments are required: ..."). For a project with
+    as many subcommands and flags as case-calendar, that summary
+    doesn't list available options — operators who typo'd a flag have
+    to re-run with ``--help`` to discover what they meant. This
+    subclass writes the relevant help text first, then the error
+    message, then exits with code 2 (matching the stock argparse exit
+    code so callers — CI, shell scripts — don't notice the
+    difference). ``add_subparsers`` defaults ``parser_class`` to the
+    type of the parent parser, so simply using this class for the
+    top-level parser propagates the behavior to every subcommand
+    automatically.
+
+    The subtlety: when an unrecognized flag is passed to a SUBCOMMAND
+    (e.g. ``case-calendar sync --sumarize``), argparse routes the
+    error to the PARENT parser, not the subparser — the subparser
+    parses what it can, returns the rest as "extras", and the parent
+    reports "unrecognized arguments". Printing the parent's help
+    there would tell the operator about ``-c`` / ``--config`` and the
+    subcommand list, but not about the actual flags the subcommand
+    accepts. So we capture the subparsers action on
+    ``add_subparsers`` and the argv passed to ``parse_args``, and
+    when ``error()`` fires on the parent we scan argv for the
+    subcommand name and print THAT subparser's help instead. Errors
+    raised by the subparser itself (required-args missing, invalid
+    choice) still route to the subparser's own ``error()`` and print
+    its own help directly.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._subparsers_action: Any = None
+        self._last_argv: list[str] | None = None
+
+    def add_subparsers(self, **kwargs: Any) -> Any:
+        action = super().add_subparsers(**kwargs)
+        self._subparsers_action = action
+        return action
+
+    def parse_args(self, args=None, namespace=None):  # type: ignore[override]
+        # Stash argv so error() can find the chosen subcommand. argparse
+        # itself doesn't expose the in-flight argv to error() — and we
+        # don't want to fall back to sys.argv unconditionally because
+        # main() can be called with an explicit argv (e.g. from tests).
+        self._last_argv = list(args) if args is not None else list(sys.argv[1:])
+        return super().parse_args(args, namespace)
+
+    def error(self, message: str):  # noqa: D401 — match argparse's signature
+        target: argparse.ArgumentParser = self
+        if self._subparsers_action is not None and self._last_argv:
+            for arg in self._last_argv:
+                if arg in self._subparsers_action.choices:
+                    target = self._subparsers_action.choices[arg]
+                    break
+        target.print_help(sys.stderr)
+        sys.stderr.write(f"\n{self.prog}: error: {message}\n")
+        sys.exit(2)
+
+
 # Deadline status -> hearing-equivalent status used by the renderers.
 # pending: still upcoming -> scheduled
 # passed:  due-date past, no MARK_FILED arrived -> held (still visible, dim)
@@ -253,6 +316,44 @@ def _print_emit_results(
             print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
 
 
+def _log_llm_setup(cfg: dict[str, Any]) -> None:
+    """Emit the LLM-configuration header for a CLI command's run log.
+
+    Called once at the start of every command that runs LLM work
+    (``cmd_sync``, ``cmd_serve``, ``cmd_summarize``) so the run-time
+    log has a consistent header naming both providers / models. The
+    extraction LLM line is always emitted. The summary LLM line
+    varies: when ``case_summaries.enabled`` is true we log the
+    summary track's resolved provider / model; when it's false we log
+    a one-liner saying summaries won't regenerate. Operators reading
+    a sync log this way can see at a glance which model produced the
+    extraction work AND which model would produce (or did produce)
+    any summary work in the same run, instead of having to know the
+    defaults out of band.
+
+    Provider / model selection for the summary track is delegated to
+    ``llm.summary_provider_info`` so the precedence (config kwargs >
+    LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL env > extractor provider
+    auto-detect + default summary model) matches what
+    ``generate_docket_summary`` actually uses at call time.
+    """
+    log.info("extraction LLM: %s", llm.provider_info())
+    summary_cfg = cfg.get("case_summaries") or {}
+    if summary_cfg.get("enabled"):
+        log.info(
+            "summary LLM: %s (case_summaries.enabled=true)",
+            llm.summary_provider_info(
+                provider=summary_cfg.get("provider"),
+                model=summary_cfg.get("model"),
+            ),
+        )
+    else:
+        log.info(
+            "summary LLM: case_summaries.enabled=false — case summaries "
+            "will not regenerate this run"
+        )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -274,7 +375,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             store.close()
             return 0
 
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
         _maybe_ensure_docket_alerts(cfg, cl, cases)
@@ -606,7 +707,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 2
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
 
     # Debounced summary refresh state. PACER batch uploads can fire many
     # webhook deliveries inside a few minutes; we don't want a Sonnet call
@@ -866,7 +967,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     allow_ocr = bool(summary_cfg.get("allow_ocr", True))
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
         for case in cases:
@@ -1181,7 +1282,13 @@ def main(argv: list[str] | None = None) -> int:
         level=os.environ.get("LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    parser = argparse.ArgumentParser(prog="case-calendar")
+    # Using _HelpfulArgumentParser (instead of stock argparse.ArgumentParser)
+    # so a typo'd flag prints the relevant subcommand's --help text
+    # alongside the error, not just a one-line usage summary. The
+    # subparser class defaults to the parent's, so every `sub.add_parser
+    # (...)` below picks up the same behavior without a per-subparser
+    # opt-in.
+    parser = _HelpfulArgumentParser(prog="case-calendar")
     parser.add_argument(
         "-c", "--config", default="config.yaml", help="path to config YAML"
     )

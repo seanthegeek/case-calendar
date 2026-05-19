@@ -323,6 +323,41 @@ class TestProviderInfo:
         assert "claude-opus-4-7" in llm.provider_info()
 
 
+class TestSummaryProviderInfo:
+    """Mirror of :class:`TestProviderInfo` for the summary-track helper —
+    same precedence chain (config kwargs > LLM_SUMMARY_PROVIDER env >
+    auto-detect) but the per-provider default model is the higher-tier
+    one (Sonnet / GPT-5.4 / Gemini Pro) so the log line reflects what
+    ``generate_docket_summary`` would actually pick at call time."""
+
+    def test_no_provider(self):
+        assert llm.summary_provider_info() == "no provider configured"
+
+    def test_explicit_kwargs_win(self):
+        # Config kwargs override env and auto-detect.
+        info = llm.summary_provider_info(provider="anthropic", model="custom-sonnet")
+        assert "anthropic" in info and "custom-sonnet" in info
+
+    def test_unknown_provider_kwarg_reports_unknown(self):
+        # Defensive: if the operator typo'd the config provider key, the
+        # log should say "unknown provider=..." rather than crashing or
+        # silently falling through. This is the no-default-summary-model
+        # branch that the strict generate_docket_summary path would
+        # raise on.
+        info = llm.summary_provider_info(provider="not-a-real-provider")
+        assert "unknown provider" in info
+        assert "not-a-real-provider" in info
+
+    def test_env_provider_picks_summary_default_model(self, monkeypatch):
+        # No explicit kwargs — env var sets the provider, summary track
+        # picks the higher-tier default for it (Sonnet for anthropic).
+        monkeypatch.setenv("LLM_SUMMARY_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        info = llm.summary_provider_info()
+        assert "anthropic" in info
+        assert "sonnet" in info.lower()
+
+
 # --- end-to-end: stub provider call, verify wiring ---
 
 

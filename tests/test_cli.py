@@ -835,6 +835,89 @@ def fake_cl_ctx(monkeypatch):
     return instance
 
 
+class TestLogLlmSetup:
+    """The startup helper that emits the LLM-configuration header.
+
+    Called by every CLI command that runs LLM work — extracts the
+    extraction-LLM line + a summary-LLM line that varies based on
+    whether ``case_summaries.enabled`` is set. The point is to make
+    sync logs accurate now that the project uses two distinct models
+    for the two tracks (Haiku for extraction, Sonnet for summaries);
+    previously the single ``LLM: ...`` line only mentioned the
+    extractor and could mislead operators about what summarized what.
+    """
+
+    def test_enabled_logs_both_extraction_and_summary_llm(self, monkeypatch, caplog):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        monkeypatch.setattr(
+            cli.llm,
+            "summary_provider_info",
+            lambda **kw: f"anthropic/sonnet (kw={sorted(kw.keys())})",
+        )
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup(
+                {
+                    "case_summaries": {
+                        "enabled": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                    }
+                }
+            )
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "extraction LLM:" in m and "anthropic/haiku" in m for m in messages
+        ), messages
+        assert any(
+            "summary LLM:" in m
+            and "anthropic/sonnet" in m
+            and "case_summaries.enabled=true" in m
+            for m in messages
+        ), messages
+
+    def test_disabled_logs_extraction_only_with_summary_disabled_note(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        # summary_provider_info must NOT be called when disabled; sentinel
+        # raises to enforce.
+        monkeypatch.setattr(
+            cli.llm,
+            "summary_provider_info",
+            lambda **kw: (_ for _ in ()).throw(
+                AssertionError("must not be called when disabled")
+            ),
+        )
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup({"case_summaries": {"enabled": False}})
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "extraction LLM:" in m and "anthropic/haiku" in m for m in messages
+        ), messages
+        assert any(
+            "summary LLM:" in m and "case_summaries.enabled=false" in m
+            for m in messages
+        ), messages
+
+    def test_missing_case_summaries_key_treated_as_disabled(self, monkeypatch, caplog):
+        # Defensive: a config without a case_summaries section at all is
+        # the most common shape for users who haven't opted in. The helper
+        # must not blow up on missing dict keys.
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup({})  # no case_summaries key
+        messages = [r.message for r in caplog.records]
+        assert any("summary LLM:" in m and "enabled=false" in m for m in messages), (
+            messages
+        )
+
+
 class TestCmdSync:
     def test_unknown_case_id_returns_2(self, cfg_file):
         args = Namespace(config=str(cfg_file), case="nope", no_emit=False)
@@ -2272,6 +2355,53 @@ class TestMain:
     def test_requires_subcommand(self, cfg_file):
         with pytest.raises(SystemExit):
             main(["-c", str(cfg_file)])
+
+    def test_invalid_subcommand_prints_full_help(self, cfg_file, capsys):
+        # `_HelpfulArgumentParser.error` must write the full --help text
+        # (not just the one-line usage) so an operator who typo'd a
+        # subcommand can see the available subcommands without re-running.
+        with pytest.raises(SystemExit) as excinfo:
+            main(["-c", str(cfg_file), "no-such-command"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # Help signature: enumerates the subcommands in a positional
+        # argument block. If the error path printed only `usage:` and
+        # the error, that block would be absent.
+        assert "sync" in err and "emit" in err and "summarize" in err, err
+        assert "error:" in err and "no-such-command" in err, err
+
+    def test_empty_argv_prints_parent_help(self, cfg_file, capsys):
+        # With no argv at all, parse_args sets _last_argv to [] (a
+        # falsy list) so the helpful parser's subparser-lookup branch
+        # doesn't fire — it falls through and prints the parent's help.
+        # Parent help lists the subcommand positional rather than the
+        # flags of any one subparser, so the operator sees the catalog.
+        with pytest.raises(SystemExit) as excinfo:
+            main([])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # Parent help shows the subcommand list.
+        assert "{sync,emit,serve,setup,summarize,show,prune,webhook-url}" in err, err
+        # And the error message is appended after the help body.
+        assert "error:" in err, err
+
+    def test_invalid_flag_on_subcommand_prints_subcommand_help(self, cfg_file, capsys):
+        # The relevant subparser's --help text, not the parent's. The
+        # user's case here was `sync --sumarize` — they typed a typo
+        # expecting it to enable summary generation, and the stock
+        # argparse usage line wouldn't have listed the real flag name.
+        # The fixed behavior should show every flag the `sync`
+        # subcommand actually accepts, in their helpful long-form
+        # description.
+        with pytest.raises(SystemExit) as excinfo:
+            main(["-c", str(cfg_file), "sync", "--sumarize"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # The subparser's help text mentions all sync flags by name.
+        assert "--force-summaries" in err, err
+        assert "--case" in err and "--only-new" in err and "--no-emit" in err, err
+        # And the actual error message is still there.
+        assert "--sumarize" in err and "error:" in err, err
 
 
 class TestEmitCalendarsCoverage:

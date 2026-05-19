@@ -13,38 +13,45 @@ from urllib.parse import urlparse
 from case_calendar import pdf
 
 
-class TestLooksGarbled:
-    """Detector for font-encoding gibberish from upstream pypdf extraction.
+class TestIsUsableText:
+    """Single positive predicate for the extraction chain.
+
+    Returns True only when text is long enough (``_MIN_USEFUL_CHARS``),
+    has a high enough alpha-character ratio to look like real prose
+    rather than font-encoding gibberish, and survives the PACER-page-
+    header strip without losing its body. Callers use it to decide
+    whether to keep an extraction result or fall through to the next
+    stage (CourtListener ``plain_text`` → local pypdf → OCR).
 
     Real prose runs ~70-80% alpha; the most number-heavy legal headers
     still score >50%. Custom-encoded PDFs decoded without a /ToUnicode
     map land under 10%. 0.4 sits comfortably between the two.
     """
 
-    def test_real_prose_is_not_garbled(self):
+    def test_real_prose_is_usable(self):
         text = (
             "Defendants VICTORIA EDUARDOVNA DUBRANOVA, also known as "
             "Vika, Tory, and Sovasonya, were members of NoName057(16). "
             "Defendant LUPIN was the Chief Executive Officer of CISM. "
             "Defendant BURLAKOV was the Deputy Director of CISM."
         )
-        assert pdf.looks_garbled(text) is False
+        assert pdf.is_usable_text(text) is True
 
-    def test_font_encoding_noise_is_garbled(self):
+    def test_font_encoding_noise_is_not_usable(self):
         # 27KB of `ÿ`-noise with occasional ASCII bits is the actual shape
         # of CourtListener's plain_text for the us-v-dubranova first superseding
         # indictment — pypdf mapped the bytes 1:1 into Latin-1 codepoints
         # because the PDF's fonts had no /ToUnicode map.
         text = "ÿ ÿ%ÿ$ÿ2 4 & '&1'&('ÿ&'&5'&)'&'ÿ" * 200
-        assert pdf.looks_garbled(text) is True
+        assert pdf.is_usable_text(text) is False
 
-    def test_pypdf_glyph_indices_are_garbled(self):
+    def test_pypdf_glyph_indices_are_not_usable(self):
         # Some PDFs produce ``/i255 /1 /2 /11/12/13/14`` glyph-index
         # tokens instead of decoded text — also a low alpha ratio.
         text = "/i255\n/1\n/2\n/3\n/11/12/13/14/15/16\n" * 100
-        assert pdf.looks_garbled(text) is True
+        assert pdf.is_usable_text(text) is False
 
-    def test_header_heavy_real_text_is_not_garbled(self):
+    def test_header_heavy_real_text_is_usable(self):
         # Worst-case real text: a page that's mostly the document header.
         # Still scores above 0.4.
         text = (
@@ -53,37 +60,47 @@ class TestLooksGarbled:
             "COURT FOR THE CENTRAL DISTRICT OF CALIFORNIA "
             "FIRST SUPERSEDING INDICTMENT 18 USC 371 18 USC 1030"
         )
-        assert pdf.looks_garbled(text) is False
+        assert pdf.is_usable_text(text) is True
 
-    def test_short_strings_are_never_garbled(self):
-        # Below the ratio-stability threshold — trust short strings.
-        # Even a string with low alpha ratio shouldn't flag, because
-        # the ratio is too noisy on tiny inputs to be reliable.
-        assert pdf.looks_garbled("###") is False
-        assert pdf.looks_garbled("ÿ" * 50) is False
+    def test_short_strings_are_not_usable(self):
+        # Below ``_MIN_USEFUL_CHARS`` — too short to feed to the summary
+        # LLM regardless of content quality. The function rolls up the
+        # length check the callers used to do separately, so any text
+        # under 100 chars rejects here whether it's clean or noisy.
+        assert pdf.is_usable_text("###") is False
+        assert pdf.is_usable_text("ÿ" * 50) is False
+        assert pdf.is_usable_text("Real but short text.") is False
 
-    def test_empty_string_is_not_garbled(self):
-        # Edge case — caller checks emptiness separately.
-        assert pdf.looks_garbled("") is False
+    def test_empty_string_is_not_usable(self):
+        assert pdf.is_usable_text("") is False
 
-    def test_pacer_page_headers_only_is_garbled(self):
+    def test_pure_whitespace_long_enough_is_not_usable(self):
+        # An input long enough to pass the _MIN_USEFUL_CHARS gate but
+        # comprised entirely of whitespace skips the alpha-ratio branch
+        # (the non-whitespace-stripped string is empty, so the inner
+        # `if nonws:` is False) and falls through to the stamp-strip /
+        # residue-length check, which catches it.
+        assert pdf.is_usable_text(" " * 200) is False
+        assert pdf.is_usable_text("\n\t" * 100) is False
+
+    def test_pacer_page_headers_only_is_not_usable(self):
         # The us-v-schmitz shape: an image-only PDF with a thin OCR
         # overlay covering just the page-header band. pypdf reads the
         # overlay as several KB of clean ASCII, but every line is the
-        # standard PACER stamp — no document body. Passes the alpha
-        # gate (page stamps are mostly letters and digits) so the
+        # standard PACER stamp — no document body. Passes the length +
+        # alpha gates (page stamps are mostly letters and digits) so the
         # function has to recognize the stamp pattern itself.
         text = "\n".join(
             f"Case 1:24-cr-00234-RMB     Document 1     "
             f"Filed 04/03/24     Page {i} of 18 PageID: {31 + i}"
             for i in range(1, 19)
         )
-        assert pdf.looks_garbled(text) is True
+        assert pdf.is_usable_text(text) is False
 
-    def test_pacer_page_headers_with_body_is_not_garbled(self):
+    def test_pacer_page_headers_with_body_is_usable(self):
         # Same page-stamp text PLUS a paragraph of body content survives
         # the strip, so the document is real and the function returns
-        # False even though the stamps are present.
+        # True even though the stamps are present.
         text = (
             "Case 1:24-cr-00234-RMB Document 1 Filed 04/03/24 Page 1 of 18 PageID: 32\n"
             "UNITED STATES OF AMERICA v. PATRICK SCHMITZ. The Grand Jury "
@@ -93,7 +110,7 @@ class TestLooksGarbled:
             "the Versus Project dark web marketplace.\n"
             "Case 1:24-cr-00234-RMB Document 1 Filed 04/03/24 Page 2 of 18 PageID: 33"
         )
-        assert pdf.looks_garbled(text) is False
+        assert pdf.is_usable_text(text) is True
 
     def test_cd_cal_page_id_hash_variant_is_recognized(self):
         # Central District of California writes "Page ID #:305" instead
@@ -105,14 +122,54 @@ class TestLooksGarbled:
             f"Page {i} of 15 Page ID #:{304 + i}"
             for i in range(1, 16)
         )
-        assert pdf.looks_garbled(text) is True
+        assert pdf.is_usable_text(text) is False
+
+
+class TestHttpStatusCategory:
+    """The one-word HTTP-status classifier feeds the pdf-fetch warning
+    logs. Each branch labels a status code in a way that tells the
+    operator whether retry-next-sync is likely to help."""
+
+    def test_404_410_are_not_found(self):
+        assert pdf._http_status_category(404) == "not found"
+        assert pdf._http_status_category(410) == "not found"
+
+    def test_401_403_are_access_denied(self):
+        assert pdf._http_status_category(401) == "access denied"
+        assert pdf._http_status_category(403) == "access denied"
+
+    def test_429_is_rate_limited(self):
+        assert pdf._http_status_category(429) == "rate limited"
+
+    def test_other_4xx_is_client_error_wont_retry(self):
+        # 4xx that isn't auth / rate-limit / not-found — e.g., 400, 422.
+        # These are permanent under retry-next-sync, so the label calls
+        # that out.
+        assert pdf._http_status_category(400) == "client error — won't retry"
+        assert pdf._http_status_category(422) == "client error — won't retry"
+
+    def test_5xx_is_server_error_retry_next_sync(self):
+        assert pdf._http_status_category(500) == "server error — retry next sync"
+        assert pdf._http_status_category(503) == "server error — retry next sync"
+        assert pdf._http_status_category(504) == "server error — retry next sync"
+
+    def test_outside_normal_range_is_unexpected(self):
+        # Defensive — should never see these in practice, but the
+        # final fallthrough exists so a weird status doesn't crash
+        # the log line.
+        assert pdf._http_status_category(999) == "unexpected"
+        assert pdf._http_status_category(100) == "unexpected"
 
 
 class TestExtractText:
     def test_uses_plain_text_first(self, monkeypatch):
+        # plain_text long enough + clean enough to satisfy is_usable_text
+        # short-circuits the fetch entirely.
         rd = {
             "plain_text": "  the body is full of real english words like "
-            "indictment and defendant and conspiracy  ",
+            "indictment and defendant and conspiracy. The grand jury in "
+            "and for the district returns this indictment against the "
+            "defendant, charging the offenses set forth below.  ",
             "is_available": True,
         }
         monkeypatch.setattr(
@@ -197,14 +254,45 @@ class TestExtractText:
         assert pdf.extract_text(rd) is None
         assert called == []
 
-    def test_unavailable_returns_none_without_fetch(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": False}
-        called = []
+    def test_unavailable_still_attempts_fetch(self, monkeypatch):
+        # us-v-lytvynenko regression: ``is_available=False`` is NOT a
+        # gate on the fetch. The cached flag can drift behind the
+        # actual storage state (CourtListener flipped is_available
+        # upstream between our last sync and now), so the pipeline must
+        # still try the URLs in the recap_doc. ``fetch_pdf_bytes``
+        # itself returns None cleanly when no URL fields are populated;
+        # ``is_sealed`` remains the only hard "don't bother" gate.
+        rd = {
+            "plain_text": "",
+            "is_available": False,
+            "filepath_local": "recap/x.pdf",
+        }
+        called: list[str] = []
+
+        def fake_fetch(rd_arg, **kw):
+            called.append("fetched")
+            return b"%PDF fake bytes"
+
+        monkeypatch.setattr(pdf, "fetch_pdf_bytes", fake_fetch)
         monkeypatch.setattr(
-            pdf, "fetch_pdf_bytes", lambda *a, **kw: called.append("nope")
+            pdf, "extract_with_pypdf", lambda data: "real body text " * 50
         )
+        result = pdf.extract_text(rd)
+        assert called == ["fetched"], "fetch must run despite is_available=False"
+        assert result and "real body text" in result
+
+    def test_unavailable_with_no_urls_returns_none_cleanly(self, monkeypatch):
+        # When is_available=False AND the recap_doc has no URL fields,
+        # fetch_pdf_bytes returns None on its own (no HTTP round-trip
+        # since both ``filepath_ia`` and ``filepath_local`` are empty).
+        # We still call it — that's the contract — and end up at the
+        # same outcome (None) the old is_available=False gate produced,
+        # just via fetch_pdf_bytes' own URL check instead of an upstream
+        # bail.
+        rd = {"plain_text": "", "is_available": False}  # no URLs
+        # Use the real fetch_pdf_bytes — it'll see no URLs and return
+        # None without touching the network.
         assert pdf.extract_text(rd) is None
-        assert called == []
 
     def test_falls_back_to_pypdf(self, monkeypatch):
         rd = {

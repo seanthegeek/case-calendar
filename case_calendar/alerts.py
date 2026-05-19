@@ -72,14 +72,37 @@ def ensure_docket_alerts(
             and alert.get("docket") is not None
         }
     except Exception as e:
-        # Listing failed entirely (e.g. transport error budget exhausted).
-        # Don't half-attempt creates against an unknown baseline — that
-        # would either spam duplicate POSTs or skip everything if the
-        # caller's account already has subscriptions we couldn't see.
+        # Listing failed entirely. Don't half-attempt creates against an
+        # unknown baseline — that would either spam duplicate POSTs or
+        # skip everything if the caller's account already has subscriptions
+        # we couldn't see. Distinguish the failure shape in the log so the
+        # operator knows which way to investigate:
+        #   - 401/403 from CourtListener (HTTPStatusError with that
+        #     status) → check ``COURTLISTENER_TOKEN`` env var, account
+        #     status, and that the token has the docket-alerts scope.
+        #   - Transport errors (httpx network-layer) → CourtListener may
+        #     be degraded; the next sync will retry.
+        #   - Anything else → unexpected; the exception type tells the
+        #     story.
+        status_code = getattr(getattr(e, "response", None), "status_code", None)
+        if status_code in (401, 403):
+            category = (
+                f"auth error (HTTP {status_code}) — check "
+                "COURTLISTENER_TOKEN and the account's docket-alerts scope"
+            )
+        elif status_code is not None:
+            category = f"HTTP {status_code} from CourtListener"
+        else:
+            category = (
+                f"transport / unexpected error ({type(e).__name__}) — "
+                "likely transient, next sync will retry"
+            )
         log.warning(
-            "ensure_docket_alerts: list call failed (%s); skipping alert "
-            "reconciliation this run",
+            "ensure_docket_alerts: list call failed: %s: %s; skipping "
+            "alert reconciliation this run (%s)",
+            type(e).__name__,
             e,
+            category,
         )
         return {did: "failed" for did in docket_ids}
 

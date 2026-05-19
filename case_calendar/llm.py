@@ -996,6 +996,84 @@ Return ONLY a single JSON object, no markdown fences, no array, no explanation.
 """
 
 
+def _call_lm_and_parse(
+    *,
+    provider: str,
+    system_prompt: str,
+    user_message: str,
+    max_tokens: int,
+    label: str,
+) -> dict[str, Any]:
+    """Single-action LLM call + JSON parse + actions-unwrap + validation.
+
+    Used by ``verify_hearing`` / ``verify_deadline`` /
+    ``resolve_duplicate_hearings`` — they all share the same call shape
+    (one provider call, parse the response, validate the ``type`` field,
+    return) and differ only in the system prompt and the log label.
+    Centralizing eliminates the four-step parse-and-validate sequence
+    from each caller and guarantees they all handle the model's quirks
+    (code fences, actions-array wrapping, missing type field) the same
+    way — silent drift between callers was a real risk when each had
+    its own hand-rolled copy.
+
+    On any failure — call exception, non-JSON response, empty actions
+    list, missing type field — returns ``{"type": "UNCLEAR", "reason":
+    "<specific failure>"}``. The ``type`` field is guaranteed present
+    on the return; callers can read it without an existence check and
+    treat UNCLEAR as a benign no-op.
+    """
+    try:
+        if provider == "anthropic":
+            raw = _call_anthropic(system_prompt, user_message, max_tokens)
+        elif provider == "openai":
+            raw = _call_openai(system_prompt, user_message, max_tokens)
+        else:
+            raw = _call_gemini(system_prompt, user_message, max_tokens)
+    except Exception:
+        logger.exception("LLM %s call failed", label)
+        return {"type": "UNCLEAR", "reason": "llm call failed"}
+
+    raw = raw.strip()
+    # Strip code fences just in case the model emits them despite the prompt.
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.warning("%s returned non-JSON: %s", label, raw[:300])
+        return {"type": "UNCLEAR", "reason": "non-JSON response"}
+
+    # Sometimes the model wraps the action in {"actions": [...]} despite
+    # the prompt — unwrap if so.
+    if isinstance(obj, dict) and "actions" in obj and isinstance(obj["actions"], list):
+        if obj["actions"]:
+            obj = obj["actions"][0]
+        else:
+            return {"type": "UNCLEAR", "reason": "empty actions list"}
+    if not isinstance(obj, dict) or "type" not in obj:
+        return {"type": "UNCLEAR", "reason": "missing type field"}
+    return obj
+
+
+def _format_recent_entries(recent_entries: list[dict[str, Any]]) -> list[str]:
+    """Render the "RECENT DOCKET ENTRIES (newest last):" block used by
+    every verify / dedupe message builder. Returns the lines as a list
+    so callers can slot them into their own parts list with the rest of
+    their preamble. Includes the header line and the "(none)" placeholder
+    when no entries are passed — caller doesn't need to special-case.
+    """
+    out: list[str] = ["RECENT DOCKET ENTRIES (newest last):"]
+    if not recent_entries:
+        out.append("  (none)")
+        return out
+    for e in recent_entries:
+        text = (e.get("description") or e.get("short_description") or "").strip()
+        out.append(
+            f"  - [{e.get('entry_number')}] eid={e.get('entry_id')} "
+            f"filed={e.get('date_filed')}: {text[:1500]}"
+        )
+    return out
+
+
 def _build_verify_user_message(
     *,
     case_name: str,
@@ -1019,17 +1097,8 @@ def _build_verify_user_message(
         f"  source_entry_ids: {hearing.get('source_entry_ids')}",
         f"  notes: {hearing.get('notes')!r}",
         "",
-        "RECENT DOCKET ENTRIES (newest last):",
+        *_format_recent_entries(recent_entries),
     ]
-    if not recent_entries:
-        parts.append("  (none)")
-    else:
-        for e in recent_entries:
-            text = (e.get("description") or e.get("short_description") or "").strip()
-            parts.append(
-                f"  - [{e.get('entry_number')}] eid={e.get('entry_id')} "
-                f"filed={e.get('date_filed')}: {text[:1500]}"
-            )
     return "\n".join(parts)
 
 
@@ -1069,40 +1138,13 @@ def verify_hearing(
         user,
     )
 
-    try:
-        if provider == "anthropic":
-            raw = _call_anthropic(VERIFY_SYSTEM_PROMPT, user, max_tokens)
-        elif provider == "openai":
-            raw = _call_openai(VERIFY_SYSTEM_PROMPT, user, max_tokens)
-        else:
-            raw = _call_gemini(VERIFY_SYSTEM_PROMPT, user, max_tokens)
-    except Exception:
-        logger.exception("LLM verify call failed key=%r", hearing.get("hearing_key"))
-        return {"type": "UNCLEAR", "reason": "llm call failed"}
-
-    raw = raw.strip()
-    # Strip code fences just in case the model emits them despite the prompt.
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning(
-            "verify hearing_key=%r returned non-JSON: %s",
-            hearing.get("hearing_key"),
-            raw[:300],
-        )
-        return {"type": "UNCLEAR", "reason": "non-JSON response"}
-
-    # Sometimes the model wraps the action in {"actions":[...]} despite the
-    # prompt — unwrap if so.
-    if isinstance(obj, dict) and "actions" in obj and isinstance(obj["actions"], list):
-        if obj["actions"]:
-            obj = obj["actions"][0]
-        else:
-            return {"type": "UNCLEAR", "reason": "empty actions list"}
-    if not isinstance(obj, dict) or "type" not in obj:
-        return {"type": "UNCLEAR", "reason": "missing type field"}
-
+    obj = _call_lm_and_parse(
+        provider=provider,
+        system_prompt=VERIFY_SYSTEM_PROMPT,
+        user_message=user,
+        max_tokens=max_tokens,
+        label=f"verify hearing_key={hearing.get('hearing_key')!r}",
+    )
     logger.info(
         "llm verify key=%r -> %s (%s)",
         hearing.get("hearing_key"),
@@ -1169,17 +1211,8 @@ def _build_verify_deadline_user_message(
         f"  source_entry_ids: {deadline.get('source_entry_ids')}",
         f"  notes: {deadline.get('notes')!r}",
         "",
-        "RECENT DOCKET ENTRIES (newest last):",
+        *_format_recent_entries(recent_entries),
     ]
-    if not recent_entries:
-        parts.append("  (none)")
-    else:
-        for e in recent_entries:
-            text = (e.get("description") or e.get("short_description") or "").strip()
-            parts.append(
-                f"  - [{e.get('entry_number')}] eid={e.get('entry_id')} "
-                f"filed={e.get('date_filed')}: {text[:1500]}"
-            )
     return "\n".join(parts)
 
 
@@ -1208,39 +1241,13 @@ def verify_deadline(
         recent_entries=recent_entries,
     )
 
-    try:
-        if provider == "anthropic":
-            raw = _call_anthropic(VERIFY_DEADLINE_SYSTEM_PROMPT, user, max_tokens)
-        elif provider == "openai":
-            raw = _call_openai(VERIFY_DEADLINE_SYSTEM_PROMPT, user, max_tokens)
-        else:
-            raw = _call_gemini(VERIFY_DEADLINE_SYSTEM_PROMPT, user, max_tokens)
-    except Exception:
-        logger.exception(
-            "LLM verify_deadline call failed key=%r",
-            deadline.get("deadline_key"),
-        )
-        return {"type": "UNCLEAR", "reason": "llm call failed"}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning(
-            "verify_deadline key=%r returned non-JSON: %s",
-            deadline.get("deadline_key"),
-            raw[:300],
-        )
-        return {"type": "UNCLEAR", "reason": "non-JSON response"}
-
-    if isinstance(obj, dict) and "actions" in obj and isinstance(obj["actions"], list):
-        if obj["actions"]:
-            obj = obj["actions"][0]
-        else:
-            return {"type": "UNCLEAR", "reason": "empty actions list"}
-    if not isinstance(obj, dict) or "type" not in obj:
-        return {"type": "UNCLEAR", "reason": "missing type field"}
+    obj = _call_lm_and_parse(
+        provider=provider,
+        system_prompt=VERIFY_DEADLINE_SYSTEM_PROMPT,
+        user_message=user,
+        max_tokens=max_tokens,
+        label=f"verify_deadline key={deadline.get('deadline_key')!r}",
+    )
 
     logger.info(
         "llm verify_deadline key=%r -> %s (%s)",
@@ -1324,16 +1331,7 @@ def _build_dedupe_hearing_user_message(
             ]
         )
     parts.append("")
-    parts.append("RECENT DOCKET ENTRIES (newest last):")
-    if not recent_entries:
-        parts.append("  (none)")
-    else:
-        for e in recent_entries:
-            text = (e.get("description") or e.get("short_description") or "").strip()
-            parts.append(
-                f"  - [{e.get('entry_number')}] eid={e.get('entry_id')} "
-                f"filed={e.get('date_filed')}: {text[:1500]}"
-            )
+    parts.extend(_format_recent_entries(recent_entries))
     return "\n".join(parts)
 
 
@@ -1367,39 +1365,14 @@ def resolve_duplicate_hearings(
         recent_entries=recent_entries,
     )
 
-    try:
-        if provider == "anthropic":
-            raw = _call_anthropic(DEDUPE_HEARING_SYSTEM_PROMPT, user, max_tokens)
-        elif provider == "openai":
-            raw = _call_openai(DEDUPE_HEARING_SYSTEM_PROMPT, user, max_tokens)
-        else:
-            raw = _call_gemini(DEDUPE_HEARING_SYSTEM_PROMPT, user, max_tokens)
-    except Exception:
-        logger.exception(
-            "LLM resolve_duplicate_hearings call failed keys=%s",
-            [h.get("hearing_key") for h in cluster],
-        )
-        return {"type": "UNCLEAR", "reason": "llm call failed"}
-
-    raw = raw.strip()
-    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.warning(
-            "resolve_duplicate_hearings keys=%s returned non-JSON: %s",
-            [h.get("hearing_key") for h in cluster],
-            raw[:300],
-        )
-        return {"type": "UNCLEAR", "reason": "non-JSON response"}
-
-    if isinstance(obj, dict) and "actions" in obj and isinstance(obj["actions"], list):
-        if obj["actions"]:
-            obj = obj["actions"][0]
-        else:
-            return {"type": "UNCLEAR", "reason": "empty actions list"}
-    if not isinstance(obj, dict) or "type" not in obj:
-        return {"type": "UNCLEAR", "reason": "missing type field"}
+    keys = [h.get("hearing_key") for h in cluster]
+    obj = _call_lm_and_parse(
+        provider=provider,
+        system_prompt=DEDUPE_HEARING_SYSTEM_PROMPT,
+        user_message=user,
+        max_tokens=max_tokens,
+        label=f"resolve_duplicate_hearings keys={keys}",
+    )
 
     logger.info(
         "llm resolve_duplicate_hearings keys=%s -> %s (%s)",
@@ -1416,6 +1389,43 @@ def provider_info() -> str:
         return "no provider configured"
     model = os.environ.get("LLM_MODEL", _DEFAULT_MODELS[p])
     return f"provider={p} model={model}"
+
+
+def summary_provider_info(
+    *, provider: Optional[str] = None, model: Optional[str] = None
+) -> str:
+    """Mirror of :func:`provider_info` but for the case-summary track.
+
+    The summary pipeline uses a separate provider / model selection from
+    the per-entry extractor (Sonnet / GPT-5.4 / Gemini Pro defaults vs
+    the cheap Haiku / nano / Flash Lite extractor tier — see the
+    matching "Summaries use a higher model tier than the extractor"
+    design note in AGENTS.md). Once we add multi-model support we want
+    operators to see BOTH providers / models on a sync log line so the
+    output isn't ambiguous about which model summarized what.
+
+    Precedence mirrors :func:`generate_docket_summary` exactly:
+      1. explicit ``provider`` / ``model`` kwargs (passed from
+         ``case_summaries.provider`` / ``.model`` in config.yaml)
+      2. ``LLM_SUMMARY_PROVIDER`` / ``LLM_SUMMARY_MODEL`` env vars
+      3. extractor's ``LLM_PROVIDER`` auto-detect, paired with the
+         per-provider default summary model (NOT the extractor default)
+    """
+    chosen_provider = (
+        provider
+        or os.environ.get("LLM_SUMMARY_PROVIDER", "").lower().strip()
+        or _detect_provider()
+    )
+    if not chosen_provider:
+        return "no provider configured"
+    if chosen_provider not in _DEFAULT_SUMMARY_MODELS:
+        return f"unknown provider={chosen_provider!r}"
+    chosen_model = (
+        model
+        or os.environ.get("LLM_SUMMARY_MODEL")
+        or _DEFAULT_SUMMARY_MODELS[chosen_provider]
+    )
+    return f"provider={chosen_provider} model={chosen_model}"
 
 
 # ---------------------------------------------------------------------------
@@ -1446,6 +1456,29 @@ SUMMARY_INSUFFICIENT_DOCUMENTS = (
     "Documents available for this docket are insufficient to generate a "
     "reliable summary."
 )
+
+
+# Three specific fallbacks for the cases where one or more primary
+# documents WERE identified on the docket (a recap_document carrying the
+# matcher signal, e.g. ``description='Indictment'``) but a real summary
+# couldn't be produced. Subscribers see exactly which of three failure
+# modes hit — these states have meaningfully different "what should
+# happen next" implications and the language is precise so readers can
+# tell "wait for unsealing" from "wait for the upload to land" from
+# "the document is permanently un-extractable from its current form."
+# All three are written by ``summary.summarize_docket`` without an LLM
+# round-trip; ``summary.py`` picks the right one based on each cached
+# primary entry's main recap_document state.
+#
+# When some primaries are in one state and others are in another (rare
+# — multi-primary dockets are uncommon), the catch-all
+# ``SUMMARY_PRIMARY_DOCUMENT_UNREADABLE`` wins; it's the least-specific
+# of the three and accurately covers any failure mode.
+SUMMARY_PRIMARY_DOCUMENT_SEALED = "The primary document(s) are currently sealed."
+SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE = (
+    "The primary document(s) are not yet available on RECAP."
+)
+SUMMARY_PRIMARY_DOCUMENT_UNREADABLE = "The primary document(s) could not be read."
 
 
 SUMMARY_SYSTEM_PROMPT = """\

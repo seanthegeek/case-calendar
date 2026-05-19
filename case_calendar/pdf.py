@@ -74,9 +74,6 @@ _MIN_USEFUL_CHARS = 100
 # #:305") still come in over 50% alpha. Garbled extracts reliably land
 # under 10%. 0.4 leaves a comfortable margin on both sides.
 _MIN_ALPHA_RATIO = 0.4
-# The ratio is too noisy on tiny strings; trust short extracts at face
-# value (a real document would fail ``_MIN_USEFUL_CHARS`` anyway).
-_GARBLED_MIN_LEN = 100
 
 
 # PACER page-header boilerplate. Every page in every PACER-source PDF
@@ -93,7 +90,7 @@ _GARBLED_MIN_LEN = 100
 # clean ASCII — passes the alpha-ratio gate — but the document body
 # (which lives only in the page images, not in any text layer) never
 # reaches the caller. The document itself has full content; the
-# EXTRACTION is the part that's stamps-only. ``looks_garbled`` flags
+# EXTRACTION is the part that's stamps-only. ``is_usable_text`` rejects
 # both this case and font-encoding gibberish so callers fall through
 # to the OCR stage.
 _PACER_PAGE_HEADER_RE = re.compile(
@@ -106,39 +103,69 @@ _PACER_PAGE_HEADER_RE = re.compile(
 )
 
 
-def looks_garbled(text: str) -> bool:
-    """Detect extracted text that's useless content, not real document body.
+def is_usable_text(text: str) -> bool:
+    """Return True when ``text`` is long enough and clean enough to use.
 
-    Catches two failure modes that callers treat the same way (fall
-    through to the next extraction stage):
+    Single positive predicate that callers in the extraction chain use
+    to decide whether to keep an extraction result or fall through to
+    the next stage (CourtListener ``plain_text`` → local pypdf → OCR).
+    Bundles three checks the callers used to do separately:
 
-    1. **Font-encoding gibberish** — PDFs using custom font subsets
+    1. **Length** — at least ``_MIN_USEFUL_CHARS``. A 2-page+ document
+       extracting to under 100 chars almost certainly failed; don't
+       burn the cost of feeding it to the summary LLM.
+    2. **Font-encoding gibberish** — PDFs using custom font subsets
        without a `/ToUnicode` map produce text whose alpha-character
-       ratio falls below ``_MIN_ALPHA_RATIO``. This is the original
-       signal the function was written for (us-v-dubranova case).
-    2. **PACER stamps with no body** — image-only scans with a thin OCR
+       ratio falls below ``_MIN_ALPHA_RATIO`` (us-v-dubranova case).
+    3. **PACER stamps with no body** — image-only scans with a thin OCR
        overlay covering just the page-header band let pypdf read clean
        ASCII headers off every page but the document body never
        reaches the caller. The text passes the alpha-ratio gate
        trivially (page stamps are mostly letters and digits) but
        contains nothing the summary LLM can use. Strip the stamps; if
-       less than ``_MIN_USEFUL_CHARS`` of residue remains, treat as
-       useless. The us-v-schmitz indictment was the canonical case.
+       less than ``_MIN_USEFUL_CHARS`` of residue remains, reject. The
+       us-v-schmitz indictment was the canonical case.
 
-    Returns False for short inputs (under ``_GARBLED_MIN_LEN`` / under
-    ``_MIN_USEFUL_CHARS``); the upstream length gate already covers
-    that and applying either ratio test to a snippet misfires.
+    The function was historically named ``looks_garbled`` and returned
+    True for unusable text. Inverted so callers read positively
+    (``if is_usable_text(text): return text`` reads more naturally than
+    the old ``len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text)``
+    pairing) and so the name reflects every check, not just the original
+    garbled-detection one.
     """
+    if len(text) < _MIN_USEFUL_CHARS:
+        return False
     nonws = "".join(text.split())
-    if len(nonws) >= _GARBLED_MIN_LEN:
+    if nonws:
         alpha = sum(1 for c in nonws if c.isascii() and c.isalpha())
         if (alpha / len(nonws)) < _MIN_ALPHA_RATIO:
-            return True
-    if len(text) >= _MIN_USEFUL_CHARS:
-        residue = _PACER_PAGE_HEADER_RE.sub("", text).strip()
-        if len(residue) < _MIN_USEFUL_CHARS:
-            return True
-    return False
+            return False
+    residue = _PACER_PAGE_HEADER_RE.sub("", text).strip()
+    if len(residue) < _MIN_USEFUL_CHARS:
+        return False
+    return True
+
+
+def _http_status_category(status: int) -> str:
+    """One-word classification of an HTTP status code for log clarity.
+
+    Operators triaging a flood of pdf-fetch warnings need to know at a
+    glance whether the failure is transient (retry next sync will
+    likely succeed) or permanent (something needs to change upstream).
+    Worth a small helper rather than embedding the same conditional in
+    every log site.
+    """
+    if status == 404 or status == 410:
+        return "not found"
+    if status in (401, 403):
+        return "access denied"
+    if status == 429:
+        return "rate limited"
+    if 400 <= status < 500:
+        return "client error — won't retry"
+    if 500 <= status < 600:
+        return "server error — retry next sync"
+    return "unexpected"
 
 
 def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
@@ -220,9 +247,14 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
                     continue
                 if r.status_code == 200 and r.content:
                     return r.content
-                log.warning("pdf fetch %s -> %s", url, r.status_code)
+                log.warning(
+                    "pdf fetch %s -> %s (%s)",
+                    url,
+                    r.status_code,
+                    _http_status_category(r.status_code),
+                )
         except Exception as e:
-            log.warning("pdf fetch %s failed: %s", url, e)
+            log.warning("pdf fetch %s failed: %s: %s", url, type(e).__name__, e)
     return None
 
 
@@ -313,9 +345,14 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
                 return None
             if r.status_code == 200 and r.content:
                 return r.content
-            log.warning("url fetch %s -> %s", url, r.status_code)
+            log.warning(
+                "url fetch %s -> %s (%s)",
+                url,
+                r.status_code,
+                _http_status_category(r.status_code),
+            )
     except Exception as e:
-        log.warning("url fetch %s failed: %s", url, e)
+        log.warning("url fetch %s failed: %s: %s", url, type(e).__name__, e)
     return None
 
 
@@ -324,18 +361,36 @@ def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
 
     The operator-supplied analogue of :func:`extract_text` — same extraction
     pipeline, different fetch source. Returns ``None`` if the URL is
-    unreachable or every extraction path yields nothing usable.
+    unreachable or every extraction path yields nothing usable. Logs
+    distinct messages for the two failure modes (fetch failed vs.
+    fetched-but-pipeline-failed) so operators can tell from the log
+    whether to retry the URL (transient fetch) or revisit the document
+    itself (image-only without OCR tools, corrupted, etc.).
     """
     pdf_bytes = fetch_url_bytes(url)
     if not pdf_bytes:
+        log.info(
+            "extract_text_from_url: %s — fetch produced no bytes (see "
+            "per-URL fetch warning above for the status code / error)",
+            url,
+        )
         return None
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
+    if is_usable_text(text):
         return text
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
+        if is_usable_text(ocr):
             return ocr
+    log.warning(
+        "extract_text_from_url: %s — fetched %d bytes but could not "
+        "extract usable text (pypdf produced %d chars %s, OCR %s)",
+        url,
+        len(pdf_bytes),
+        len(text),
+        "(rejected by is_usable_text)" if text else "(empty)",
+        "ran but rejected" if allow_ocr else "disabled by caller",
+    )
     return text or None
 
 
@@ -343,47 +398,148 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 
     Order of operations:
-      1. Use ``plain_text`` from CourtListener if non-empty AND not
-         garbled. ``looks_garbled`` rejects both font-encoding
-         gibberish and PACER-stamps-only extractions (see its
-         docstring), so this catches both upstream-failed-encoding
-         and upstream-failed-image-OCR cases the same way.
-      2. If the PDF is sealed, return None — never going to be available.
-      3. If not is_available, return None — not on RECAP yet; we'll retry
-         on next sync once the fingerprint changes.
-      4. Download the PDF, try pypdf (rejecting garbled output), then
-         optionally tesseract OCR (also rejecting garbled output).
+      1. Use ``plain_text`` from CourtListener if ``is_usable_text``
+         passes. CourtListener does not OCR documents — their
+         ``plain_text`` is whatever their upstream pypdf pass
+         produced, so it inherits all the same failure modes our
+         local pypdf would produce on the same PDF:
+         font-encoding gibberish (custom font subsets with no
+         ``/ToUnicode`` map), PACER-stamps-only output (image-only
+         scan with a thin OCR overlay covering just the page-header
+         band), or empty / too-short text. ``is_usable_text`` bundles
+         length + font-encoding-ratio + stamp-strip detection in one
+         check, so all of those upstream pypdf failures fail this
+         gate the same way and we fall through to our local
+         extraction (where the OCR fallback can actually recover the
+         image-only cases).
+      2. If the PDF is sealed per the cache, return None — PACER
+         doesn't expose sealed documents over the public API, so
+         attempting a fetch would just fail. The seal is not necessarily
+         permanent: if the document is unsealed later, the recap_doc's
+         ``is_sealed`` flag flips False upstream, our entry fingerprint
+         changes (``is_sealed`` is included), the next sync's
+         ``process_entry`` re-runs and refreshes the cached state, and
+         this gate stops firing — at which point the normal fetch +
+         pypdf + OCR chain runs.
+      3. Otherwise ALWAYS try the local pipeline: ``fetch_pdf_bytes``
+         decides whether the document is fetchable from the URL fields
+         (``filepath_ia`` / ``filepath_local``) — when both are empty
+         it returns ``None`` cleanly without any HTTP round-trip — then
+         pypdf (gated by ``is_usable_text``), then optionally tesseract
+         OCR (also gated by ``is_usable_text``).
+
+    ``is_available`` is intentionally NOT a gate. The us-v-lytvynenko
+    regression is the canonical example of why: the cached recap_doc
+    had ``is_available=False`` (correct at the time we synced this
+    entry — the PDF wasn't on RECAP yet), but upstream had since
+    flipped the flag to ``True`` AND populated the URL fields. Gating
+    on the stale cached flag meant we never even attempted the fetch,
+    so pypdf and OCR never ran on a document we could perfectly well
+    have read. When the cache's URL fields really are empty
+    ``fetch_pdf_bytes`` returns ``None`` after just looking at the
+    dict, so the cost of removing the gate is bounded — when the
+    underlying storage truly has nothing, we behave the same way we
+    used to but with one extra in-process function call. When the
+    storage state has drifted ahead of the ``is_available`` flag
+    (which CourtListener can exhibit between an upstream RECAP upload
+    and the next flag flip), we successfully recover instead of
+    bailing.
     """
+    rd_id = rd.get("id")
     plain = (rd.get("plain_text") or "").strip()
-    if plain and not looks_garbled(plain):
+    if is_usable_text(plain):
         return plain
     if plain:
         log.info(
-            "extract_text: CourtListener plain_text looks garbled (len=%d), "
-            "falling through to local extraction",
+            "extract_text: rd %s — CourtListener plain_text not usable "
+            "(len=%d), falling through to local extraction",
+            rd_id,
             len(plain),
         )
 
     if rd.get("is_sealed"):
-        return None
-    if not rd.get("is_available"):
+        # Currently sealed per the cache. PACER doesn't expose sealed
+        # documents over the public API, so a fetch would just fail —
+        # we skip it. The seal isn't permanent though: if the document
+        # is unsealed later (common in extradition cases after the
+        # defendant is arrested or appears, or after a stipulation to
+        # unseal), CourtListener flips is_sealed back to False on the
+        # recap_document. Our entry fingerprint includes is_sealed, so
+        # the flip changes the fingerprint, the next sync's process_entry
+        # path re-runs, and the cache picks up the unsealed state
+        # automatically — at which point this gate stops firing and the
+        # fetch + pypdf + OCR chain runs normally.
+        log.info(
+            "extract_text: rd %s — currently sealed; skipping fetch "
+            "until upstream unseals (cache fingerprint will flip)",
+            rd_id,
+        )
         return None
 
     pdf_bytes = fetch_pdf_bytes(rd)
     if not pdf_bytes:
-        # Couldn't fetch a fresh copy — better to return the garbled plain
-        # text than nothing at all so callers can at least see the entry
-        # was attempted; the summary LLM is briefed to refuse synthesis on
-        # nonsense input.
+        # We never got bytes — distinguish the two subcases for the log.
+        # The "no URL" case is normal for entries CourtListener hasn't
+        # uploaded to RECAP yet (paperless orders, recently-filed docs
+        # awaiting RECAP capture); the "fetch failed" case is unusual
+        # and worth a warning so operators notice flaky RECAP / IA. Both
+        # paths return the (unusable) plain text if any so callers see
+        # the entry was attempted, otherwise None.
+        if not (rd.get("filepath_ia") or rd.get("filepath_local")):
+            log.info(
+                "extract_text: rd %s — document is not available "
+                "(no filepath_ia or filepath_local on the recap_document; "
+                "not on RECAP yet)",
+                rd_id,
+            )
+        else:
+            log.warning(
+                "extract_text: rd %s — fetch failed across all URLs "
+                "(filepath_ia=%r, filepath_local=%r); see per-URL pdf "
+                "fetch warnings above for the status codes / errors",
+                rd_id,
+                rd.get("filepath_ia"),
+                rd.get("filepath_local"),
+            )
         return plain or None
 
+    # We downloaded the PDF. From this point on the result MUST come
+    # from our own pipeline (pypdf → OCR) — never fall back to
+    # CourtListener's ``plain_text``. CourtListener's plain_text on
+    # this same PDF came from the same upstream pypdf pass that we're
+    # about to run locally; if our local extraction reveals the PDF is
+    # image-only (pypdf yields PACER stamps with no body) or font-
+    # encoding-garbled, the upstream plain_text was lying with that
+    # exact same noise. Returning it here would re-inject the garbage
+    # we already rejected at the top of this function and feed the
+    # summary LLM a worse-than-OCR version of the same document.
     text = extract_with_pypdf(pdf_bytes)
-    if len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text):
+    if is_usable_text(text):
         return text
 
     if allow_ocr:
         ocr = ocr_with_tesseract(pdf_bytes)
-        if len(ocr) >= _MIN_USEFUL_CHARS and not looks_garbled(ocr):
+        if is_usable_text(ocr):
             return ocr
 
-    return text or plain or None
+    # Neither pypdf nor OCR produced usable text. Distinguish in the
+    # log: this is the genuine "could not extract text" case, not the
+    # "not available" or "sealed" cases — we DID get the PDF bytes,
+    # and ran our full pipeline on them, and neither pypdf (text-layer
+    # extraction) nor tesseract (image OCR) produced anything that
+    # cleared ``is_usable_text``. This is the operator's signal to
+    # check that poppler / tesseract are installed (or that the PDF
+    # itself isn't legitimately a non-textual artifact).
+    log.warning(
+        "extract_text: rd %s — fetched %d bytes but could not extract "
+        "usable text (pypdf produced %d chars %s, OCR %s)",
+        rd_id,
+        len(pdf_bytes),
+        len(text),
+        "(rejected by is_usable_text)" if text else "(empty)",
+        "ran but rejected" if allow_ocr else "disabled by caller",
+    )
+    # Return whatever OUR pipeline got (pypdf's output — may be page
+    # stamps only) so the caller still has something attributable to
+    # our local extraction; do NOT fall back to CL's ``plain_text``.
+    return text or None
