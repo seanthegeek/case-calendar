@@ -178,8 +178,41 @@ def _entry_description_head(entry: dict[str, Any]) -> str:
     return ""
 
 
+def _primary_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recap_documents on this entry whose own description matches the
+    primary-document regex.
+
+    The us-v-stryzhak shape: entry 1 is a "CONSENT TO TRANSFER
+    JURISDICTION (Rule 20)" filing where the indictment from the
+    sending district is ``attachment_number=1`` on the entry. The
+    parent entry's ``description`` heads with "CONSENT TO TRANSFER",
+    which never matches ``_PRIMARY_DOCUMENT_RE``. But the attachment's
+    own ``description`` is ``"Indictment"``, which does. The same
+    pattern occurs whenever a primary document is filed as an exhibit
+    on a procedural parent filing (transfer-in, motion to seal /
+    unseal an attached charging document, certain reassignments).
+
+    Used by both :func:`is_primary_document` (so detection picks up
+    the attachment) and :func:`_entry_doc_text` (so the extraction
+    chain reads from the attachment carrying the substance rather
+    than the parent's procedural main doc).
+    """
+    out: list[dict[str, Any]] = []
+    for rd in entry.get("recap_documents") or []:
+        desc = (rd.get("description") or "").strip()
+        if _PRIMARY_DOCUMENT_RE.match(desc):
+            out.append(rd)
+    return out
+
+
 def is_primary_document(entry: dict[str, Any]) -> bool:
-    return bool(_PRIMARY_DOCUMENT_RE.match(_entry_description_head(entry)))
+    if _PRIMARY_DOCUMENT_RE.match(_entry_description_head(entry)):
+        return True
+    # Also match when a recap_document (typically an attachment) on
+    # this entry carries the primary-document signal — see
+    # :func:`_primary_recap_documents` for the canonical us-v-stryzhak
+    # transfer-in shape that drove this branch.
+    return bool(_primary_recap_documents(entry))
 
 
 def is_disposition(entry: dict[str, Any]) -> bool:
@@ -822,19 +855,45 @@ def detect_sealing(
 
 
 def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
-    """Concatenate text from all recap_documents on an entry.
+    """Concatenate text from the relevant recap_documents on an entry.
 
-    Some entries (especially amended complaints) attach the primary
-    document AND its exhibits. We pull text from each available main+attachment
-    in order and return the concatenation. Exhibits add noise but are
-    truncated downstream by the LLM's character budget anyway.
+    Priority order — first non-empty wins (the rest aren't consulted):
+
+      1. **Primary-marked recap_documents** (per
+         :func:`_primary_recap_documents`). When the indictment is
+         attached as an exhibit to a procedural parent filing (Rule 20
+         transfer-in, motion to seal/unseal a charging document, etc.),
+         the parent's main doc is just procedural boilerplate; the
+         actual substance is on the attachment. Pulling text from the
+         attachment carrying ``description='Indictment'`` (or similar
+         primary signal) keeps the summary LLM's input focused on the
+         charging document rather than the transfer notice.
+      2. **Main recap_document(s)** (``attachment_number`` falsy). The
+         common case — the indictment / complaint / judgment IS the
+         entry's main filing.
+      3. **All attachments**. Last-resort fallback when neither the
+         primary-marked docs nor the main doc produced text — covers
+         entries whose main doc isn't on RECAP yet but where some
+         exhibit happens to be.
+
+    Exhibits not matching the primary pattern at step 1 add noise but
+    are truncated downstream by the LLM's character budget anyway, so
+    the fallback at step 3 isn't aggressive about filtering.
     """
     rds = entry.get("recap_documents") or []
+
+    # 1. Primary-marked recap_documents (handles the Stryzhak Rule 20
+    #    transfer-with-attached-indictment shape).
     parts: list[str] = []
+    for rd in _primary_recap_documents(entry):
+        text = pdf.extract_text(rd, allow_ocr=allow_ocr)
+        if text:
+            parts.append(text)
+    if parts:
+        return "\n\n".join(parts)
+
+    # 2. Main recap_document(s).
     for rd in rds:
-        # Prefer the main document; only include attachments if the main
-        # document is unavailable, to keep the input focused on the primary
-        # text rather than exhibits.
         if rd.get("attachment_number"):
             continue
         text = pdf.extract_text(rd, allow_ocr=allow_ocr)
@@ -842,7 +901,8 @@ def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
             parts.append(text)
     if parts:
         return "\n\n".join(parts)
-    # Fall back: if no main doc had text, try attachments.
+
+    # 3. Last-resort: any remaining attachment.
     for rd in rds:
         if not rd.get("attachment_number"):
             continue

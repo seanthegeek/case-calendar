@@ -3335,3 +3335,108 @@ class TestEntryDocTextAttachmentFallback:
         monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
         out = _entry_doc_text({"recap_documents": rds})
         assert "exhibit text" in out
+
+
+class TestIndictmentAttachedToProceduralParent:
+    """us-v-stryzhak shape: the indictment is attached to a "CONSENT TO
+    TRANSFER JURISDICTION (Rule 20)" parent entry. The parent's
+    ``description`` heads with the transfer notice and never matches
+    ``_PRIMARY_DOCUMENT_RE``, but the attachment's own description is
+    ``"Indictment"``. The matcher AND the extractor must both recognize
+    the attachment so the summary LLM gets the charging document body
+    rather than the transfer-procedural body.
+    """
+
+    def _stryzhak_rule20_entry(self):
+        # The literal CourtListener-returned shape for Stryzhak entry 1:
+        # parent description starts with "CONSENT TO TRANSFER JURISDICTION",
+        # main recap_doc carries "Rule 20 - Transfer In", indictment is
+        # attachment 1.
+        return {
+            "id": 446651345,
+            "description": (
+                "CONSENT TO TRANSFER JURISDICTION (Rule 20) from Middle "
+                "District of Florida by Artem Aleksandrovych Stryzhak. "
+                "(Attachments: # 1 Indictment) (AM) (Additional attachment "
+                "(MDFL Docket sheet) added on 12/9/2025: (AM))"
+            ),
+            "short_description": None,
+            "recap_documents": [
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "description": "Rule 20 - Transfer In",
+                },
+                {
+                    "id": 501,
+                    "document_number": "1",
+                    "attachment_number": 1,
+                    "description": "Indictment",
+                },
+                {
+                    "id": 502,
+                    "document_number": "1",
+                    "attachment_number": 2,
+                    "description": "MDFL Docket sheet",
+                },
+            ],
+        }
+
+    def test_is_primary_document_matches_via_attachment(self):
+        from case_calendar.summary import is_primary_document
+
+        # The parent description doesn't match _PRIMARY_DOCUMENT_RE,
+        # and the first recap_doc's description ("Rule 20 - Transfer In")
+        # doesn't either — but the matcher should still return True
+        # because attachment #1 carries description="Indictment".
+        assert is_primary_document(self._stryzhak_rule20_entry()) is True
+
+    def test_entry_doc_text_extracts_from_indictment_attachment(
+        self, monkeypatch
+    ):
+        # When an attachment carries the primary-document signal, the
+        # extractor must pull text from THAT attachment in preference
+        # to the parent's main doc — otherwise the summary LLM sees the
+        # Rule 20 procedural text instead of the indictment body.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            500: "Rule 20 transfer notice procedural text " * 20,
+            501: "Real indictment body charging defendant with " * 20,
+            502: "MDFL docket sheet listing entries 1-42 " * 20,
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+
+        out = _entry_doc_text(self._stryzhak_rule20_entry())
+        # Indictment attachment is the priority; main + non-primary
+        # attachment are skipped.
+        assert "Real indictment body" in out
+        assert "Rule 20 transfer notice" not in out
+        assert "MDFL docket sheet" not in out
+
+    def test_entry_doc_text_falls_through_when_primary_attachment_empty(
+        self, monkeypatch
+    ):
+        # Defensive: if the primary-marked attachment's extraction
+        # produces nothing (PDF not on RECAP, etc.), we fall through
+        # to the main doc — better the procedural text than nothing,
+        # and the summary LLM is briefed to refuse on weak inputs.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            500: "Rule 20 transfer notice body that is at least usable",
+            501: "",  # indictment attachment extracts to nothing
+            502: "",
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._stryzhak_rule20_entry())
+        assert "Rule 20 transfer notice" in out
