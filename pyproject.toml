@@ -1,6 +1,6 @@
 [project]
 name = "case-calendar"
-version = "0.3.2"
+version = "0.3.3"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.40",
@@ -12,6 +12,7 @@ dependencies = [
     "msgraph-sdk>=1.57.0",
     "azure-identity>=1.19.0",
     "httpx>=0.28.1",
+    "json-repair>=0.30",
     "pypdf>=4.0",
     "python-dotenv>=1.0",
     "pyyaml>=6.0.3",

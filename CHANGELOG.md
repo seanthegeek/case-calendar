@@ -8,6 +8,49 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.3.3] - 2026-05-19
+
+### Fixed
+
+- **LLM responses with malformed JSON now recover via `json_repair`
+  instead of dropping the entry to IGNORE.** Haiku occasionally emits
+  unescaped `"` characters or stray newlines inside a long `notes`
+  string, terminating the JSON value early and surfacing as
+  `json.JSONDecodeError: Expecting ',' delimiter` in the warning log —
+  the action that triggered it (a real MARK_HELD on the us-v-ding
+  Daubert hearing) was silently dropped despite carrying perfectly
+  recoverable identity fields (`type`, `hearing_key`, `local_date`).
+  `_parse_actions` now runs `json_repair.repair_json` on parse failure
+  and uses the repaired dict when it carries an `actions` key. The
+  recovered action goes through the rest of the pipeline normally; the
+  WARNING line names "recovered via json_repair" so the failure rate is
+  still visible in logs. Pairs with the 0.3.2 `OutputTruncatedError`
+  path, which catches the orthogonal truncation case at the provider
+  level — between the two, the only failures that still IGNORE are
+  responses too broken even for json_repair.
+
+### Changed
+
+- **`notes` formatting rules tightened in the system prompt.** The
+  hearings-prompt notes guidance now spells out the JSON-safety
+  invariants the model has been violating in production: at most ~200
+  chars, no unescaped `"` inside the string (with an explicit
+  paraphrase example), no literal newlines / tabs / control characters.
+  The matching deadline-prompt rule (verbatim trigger language on
+  conditional deadlines) is relaxed from "VERBATIM" to "as close to
+  verbatim as the JSON-safety rules allow", with paraphrase encouraged
+  when the original would carry a `"` or run long. The action-schema
+  comment on the `notes` field is updated inline so the rule is
+  visible where the model declares the value. These prompt changes are
+  the upstream fix for the malformed-JSON class of failures; the
+  json_repair fallback above is the belt-and-suspenders downstream.
+
+### Internal
+
+- New runtime dependency: `json-repair>=0.30` (MIT, pure-Python, no
+  transitive deps). Lazy-imported inside `_try_json_repair` so it
+  only loads on parse failure.
+
 ## [0.3.2] - 2026-05-19
 
 ### Fixed
@@ -294,6 +337,8 @@ adheres to [Semantic Versioning][semver].
   the manual "click Get alerts on each docket page" instructions are
   replaced with a description of the automatic reconciler, the
   opt-out flag, and the per-run log line.
+
+[0.3.3]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.3
 
 [0.3.2]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.2
 
