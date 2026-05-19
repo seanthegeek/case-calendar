@@ -253,6 +253,44 @@ def _print_emit_results(
             print(f"[{cal_id}] pushed {r['events']} events to M365 {m365_id}")
 
 
+def _log_llm_setup(cfg: dict[str, Any]) -> None:
+    """Emit the LLM-configuration header for a CLI command's run log.
+
+    Called once at the start of every command that runs LLM work
+    (``cmd_sync``, ``cmd_serve``, ``cmd_summarize``) so the run-time
+    log has a consistent header naming both providers / models. The
+    extraction LLM line is always emitted. The summary LLM line
+    varies: when ``case_summaries.enabled`` is true we log the
+    summary track's resolved provider / model; when it's false we log
+    a one-liner saying summaries won't regenerate. Operators reading
+    a sync log this way can see at a glance which model produced the
+    extraction work AND which model would produce (or did produce)
+    any summary work in the same run, instead of having to know the
+    defaults out of band.
+
+    Provider / model selection for the summary track is delegated to
+    ``llm.summary_provider_info`` so the precedence (config kwargs >
+    LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL env > extractor provider
+    auto-detect + default summary model) matches what
+    ``generate_docket_summary`` actually uses at call time.
+    """
+    log.info("extraction LLM: %s", llm.provider_info())
+    summary_cfg = cfg.get("case_summaries") or {}
+    if summary_cfg.get("enabled"):
+        log.info(
+            "summary LLM: %s (case_summaries.enabled=true)",
+            llm.summary_provider_info(
+                provider=summary_cfg.get("provider"),
+                model=summary_cfg.get("model"),
+            ),
+        )
+    else:
+        log.info(
+            "summary LLM: case_summaries.enabled=false — case summaries "
+            "will not regenerate this run"
+        )
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -274,7 +312,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
             store.close()
             return 0
 
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
         _maybe_ensure_docket_alerts(cfg, cl, cases)
@@ -606,7 +644,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         return 2
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
 
     # Debounced summary refresh state. PACER batch uploads can fire many
     # webhook deliveries inside a few minutes; we don't want a Sonnet call
@@ -866,7 +904,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     allow_ocr = bool(summary_cfg.get("allow_ocr", True))
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
-    log.info("LLM: %s", llm.provider_info())
+    _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
         for case in cases:

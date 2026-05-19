@@ -835,6 +835,93 @@ def fake_cl_ctx(monkeypatch):
     return instance
 
 
+class TestLogLlmSetup:
+    """The startup helper that emits the LLM-configuration header.
+
+    Called by every CLI command that runs LLM work — extracts the
+    extraction-LLM line + a summary-LLM line that varies based on
+    whether ``case_summaries.enabled`` is set. The point is to make
+    sync logs accurate now that the project uses two distinct models
+    for the two tracks (Haiku for extraction, Sonnet for summaries);
+    previously the single ``LLM: ...`` line only mentioned the
+    extractor and could mislead operators about what summarized what.
+    """
+
+    def test_enabled_logs_both_extraction_and_summary_llm(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        monkeypatch.setattr(
+            cli.llm,
+            "summary_provider_info",
+            lambda **kw: f"anthropic/sonnet (kw={sorted(kw.keys())})",
+        )
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup(
+                {
+                    "case_summaries": {
+                        "enabled": True,
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-6",
+                    }
+                }
+            )
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "extraction LLM:" in m and "anthropic/haiku" in m for m in messages
+        ), messages
+        assert any(
+            "summary LLM:" in m
+            and "anthropic/sonnet" in m
+            and "case_summaries.enabled=true" in m
+            for m in messages
+        ), messages
+
+    def test_disabled_logs_extraction_only_with_summary_disabled_note(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        # summary_provider_info must NOT be called when disabled; sentinel
+        # raises to enforce.
+        monkeypatch.setattr(
+            cli.llm,
+            "summary_provider_info",
+            lambda **kw: (_ for _ in ()).throw(
+                AssertionError("must not be called when disabled")
+            ),
+        )
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup({"case_summaries": {"enabled": False}})
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "extraction LLM:" in m and "anthropic/haiku" in m for m in messages
+        ), messages
+        assert any(
+            "summary LLM:" in m and "case_summaries.enabled=false" in m
+            for m in messages
+        ), messages
+
+    def test_missing_case_summaries_key_treated_as_disabled(
+        self, monkeypatch, caplog
+    ):
+        # Defensive: a config without a case_summaries section at all is
+        # the most common shape for users who haven't opted in. The helper
+        # must not blow up on missing dict keys.
+        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
+            cli._log_llm_setup({})  # no case_summaries key
+        messages = [r.message for r in caplog.records]
+        assert any(
+            "summary LLM:" in m and "enabled=false" in m for m in messages
+        ), messages
+
+
 class TestCmdSync:
     def test_unknown_case_id_returns_2(self, cfg_file):
         args = Namespace(config=str(cfg_file), case="nope", no_emit=False)

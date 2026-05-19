@@ -1418,6 +1418,43 @@ def provider_info() -> str:
     return f"provider={p} model={model}"
 
 
+def summary_provider_info(
+    *, provider: Optional[str] = None, model: Optional[str] = None
+) -> str:
+    """Mirror of :func:`provider_info` but for the case-summary track.
+
+    The summary pipeline uses a separate provider / model selection from
+    the per-entry extractor (Sonnet / GPT-5.4 / Gemini Pro defaults vs
+    the cheap Haiku / nano / Flash Lite extractor tier — see the
+    matching "Summaries use a higher model tier than the extractor"
+    design note in AGENTS.md). Once we add multi-model support we want
+    operators to see BOTH providers / models on a sync log line so the
+    output isn't ambiguous about which model summarized what.
+
+    Precedence mirrors :func:`generate_docket_summary` exactly:
+      1. explicit ``provider`` / ``model`` kwargs (passed from
+         ``case_summaries.provider`` / ``.model`` in config.yaml)
+      2. ``LLM_SUMMARY_PROVIDER`` / ``LLM_SUMMARY_MODEL`` env vars
+      3. extractor's ``LLM_PROVIDER`` auto-detect, paired with the
+         per-provider default summary model (NOT the extractor default)
+    """
+    chosen_provider = (
+        provider
+        or os.environ.get("LLM_SUMMARY_PROVIDER", "").lower().strip()
+        or _detect_provider()
+    )
+    if not chosen_provider:
+        return "no provider configured"
+    if chosen_provider not in _DEFAULT_SUMMARY_MODELS:
+        return f"unknown provider={chosen_provider!r}"
+    chosen_model = (
+        model
+        or os.environ.get("LLM_SUMMARY_MODEL")
+        or _DEFAULT_SUMMARY_MODELS[chosen_provider]
+    )
+    return f"provider={chosen_provider} model={chosen_model}"
+
+
 # ---------------------------------------------------------------------------
 # Case-summary prompt + entry point
 # ---------------------------------------------------------------------------
