@@ -2360,6 +2360,40 @@ class TestMain:
         with pytest.raises(SystemExit):
             main(["-c", str(cfg_file)])
 
+    def test_invalid_subcommand_prints_full_help(self, cfg_file, capsys):
+        # `_HelpfulArgumentParser.error` must write the full --help text
+        # (not just the one-line usage) so an operator who typo'd a
+        # subcommand can see the available subcommands without re-running.
+        with pytest.raises(SystemExit) as excinfo:
+            main(["-c", str(cfg_file), "no-such-command"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # Help signature: enumerates the subcommands in a positional
+        # argument block. If the error path printed only `usage:` and
+        # the error, that block would be absent.
+        assert "sync" in err and "emit" in err and "summarize" in err, err
+        assert "error:" in err and "no-such-command" in err, err
+
+    def test_invalid_flag_on_subcommand_prints_subcommand_help(
+        self, cfg_file, capsys
+    ):
+        # The relevant subparser's --help text, not the parent's. The
+        # user's case here was `sync --sumarize` — they typed a typo
+        # expecting it to enable summary generation, and the stock
+        # argparse usage line wouldn't have listed the real flag name.
+        # The fixed behavior should show every flag the `sync`
+        # subcommand actually accepts, in their helpful long-form
+        # description.
+        with pytest.raises(SystemExit) as excinfo:
+            main(["-c", str(cfg_file), "sync", "--sumarize"])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # The subparser's help text mentions all sync flags by name.
+        assert "--force-summaries" in err, err
+        assert "--case" in err and "--only-new" in err and "--no-emit" in err, err
+        # And the actual error message is still there.
+        assert "--sumarize" in err and "error:" in err, err
+
 
 class TestEmitCalendarsCoverage:
     """Edge-case branches in emit_calendars not covered by TestEmitCalendars
