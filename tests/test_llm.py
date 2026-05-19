@@ -463,7 +463,7 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
 
     captured = {}
 
-    def fake_call(system, user, max_tokens):
+    def fake_call(system, user, max_tokens, **kw):
         captured["system"] = system
         captured["user"] = user
         return '{"actions": [{"type": "ADD", "hearing_key": "x", "title": "T"}]}'
@@ -513,7 +513,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"type": "CONFIRM", "reason": "still scheduled"}'
             ),
         )
@@ -531,7 +531,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
                 '"local_time": "10:00", "reason": "moved"}'
             ),
@@ -551,7 +551,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '```json\n{"type": "CANCEL", "reason": "vacated"}\n```'
             ),
         )
@@ -570,7 +570,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}'
             ),
         )
@@ -588,7 +588,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: "I cannot determine.",
+            lambda system, user, max_tokens, **kw: "I cannot determine.",
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -604,7 +604,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: '{"reason": "no type field"}',
+            lambda system, user, max_tokens, **kw: '{"reason": "no type field"}',
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -618,7 +618,7 @@ class TestVerifyHearing:
     def test_llm_call_failure_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
-        def boom(system, user, max_tokens):
+        def boom(system, user, max_tokens, **kw):
             raise RuntimeError("api down")
 
         monkeypatch.setattr(llm, "_call_anthropic", boom)
@@ -636,7 +636,7 @@ class TestVerifyHearing:
     ):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
-        def boom(system, user, max_tokens):
+        def boom(system, user, max_tokens, **kw):
             raise llm.OutputTruncatedError("anthropic", '{"type":', 512)
 
         monkeypatch.setattr(llm, "_call_anthropic", boom)
@@ -656,7 +656,7 @@ class TestVerifyHearing:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             captured["system"] = system
             return '{"type": "CONFIRM"}'
@@ -685,7 +685,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_openai",
-            lambda system, user, max_tokens: '{"type": "CONFIRM"}',
+            lambda system, user, max_tokens, **kw: '{"type": "CONFIRM"}',
         )
         out = llm.verify_hearing(
             case_name="X",
@@ -701,7 +701,7 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_gemini",
-            lambda system, user, max_tokens: '{"type": "CONFIRM"}',
+            lambda system, user, max_tokens, **kw: '{"type": "CONFIRM"}',
         )
         out = llm.verify_hearing(
             case_name="X",
@@ -748,7 +748,7 @@ class TestExtractActionsDispatch:
         monkeypatch.setattr(
             llm,
             "_call_openai",
-            lambda system, user, max_tokens: '{"actions": [{"type": "IGNORE"}]}',
+            lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
         )
         out = llm.extract_actions(
             case_name="x",
@@ -765,7 +765,7 @@ class TestExtractActionsDispatch:
         monkeypatch.setattr(
             llm,
             "_call_gemini",
-            lambda system, user, max_tokens: '{"actions": [{"type": "IGNORE"}]}',
+            lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
         )
         out = llm.extract_actions(
             case_name="x",
@@ -864,6 +864,92 @@ class TestBuildUserMessageOptionalBlocks:
             ],
         )
         assert "RELATED DOCKET ENTRIES" not in msg
+
+
+# --- _dispatch_llm_call ---
+
+
+class TestDispatchLLMCall:
+    """The 3-way provider dispatch used by ``extract_actions``,
+    ``_call_lm_and_parse``, and ``generate_docket_summary``. Three
+    callers, one helper — these tests pin the routing so a future
+    fourth caller can rely on the same behavior."""
+
+    def test_routes_to_anthropic(self, monkeypatch):
+        captured = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["provider"] = "anthropic"
+            captured["kw"] = kw
+            return "ok"
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        assert llm._dispatch_llm_call("anthropic", "s", "u", 100) == "ok"
+        assert captured["provider"] == "anthropic"
+
+    def test_routes_to_openai(self, monkeypatch):
+        captured = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["provider"] = "openai"
+            captured["kw"] = kw
+            return "ok"
+
+        monkeypatch.setattr(llm, "_call_openai", fake)
+        assert llm._dispatch_llm_call("openai", "s", "u", 100) == "ok"
+        # Default json_mode=True propagates to the per-provider call so
+        # the SDK's response_format kwarg fires as expected.
+        assert captured["kw"]["json_mode"] is True
+
+    def test_routes_to_gemini(self, monkeypatch):
+        captured = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["provider"] = "gemini"
+            captured["kw"] = kw
+            return "ok"
+
+        # Any provider name that isn't "anthropic" or "openai" falls
+        # through to gemini — matches the historical else-branch
+        # behavior across all three callers.
+        monkeypatch.setattr(llm, "_call_gemini", fake)
+        assert llm._dispatch_llm_call("gemini", "s", "u", 100) == "ok"
+        assert captured["kw"]["json_mode"] is True
+
+    def test_model_and_json_mode_passthrough(self, monkeypatch):
+        # Summary-track callers pin a higher-tier model and disable
+        # JSON mode (the model returns prose, not a JSON object). The
+        # helper threads both kwargs through to openai/gemini.
+        captured = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["kw"] = kw
+            return "summary text"
+
+        monkeypatch.setattr(llm, "_call_openai", fake)
+        llm._dispatch_llm_call(
+            "openai", "s", "u", 800, model="gpt-5.4", json_mode=False
+        )
+        assert captured["kw"] == {"model": "gpt-5.4", "json_mode": False}
+
+    def test_anthropic_does_not_receive_json_mode(self, monkeypatch):
+        # Anthropic's SDK has no json_mode flag — we rely on the prompt
+        # to elicit JSON. The helper must NOT pass json_mode through to
+        # the anthropic call function or the SDK call would raise on
+        # the unexpected kwarg.
+        captured = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["model"] = model
+            # If json_mode leaked in, kwargs handling would have
+            # captured it here; this signature explicitly forbids it.
+            return "ok"
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm._dispatch_llm_call(
+            "anthropic", "s", "u", 100, model="claude-sonnet-4-6", json_mode=False
+        )
+        assert captured["model"] == "claude-sonnet-4-6"
 
 
 # --- Provider call functions (per-provider SDK wrappers) ---
@@ -1386,7 +1472,7 @@ class TestVerifyDeadline:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
@@ -1413,7 +1499,7 @@ class TestVerifyDeadline:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
@@ -1435,7 +1521,7 @@ class TestVerifyHearingNoRecentEntries:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
@@ -1462,7 +1548,7 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
@@ -1491,7 +1577,7 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
@@ -1538,7 +1624,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"type": "MERGE_INTO", '
                 '"target_key": "msj-hearing-anthropic-v-usdw", '
                 '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}'
@@ -1560,7 +1646,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}'
             ),
         )
@@ -1578,7 +1664,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '```json\n{"type": "MERGE_INTO", '
                 '"target_key": "msj-hearing-anthropic-v-usdw", '
                 '"reason": "..."}\n```'
@@ -1598,7 +1684,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}'
             ),
         )
@@ -1616,7 +1702,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: '{"actions": []}',
+            lambda system, user, max_tokens, **kw: '{"actions": []}',
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",
@@ -1632,7 +1718,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: "I cannot tell.",
+            lambda system, user, max_tokens, **kw: "I cannot tell.",
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",
@@ -1648,7 +1734,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: '{"reason": "no type"}',
+            lambda system, user, max_tokens, **kw: '{"reason": "no type"}',
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",
@@ -1662,7 +1748,7 @@ class TestResolveDuplicateHearings:
     def test_llm_call_failure_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
-        def boom(system, user, max_tokens):
+        def boom(system, user, max_tokens, **kw):
             raise RuntimeError("api down")
 
         monkeypatch.setattr(llm, "_call_anthropic", boom)
@@ -1700,7 +1786,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "UNCLEAR"}'
 
@@ -1730,7 +1816,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         captured: dict[str, str] = {}
 
-        def fake(system, user, max_tokens):
+        def fake(system, user, max_tokens, **kw):
             captured["user"] = user
             return '{"type": "UNCLEAR"}'
 
@@ -1751,7 +1837,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_openai",
-            lambda system, user, max_tokens: (
+            lambda system, user, max_tokens, **kw: (
                 '{"type": "MERGE_INTO", '
                 '"target_key": "msj-hearing-anthropic-v-usdw", '
                 '"reason": "..."}'
@@ -1774,7 +1860,9 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_gemini",
-            lambda system, user, max_tokens: '{"type": "KEEP_BOTH", "reason": "..."}',
+            lambda system, user, max_tokens, **kw: (
+                '{"type": "KEEP_BOTH", "reason": "..."}'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",

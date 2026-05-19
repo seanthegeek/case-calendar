@@ -2291,6 +2291,63 @@ class TestDeadlineExtraction:
         assert rows[0]["due_at_utc"] == "2026-06-14T21:00:00+00:00"
         assert set(rows[0]["source_entry_ids"]) == {1, 2}
 
+    def test_update_details_on_deadline_coerces_to_reschedule_deadline(
+        self,
+        store,
+        case,
+        monkeypatch,
+    ):
+        # Production failure shape (us-v-ding 2025-07-11): LLM emitted
+        # ``UPDATE_DETAILS`` with ``deadline_key`` after an order
+        # reiterated an existing deadline. ``UPDATE_DETAILS`` is a
+        # hearing-only action, so before the coercion the dispatch
+        # routed to ``_apply_action`` which logged "action without
+        # hearing_key" and dropped the action. With the coercion the
+        # action lands as RESCHEDULE_DEADLINE on the existing row —
+        # the time gets updated, the audit trail keeps the entry.
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                1: [
+                    {
+                        "type": "ADD_DEADLINE",
+                        "deadline_key": "govt-status-report",
+                        "title": "Government's Status Report",
+                        "local_date": "2025-07-11",
+                    }
+                ],
+                2: [
+                    {
+                        "type": "UPDATE_DETAILS",
+                        "deadline_key": "govt-status-report",
+                        "title": "Government's Status Report",
+                        "local_date": "2025-07-11",
+                        "local_time": "09:00",
+                    }
+                ],
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case,
+            100,
+            _entry(1, "ORDER: status report due 7/11/2025"),
+        )
+        syncer.process_entry(
+            case,
+            100,
+            _entry(2, "ORDER: status report due 7/11/2025 at 9:00 AM"),
+        )
+        rows = store.get_deadlines("us-v-x")
+        assert len(rows) == 1
+        # The time update landed — proves the coerced RESCHEDULE_DEADLINE
+        # reached `_apply_deadline_action` and was processed normally.
+        # (Court tz on the fake docket is ET → 9 AM = 13:00 UTC.)
+        assert rows[0]["due_at_utc"] == "2025-07-11T13:00:00+00:00"
+        # Both source entries on the audit trail.
+        assert set(rows[0]["source_entry_ids"]) == {1, 2}
+
     def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
         make_llm_stub(
             monkeypatch,

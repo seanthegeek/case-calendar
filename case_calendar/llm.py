@@ -452,6 +452,18 @@ array):
                           deadline was "Reply in support of MTD" and this
                           entry IS the reply being filed).
 
+NO UPDATE_DETAILS for deadlines. ``UPDATE_DETAILS`` is a hearings-only
+action — deadlines have a simpler shape (date + title) with no judge,
+courtroom, or dial-in to update. When an order:
+- Reiterates an existing deadline with the SAME date and time → IGNORE.
+  The deadline is already in `known_deadlines`; restating it doesn't change
+  anything we'd render or persist. Example: an order says "the government
+  shall file its status report by noon on July 11" and the known deadline
+  is already 2025-07-11T19:00:00Z (= noon PDT). No action.
+- Changes the date OR adds a previously-unknown time → ``RESCHEDULE_DEADLINE``
+  on the existing deadline_key. Use this even when only the time changes
+  (e.g. known deadline was date-only "2025-07-11", new order says "by 9:00 AM").
+
 A scheduling order can set MANY deadlines in one entry — emit one ADD_DEADLINE
 per distinct due date. Example: "Responses due by 5/24/2026; replies due by
 5/31/2026" → two ADD_DEADLINE actions, one per due date.
@@ -818,6 +830,43 @@ def _call_gemini(
 
 
 # ---------------------------------------------------------------------------
+# Provider dispatch
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_llm_call(
+    provider: str,
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    model: Optional[str] = None,
+    json_mode: bool = True,
+) -> str:
+    """Route to the per-provider call function by ``provider`` name.
+
+    Single home for the three-way ``anthropic | openai | gemini``
+    dispatch — previously inlined identically in ``extract_actions``,
+    ``_call_lm_and_parse``, and ``generate_docket_summary``. The
+    per-provider functions still own their SDK quirks (truncation
+    signal detection, json-mode kwargs, model-default selection); this
+    helper just picks which one to call so callers don't have to
+    rewrite the if/elif/else when a fourth provider is added or a
+    kwarg shape shifts. ``OutputTruncatedError`` and any other
+    exceptions propagate unchanged so callers can convert them into
+    their own caller-specific fallback shape (IGNORE list vs UNCLEAR
+    dict vs raise).
+    """
+    if provider == "anthropic":
+        # Anthropic has no `json_mode` knob (no JSON mode flag in the
+        # SDK; we just rely on the prompt and validate the response).
+        return _call_anthropic(system, user, max_tokens, model=model)
+    if provider == "openai":
+        return _call_openai(system, user, max_tokens, model=model, json_mode=json_mode)
+    return _call_gemini(system, user, max_tokens, model=model, json_mode=json_mode)
+
+
+# ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
 
@@ -944,12 +993,7 @@ def extract_actions(
     )
 
     try:
-        if provider == "anthropic":
-            raw = _call_anthropic(system, user, max_tokens)
-        elif provider == "openai":
-            raw = _call_openai(system, user, max_tokens)
-        else:
-            raw = _call_gemini(system, user, max_tokens)
+        raw = _dispatch_llm_call(provider, system, user, max_tokens)
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM output truncated at max_tokens=%d for entry %s (provider=%s, "
@@ -1131,12 +1175,7 @@ def _call_lm_and_parse(
     treat UNCLEAR as a benign no-op.
     """
     try:
-        if provider == "anthropic":
-            raw = _call_anthropic(system_prompt, user_message, max_tokens)
-        elif provider == "openai":
-            raw = _call_openai(system_prompt, user_message, max_tokens)
-        else:
-            raw = _call_gemini(system_prompt, user_message, max_tokens)
+        raw = _dispatch_llm_call(provider, system_prompt, user_message, max_tokens)
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM %s output truncated at max_tokens=%d (provider=%s, partial=%d chars)",
@@ -2154,29 +2193,14 @@ def generate_docket_summary(
         len(user),
     )
 
-    if chosen_provider == "anthropic":
-        text = _call_anthropic(
-            SUMMARY_SYSTEM_PROMPT,
-            user,
-            max_tokens,
-            model=chosen_model,
-        )
-    elif chosen_provider == "openai":
-        text = _call_openai(
-            SUMMARY_SYSTEM_PROMPT,
-            user,
-            max_tokens,
-            model=chosen_model,
-            json_mode=False,
-        )
-    else:
-        text = _call_gemini(
-            SUMMARY_SYSTEM_PROMPT,
-            user,
-            max_tokens,
-            model=chosen_model,
-            json_mode=False,
-        )
+    text = _dispatch_llm_call(
+        chosen_provider,
+        SUMMARY_SYSTEM_PROMPT,
+        user,
+        max_tokens,
+        model=chosen_model,
+        json_mode=False,
+    )
 
     summary = text.strip()
     # Strip code fences if the model emits them anyway.

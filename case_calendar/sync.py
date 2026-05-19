@@ -244,6 +244,78 @@ def _validate_action_dial_in(action: dict[str, Any]) -> None:
     action["dial_in"] = None
 
 
+# Action-category coercion mappings. The LLM occasionally picks a hearing
+# action type for a deadline-shaped payload (e.g. ``UPDATE_DETAILS`` with
+# ``deadline_key`` on the us-v-ding 2025-07-11 government status-report
+# reiteration) or vice versa. The KEY is the more specific signal — the
+# model had to know about that exact row to use its key — so we trust the
+# key and coerce the type to its other-category equivalent. There's no
+# ``UPDATE_DETAILS_DEADLINE``: deadlines have a much simpler shape (no
+# judge, courtroom, dial-in to update), so a RESCHEDULE_DEADLINE with the
+# same date covers the same intent.
+_HEARING_TO_DEADLINE_TYPE: dict[str, str] = {
+    "ADD": "ADD_DEADLINE",
+    "RESCHEDULE": "RESCHEDULE_DEADLINE",
+    "UPDATE_DETAILS": "RESCHEDULE_DEADLINE",
+    "CANCEL": "CANCEL_DEADLINE",
+    "MARK_HELD": "MARK_FILED",
+}
+_DEADLINE_TO_HEARING_TYPE: dict[str, str] = {
+    "ADD_DEADLINE": "ADD",
+    "RESCHEDULE_DEADLINE": "RESCHEDULE",
+    "CANCEL_DEADLINE": "CANCEL",
+    "MARK_FILED": "MARK_HELD",
+}
+
+
+def _normalize_action_category(action: dict[str, Any]) -> dict[str, Any]:
+    """Coerce hearing/deadline type-vs-key mismatches.
+
+    The LLM sometimes picks an action type for the wrong category but
+    still uses the right kind of KEY for the row it meant to touch. We
+    trust the key (it's specific evidence the model knew about that
+    exact row) and rewrite the type to match. Returns a NEW dict when
+    a coercion fires so the caller's action list isn't mutated under
+    them; returns the input unchanged otherwise. Logs at INFO so the
+    prompt-violation rate stays visible without spamming WARN.
+
+    Pairs with the prompt-side rule in ``DEADLINE_PROMPT_ADDENDUM``
+    telling the model that ``UPDATE_DETAILS`` is hearings-only — this
+    is the belt-and-suspenders downstream.
+    """
+    atype = (action.get("type") or "").upper()
+    if not atype:
+        return action
+    has_hearing_key = bool(action.get("hearing_key"))
+    has_deadline_key = bool(action.get("deadline_key"))
+
+    if atype in _HEARING_TO_DEADLINE_TYPE and has_deadline_key and not has_hearing_key:
+        coerced = _HEARING_TO_DEADLINE_TYPE[atype]
+        log.info(
+            "coerced hearing action %s -> %s (had deadline_key=%r, no hearing_key)",
+            atype,
+            coerced,
+            action.get("deadline_key"),
+        )
+        out = dict(action)
+        out["type"] = coerced
+        return out
+
+    if atype in _DEADLINE_TO_HEARING_TYPE and has_hearing_key and not has_deadline_key:
+        coerced = _DEADLINE_TO_HEARING_TYPE[atype]
+        log.info(
+            "coerced deadline action %s -> %s (had hearing_key=%r, no deadline_key)",
+            atype,
+            coerced,
+            action.get("hearing_key"),
+        )
+        out = dict(action)
+        out["type"] = coerced
+        return out
+
+    return action
+
+
 def _local_to_utc(
     date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
@@ -1302,6 +1374,7 @@ class CaseSyncer:
         )
 
         for action in actions:
+            action = _normalize_action_category(action)
             atype = (action.get("type") or "").upper()
             stats["actions"] += 1
             if atype.endswith("_DEADLINE") or atype == "MARK_FILED":
