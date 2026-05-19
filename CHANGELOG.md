@@ -8,6 +8,132 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.3.1] - 2026-05-19
+
+### Fixed
+
+- **Primary documents filed as attachments on procedural parent
+  entries are now picked up.** When the indictment for a transferred-in
+  criminal case is attached to a "CONSENT TO TRANSFER JURISDICTION
+  (Rule 20)" parent entry (or any procedural parent whose description
+  doesn't head with the primary-document regex), the matcher used to
+  return False and the summary pipeline emitted the "no primary
+  document identified" refusal. `is_primary_document` now also returns
+  True when any recap_document on the entry — including attachments —
+  has its own description match `_PRIMARY_DOCUMENT_RE`, and
+  `_entry_doc_text` prioritizes those primary-marked attachments over
+  the parent's main doc so the summary LLM gets the charging document
+  rather than the procedural Rule 20 text. The us-v-stryzhak
+  (`1:25-cr-00381`, E.D.N.Y.) docket was the canonical case — entry 1
+  had the indictment as `attachment_number=1`. Same fix applies to
+  motions to seal/unseal an attached charging document and other
+  procedural parents.
+- **PDF text extraction no longer bails on a stale `is_available=False`
+  flag.** The cached recap_document flag can drift behind upstream
+  state (the PDF lands on RECAP, CourtListener flips `is_available`
+  to True and populates `filepath_local`, but our sync hasn't refetched
+  the entry yet). The previous gate at the top of `pdf.extract_text`
+  returned None when `is_available=False` without ever attempting
+  `fetch_pdf_bytes`, so pypdf and OCR never ran on documents we could
+  perfectly well have read. `is_sealed` remains the only hard "don't
+  bother trying" gate; otherwise the pipeline always attempts the
+  fetch and `fetch_pdf_bytes` itself returns None cleanly (no HTTP
+  round-trip) when neither `filepath_ia` nor `filepath_local` is
+  populated. The us-v-lytvynenko (`3:23-cr-00088`, M.D. Tenn.)
+  indictment was the canonical case — sync had cached the recap_doc
+  pre-upload, the polling cutoff hadn't refetched the entry, and the
+  pipeline bailed on the stale flag despite the PDF being live on
+  CourtListener's storage URL the whole time.
+- **Once we download a PDF, the result comes from our pipeline, not
+  from CourtListener's `plain_text`.** The previous final return in
+  `pdf.extract_text` was `return text or plain or None` — falling
+  back to CourtListener's plain_text after our local pypdf produced
+  unusable output. Both extractions ran the same upstream pypdf pass,
+  so the fallback was re-injecting exactly the garbage we'd rejected
+  at the top of the function and feeding the summary LLM a worse-
+  than-OCR version of the same document. After a successful fetch
+  the return is now `text or None`. The fallback to plain_text is
+  preserved only when the fetch itself failed (we never got to run
+  our pipeline).
+- **Distinct subscriber-facing messages for the four "no extractable
+  text" failure modes.** Replaces the previous catch-all
+  "Documents available for this docket are insufficient to generate a
+  reliable summary" with four state-specific strings, picked by
+  inspecting each identified primary entry's main recap_document:
+  `SUMMARY_PRIMARY_DOCUMENT_SEALED` ("currently sealed") when all
+  primaries have `is_sealed=True`;
+  `SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE` ("not yet available on
+  RECAP") when all primaries have no fetchable source;
+  `SUMMARY_PRIMARY_DOCUMENT_UNREADABLE` ("could not be read") when the
+  pipeline had something to work with but couldn't produce usable
+  text, and as the catch-all for mixed states;
+  `SUMMARY_INSUFFICIENT_DOCUMENTS` when no entry matched
+  `is_primary_document` at all. Each is operator-actionable in a
+  different direction (wait for unseal / wait for upload /
+  investigate OCR tools / check sealing posture or add
+  `extra_documents`). Subscribers no longer see "could not be read"
+  on docks where the actual state is "currently sealed."
+- **Audit pass on log messages across the project.** Every catch-all
+  failure log that conflated distinct subcauses the code already had
+  visibility into now logs specifically: `pdf.extract_text` emits
+  separate INFO / WARNING lines for sealed / not-fetchable /
+  fetched-but-pipeline-failed; `pdf.fetch_pdf_bytes` and
+  `fetch_url_bytes` non-200 logs carry an HTTP category label ("not
+  found" / "access denied" / "rate limited" / "client error — won't
+  retry" / "server error — retry next sync"); exception logs across
+  the project include the exception type so DNS / TLS / read-timeout
+  / connection-error are distinguishable; `summary._fetch_extra_docu‐
+  ments` drop log points operators at the per-URL log line for the
+  actual cause; `summary.find_primary_documents` adds an outcome log
+  after the CourtListener fallthrough so the "falling through to
+  refresh" trail isn't left hanging; `sync._ensure_court`,
+  `courtlistener._request`, and `alerts.ensure_docket_alerts` all
+  carry richer per-failure-mode classification.
+
+### Added
+
+- **Both extraction LLM and summary LLM are logged at command
+  startup.** The previous single `LLM: provider=... model=...` line
+  named the extraction-track config only — fine when both tracks ran
+  on the same model, but the project now uses distinct providers and
+  models per track (Haiku for per-entry extraction, Sonnet for case
+  summaries) and the single line silently misled operators about
+  which model produced summary text on a given docket. A new shared
+  helper `cli._log_llm_setup` is called by `cmd_sync`, `cmd_serve`,
+  and `cmd_summarize` and emits both lines, plus an explicit
+  "case_summaries.enabled=false — case summaries will not regenerate
+  this run" note when summaries are off so operators don't have to
+  cross-reference the config. New `llm.summary_provider_info` mirrors
+  the existing `provider_info` for the summary track and applies the
+  same precedence chain `generate_docket_summary` uses at call time,
+  so the log can't drift from the runtime resolution.
+
+### Changed
+
+- **`pdf.looks_garbled` renamed to `pdf.is_usable_text` and inverted
+  to a positive predicate.** The function checks more than just
+  garbled-ness now (length floor + font-encoding gibberish +
+  PACER-stamps-only), so the old name was underselling what it does.
+  Inverting also lets callers consolidate the recurring
+  `len(text) >= _MIN_USEFUL_CHARS and not looks_garbled(text)` pairing
+  into a single `is_usable_text(text)` call that reads more naturally.
+  Minor behavior change: short non-empty `plain_text` in
+  `extract_text` now falls through to the PDF fetch instead of being
+  returned directly (a 50-char stub like "INDICTMENT" isn't useful as
+  a primary document body, and if the fetch succeeds we get something
+  better; if it fails we still return the short plain_text via the
+  fetch-failed fallback).
+- **CLI argparse errors now print the full help text of the relevant
+  subcommand alongside the error message.** Stock argparse prints only
+  a one-line usage summary plus the error ("unrecognized arguments:
+  --foo"), which for a project with this many subcommand flags didn't
+  show the real options — operators who typo'd a flag had to re-run
+  with `--help` to discover what they meant. A custom
+  `_HelpfulArgumentParser` writes the relevant subparser's help first
+  (auto-located when the typo is on a subcommand flag like
+  `case-calendar sync --sumarize`), then the error, then exits with
+  code 2 — same exit semantics as before, much more useful UX.
+
 ## [0.3.0] - 2026-05-18
 
 ### Added
