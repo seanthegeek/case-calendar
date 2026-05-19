@@ -258,9 +258,44 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
                     dockets,
                     c.get("extra_documents"),
                 ),
+                tags=_tags_from_config(c["id"], c.get("tags")),
             )
         )
     return cases
+
+
+def _tags_from_config(case_id: str, raw: Any) -> list[str]:
+    """Parse + normalize the per-case ``tags`` list out of the YAML.
+
+    Each tag is stripped, deduped (first-seen wins so authored order is
+    preserved), and required to be a non-empty string. Misconfiguration
+    (non-list, non-string entry, empty string after strip) fails loud via
+    ``SystemExit`` — a typo here would otherwise silently drop a tag and
+    leave the operator wondering why their filter doesn't match.
+    """
+    if raw in (None, []):
+        return []
+    if not isinstance(raw, list):
+        raise SystemExit(
+            f"case {case_id!r}: tags must be a list, got {type(raw).__name__}"
+        )
+    seen: set[str] = set()
+    out: list[str] = []
+    for i, item in enumerate(raw):
+        if not isinstance(item, str):
+            raise SystemExit(
+                f"case {case_id!r}: tags[{i}] must be a string, got "
+                f"{type(item).__name__}"
+            )
+        tag = item.strip()
+        if not tag:
+            raise SystemExit(f"case {case_id!r}: tags[{i}] must be a non-empty string")
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    return out
 
 
 def _maybe_ensure_docket_alerts(
@@ -590,6 +625,8 @@ def emit_calendars(
                 h["notify_emails"] = notify_emails
             if reminders:
                 h["reminders"] = reminders
+            if case.tags:
+                h["tags"] = list(case.tags)
             by_calendar[case.calendar].append(h)
 
     # Resolve push readiness once per emit pass (auto-detect from config +

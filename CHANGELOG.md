@@ -8,6 +8,75 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.4.0] - 2026-05-19
+
+### Added
+
+- **Per-case `tags` list in `config.yaml`.** Each case can now carry
+  a list of topical labels (e.g. `[DPRK, IT worker fraud, laptop farm]`,
+  `[PRC, China]`, `[Russia, espionage]`, `[defense, AI, LLM]`) that
+  surface in two places:
+  - **Calendar event descriptions.** Every hearing and deadline emits a
+    `Tags: foo, bar` line directly under the event description (above
+    the docket-keeping metadata blocks — Judge, Dial-in, Case, Docket,
+    Documents, entry IDs). Subscribers scanning a shared cybercrime
+    calendar can see at a glance whether each event belongs to the
+    DPRK IT-worker conspiracy, a PRC actor case, a NatSec espionage
+    matter, etc., with a simple search.
+  - **HTML index page.** Tags render as clickable pill `<button>`
+    chips under each case row. Clicking a chip appends the tag to the
+    global search bar (wrapping multi-word tags in `"quoted strings"`
+    so they stay one AND-clause) and re-runs the filter immediately;
+    repeat clicks of the same tag are idempotent. Tags also join the
+    lowercased `data-search` haystack so typed queries hit them the
+    same way they hit case names, docket numbers, and summary prose.
+  Tags are deduped case-insensitively at config load (first-seen
+  casing wins); whitespace around each label is stripped. Validation
+  is loud — non-list, non-string, or empty-string entries fail config
+  load with a clear `SystemExit` rather than silently dropping a tag
+  the operator expected to see.
+- **`docs/configuration.md` Tags subsection** describing the field, the
+  two render surfaces, and the case-insensitive dedup + multi-word
+  quoting behavior, plus a worked example.
+- **`config.example.yaml` worked examples**, one per category:
+  - Anthropic v. DOW — `tags: [defense, AI, LLM]`
+  - DPRK IT-worker prosecutions (Ashtor, Knoot, Wang ×2, Didenko,
+    Jin, Hwa, Chapman) — `tags: [DPRK, IT worker fraud, ...]` with
+    case-specific extras like `laptop farm` and `marketplace`
+  - Xu Zewei
+    — `tags: [PRC, China]`
+  - McGonigal — `tags: [Russia, espionage]`
+
+  An inline doc-comment on the first tagged case (Anthropic v. DOW)
+  explains the field's behavior to operators copying the example —
+  including the point that chip-clicks compose with typed search the
+  same way, so searching `DPRK` then `sentencing` narrows the list
+  the same way clicking the `DPRK` chip and typing `sentencing` does.
+
+### Internal
+
+- **Shared search tokenizer in the index runtime JS.** The chip-click
+  handler and the global search input now share one
+  `/"([^"]*)"|(\S+)/g` parser plus a `renderQueryTokens` round-tripper,
+  so a multi-word tag added by chip click writes a quoted token to the
+  search box that the AND-substring matcher then treats as one
+  haystack lookup. Replaces the previous whitespace-only split, which
+  would have broken multi-word tags into two stray words on click.
+- **`_normalize_tags` boundary helper in
+  `case_calendar/calendars/index.py`** mirrors the CLI parser's
+  strip+dedupe so `build_calendar_models` reads tags off the raw cfg
+  dict in the same shape `_cases_from_config` produces. Avoids a
+  cli.py → calendars/index.py dependency while keeping the two render
+  paths consistent.
+- **100% line + branch coverage maintained.** 23 new tests across
+  `test_description.py` (tag placement under notes, empty/blank-tag
+  filtering, row-dict surfacing), `test_cli.py` (parser positive +
+  validation cases, emit-threading into ICS), and `test_index.py`
+  (chip rendering, data-tag escaping, normalize-tags edges, search-
+  haystack inclusion, build_calendar_models propagation).
+
+[0.4.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.4.0
+
 ## [0.3.4] - 2026-05-19
 
 ### Fixed

@@ -11,8 +11,10 @@ from case_calendar.calendars.index import (
     _esc,
     _format_date,
     _ics_links,
+    _normalize_tags,
     _render_case,
     _render_summaries,
+    _render_tags,
     build_calendar_models,
     render_index,
     write_index,
@@ -320,6 +322,111 @@ class TestCaseSearchText:
             )
             == ""
         )
+
+
+class TestRenderTags:
+    def test_chip_carries_data_tag_for_click_handler(self):
+        # The runtime JS reads `data-tag` to know what to append to the
+        # search box; the visible label is the same string. Both must be
+        # HTML-escaped (the operator picks the casing, but a hostile tag
+        # value still needs to survive).
+        html = _render_tags(["DPRK", "IT-worker"])
+        assert html.startswith('<ul class="tags">')
+        assert 'data-tag="DPRK"' in html
+        assert ">DPRK</button>" in html
+        assert 'data-tag="IT-worker"' in html
+
+    def test_empty_list_renders_nothing(self):
+        assert _render_tags([]) == ""
+
+    def test_escapes_html_in_tag_text(self):
+        # Tags are operator-supplied but flow through unsanitized YAML;
+        # the renderer must HTML-escape both the visible text and the
+        # data-tag attribute.
+        html = _render_tags(['<script>"x"'])
+        assert "&lt;script&gt;&quot;x&quot;" in html
+        assert "<script>" not in html
+
+
+class TestNormalizeTags:
+    def test_strips_whitespace_and_dedupes_case_insensitively(self):
+        # build_calendar_models reads tags off the raw cfg dict, bypassing
+        # the CLI parser. _normalize_tags mirrors _tags_from_config's
+        # strip+dedupe so the index sees the same shape the calendar
+        # event descriptions do.
+        assert _normalize_tags(["  DPRK  ", "dprk", "ransomware"]) == [
+            "DPRK",
+            "ransomware",
+        ]
+
+    def test_drops_non_string_and_empty_entries(self):
+        # Defensive read — validation has happened earlier, but malformed
+        # input shouldn't crash the renderer.
+        assert _normalize_tags(["DPRK", "", "  ", 42, None]) == ["DPRK"]
+
+    def test_non_list_returns_empty(self):
+        for bad in (None, "DPRK", {"tag": "DPRK"}):
+            assert _normalize_tags(bad) == []
+
+
+class TestCaseSearchTextTags:
+    def test_tags_join_the_search_haystack(self):
+        # Clicking a tag chip appends the tag (verbatim, possibly quoted)
+        # to the search bar; for the resulting AND-substring match to
+        # hit the case, the tag must also appear in data-search.
+        text = _case_search_text(
+            {
+                "name": "US v. X",
+                "dockets": [],
+                "summaries": [],
+                "tags": ["DPRK", "ransomware"],
+            }
+        )
+        assert "dprk" in text
+        assert "ransomware" in text
+
+    def test_falsy_tag_entries_are_skipped(self):
+        # _normalize_tags strips falsy entries at the boundary, but the
+        # search-haystack helper is also called with raw dicts in tests
+        # and renders directly — assert the inner filter holds too.
+        text = _case_search_text(
+            {
+                "name": "X",
+                "dockets": [],
+                "summaries": [],
+                "tags": ["", None, "DPRK"],
+            }
+        )
+        assert "dprk" in text
+
+
+class TestRenderCaseTags:
+    def test_tags_block_rendered_when_present(self):
+        html = _render_case(
+            {
+                "name": "US v. X",
+                "dockets": [],
+                "summaries": [],
+                "tags": ["DPRK", "IT-worker"],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
+        assert 'class="tags"' in html
+        assert ">DPRK</button>" in html
+        assert ">IT-worker</button>" in html
+
+    def test_no_tags_block_when_absent(self):
+        html = _render_case(
+            {
+                "name": "US v. X",
+                "dockets": [],
+                "summaries": [],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
+        assert 'class="tags"' not in html
 
 
 class TestRenderIndex:
@@ -644,6 +751,37 @@ class TestBuildCalendarModels:
         assert case["last_filing_date"] == "2026-05-10"
         assert case["dockets"][0]["docket_number"] == "1:24-cr-12345"
         assert case["dockets"][0]["court_citation"] == "S.D.N.Y."
+
+    def test_propagates_normalized_tags_onto_case_row(self, store):
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": "nysd",
+                "docket_number": "1:24-cr-1",
+                "case_name": "US v. X",
+                "absolute_url": "/docket/100/x/",
+                "date_last_filing": "2026-05-10",
+            },
+        )
+        store.set_docket_last_modified(100, "2026-05-10T12:00:00Z")
+        store.upsert_court("nysd", "S.D.N.Y.", "nysd", "Southern District of NY")
+        cfg = {
+            "calendars": {"cyber": {"name": "Cybercrime", "ics_path": "out/cyber.ics"}},
+            "cases": [
+                {
+                    "id": "us-v-x",
+                    "name": "US v. X",
+                    "calendar": "cyber",
+                    "dockets": [100],
+                    # Whitespace + casing-duplicate to confirm the normalize
+                    # boundary is wired up.
+                    "tags": ["  DPRK  ", "dprk", "ransomware"],
+                },
+            ],
+        }
+        models = build_calendar_models(cfg, store)
+        case = models[0]["cases"][0]
+        assert case["tags"] == ["DPRK", "ransomware"]
 
     def test_collapses_sibling_docket_ids_into_one_dockets_meta_entry(self, store):
         # When `case.dockets` lists multiple CourtListener docket_ids that share

@@ -253,6 +253,63 @@ def test_documents_block_above_entry_numbers():
     assert docs_idx < nums_idx < ids_idx
 
 
+def test_tags_render_immediately_after_notes():
+    # Tags sit directly under the event description so a subscriber
+    # scanning their calendar sees the topic label before the
+    # docket-keeping metadata blocks (Judge, Dial-in, Case, Docket).
+    out = build(
+        notes="Status conference.",
+        dial_in=None,
+        docket_number="1:25-cr-1",
+        court_citation="D. Mass.",
+        docket_absolute_url="/d/1/",
+        source_entry_ids=[1001],
+        judge="Hon. Example",
+        tags=["DPRK", "IT-worker"],
+    )
+    sections = out.split("\n\n")
+    assert sections[0] == "Status conference."
+    assert sections[1] == "Tags: DPRK, IT-worker"
+    # Judge, Case, Docket, IDs all live below tags.
+    tags_idx = next(i for i, s in enumerate(sections) if s.startswith("Tags:"))
+    judge_idx = next(i for i, s in enumerate(sections) if s.startswith("Judge:"))
+    ids_idx = next(
+        i for i, s in enumerate(sections) if s.startswith("CourtListener entry IDs:")
+    )
+    assert tags_idx < judge_idx < ids_idx
+
+
+def test_tags_omitted_when_empty_or_blank():
+    # Empty / None / whitespace-only tags must NOT emit a "Tags:" line —
+    # an empty label on every event is more noise than signal.
+    for tags in (None, [], ["", "  "]):
+        out = build(
+            notes="Status.",
+            dial_in=None,
+            docket_number=None,
+            court_citation=None,
+            docket_absolute_url=None,
+            source_entry_ids=None,
+            tags=tags,
+        )
+        assert "Tags:" not in out
+
+
+def test_build_description_for_row_passes_tags_through():
+    # The row-dict wrapper must surface the tags key so each backend
+    # (ICS, gcal, m365) sees them without a per-backend code change.
+    from case_calendar.calendars.description import build_description_for_row
+
+    out = build_description_for_row(
+        {
+            "notes": "Trial.",
+            "source_entry_ids": [42],
+            "tags": ["ransomware"],
+        }
+    )
+    assert "Tags: ransomware" in out
+
+
 def test_no_source_text_block_emitted():
     # Description shows only the structured fields plus the entry-id audit
     # line. The raw docket prose lives one click away at the Docket: URL.

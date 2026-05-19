@@ -249,6 +249,26 @@ ol.cases h3 { font-size: 1.15rem; margin: 0 0 0.3rem 0; font-weight: 600; }
 }
 .dates span { margin-right: 1.2rem; }
 .dates b { font-weight: 600; color: var(--fg); }
+ul.tags {
+  list-style: none;
+  margin: 0.5rem 0 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+ul.tags li { display: inline-flex; }
+button.tag {
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--accent);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.1rem 0.55rem;
+  cursor: pointer;
+}
+button.tag:hover { background: var(--hover-bg); }
 button#theme-toggle {
   font: inherit;
   background: var(--bg);
@@ -316,6 +336,27 @@ _RUNTIME_JS = r"""
   function isSearching() {
     return !!(searchInput && searchInput.value && searchInput.value.trim());
   }
+  // Tokenize a query into substring-AND clauses. Bare tokens split on
+  // whitespace; "quoted strings" are taken whole so multi-word tags
+  // survive the search round-trip. Raw case is preserved so the tag-chip
+  // handler can round-trip the user's existing query verbatim; callers
+  // that need case-insensitive compare lowercase at the comparison site.
+  function searchTokens(query) {
+    var out = [];
+    var re = /"([^"]*)"|(\S+)/g;
+    var m;
+    while ((m = re.exec(query)) !== null) {
+      var raw = m[1] !== undefined ? m[1] : m[2];
+      raw = raw.trim();
+      if (raw) out.push(raw);
+    }
+    return out;
+  }
+  function renderQueryTokens(tokens) {
+    return tokens.map(function(t) {
+      return /\s/.test(t) ? '"' + t + '"' : t;
+    }).join(' ');
+  }
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
@@ -377,8 +418,13 @@ _RUNTIME_JS = r"""
     // AND-tokenized substring match against data-search (already lowercased
     // at render time). Empty query clears all hidden-by-search markers and
     // unhides every section; truncation then re-applies per section.
-    var raw = (searchInput && searchInput.value || '').trim().toLowerCase();
-    var tokens = raw ? raw.split(/\s+/) : [];
+    // Tokens are extracted with the same parser the tag-chip handler uses so
+    // a multi-word tag click ("white collar") writes one quoted token that
+    // matches as one substring instead of two stray words.
+    var raw = (searchInput && searchInput.value || '').trim();
+    var tokens = raw ? searchTokens(raw).map(function(t) {
+      return t.toLowerCase();
+    }) : [];
     var totalShown = 0;
     document.querySelectorAll('section.calendar').forEach(function(section) {
       var items = section.querySelectorAll('ol.cases > li');
@@ -434,6 +480,26 @@ _RUNTIME_JS = r"""
   if (searchInput) {
     searchInput.addEventListener('input', applySearch);
   }
+
+  // Tag chips: clicking a tag adds it to the search box, wrapped in
+  // quotes if it contains whitespace so a multi-word tag stays one
+  // AND-clause. Repeat clicks on the same tag are idempotent (matched
+  // case-insensitively against existing tokens), and the search runs
+  // immediately so the page filters as the user clicks.
+  document.querySelectorAll('button.tag').forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      if (!searchInput) return;
+      var tag = btn.getAttribute('data-tag') || '';
+      if (!tag) return;
+      var tokens = searchTokens(searchInput.value || '');
+      var lc = tag.toLowerCase();
+      var already = tokens.some(function(t) { return t.toLowerCase() === lc; });
+      if (!already) tokens.push(tag);
+      searchInput.value = renderQueryTokens(tokens);
+      searchInput.focus();
+      applySearch();
+    });
+  });
 
   // Copy-feed-URL buttons. The clipboard API only works in secure
   // contexts (https, localhost, or file://) — every realistic deployment
@@ -568,11 +634,12 @@ def _render_summaries(
 def _case_search_text(case: dict[str, Any]) -> str:
     """Build the lowercased haystack the client-side filter searches over.
 
-    Includes the case name, every docket number + court citation, and every
-    per-docket summary body. The JS does AND-tokenized substring matching
-    against this string, so subscribers can search by defendant name,
-    docket number, court, judge name (when it appears in the summary), or
-    any vocabulary from the prose without us maintaining a search index.
+    Includes the case name, every docket number + court citation, every
+    per-docket summary body, and every configured tag. The JS does
+    AND-tokenized substring matching against this string, so subscribers
+    can search by defendant name, docket number, court, judge name (when
+    it appears in the summary), tag, or any vocabulary from the prose
+    without us maintaining a search index.
     """
     parts: list[str] = []
     if case.get("name"):
@@ -586,7 +653,56 @@ def _case_search_text(case: dict[str, Any]) -> str:
         body = (s.get("summary") or "").strip()
         if body:
             parts.append(body)
+    for tag in case.get("tags") or []:
+        if tag:
+            parts.append(str(tag))
     return " ".join(parts).lower()
+
+
+def _normalize_tags(raw: Any) -> list[str]:
+    """Strip + dedupe a raw tags list, mirroring ``_tags_from_config``.
+
+    Used at the render boundary so the index reads tags the same shape
+    the calendar event descriptions do: validation has already happened
+    at config-load time, but the parsed ``CaseConfig`` isn't threaded
+    into ``build_calendar_models``, so we re-normalize here rather than
+    add a cli.py dependency.
+    """
+    if not isinstance(raw, list):
+        return []
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        tag = item.strip()
+        if not tag:
+            continue
+        key = tag.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(tag)
+    return out
+
+
+def _render_tags(tags: list[str]) -> str:
+    """Render the tag-chip list for one case.
+
+    Each chip is a ``<button>`` carrying ``data-tag``; the runtime JS
+    appends the tag to the global search box on click. We render the
+    tag verbatim (the operator chose the casing) — case folding for
+    matching happens against the lowercased ``data-search`` haystack.
+    """
+    if not tags:
+        return ""
+    chips = "".join(
+        f'<li><button type="button" class="tag" '
+        f'data-tag="{_esc(t)}" '
+        f'title="Filter by tag: {_esc(t)}">{_esc(t)}</button></li>'
+        for t in tags
+    )
+    return f'<ul class="tags">{chips}</ul>'
 
 
 def _render_case(case: dict[str, Any]) -> str:
@@ -648,13 +764,17 @@ def _render_case(case: dict[str, Any]) -> str:
         f'<ul class="dockets">{"".join(dockets_html)}</ul>' if dockets_html else ""
     )
     summary_block = _render_summaries(case, dockets)
+    tags_block = _render_tags(list(case.get("tags") or []))
     dates_bits = []
     if date_filed:
         dates_bits.append(f"<span><b>Filed</b> {_esc(date_filed)}</span>")
     if last_filing:
         dates_bits.append(f"<span><b>Last filing</b> {_esc(last_filing)}</span>")
     dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
-    return f"<li {data}><h3>{name}</h3>{dockets_block}{summary_block}{dates_block}</li>"
+    return (
+        f"<li {data}><h3>{name}</h3>"
+        f"{dockets_block}{summary_block}{tags_block}{dates_block}</li>"
+    )
 
 
 def _render_calendar(calendar: dict[str, Any]) -> str:
@@ -891,6 +1011,7 @@ def build_calendar_models(
                     "name": c.get("name"),
                     "dockets": dockets_meta,
                     "summaries": summaries,
+                    "tags": _normalize_tags(c.get("tags")),
                     "date_filed": agg["date_filed"],
                     "last_filing_date": agg["last_filing_date"],
                 }
