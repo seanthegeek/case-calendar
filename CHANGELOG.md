@@ -8,6 +8,61 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.3.4] - 2026-05-19
+
+### Fixed
+
+- **Hearing-typed actions carrying a `deadline_key` (and vice versa)
+  are now coerced to the correct category instead of being silently
+  dropped.** Production failure shape (us-v-ding, 2025-07-11 government
+  status-report reiteration): the LLM emitted `{"type":
+  "UPDATE_DETAILS", "deadline_key": "govt-status-report", ...}` — a
+  hearings-only action type carrying a deadline-shaped payload. The
+  dispatch in `CaseSyncer.process_entry` routed by `type` to
+  `_apply_action`, which then logged `action without hearing_key` and
+  dropped the action from the audit trail. New `_normalize_action_category`
+  trusts the key (the more specific signal — the model had to know
+  about that exact row to use its key) and rewrites the type to its
+  other-category equivalent: `UPDATE_DETAILS` → `RESCHEDULE_DEADLINE`
+  (no `UPDATE_DETAILS_DEADLINE` exists; deadlines have a simpler shape
+  with no judge / courtroom / dial-in to update), `ADD` ↔ `ADD_DEADLINE`,
+  `RESCHEDULE` ↔ `RESCHEDULE_DEADLINE`, `CANCEL` ↔ `CANCEL_DEADLINE`,
+  `MARK_HELD` ↔ `MARK_FILED`. Logs at INFO so the prompt-violation rate
+  stays visible. Actions with both keys present, no keys, or unknown
+  action types pass through unchanged so future failure modes remain
+  visible. Pairs with the prompt-side rule in `DEADLINE_PROMPT_ADDENDUM`.
+
+### Changed
+
+- **`DEADLINE_PROMPT_ADDENDUM` now states "no `UPDATE_DETAILS` for
+  deadlines" explicitly, with two examples for the model.** When an
+  order merely reiterates an existing deadline with the same date and
+  time, emit `IGNORE` (the deadline is already in `known_deadlines`;
+  restating it doesn't change anything we render or persist). When the
+  date OR time changes — including the common case of a date-only
+  deadline gaining an explicit time — emit `RESCHEDULE_DEADLINE` on the
+  existing key. The hearings-side `UPDATE_DETAILS` exists because
+  hearings have judge / courtroom / dial-in fields that can change
+  without the date moving; deadlines don't have those fields, so the
+  same action type isn't needed.
+
+### Internal
+
+- **Three-way provider dispatch consolidated into one
+  `_dispatch_llm_call(provider, system, user, max_tokens, *, model,
+  json_mode)` helper.** Previously inlined identically in
+  `extract_actions`, `_call_lm_and_parse`, and `generate_docket_summary`
+  — same `if provider == "anthropic" ... elif "openai" ... else
+  "gemini"` if/elif/else, repeated three times. Now one helper; the
+  per-provider call functions still own their SDK quirks (truncation
+  signal detection, json-mode kwargs, model-default selection).
+  `OutputTruncatedError` and other exceptions still propagate so
+  callers convert them into their own caller-specific fallback shape
+  (IGNORE list vs UNCLEAR dict vs raise). The `llm.py` module shrunk
+  by net statements; test fakes for the per-provider call functions
+  picked up a `**kw` (or explicit `model=None` / `json_mode=True`)
+  parameter to match the real signatures the helper threads through.
+
 ## [0.3.3] - 2026-05-19
 
 ### Fixed
@@ -337,6 +392,8 @@ adheres to [Semantic Versioning][semver].
   the manual "click Get alerts on each docket page" instructions are
   replaced with a description of the automatic reconciler, the
   opt-out flag, and the per-run log line.
+
+[0.3.4]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.4
 
 [0.3.3]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.3
 

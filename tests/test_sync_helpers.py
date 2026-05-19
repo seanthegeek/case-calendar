@@ -11,6 +11,7 @@ from case_calendar.sync import (
     _local_to_utc,
     _mark_held_date_matches,
     _needs_pdf,
+    _normalize_action_category,
     _validate_action_dial_in,
     fingerprint_entry,
 )
@@ -432,6 +433,106 @@ class TestValidateActionDialIn:
         _validate_action_dial_in(action)
         assert action["notes"].startswith("Existing notes line.")
         assert "Dial-in (unverified)" in action["notes"]
+
+
+# --- _normalize_action_category ---
+
+
+class TestNormalizeActionCategory:
+    """Coerces hearing/deadline type-vs-key mismatches. The canonical
+    failure shape is the LLM picking ``UPDATE_DETAILS`` (a hearing
+    action) for a deadline-shaped payload — observed in production on
+    the us-v-ding 2025-07-11 government status-report reiteration.
+    Without coercion, the dispatch routes by type to ``_apply_action``,
+    which then warns ``action without hearing_key`` and drops the entry
+    from the audit trail."""
+
+    def test_update_details_with_deadline_key_becomes_reschedule_deadline(self):
+        # The reported failure shape — UPDATE_DETAILS doesn't exist on
+        # the deadline side, but RESCHEDULE_DEADLINE with the same date
+        # covers the same intent for the simpler deadline payload shape.
+        action = {
+            "type": "UPDATE_DETAILS",
+            "deadline_key": "govt-status-report",
+            "title": "Government's Status Report",
+            "local_date": "2025-07-11",
+            "local_time": "12:00",
+        }
+        out = _normalize_action_category(action)
+        assert out["type"] == "RESCHEDULE_DEADLINE"
+        # Other fields pass through untouched.
+        assert out["deadline_key"] == "govt-status-report"
+        assert out["local_date"] == "2025-07-11"
+        # Coercion produces a NEW dict so the caller's action list
+        # isn't mutated under them.
+        assert action["type"] == "UPDATE_DETAILS"
+
+    def test_hearing_types_with_deadline_key_coerce_to_deadline_types(self):
+        # Full coercion grid for the hearing→deadline direction.
+        for src, dst in [
+            ("ADD", "ADD_DEADLINE"),
+            ("RESCHEDULE", "RESCHEDULE_DEADLINE"),
+            ("CANCEL", "CANCEL_DEADLINE"),
+            ("MARK_HELD", "MARK_FILED"),
+        ]:
+            out = _normalize_action_category({"type": src, "deadline_key": "x"})
+            assert out["type"] == dst, (
+                f"{src} should coerce to {dst}, got {out['type']}"
+            )
+
+    def test_deadline_types_with_hearing_key_coerce_to_hearing_types(self):
+        # Reverse direction — same logic.
+        for src, dst in [
+            ("ADD_DEADLINE", "ADD"),
+            ("RESCHEDULE_DEADLINE", "RESCHEDULE"),
+            ("CANCEL_DEADLINE", "CANCEL"),
+            ("MARK_FILED", "MARK_HELD"),
+        ]:
+            out = _normalize_action_category({"type": src, "hearing_key": "x"})
+            assert out["type"] == dst, (
+                f"{src} should coerce to {dst}, got {out['type']}"
+            )
+
+    def test_matching_type_and_key_unchanged(self):
+        # Hearing-typed action with hearing_key — no coercion needed.
+        action = {"type": "ADD", "hearing_key": "sentencing-knoot"}
+        assert _normalize_action_category(action) is action
+
+        action = {"type": "RESCHEDULE_DEADLINE", "deadline_key": "reply-mtd"}
+        assert _normalize_action_category(action) is action
+
+    def test_action_with_both_keys_does_not_coerce(self):
+        # Ambiguous — model emitted both keys. Don't guess; dispatch by
+        # type as the original logic does. Edge case but worth pinning
+        # so a future "smart" coercion doesn't start guessing here.
+        action = {
+            "type": "UPDATE_DETAILS",
+            "hearing_key": "h",
+            "deadline_key": "d",
+        }
+        assert _normalize_action_category(action) is action
+
+    def test_action_with_no_keys_does_not_coerce(self):
+        # No key means downstream will warn and drop — no information
+        # to coerce on. Don't invent a category.
+        assert _normalize_action_category({"type": "ADD"})["type"] == "ADD"
+
+    def test_unknown_type_passes_through(self):
+        # IGNORE / UNCLEAR / typos / etc. — anything not in the
+        # hearing-or-deadline action vocabulary stays as-is.
+        for t in ("IGNORE", "UNCLEAR", "SOME_NEW_TYPE", ""):
+            out = _normalize_action_category({"type": t, "deadline_key": "x"})
+            assert out["type"] == t
+
+    def test_missing_type_passes_through(self):
+        # Defensive: an action with no `type` field at all (shouldn't
+        # happen in practice) is passed through unchanged so the
+        # downstream "action without hearing_key" / "no type" handling
+        # in _apply_action / _apply_deadline_action fires the same way
+        # it always did.
+        assert _normalize_action_category({"deadline_key": "x"}) == {
+            "deadline_key": "x"
+        }
 
 
 # --- _mark_held_date_matches ---
