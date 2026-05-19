@@ -335,9 +335,7 @@ class TestSummaryProviderInfo:
 
     def test_explicit_kwargs_win(self):
         # Config kwargs override env and auto-detect.
-        info = llm.summary_provider_info(
-            provider="anthropic", model="custom-sonnet"
-        )
+        info = llm.summary_provider_info(provider="anthropic", model="custom-sonnet")
         assert "anthropic" in info and "custom-sonnet" in info
 
     def test_unknown_provider_kwarg_reports_unknown(self):

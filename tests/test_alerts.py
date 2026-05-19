@@ -129,8 +129,7 @@ class TestEnsureDocketAlerts:
             status = ensure_docket_alerts(_AuthFailureCL(), [42])
         assert status == {42: "failed"}
         assert any(
-            "auth error (HTTP 401)" in r.message
-            and "COURTLISTENER_TOKEN" in r.message
+            "auth error (HTTP 401)" in r.message and "COURTLISTENER_TOKEN" in r.message
             for r in caplog.records
         ), [r.message for r in caplog.records]
 

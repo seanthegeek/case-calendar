@@ -257,9 +257,7 @@ def _matches_disposition_document(text: str) -> bool:
 # version the extractor uses to pick which recap_doc to read text from.
 
 
-def _entry_matches(
-    entry: dict[str, Any], predicate: Callable[[str], bool]
-) -> bool:
+def _entry_matches(entry: dict[str, Any], predicate: Callable[[str], bool]) -> bool:
     """True if the entry's head OR any of its recap_documents'
     descriptions matches the given predicate."""
     if predicate(_entry_description_head(entry)):
@@ -1500,9 +1498,7 @@ def summarize_docket(
             )
         model_id = "n/a (no document text)"
         source_ids = [
-            e["id"]
-            for e in (primary + dispositions)
-            if e.get("id") is not None
+            e["id"] for e in (primary + dispositions) if e.get("id") is not None
         ]
         store.upsert_case_summary(
             case.case_id,

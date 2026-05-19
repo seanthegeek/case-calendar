@@ -77,9 +77,7 @@ class _HelpfulArgumentParser(argparse.ArgumentParser):
         # itself doesn't expose the in-flight argv to error() — and we
         # don't want to fall back to sys.argv unconditionally because
         # main() can be called with an explicit argv (e.g. from tests).
-        self._last_argv = (
-            list(args) if args is not None else list(sys.argv[1:])
-        )
+        self._last_argv = list(args) if args is not None else list(sys.argv[1:])
         return super().parse_args(args, namespace)
 
     def error(self, message: str):  # noqa: D401 — match argparse's signature

@@ -1894,8 +1894,7 @@ class TestSummarizeDocket:
         assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_SEALED
         # WARN breakdown shows sealed=1.
         assert any(
-            "sealed=1" in r.message and "docket 1" in r.message
-            for r in caplog.records
+            "sealed=1" in r.message and "docket 1" in r.message for r in caplog.records
         ), [r.message for r in caplog.records]
 
     def test_writes_unreadable_message_when_fetch_returns_no_usable_text(
@@ -1997,8 +1996,7 @@ class TestSummarizeDocket:
         # tell this is the matcher-missed-everything shape, not the
         # identified-but-unreadable shape.
         assert any(
-            "primary=0" in r.message and "docket 1" in r.message
-            for r in caplog.records
+            "primary=0" in r.message and "docket 1" in r.message for r in caplog.records
         ), [r.message for r in caplog.records]
 
     def test_insufficient_documents_fallback_is_stored_and_warns(
@@ -3392,9 +3390,7 @@ class TestIndictmentAttachedToProceduralParent:
         # because attachment #1 carries description="Indictment".
         assert is_primary_document(self._stryzhak_rule20_entry()) is True
 
-    def test_entry_doc_text_extracts_from_indictment_attachment(
-        self, monkeypatch
-    ):
+    def test_entry_doc_text_extracts_from_indictment_attachment(self, monkeypatch):
         # When an attachment carries the primary-document signal, the
         # extractor must pull text from THAT attachment in preference
         # to the parent's main doc — otherwise the summary LLM sees the
@@ -3499,9 +3495,7 @@ class TestDispositionAttachedToProceduralParent:
         # carrying the broad signal flips the entry.
         assert is_disposition(self._notice_of_plea_entry()) is True
 
-    def test_entry_doc_text_extracts_from_disposition_attachment(
-        self, monkeypatch
-    ):
+    def test_entry_doc_text_extracts_from_disposition_attachment(self, monkeypatch):
         # Same priority as primaries: substance-marked attachment wins
         # over the parent's procedural main doc.
         from case_calendar import pdf as pdf_mod
@@ -3539,6 +3533,7 @@ class TestDispositionAttachedToProceduralParent:
         out = _entry_doc_text(self._notice_of_plea_entry())
         assert "Notice of Filing body" in out
 
+
 class TestPrimaryFailureStateEdgeCases:
     """Coverage for the recap_doc-level state classifier's edge branches."""
 
@@ -3552,12 +3547,12 @@ class TestPrimaryFailureStateEdgeCases:
         from case_calendar.summary import _primary_failure_state
 
         entry = {
-            'recap_documents': [
-                {'id': 1, 'attachment_number': 1, 'is_sealed': False},
-                {'id': 2, 'attachment_number': 2, 'is_sealed': False},
+            "recap_documents": [
+                {"id": 1, "attachment_number": 1, "is_sealed": False},
+                {"id": 2, "attachment_number": 2, "is_sealed": False},
             ],
         }
-        assert _primary_failure_state(entry) == 'not-available'
+        assert _primary_failure_state(entry) == "not-available"
 
     def test_entry_with_no_recap_documents_returns_not_available(self):
         # The function defaults to 'not-available' when there are no
@@ -3566,8 +3561,8 @@ class TestPrimaryFailureStateEdgeCases:
         # no-main-doc fallthrough.
         from case_calendar.summary import _primary_failure_state
 
-        assert _primary_failure_state({}) == 'not-available'
-        assert _primary_failure_state({'recap_documents': []}) == 'not-available'
+        assert _primary_failure_state({}) == "not-available"
+        assert _primary_failure_state({"recap_documents": []}) == "not-available"
 
 
 class TestSubstanceRecapDocumentsDedup:
@@ -3588,11 +3583,11 @@ class TestSubstanceRecapDocumentsDedup:
         # have descriptions that hit both regexes. The point is to
         # exercise the dedup branch even if natural data wouldn't.
         entry = {
-            'recap_documents': [
+            "recap_documents": [
                 {
-                    'id': 100,
-                    'attachment_number': None,
-                    'description': 'INDICTMENT',
+                    "id": 100,
+                    "attachment_number": None,
+                    "description": "INDICTMENT",
                 },
             ],
         }
@@ -3600,18 +3595,19 @@ class TestSubstanceRecapDocumentsDedup:
         # also looks dispositive, exercising the same-id-twice dedup
         # branch.
         import case_calendar.summary as s_mod
+
         orig = s_mod._SUBSTANCE_PREDICATES
         try:
             s_mod._SUBSTANCE_PREDICATES = (
                 s_mod._matches_primary_document,
-                lambda text: 'INDICTMENT' in text,  # also matches the same doc
+                lambda text: "INDICTMENT" in text,  # also matches the same doc
             )
             out = _substance_recap_documents(entry)
         finally:
             s_mod._SUBSTANCE_PREDICATES = orig
         # The single recap_doc appears exactly once despite matching
         # both predicates.
-        assert [rd['id'] for rd in out] == [100]
+        assert [rd["id"] for rd in out] == [100]
 
     def test_dedup_handles_recap_doc_without_id(self):
         # Defensive: a recap_doc with no 'id' field — possible on
@@ -3622,9 +3618,9 @@ class TestSubstanceRecapDocumentsDedup:
         from case_calendar.summary import _substance_recap_documents
 
         entry = {
-            'recap_documents': [
+            "recap_documents": [
                 # No 'id' field at all.
-                {'attachment_number': None, 'description': 'INDICTMENT'},
+                {"attachment_number": None, "description": "INDICTMENT"},
             ],
         }
         out = _substance_recap_documents(entry)
@@ -3645,30 +3641,25 @@ class TestRefreshStaleSummarizeDocketReturnsNone:
 
         _seed_docket_meta(store, 1)
         # Mark stale so the regen path runs.
-        store.mark_summary_stale('us-v-doe', *_DEFAULT_GROUP)
-        monkeypatch.setattr(
-            summary_mod, 'summarize_docket', lambda **kw: None
-        )
+        store.mark_summary_stale("us-v-doe", *_DEFAULT_GROUP)
+        monkeypatch.setattr(summary_mod, "summarize_docket", lambda **kw: None)
         cl = _FakeCourtListener({})
         case = _Case(
-            case_id='us-v-doe', name='US v. Doe', dockets=[1], calendar='cyber'
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case])
         # summarize_docket returned None → no entry added to written.
-        assert 'us-v-doe' not in written or written['us-v-doe'] == set()
+        assert "us-v-doe" not in written or written["us-v-doe"] == set()
 
     def test_summarize_case_skips_falsy_row(self, store, monkeypatch):
         from case_calendar import summary as summary_mod
         from case_calendar.summary import summarize_case
 
         _seed_docket_meta(store, 1)
-        monkeypatch.setattr(
-            summary_mod, 'summarize_docket', lambda **kw: None
-        )
+        monkeypatch.setattr(summary_mod, "summarize_docket", lambda **kw: None)
         cl = _FakeCourtListener({})
         case = _Case(
-            case_id='us-v-doe', name='US v. Doe', dockets=[1], calendar='cyber'
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
         assert rows == []
-

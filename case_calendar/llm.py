@@ -1474,9 +1474,7 @@ SUMMARY_INSUFFICIENT_DOCUMENTS = (
 # — multi-primary dockets are uncommon), the catch-all
 # ``SUMMARY_PRIMARY_DOCUMENT_UNREADABLE`` wins; it's the least-specific
 # of the three and accurately covers any failure mode.
-SUMMARY_PRIMARY_DOCUMENT_SEALED = (
-    "The primary document(s) are currently sealed."
-)
+SUMMARY_PRIMARY_DOCUMENT_SEALED = "The primary document(s) are currently sealed."
 SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE = (
     "The primary document(s) are not yet available on RECAP."
 )

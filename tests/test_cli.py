@@ -847,9 +847,7 @@ class TestLogLlmSetup:
     extractor and could mislead operators about what summarized what.
     """
 
-    def test_enabled_logs_both_extraction_and_summary_llm(
-        self, monkeypatch, caplog
-    ):
+    def test_enabled_logs_both_extraction_and_summary_llm(self, monkeypatch, caplog):
         monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
         monkeypatch.setattr(
             cli.llm,
@@ -905,9 +903,7 @@ class TestLogLlmSetup:
             for m in messages
         ), messages
 
-    def test_missing_case_summaries_key_treated_as_disabled(
-        self, monkeypatch, caplog
-    ):
+    def test_missing_case_summaries_key_treated_as_disabled(self, monkeypatch, caplog):
         # Defensive: a config without a case_summaries section at all is
         # the most common shape for users who haven't opted in. The helper
         # must not blow up on missing dict keys.
@@ -917,9 +913,9 @@ class TestLogLlmSetup:
         with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
             cli._log_llm_setup({})  # no case_summaries key
         messages = [r.message for r in caplog.records]
-        assert any(
-            "summary LLM:" in m and "enabled=false" in m for m in messages
-        ), messages
+        assert any("summary LLM:" in m and "enabled=false" in m for m in messages), (
+            messages
+        )
 
 
 class TestCmdSync:
@@ -2389,9 +2385,7 @@ class TestMain:
         # And the error message is appended after the help body.
         assert "error:" in err, err
 
-    def test_invalid_flag_on_subcommand_prints_subcommand_help(
-        self, cfg_file, capsys
-    ):
+    def test_invalid_flag_on_subcommand_prints_subcommand_help(self, cfg_file, capsys):
         # The relevant subparser's --help text, not the parent's. The
         # user's case here was `sync --sumarize` — they typed a typo
         # expecting it to enable summary generation, and the stock

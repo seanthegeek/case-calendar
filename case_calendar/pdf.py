@@ -247,7 +247,12 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
                     continue
                 if r.status_code == 200 and r.content:
                     return r.content
-                log.warning("pdf fetch %s -> %s (%s)", url, r.status_code, _http_status_category(r.status_code))
+                log.warning(
+                    "pdf fetch %s -> %s (%s)",
+                    url,
+                    r.status_code,
+                    _http_status_category(r.status_code),
+                )
         except Exception as e:
             log.warning("pdf fetch %s failed: %s: %s", url, type(e).__name__, e)
     return None
