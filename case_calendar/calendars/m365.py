@@ -35,7 +35,7 @@ from typing import Any, Iterable, Optional
 from zoneinfo import ZoneInfo
 
 from ..courts import DEFAULT_TZ
-from .description import build as build_description
+from .description import build_description_for_row, is_calendar_visible, has_no_time
 
 log = logging.getLogger(__name__)
 
@@ -146,12 +146,9 @@ class M365CalendarSync:
         calendar_id: Optional[str],
     ) -> None:
         for h in hearings:
-            if h.get("significance") == "minor":
-                # Procedural-only events (phone calls about scheduling
-                # motions) stay in the DB for audit but are kept off the
-                # user-facing calendar.
-                continue
-            if not h.get("starts_at_utc"):
+            if not is_calendar_visible(h):
+                # No date, or significance='minor' (procedural-only events
+                # stay in the DB for audit but off the user-facing calendar).
                 continue
             if h.get("status") == "cancelled":
                 # Cancelled rows: delete from the calendar so subscribers
@@ -321,19 +318,9 @@ class M365CalendarSync:
             SingleValueLegacyExtendedProperty,
         )
 
-        no_time = not (h.get("duration_minutes") and h["duration_minutes"] > 0)
+        no_time = has_no_time(h)
         tz = h.get("timezone") or DEFAULT_TZ
-        description = build_description(
-            notes=h.get("notes"),
-            dial_in=h.get("dial_in"),
-            docket_number=h.get("docket_number"),
-            court_citation=h.get("court_citation"),
-            docket_absolute_url=h.get("docket_absolute_url"),
-            source_entry_ids=h.get("source_entry_ids"),
-            docket_entry_numbers=h.get("docket_entry_numbers"),
-            judge=h.get("judge"),
-            documents=h.get("documents"),
-        )
+        description = build_description_for_row(h)
 
         start_dt = datetime.fromisoformat(h["starts_at_utc"])
         if start_dt.tzinfo is None:

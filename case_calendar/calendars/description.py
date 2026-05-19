@@ -48,6 +48,54 @@ def no_time_title_prefix(
     return "[time unknown]" if when < now else "[time TBD]"
 
 
+def is_calendar_visible(h: dict) -> bool:
+    """Filter applied at the top of every backend's render loop.
+
+    A row is calendar-visible when it has a start timestamp AND its
+    significance isn't ``minor``. ``cancelled`` rows are deliberately
+    NOT filtered here — each backend handles them differently (ICS
+    skips, gcal patches with ``status=cancelled``, m365 issues a
+    DELETE) — so the cancellation check stays in the backend bodies.
+    """
+    if not h.get("starts_at_utc"):
+        return False
+    if h.get("significance") == "minor":
+        return False
+    return True
+
+
+def has_no_time(h: dict) -> bool:
+    """Date-only hearing — no specific clock time was scheduled.
+
+    Renderers use this to switch between a timed VEVENT and an all-day
+    or 9-5 fallback. A row is date-only when its duration is zero or
+    missing — the LLM emits ``duration_minutes`` only on rows that
+    carry an actual time.
+    """
+    return not (h.get("duration_minutes") and h["duration_minutes"] > 0)
+
+
+def build_description_for_row(h: dict) -> str:
+    """Build a description string from a hearing/deadline row dict.
+
+    Wraps :func:`build` so each backend (ICS, gcal, m365) doesn't have
+    to repeat the same 9-key ``h.get(...)`` argument list — adding a
+    new field to event descriptions is now a one-file change here
+    instead of touching every backend in lockstep.
+    """
+    return build(
+        notes=h.get("notes"),
+        dial_in=h.get("dial_in"),
+        docket_number=h.get("docket_number"),
+        court_citation=h.get("court_citation"),
+        docket_absolute_url=h.get("docket_absolute_url"),
+        source_entry_ids=h.get("source_entry_ids"),
+        docket_entry_numbers=h.get("docket_entry_numbers"),
+        judge=h.get("judge"),
+        documents=h.get("documents"),
+    )
+
+
 def build(
     *,
     notes: Optional[str],
