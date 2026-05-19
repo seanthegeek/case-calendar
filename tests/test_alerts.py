@@ -101,6 +101,64 @@ class TestEnsureDocketAlerts:
             status = ensure_docket_alerts(cl, [100, 200])
         assert status == {100: "failed", 200: "failed"}
         assert any("list call failed" in r.message for r in caplog.records)
+        # Transport / unexpected category — no .response on the exception.
+        assert any(
+            "transport / unexpected error" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_list_failure_with_401_logs_auth_category(self, caplog):
+        # When the list call fails with an exception that carries a
+        # .response.status_code of 401 or 403, the log should call it
+        # out as an auth error (operator needs to check the token /
+        # scope) rather than the generic transport classification.
+        class _AuthError(Exception):
+            def __init__(self, status_code):
+                super().__init__(f"HTTP {status_code}")
+
+                class _Resp:
+                    pass
+
+                self.response = _Resp()
+                self.response.status_code = status_code
+
+        class _AuthFailureCL(FakeCourtListener):
+            def iter_docket_alerts(self, **_):
+                raise _AuthError(401)
+
+        with caplog.at_level("WARNING", logger="case_calendar.alerts"):
+            status = ensure_docket_alerts(_AuthFailureCL(), [42])
+        assert status == {42: "failed"}
+        assert any(
+            "auth error (HTTP 401)" in r.message
+            and "COURTLISTENER_TOKEN" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_list_failure_with_500_logs_generic_http_category(self, caplog):
+        # Non-auth HTTP statuses (5xx, 422, etc.) get the generic
+        # "HTTP {n} from CourtListener" classification — distinct from
+        # both the auth category and the no-response-attached transport
+        # category.
+        class _ServerError(Exception):
+            def __init__(self):
+                super().__init__("HTTP 500")
+
+                class _Resp:
+                    pass
+
+                self.response = _Resp()
+                self.response.status_code = 500
+
+        class _Failing(FakeCourtListener):
+            def iter_docket_alerts(self, **_):
+                raise _ServerError()
+
+        with caplog.at_level("WARNING", logger="case_calendar.alerts"):
+            status = ensure_docket_alerts(_Failing(), [42])
+        assert status == {42: "failed"}
+        assert any(
+            "HTTP 500 from CourtListener" in r.message for r in caplog.records
+        ), [r.message for r in caplog.records]
 
 
 class TestCourtListenerClientAlerts:

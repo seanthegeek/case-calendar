@@ -3538,3 +3538,137 @@ class TestDispositionAttachedToProceduralParent:
         monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
         out = _entry_doc_text(self._notice_of_plea_entry())
         assert "Notice of Filing body" in out
+
+class TestPrimaryFailureStateEdgeCases:
+    """Coverage for the recap_doc-level state classifier's edge branches."""
+
+    def test_attachment_only_recap_documents_falls_through_to_no_main(self):
+        # If an entry's recap_documents are ALL attachments (no main
+        # doc), the per-rd loop skips all of them and the function
+        # falls through to the no-main-recap_document branch, which
+        # returns 'not-available'. This shape is uncommon but possible
+        # for entries where someone treated an attachment as primary
+        # via description-only matching.
+        from case_calendar.summary import _primary_failure_state
+
+        entry = {
+            'recap_documents': [
+                {'id': 1, 'attachment_number': 1, 'is_sealed': False},
+                {'id': 2, 'attachment_number': 2, 'is_sealed': False},
+            ],
+        }
+        assert _primary_failure_state(entry) == 'not-available'
+
+    def test_entry_with_no_recap_documents_returns_not_available(self):
+        # The function defaults to 'not-available' when there are no
+        # recap_documents at all on the entry (paperless primary entry
+        # tagged by description text alone — rare). Documents the
+        # no-main-doc fallthrough.
+        from case_calendar.summary import _primary_failure_state
+
+        assert _primary_failure_state({}) == 'not-available'
+        assert _primary_failure_state({'recap_documents': []}) == 'not-available'
+
+
+class TestSubstanceRecapDocumentsDedup:
+    """Coverage for the dedup logic in _substance_recap_documents."""
+
+    def test_dedup_skips_same_id_seen_under_another_predicate(self):
+        # A recap_document whose description head-matches BOTH the
+        # primary regex AND the disposition regex (rare but possible
+        # — e.g. someone files something they call 'INDICTMENT AND
+        # JUDGMENT' on a single doc). The dedup loop sees it under
+        # the first predicate, marks the id seen, and skips on the
+        # second pass.
+        from case_calendar.summary import _substance_recap_documents
+
+        # Construct two recap_docs: one matches primary only, one
+        # would match BOTH primary and disposition (the dedup target).
+        # Note: this is a synthetic edge case — actual filings rarely
+        # have descriptions that hit both regexes. The point is to
+        # exercise the dedup branch even if natural data wouldn't.
+        entry = {
+            'recap_documents': [
+                {
+                    'id': 100,
+                    'attachment_number': None,
+                    'description': 'INDICTMENT',
+                },
+            ],
+        }
+        # Patch the disposition predicate to claim the same recap_doc
+        # also looks dispositive, exercising the same-id-twice dedup
+        # branch.
+        import case_calendar.summary as s_mod
+        orig = s_mod._SUBSTANCE_PREDICATES
+        try:
+            s_mod._SUBSTANCE_PREDICATES = (
+                s_mod._matches_primary_document,
+                lambda text: 'INDICTMENT' in text,  # also matches the same doc
+            )
+            out = _substance_recap_documents(entry)
+        finally:
+            s_mod._SUBSTANCE_PREDICATES = orig
+        # The single recap_doc appears exactly once despite matching
+        # both predicates.
+        assert [rd['id'] for rd in out] == [100]
+
+    def test_dedup_handles_recap_doc_without_id(self):
+        # Defensive: a recap_doc with no 'id' field — possible on
+        # malformed test fixtures or older entries — still ends up
+        # in the result (the dedup set tracks by id, so no-id docs
+        # can't deduplicate; they pass through). Exercises the
+        # 'if rid is not None' branch.
+        from case_calendar.summary import _substance_recap_documents
+
+        entry = {
+            'recap_documents': [
+                # No 'id' field at all.
+                {'attachment_number': None, 'description': 'INDICTMENT'},
+            ],
+        }
+        out = _substance_recap_documents(entry)
+        assert len(out) == 1
+
+
+class TestRefreshStaleSummarizeDocketReturnsNone:
+    """Coverage for the 'if row:' falsy branch in refresh_stale and
+    summarize_case. summarize_docket's None return is in principle
+    defensive (the no-metadata case is filtered by _group_dockets_on_case
+    before the call), but the check exists in case a future refactor
+    relaxes that invariant — we patch summarize_docket to return None
+    to exercise the branch."""
+
+    def test_refresh_stale_skips_falsy_row(self, store, monkeypatch):
+        from case_calendar import summary as summary_mod
+        from case_calendar.summary import refresh_stale
+
+        _seed_docket_meta(store, 1)
+        # Mark stale so the regen path runs.
+        store.mark_summary_stale('us-v-doe', *_DEFAULT_GROUP)
+        monkeypatch.setattr(
+            summary_mod, 'summarize_docket', lambda **kw: None
+        )
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id='us-v-doe', name='US v. Doe', dockets=[1], calendar='cyber'
+        )
+        written = refresh_stale(cl=cl, store=store, cases=[case])
+        # summarize_docket returned None → no entry added to written.
+        assert 'us-v-doe' not in written or written['us-v-doe'] == set()
+
+    def test_summarize_case_skips_falsy_row(self, store, monkeypatch):
+        from case_calendar import summary as summary_mod
+        from case_calendar.summary import summarize_case
+
+        _seed_docket_meta(store, 1)
+        monkeypatch.setattr(
+            summary_mod, 'summarize_docket', lambda **kw: None
+        )
+        cl = _FakeCourtListener({})
+        case = _Case(
+            case_id='us-v-doe', name='US v. Doe', dockets=[1], calendar='cyber'
+        )
+        rows = summarize_case(cl=cl, store=store, case=case, force=True)
+        assert rows == []
+

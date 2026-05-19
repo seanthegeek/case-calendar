@@ -74,6 +74,15 @@ class TestIsUsableText:
     def test_empty_string_is_not_usable(self):
         assert pdf.is_usable_text("") is False
 
+    def test_pure_whitespace_long_enough_is_not_usable(self):
+        # An input long enough to pass the _MIN_USEFUL_CHARS gate but
+        # comprised entirely of whitespace skips the alpha-ratio branch
+        # (the non-whitespace-stripped string is empty, so the inner
+        # `if nonws:` is False) and falls through to the stamp-strip /
+        # residue-length check, which catches it.
+        assert pdf.is_usable_text(" " * 200) is False
+        assert pdf.is_usable_text("\n\t" * 100) is False
+
     def test_pacer_page_headers_only_is_not_usable(self):
         # The us-v-schmitz shape: an image-only PDF with a thin OCR
         # overlay covering just the page-header band. pypdf reads the
@@ -114,6 +123,42 @@ class TestIsUsableText:
             for i in range(1, 16)
         )
         assert pdf.is_usable_text(text) is False
+
+
+class TestHttpStatusCategory:
+    """The one-word HTTP-status classifier feeds the pdf-fetch warning
+    logs. Each branch labels a status code in a way that tells the
+    operator whether retry-next-sync is likely to help."""
+
+    def test_404_410_are_not_found(self):
+        assert pdf._http_status_category(404) == "not found"
+        assert pdf._http_status_category(410) == "not found"
+
+    def test_401_403_are_access_denied(self):
+        assert pdf._http_status_category(401) == "access denied"
+        assert pdf._http_status_category(403) == "access denied"
+
+    def test_429_is_rate_limited(self):
+        assert pdf._http_status_category(429) == "rate limited"
+
+    def test_other_4xx_is_client_error_wont_retry(self):
+        # 4xx that isn't auth / rate-limit / not-found — e.g., 400, 422.
+        # These are permanent under retry-next-sync, so the label calls
+        # that out.
+        assert pdf._http_status_category(400) == "client error — won't retry"
+        assert pdf._http_status_category(422) == "client error — won't retry"
+
+    def test_5xx_is_server_error_retry_next_sync(self):
+        assert pdf._http_status_category(500) == "server error — retry next sync"
+        assert pdf._http_status_category(503) == "server error — retry next sync"
+        assert pdf._http_status_category(504) == "server error — retry next sync"
+
+    def test_outside_normal_range_is_unexpected(self):
+        # Defensive — should never see these in practice, but the
+        # final fallthrough exists so a weird status doesn't crash
+        # the log line.
+        assert pdf._http_status_category(999) == "unexpected"
+        assert pdf._http_status_category(100) == "unexpected"
 
 
 class TestExtractText:

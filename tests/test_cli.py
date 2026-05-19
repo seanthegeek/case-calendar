@@ -2374,6 +2374,21 @@ class TestMain:
         assert "sync" in err and "emit" in err and "summarize" in err, err
         assert "error:" in err and "no-such-command" in err, err
 
+    def test_empty_argv_prints_parent_help(self, cfg_file, capsys):
+        # With no argv at all, parse_args sets _last_argv to [] (a
+        # falsy list) so the helpful parser's subparser-lookup branch
+        # doesn't fire — it falls through and prints the parent's help.
+        # Parent help lists the subcommand positional rather than the
+        # flags of any one subparser, so the operator sees the catalog.
+        with pytest.raises(SystemExit) as excinfo:
+            main([])
+        assert excinfo.value.code == 2
+        err = capsys.readouterr().err
+        # Parent help shows the subcommand list.
+        assert "{sync,emit,serve,setup,summarize,show,prune,webhook-url}" in err, err
+        # And the error message is appended after the help body.
+        assert "error:" in err, err
+
     def test_invalid_flag_on_subcommand_prints_subcommand_help(
         self, cfg_file, capsys
     ):
