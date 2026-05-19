@@ -386,6 +386,54 @@ def _cached_entries_look_stale(entries: Iterable[dict[str, Any]]) -> bool:
     return any(_entry_looks_stale(e) for e in entries)
 
 
+def _primary_failure_state(entry: dict[str, Any]) -> str:
+    """Classify why a primary entry's text didn't reach the LLM.
+
+    Returns one of three labels used by ``summarize_docket`` to pick
+    the correct subscriber-facing fallback message (and to log the
+    operator-facing per-doc breakdown). Inspection is bounded to the
+    main recap_document (attachments are skipped — primary documents'
+    body lives on the main doc):
+
+      ``"sealed"``        — main recap_doc has ``is_sealed=True``. The
+        document exists but PACER doesn't expose it. A fetch would 401/
+        403; it can be unsealed later, at which point the fingerprint
+        flips and the next sync picks it up automatically.
+      ``"not-available"`` — main recap_doc has neither ``filepath_ia``
+        nor ``filepath_local`` AND empty ``plain_text``. There was
+        literally nothing for the extraction chain to fetch — the PDF
+        hasn't been uploaded to RECAP yet (or our local cache is stale
+        in a way the fingerprint missed).
+      ``"unreadable"``    — anything else. The chain had something to
+        work with (a URL or upstream plain_text) but couldn't produce
+        usable text. Typically: image-only scan where OCR tools aren't
+        installed, fetch ran but all URLs returned 4xx/5xx, or
+        upstream pypdf produced font-encoding gibberish that our local
+        pypdf can't decode either.
+
+    The catch-all ``"unreadable"`` is intentionally the least specific
+    — any state we don't recognize as cleanly sealed or no-source maps
+    here, since "could not be read" is the most general framing that
+    stays accurate.
+    """
+    for rd in entry.get("recap_documents") or []:
+        if rd.get("attachment_number"):
+            continue
+        if rd.get("is_sealed"):
+            return "sealed"
+        has_url = bool(rd.get("filepath_ia") or rd.get("filepath_local"))
+        has_plain = bool((rd.get("plain_text") or "").strip())
+        if not has_url and not has_plain:
+            return "not-available"
+        return "unreadable"
+    # No main recap_document at all (paperless entry tagged as primary
+    # by description text alone — rare, since paperless minute orders
+    # don't match is_primary_document head-anchored patterns, but
+    # possible for short_description-only entries). Treat as
+    # not-available — there's nothing to fetch.
+    return "not-available"
+
+
 def find_primary_documents(
     cl: CourtListener,
     docket_id: int,
@@ -518,6 +566,22 @@ def find_primary_documents(
         # doesn't commit per-call, matching the rest of the Store
         # methods that share `mark_entry`'s commit-via-caller pattern.
         store.conn.commit()
+        # Log the outcome so the staleness-detection trail is closed
+        # out — the earlier "falling through" line told operators we
+        # were ABOUT to refresh; this line tells them whether anything
+        # came back and got refreshed. A zero-primary / zero-disposition
+        # outcome here means the CourtListener walk didn't find what
+        # the cache was missing either (rare — usually a CL-side data
+        # gap rather than our cache being wrong), and the next sync
+        # will try again.
+        log.info(
+            "summary: docket %s — CourtListener fallback complete: "
+            "%d primary, %d disposition documents in the final set "
+            "(cache rewrite committed)",
+            docket_id,
+            len(primary),
+            len(dispositions),
+        )
 
     primary.sort(key=lambda e: e.get("date_filed") or "")
     dispositions.sort(key=lambda e: e.get("date_filed") or "")
@@ -970,8 +1034,18 @@ def _fetch_extra_documents(
         )
         text = pdf.extract_text_from_url(extra.url, allow_ocr=allow_ocr)
         if not text:
+            # The per-URL cause (fetch failed vs. fetched-but-pipeline-
+            # failed) is logged by `pdf.extract_text_from_url` and (for
+            # the fetch-failed case) `pdf.fetch_url_bytes`. This log line
+            # is just the operator-level outcome ("the operator-provided
+            # document didn't make it into the document set") so the
+            # config-side trail is visible alongside the lower-level
+            # cause.
             log.warning(
-                "summary: docket %s — operator-provided document %s yielded no text; skipping",
+                "summary: docket %s — operator-provided document %s "
+                "produced no usable text and was dropped from the LLM "
+                "input (see pdf.extract_text_from_url log above for the "
+                "fetch vs. extraction cause)",
                 extra.docket,
                 extra.url,
             )
@@ -1074,9 +1148,23 @@ def summarize_docket(
     docket_number = meta.get("docket_number")
     court_id = meta.get("court_id")
     if not docket_number or not court_id:
+        # The expected reason is "this docket id has never been synced
+        # successfully" — the next sync will populate the columns and
+        # this gate will clear. But it can also fire when the operator
+        # added a docket id that doesn't correspond to a real
+        # CourtListener docket (typo in config.yaml) — in that case
+        # the sync's `cl.get_docket(docket_id)` 404s, and we never
+        # call `upsert_docket_meta` for it, so the row stays empty
+        # forever. Logging both possibilities so the operator knows
+        # to check the docket id if a sync has already run and this
+        # warning is still firing.
         log.warning(
             "summary: skipping docket %s — no (docket_number, court_id) "
-            "metadata yet (run sync first to populate)",
+            "metadata in the local store. Expected if this docket id has "
+            "never been synced; if a sync has already run successfully "
+            "for it, verify that the id corresponds to a real CourtListener "
+            "docket (check the sync log for a 4xx on /dockets/%s/).",
+            docket_id,
             docket_id,
         )
         return None
@@ -1221,15 +1309,43 @@ def summarize_docket(
         # first case; CourtListener docket inspection + possible
         # `extra_documents` workaround for the second).
         if primary:
-            summary_text = llm.SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+            # Classify each identified primary by its main recap_doc's
+            # state so subscribers and operators see the specific
+            # failure shape rather than a catch-all "could not be read":
+            #   sealed = main recap_doc has is_sealed=True
+            #   not-available = main recap_doc has no filepath_ia AND
+            #     no filepath_local AND empty plain_text — there was
+            #     nothing to fetch
+            #   unreadable = anything else (had a URL or text, the
+            #     extraction chain just couldn't produce usable output)
+            # The catch-all wins when the primaries are in mixed states:
+            # unreadable is the most general of the three and accurately
+            # describes any failure path.
+            states = [_primary_failure_state(e) for e in primary]
+            if all(s == "sealed" for s in states):
+                summary_text = llm.SUMMARY_PRIMARY_DOCUMENT_SEALED
+                state_label = "sealed"
+            elif all(s == "not-available" for s in states):
+                summary_text = llm.SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+                state_label = "not-available"
+            else:
+                summary_text = llm.SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+                state_label = "unreadable"
+            counts = {"sealed": 0, "not-available": 0, "unreadable": 0}
+            for s in states:
+                counts[s] += 1
             log.warning(
                 "summary: docket %s — primary document(s) identified "
-                "(primary=%d disposition=%d) but no text extractable; "
-                "writing the 'primary documents could not be read' "
-                "message so subscribers see the docket on the index.",
+                "but no text extractable: primary=%d "
+                "(sealed=%d, not-available=%d, unreadable=%d) "
+                "disposition=%d; writing %s message",
                 docket_id,
                 len(primary),
+                counts["sealed"],
+                counts["not-available"],
+                counts["unreadable"],
                 len(dispositions),
+                state_label,
             )
         else:
             summary_text = llm.SUMMARY_INSUFFICIENT_DOCUMENTS

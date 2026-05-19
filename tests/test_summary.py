@@ -1797,25 +1797,19 @@ class TestSummarizeDocket:
         assert call["docket"]["court_tz"] is not None
         assert [d["entry_id"] for d in call["primary_documents"]] == [10]
 
-    def test_writes_unreadable_message_when_primary_identified_but_text_missing(
+    def test_writes_not_available_message_when_primary_has_no_source(
         self, store, patch_llm, patch_pdf, caplog
     ):
-        # us-v-lytvynenko shape: CourtListener returned an entry whose
-        # recap_document carries the matcher signal (description='Indictment',
-        # so is_primary_document matches) but the PDF isn't on RECAP / IA
-        # and OCR finds nothing — _attach_text produces an empty
-        # primary_documents list. The matcher DID find a primary, so the
-        # subscriber-facing message is the specific
-        # SUMMARY_PRIMARY_DOCUMENT_UNREADABLE ("we know there's an
-        # indictment, we just can't read it") rather than the broader
-        # SUMMARY_INSUFFICIENT_DOCUMENTS refusal. The two messages
-        # distinguish the failure modes so operators can read the index
-        # and tell which dockets need an OCR-tool install / RECAP retry
-        # vs which dockets are genuinely missing an identifiable primary.
-        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # us-v-lytvynenko shape: CourtListener returned a primary entry
+        # whose main recap_doc has NO source for text — no filepath_ia,
+        # no filepath_local, no plain_text, not sealed. Nothing for the
+        # extraction chain to fetch. Subscribers see the specific
+        # SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE message ("the primary
+        # document(s) are not yet available on RECAP"), distinct from
+        # the "sealed" and "could not be read" sibling messages.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
 
         _seed_docket_meta(store, 1)
-        # Primary document identified but PDF text is empty for every doc.
         patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
@@ -1824,6 +1818,8 @@ class TestSummarizeDocket:
                         "id": 10,
                         "description": "INDICTMENT",
                         "date_filed": "2024-01-01",
+                        # No filepath_ia, no filepath_local, no plain_text —
+                        # truly no source. Maps to "not-available".
                         "recap_documents": [{"id": 500}],
                     }
                 ],
@@ -1841,19 +1837,115 @@ class TestSummarizeDocket:
 
         # LLM is NOT called — we synthesize the message directly.
         assert patch_llm == []
-        # Row IS returned and persisted with the "could not be read" message.
+        # Row IS returned and persisted with the "not yet available" message.
         assert row is not None
-        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
         # source_entry_ids preserves the entry we tried to summarize from
         # so the audit trail captures it.
         assert row["source_entry_ids"] == [10]
         persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
-        assert persisted["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
-        # WARN fired with primary>0 in the count so the operator can find
-        # dockets needing the extra_documents workaround / OCR-tool install
-        # (vs the "primary=0" log line for the truly-cold case).
+        assert persisted["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
+        # WARN fired with the per-doc breakdown showing not-available=1.
         assert any(
-            "primary=1" in r.message and "docket 1" in r.message
+            "not-available=1" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_sealed_message_when_primary_is_sealed(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Primary entry whose main recap_doc has is_sealed=True. PACER
+        # blocks access; subscribers see the specific "currently sealed"
+        # message so they know it's a legal-posture wait, not a pipeline
+        # gap.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_SEALED
+
+        _seed_docket_meta(store, 1)
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "attachment_number": None,
+                                "is_sealed": True,
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert patch_llm == []
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_SEALED
+        # WARN breakdown shows sealed=1.
+        assert any(
+            "sealed=1" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_unreadable_message_when_fetch_returns_no_usable_text(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Primary entry's main recap_doc had a fetchable URL (so it's
+        # neither sealed nor not-available), but the extraction chain
+        # couldn't produce usable text — typically an image-only PDF on
+        # a host without OCR tools installed, or a fetch that 4xx'd
+        # across all URLs. Subscribers see the "could not be read"
+        # catch-all message.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {}  # PDF text extracts to empty
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "attachment_number": None,
+                                "is_sealed": False,
+                                "filepath_local": "recap/x.pdf",  # has URL
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert patch_llm == []
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # WARN breakdown shows unreadable=1.
+        assert any(
+            "unreadable=1" in r.message and "docket 1" in r.message
             for r in caplog.records
         ), [r.message for r in caplog.records]
 
@@ -2316,12 +2408,14 @@ class TestSummarizeDocket:
         # Primary documents are indictments / complaints — a clerk's
         # minute-entry stub isn't an acceptable substitute, and feeding one
         # in would produce a vacuous summary. Confirm the asymmetry: when
-        # the PDF text is empty, the primary entry's description is NOT
-        # used as a synthetic body — instead we write the
-        # SUMMARY_PRIMARY_DOCUMENT_UNREADABLE message directly without an
-        # LLM call. The asymmetry survives the message-on-identification
-        # behavior change (no vacuous summary is ever produced).
-        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # the PDF text is empty AND the recap_doc has no source for text,
+        # the primary entry's description is NOT used as a synthetic
+        # body — instead we write a fallback message directly without an
+        # LLM call. This specific setup (no URL fields, no plain_text,
+        # not sealed) maps to the NOT_AVAILABLE state; the asymmetry
+        # holds across all three failure states (none of them use the
+        # description-as-text fallback).
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
 
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {}  # no PDF text extracts
@@ -2345,10 +2439,10 @@ class TestSummarizeDocket:
         # LLM is NOT called — the description is NOT used as a fallback
         # body to manufacture a summary. The asymmetry stands.
         assert patch_llm == []
-        # The "could not be read" message is what gets persisted, not a
+        # The fallback message is what gets persisted, not a
         # description-derived synthetic summary.
         assert row is not None
-        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE
 
     def test_falls_back_to_attachments_when_main_doc_has_no_text(
         self,

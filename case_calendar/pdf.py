@@ -146,6 +146,28 @@ def is_usable_text(text: str) -> bool:
     return True
 
 
+def _http_status_category(status: int) -> str:
+    """One-word classification of an HTTP status code for log clarity.
+
+    Operators triaging a flood of pdf-fetch warnings need to know at a
+    glance whether the failure is transient (retry next sync will
+    likely succeed) or permanent (something needs to change upstream).
+    Worth a small helper rather than embedding the same conditional in
+    every log site.
+    """
+    if status == 404 or status == 410:
+        return "not found"
+    if status in (401, 403):
+        return "access denied"
+    if status == 429:
+        return "rate limited"
+    if 400 <= status < 500:
+        return "client error — won't retry"
+    if 500 <= status < 600:
+        return "server error — retry next sync"
+    return "unexpected"
+
+
 def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
     """GET with retry on transient transport errors and retryable status codes.
 
@@ -225,9 +247,9 @@ def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
                     continue
                 if r.status_code == 200 and r.content:
                     return r.content
-                log.warning("pdf fetch %s -> %s", url, r.status_code)
+                log.warning("pdf fetch %s -> %s (%s)", url, r.status_code, _http_status_category(r.status_code))
         except Exception as e:
-            log.warning("pdf fetch %s failed: %s", url, e)
+            log.warning("pdf fetch %s failed: %s: %s", url, type(e).__name__, e)
     return None
 
 
@@ -318,9 +340,14 @@ def fetch_url_bytes(url: str, *, timeout: float = 60.0) -> Optional[bytes]:
                 return None
             if r.status_code == 200 and r.content:
                 return r.content
-            log.warning("url fetch %s -> %s", url, r.status_code)
+            log.warning(
+                "url fetch %s -> %s (%s)",
+                url,
+                r.status_code,
+                _http_status_category(r.status_code),
+            )
     except Exception as e:
-        log.warning("url fetch %s failed: %s", url, e)
+        log.warning("url fetch %s failed: %s: %s", url, type(e).__name__, e)
     return None
 
 
@@ -329,10 +356,19 @@ def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
 
     The operator-supplied analogue of :func:`extract_text` — same extraction
     pipeline, different fetch source. Returns ``None`` if the URL is
-    unreachable or every extraction path yields nothing usable.
+    unreachable or every extraction path yields nothing usable. Logs
+    distinct messages for the two failure modes (fetch failed vs.
+    fetched-but-pipeline-failed) so operators can tell from the log
+    whether to retry the URL (transient fetch) or revisit the document
+    itself (image-only without OCR tools, corrupted, etc.).
     """
     pdf_bytes = fetch_url_bytes(url)
     if not pdf_bytes:
+        log.info(
+            "extract_text_from_url: %s — fetch produced no bytes (see "
+            "per-URL fetch warning above for the status code / error)",
+            url,
+        )
         return None
     text = extract_with_pypdf(pdf_bytes)
     if is_usable_text(text):
@@ -341,6 +377,15 @@ def extract_text_from_url(url: str, *, allow_ocr: bool = True) -> Optional[str]:
         ocr = ocr_with_tesseract(pdf_bytes)
         if is_usable_text(ocr):
             return ocr
+    log.warning(
+        "extract_text_from_url: %s — fetched %d bytes but could not "
+        "extract usable text (pypdf produced %d chars %s, OCR %s)",
+        url,
+        len(pdf_bytes),
+        len(text),
+        "(rejected by is_usable_text)" if text else "(empty)",
+        "ran but rejected" if allow_ocr else "disabled by caller",
+    )
     return text or None
 
 

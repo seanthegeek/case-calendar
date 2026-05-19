@@ -124,18 +124,29 @@ class CourtListener:
             except _RETRYABLE_TRANSPORT_EXCEPTIONS as e:
                 transport_attempts += 1
                 if transport_attempts > _TRANSPORT_RETRY_BUDGET:
+                    # Transport errors are network-layer (DNS,
+                    # connection refused, read timeout, TLS handshake
+                    # failure) — surface the exception type so the
+                    # operator can tell e.g. ConnectTimeout (firewall /
+                    # CourtListener degraded) from ReadTimeout (large
+                    # response timed out, increase timeout) from
+                    # ConnectError (CourtListener fully down).
                     log.warning(
-                        "courtlistener transport error budget exhausted (%d attempts) for %s: %s",
+                        "courtlistener transport error budget exhausted "
+                        "(%d attempts) for %s: %s: %s",
                         transport_attempts,
                         url,
+                        type(e).__name__,
                         e,
                     )
                     raise
                 log.warning(
-                    "courtlistener transport error (attempt %d/%d) for %s: %s; retrying in %.1fs",
+                    "courtlistener transport error (attempt %d/%d) for %s: "
+                    "%s: %s; retrying in %.1fs",
                     transport_attempts,
                     _TRANSPORT_RETRY_BUDGET,
                     url,
+                    type(e).__name__,
                     e,
                     transport_delay,
                 )
@@ -170,7 +181,23 @@ class CourtListener:
                 delay = min(delay * 2, 60)
                 continue
             if 500 <= r.status_code < 600:
-                log.warning("courtlistener %s; retrying in %.1fs", r.status_code, delay)
+                # 5xx means CourtListener's server is having trouble.
+                # Distinguish 500 (origin app error, less likely to fix
+                # itself) from 502 / 503 / 504 (gateway / load-balancer
+                # transient — usually resolves within a few seconds).
+                # Operators triaging recurring 5xxs should know which.
+                category = (
+                    "origin app error"
+                    if r.status_code == 500
+                    else "gateway / load-balancer transient"
+                )
+                log.warning(
+                    "courtlistener %s (%s) for %s; retrying in %.1fs",
+                    r.status_code,
+                    category,
+                    r.request.url,
+                    delay,
+                )
                 time.sleep(delay)
                 delay = min(delay * 2, 60)
                 continue

@@ -1448,19 +1448,28 @@ SUMMARY_INSUFFICIENT_DOCUMENTS = (
 )
 
 
-# Specific fallback for the case where one or more primary documents
-# WERE identified on the docket (a recap_document carrying the matcher
-# signal, e.g. ``description='Indictment'``) but text extraction failed
-# on all of them — PDF not on RECAP / IA yet, image-only scan with no
-# recoverable layer, OCR tools absent. Distinct from
-# ``SUMMARY_INSUFFICIENT_DOCUMENTS`` (which is what we fall back to when
-# no primary document was identified at all, or what the LLM emits when
-# fed garbled text it cannot trust) so subscribers and operators can
-# tell the failure modes apart at a glance: "we found the indictment
-# but couldn't read its bytes" vs "we don't have an indictment on this
-# docket". Both are written by ``summary.summarize_docket`` without an
-# LLM round-trip; ``summary.py`` greps for either string when deciding
-# what to log.
+# Three specific fallbacks for the cases where one or more primary
+# documents WERE identified on the docket (a recap_document carrying the
+# matcher signal, e.g. ``description='Indictment'``) but a real summary
+# couldn't be produced. Subscribers see exactly which of three failure
+# modes hit — these states have meaningfully different "what should
+# happen next" implications and the language is precise so readers can
+# tell "wait for unsealing" from "wait for the upload to land" from
+# "the document is permanently un-extractable from its current form."
+# All three are written by ``summary.summarize_docket`` without an LLM
+# round-trip; ``summary.py`` picks the right one based on each cached
+# primary entry's main recap_document state.
+#
+# When some primaries are in one state and others are in another (rare
+# — multi-primary dockets are uncommon), the catch-all
+# ``SUMMARY_PRIMARY_DOCUMENT_UNREADABLE`` wins; it's the least-specific
+# of the three and accurately covers any failure mode.
+SUMMARY_PRIMARY_DOCUMENT_SEALED = (
+    "The primary document(s) are currently sealed."
+)
+SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE = (
+    "The primary document(s) are not yet available on RECAP."
+)
 SUMMARY_PRIMARY_DOCUMENT_UNREADABLE = "The primary document(s) could not be read."
 
 

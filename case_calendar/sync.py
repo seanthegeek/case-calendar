@@ -1236,7 +1236,19 @@ class CaseSyncer:
         try:
             c = self.cl.get_court(court_id)
         except Exception as e:
-            log.warning("court fetch failed id=%s: %s", court_id, e)
+            # Surface the exception type alongside the message so an
+            # operator can tell network / transport (httpx.* errors) from
+            # API-side problems (CourtListener returning 4xx/5xx that
+            # bubbles as HTTPStatusError) from parsing problems (JSON
+            # decode errors). The court_id is the only fetch-identifying
+            # piece worth logging; it doubles as the operator's pointer
+            # back to the configured docket that needs investigation.
+            log.warning(
+                "court fetch failed id=%s: %s: %s",
+                court_id,
+                type(e).__name__,
+                e,
+            )
             return
         self.store.upsert_court(
             court_id,
