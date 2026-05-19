@@ -8,6 +8,48 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.2.8] - 2026-05-18
+
+### Fixed
+
+- `find_primary_documents_for_group` no longer drops the populated copy
+  of a logical PACER entry when one CourtListener sibling carries it
+  with empty `plain_text` while another sibling in the same group has
+  the extracted body. The dedup was "first-seen wins, freshest CL
+  docket_id first," which silently discarded the good copy whenever
+  the freshest sibling happened to have the empty one. The us-v-schmitz
+  indictment (`1:24-cr-00234`, D.N.J.) was the canonical instance —
+  freshest CL sibling 73292090's recap_document had `plain_text=""`,
+  while older sibling 73353898 carried 20 KB of text; the summary LLM
+  received metadata only and emitted the "insufficient documents"
+  refusal. The dedup now upgrades the first-seen entry when a later
+  sibling's copy has populated `plain_text` on its main recap_document
+  and the prior copy doesn't, for both primary documents and
+  dispositions. No extra PDF reads — the choice is between copies
+  already in hand.
+- The single-docket cache-staleness check inside
+  `find_primary_documents` now detects stale disposition entries the
+  same way it detects stale primaries. A stored disposition whose
+  available main recap_document has empty `plain_text` triggers the
+  CourtListener fallthrough and `Store.refresh_entry_recap_documents`
+  rebuild — the previous code only caught the primary case (the
+  us-v-moucka shape) and would silently return a stub disposition.
+  Renames the staleness helper to `_cached_entries_look_stale`
+  (generic) and splits the per-entry signature into
+  `_entry_looks_stale`. Only the entries that look stale are dropped
+  from the cache view; fresh ones stay so the CL fallthrough doesn't
+  re-fetch their text unnecessarily.
+
+### Changed
+
+- AGENTS.md's "Entry dedup across a docket group" and "Automatically
+  rebuild stale cached recap_documents" rules now document the
+  upgrade-on-better-text dedup and the disposition-staleness sweep
+  respectively, with us-v-schmitz documented as the canonical case
+  alongside the existing us-v-moucka reference.
+
+[0.2.8]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.8
+
 ## [0.2.7] - 2026-05-18
 
 ### Changed
