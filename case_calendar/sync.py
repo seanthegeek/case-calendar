@@ -75,6 +75,12 @@ class CaseConfig:
     to one ``docket`` id on this case and carries a required ``note``
     that describes what the document is and why it was added."""
 
+    tags: list[str] = field(default_factory=list)
+    """Topical labels (e.g. ``DPRK``, ``PRC``, ``ransomware``) used to
+    group cases by theme. Rendered on each calendar event's description
+    AND on the HTML index, where they double as click-to-filter chips
+    against the global search."""
+
 
 # Federal docket-number type codes that indicate a routine criminal matter
 # (criminal felony, criminal misdemeanor, criminal magistrate complaint,

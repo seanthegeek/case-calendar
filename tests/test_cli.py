@@ -311,6 +311,32 @@ class TestEmitCalendars:
         assert "65: https://archive.org/65.pdf" in unfolded
         assert "65-1: https://archive.org/65a.pdf" in unfolded
 
+    def test_case_tags_rendered_into_ics_description(self, store, cfg):
+        # Tags configured on a case must reach the per-event description
+        # via the shared description builder. They sit immediately under
+        # the notes block, above the docket-keeping metadata.
+        cfg["cases"][0]["tags"] = ["DPRK", "IT-worker"]
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2099-04-14T15:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1001],
+                "notes": "Sentencing on counts I-III.",
+            }
+        )
+        emit_calendars(cfg, store, only_calendars={"cyber"})
+        text = Path(cfg["calendars"]["cyber"]["ics_path"]).read_bytes().decode()
+        unfolded = text.replace("\r\n ", "")
+        # ICS escapes commas with backslashes per RFC 5545.
+        assert "Tags: DPRK\\, IT-worker" in unfolded
+
     def test_gcal_skipped_when_no_token_cache(self, store, cfg, tmp_path):
         # gcal push auto-enables when a token cache is present. Without
         # one — first run, or after a token wipe — push is skipped
@@ -713,6 +739,126 @@ class TestCasesFromConfig:
         }
         with pytest.raises(SystemExit, match="note must be a string"):
             _cases_from_config(cfg)
+
+    def test_defaults_empty_tags(self):
+        cfg = {
+            "cases": [
+                {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
+            ]
+        }
+        cases = _cases_from_config(cfg)
+        assert cases[0].tags == []
+
+    def test_parses_tags_preserving_casing(self):
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "tags": ["DPRK", "IT-worker", "ransomware"],
+                }
+            ]
+        }
+        cases = _cases_from_config(cfg)
+        # Operator-chosen casing is preserved; the index and the calendar
+        # event description show exactly what was written.
+        assert cases[0].tags == ["DPRK", "IT-worker", "ransomware"]
+
+    def test_strips_tag_whitespace(self):
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "tags": ["  DPRK  ", "\nransomware\n"],
+                }
+            ]
+        }
+        cases = _cases_from_config(cfg)
+        assert cases[0].tags == ["DPRK", "ransomware"]
+
+    def test_dedupes_tags_case_insensitively_first_seen_wins(self):
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    # Two duplicate forms of the same tag — the parser
+                    # keeps the FIRST casing the operator wrote.
+                    "tags": ["DPRK", "dprk", "PRC"],
+                }
+            ]
+        }
+        cases = _cases_from_config(cfg)
+        assert cases[0].tags == ["DPRK", "PRC"]
+
+    def test_tags_none_or_empty_yields_empty_list(self):
+        for raw in (None, []):
+            cfg = {
+                "cases": [
+                    {
+                        "id": "x",
+                        "name": "X",
+                        "calendar": "a",
+                        "dockets": [1],
+                        "tags": raw,
+                    }
+                ]
+            }
+            cases = _cases_from_config(cfg)
+            assert cases[0].tags == []
+
+    def test_tags_must_be_list(self):
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "tags": "DPRK",  # bare string, not a list — easy YAML typo
+                }
+            ]
+        }
+        with pytest.raises(SystemExit, match="tags must be a list"):
+            _cases_from_config(cfg)
+
+    def test_tags_entry_must_be_string(self):
+        cfg = {
+            "cases": [
+                {
+                    "id": "x",
+                    "name": "X",
+                    "calendar": "a",
+                    "dockets": [1],
+                    "tags": ["DPRK", 42],
+                }
+            ]
+        }
+        with pytest.raises(SystemExit, match="must be a string"):
+            _cases_from_config(cfg)
+
+    def test_tags_entry_must_be_non_empty(self):
+        for empty in ("", "   ", "\n"):
+            cfg = {
+                "cases": [
+                    {
+                        "id": "x",
+                        "name": "X",
+                        "calendar": "a",
+                        "dockets": [1],
+                        "tags": [empty],
+                    }
+                ]
+            }
+            with pytest.raises(SystemExit, match="non-empty string"):
+                _cases_from_config(cfg)
 
     def test_extra_documents_note_must_be_non_empty(self):
         # Empty / whitespace-only note is a misconfiguration — the

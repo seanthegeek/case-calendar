@@ -1,9 +1,13 @@
 """Shared event-description builder.
 
 Both the ICS and Google Calendar outputs assemble the event body from the
-same fields, so the formatting lives here. Each event gets:
+same fields, so the formatting lives here. Each event gets, in order:
 
-  * notes (free-form, from the LLM)
+  * notes (free-form, from the LLM — the actual event description)
+  * the case's tags (topical labels from the YAML config), rendered as a
+    comma-separated ``Tags:`` line. Sits right under the description so a
+    subscriber scanning their calendar sees the topic before the
+    docket-keeping metadata that follows.
   * judge or appellate panel
   * dial-in / video link
   * case citation: "<docket_number> (<court citation>)"
@@ -93,6 +97,7 @@ def build_description_for_row(h: dict) -> str:
         docket_entry_numbers=h.get("docket_entry_numbers"),
         judge=h.get("judge"),
         documents=h.get("documents"),
+        tags=h.get("tags"),
     )
 
 
@@ -107,11 +112,16 @@ def build(
     docket_entry_numbers: Iterable[int] | None = None,
     judge: Optional[str] = None,
     documents: Iterable[dict] | None = None,
+    tags: Iterable[str] | None = None,
 ) -> str:
     parts: list[str] = []
 
     if notes:
         parts.append(notes)
+
+    tag_list = [t.strip() for t in (tags or []) if isinstance(t, str) and t.strip()]
+    if tag_list:
+        parts.append("Tags: " + ", ".join(tag_list))
 
     if judge:
         # "Panel:" reads naturally for an appellate bench (comma-separated

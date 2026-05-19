@@ -90,6 +90,7 @@ cases:
 | `notify_emails` | no | Per-case override of the calendar's `notify_emails`. |
 | `reminders` | no | Per-case override of the calendar's `reminders`. |
 | `extra_documents` | no | Operator-provided document URLs for the AI summary pipeline. See [case summaries](case-summaries.md#extra_documents). |
+| `tags` | no | Topical labels (e.g. `DPRK`, `PRC`, `Russia`) rendered on calendar event descriptions and as click-to-filter chips on the HTML index. See below. |
 
 ### Multi-docket cases
 
@@ -177,6 +178,36 @@ force it on:
   dockets: [123456]
   extract_deadlines: true
 ```
+
+### Tags
+
+Each case can carry a short list of topical labels:
+
+```yaml
+- id: us-v-knoot
+  name: "United States v. Knoot"
+  calendar: cybercrime
+  dockets: [69026861]
+  tags: [DPRK, IT worker fraud, laptop farm]
+```
+
+Tags appear in two places:
+
+- **Calendar events** — every event for the case (hearings and deadlines)
+  carries a `Tags: DPRK, IT worker fraud, laptop farm` line directly
+  under the event description, above the docket-keeping blocks (Judge,
+  Case, Docket, etc.). Tags render verbatim, so the casing you write
+  is what subscribers see — anyone scanning their calendar app can
+  tell at a glance which topic each event belongs to.
+- **HTML index** — tags render as clickable chips under each case row.
+  Clicking a chip appends the tag to the global search bar, filtering the
+  list to cases that carry it. The search bar uses an AND-substring match,
+  so clicking two chips narrows further; typed words and chip-added tags
+  combine the same way.
+
+Tags are case-insensitive for filter / dedup purposes; the casing you write
+here is how they render. Multi-word tags are supported — write them with
+whitespace and they'll be quoted into the search box on click.
 
 ## Validation
 
