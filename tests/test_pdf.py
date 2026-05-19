@@ -66,6 +66,47 @@ class TestLooksGarbled:
         # Edge case — caller checks emptiness separately.
         assert pdf.looks_garbled("") is False
 
+    def test_pacer_page_headers_only_is_garbled(self):
+        # The us-v-schmitz shape: an image-only PDF with a thin OCR
+        # overlay covering just the page-header band. pypdf reads the
+        # overlay as several KB of clean ASCII, but every line is the
+        # standard PACER stamp — no document body. Passes the alpha
+        # gate (page stamps are mostly letters and digits) so the
+        # function has to recognize the stamp pattern itself.
+        text = "\n".join(
+            f"Case 1:24-cr-00234-RMB     Document 1     "
+            f"Filed 04/03/24     Page {i} of 18 PageID: {31 + i}"
+            for i in range(1, 19)
+        )
+        assert pdf.looks_garbled(text) is True
+
+    def test_pacer_page_headers_with_body_is_not_garbled(self):
+        # Same page-stamp text PLUS a paragraph of body content survives
+        # the strip, so the document is real and the function returns
+        # False even though the stamps are present.
+        text = (
+            "Case 1:24-cr-00234-RMB Document 1 Filed 04/03/24 Page 1 of 18 PageID: 32\n"
+            "UNITED STATES OF AMERICA v. PATRICK SCHMITZ. The Grand Jury "
+            "in and for the District of New Jersey, charges defendant with "
+            "Continuing Criminal Enterprise under 21 U.S.C. Section 848 "
+            "and seven additional counts arising from his operation of "
+            "the Versus Project dark web marketplace.\n"
+            "Case 1:24-cr-00234-RMB Document 1 Filed 04/03/24 Page 2 of 18 PageID: 33"
+        )
+        assert pdf.looks_garbled(text) is False
+
+    def test_cd_cal_page_id_hash_variant_is_recognized(self):
+        # Central District of California writes "Page ID #:305" instead
+        # of the standard "PageID: 305". The stamp regex must match
+        # both shapes; without the alternative, pypdf-on-header-only
+        # output from C.D. Cal. dockets would slip past.
+        text = "\n".join(
+            f"Case 2:25-cr-00578-SRM Document 33 Filed 08/21/25 "
+            f"Page {i} of 15 Page ID #:{304 + i}"
+            for i in range(1, 16)
+        )
+        assert pdf.looks_garbled(text) is True
+
 
 class TestExtractText:
     def test_uses_plain_text_first(self, monkeypatch):

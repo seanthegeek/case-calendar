@@ -55,6 +55,22 @@ store_path: data/case-calendar.sqlite
 # site_title:        "Case Calendar"
 # site_description:  "Subscribable calendar feeds for federal court hearings and filing deadlines, sourced from CourtListener and RECAP."
 
+# Optional — auto-subscribe configured dockets to CourtListener docket
+# alerts so the webhook receiver gets DOCKET_ALERT pushes for every
+# tracked docket without manual subscription clicks in the CL UI.
+#
+# When enabled (the default), every `case-calendar sync` and
+# `case-calendar serve` startup lists the account's existing alert
+# subscriptions, compares against the union of docket ids configured
+# under `cases:` below, and POSTs a new subscription for any docket
+# that isn't already covered. Failures are logged but don't abort
+# sync / serve — polling still works without webhook alerts.
+#
+# Set to `false` if you configure docket alerts via some other surface
+# (a CSV import to CourtListener, an admin tool, etc.) and don't want
+# this project to maintain the subscription list.
+# ensure_docket_alerts: true
+
 # Optional — AI-generated per-docket summaries on the index page.
 #
 # When enabled, `case-calendar summarize` walks each docket for its primary

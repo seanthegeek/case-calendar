@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
@@ -78,18 +79,66 @@ _MIN_ALPHA_RATIO = 0.4
 _GARBLED_MIN_LEN = 100
 
 
-def looks_garbled(text: str) -> bool:
-    """Detect font-encoding gibberish from upstream PDF text extraction.
+# PACER page-header boilerplate. Every page in every PACER-source PDF
+# carries a stamp of this shape across the top:
+#
+#   Case 1:24-cr-00234-RMB     Document 1     Filed 04/03/24     Page 1 of 18 PageID: 32
+#   Case 2:25-cr-00578-SRM Document 33 Filed 08/21/25 Page 1 of 15 Page ID #:305
+#
+# (The Central District of California writes "Page ID #:" instead of
+# "PageID:"; some courts append a judge initials suffix to the docket
+# number; some don't include all four trailing fields.) When an
+# indictment is an image-only scan with a thin OCR overlay covering
+# only the page-header band, pypdf reads the overlay as several KB of
+# clean ASCII — passes the alpha-ratio gate — but the document body
+# (which lives only in the page images, not in any text layer) never
+# reaches the caller. The document itself has full content; the
+# EXTRACTION is the part that's stamps-only. ``looks_garbled`` flags
+# both this case and font-encoding gibberish so callers fall through
+# to the OCR stage.
+_PACER_PAGE_HEADER_RE = re.compile(
+    r"Case\s+\d+:\d+-[a-z]+-\d+(?:-\w+)?\s+"
+    r"Document\s+\d+(?:-\d+)?"
+    r"(?:\s+Filed\s+\d+/\d+/\d+)?"
+    r"(?:\s+Page\s+\d+\s+of\s+\d+)?"
+    r"(?:\s+Page\s*ID:?\s*\#?:?\s*\d+)?",
+    re.IGNORECASE,
+)
 
-    Returns True when the text is long enough to score meaningfully and the
-    alpha-character ratio falls below ``_MIN_ALPHA_RATIO``. Short strings
-    return False — there's not enough data to call it.
+
+def looks_garbled(text: str) -> bool:
+    """Detect extracted text that's useless content, not real document body.
+
+    Catches two failure modes that callers treat the same way (fall
+    through to the next extraction stage):
+
+    1. **Font-encoding gibberish** — PDFs using custom font subsets
+       without a `/ToUnicode` map produce text whose alpha-character
+       ratio falls below ``_MIN_ALPHA_RATIO``. This is the original
+       signal the function was written for (us-v-dubranova case).
+    2. **PACER stamps with no body** — image-only scans with a thin OCR
+       overlay covering just the page-header band let pypdf read clean
+       ASCII headers off every page but the document body never
+       reaches the caller. The text passes the alpha-ratio gate
+       trivially (page stamps are mostly letters and digits) but
+       contains nothing the summary LLM can use. Strip the stamps; if
+       less than ``_MIN_USEFUL_CHARS`` of residue remains, treat as
+       useless. The us-v-schmitz indictment was the canonical case.
+
+    Returns False for short inputs (under ``_GARBLED_MIN_LEN`` / under
+    ``_MIN_USEFUL_CHARS``); the upstream length gate already covers
+    that and applying either ratio test to a snippet misfires.
     """
     nonws = "".join(text.split())
-    if len(nonws) < _GARBLED_MIN_LEN:
-        return False
-    alpha = sum(1 for c in nonws if c.isascii() and c.isalpha())
-    return (alpha / len(nonws)) < _MIN_ALPHA_RATIO
+    if len(nonws) >= _GARBLED_MIN_LEN:
+        alpha = sum(1 for c in nonws if c.isascii() and c.isalpha())
+        if (alpha / len(nonws)) < _MIN_ALPHA_RATIO:
+            return True
+    if len(text) >= _MIN_USEFUL_CHARS:
+        residue = _PACER_PAGE_HEADER_RE.sub("", text).strip()
+        if len(residue) < _MIN_USEFUL_CHARS:
+            return True
+    return False
 
 
 def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
@@ -294,7 +343,11 @@ def extract_text(rd: dict, *, allow_ocr: bool = True) -> Optional[str]:
     """Extract text from a recap_document, handling all the gap cases.
 
     Order of operations:
-      1. Use ``plain_text`` from CourtListener if non-empty AND not garbled.
+      1. Use ``plain_text`` from CourtListener if non-empty AND not
+         garbled. ``looks_garbled`` rejects both font-encoding
+         gibberish and PACER-stamps-only extractions (see its
+         docstring), so this catches both upstream-failed-encoding
+         and upstream-failed-image-OCR cases the same way.
       2. If the PDF is sealed, return None — never going to be available.
       3. If not is_available, return None — not on RECAP yet; we'll retry
          on next sync once the fingerprint changes.

@@ -200,6 +200,38 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
     return cases
 
 
+def _maybe_ensure_docket_alerts(
+    cfg: dict[str, Any], cl: CourtListener, cases: list[CaseConfig]
+) -> None:
+    """Ensure every configured docket has a CourtListener subscription.
+
+    Gated on the top-level ``ensure_docket_alerts`` config flag (default
+    True). When enabled, walks the union of every case's docket ids and
+    has :func:`alerts.ensure_docket_alerts` reconcile against the
+    account's existing subscriptions, creating any that are missing.
+    Failures are logged but don't abort sync / serve — webhook alerts
+    are auxiliary to polling, and the polling path still works without
+    them.
+    """
+    if cfg.get("ensure_docket_alerts", True) is False:
+        return
+    docket_ids = sorted({d for c in cases for d in c.dockets})
+    if not docket_ids:
+        return
+    from .alerts import ensure_docket_alerts
+
+    statuses = ensure_docket_alerts(cl, docket_ids)
+    created = sum(1 for v in statuses.values() if v == "created")
+    failed = sum(1 for v in statuses.values() if v == "failed")
+    if created or failed:
+        log.info(
+            "docket alerts: %d created, %d already subscribed, %d failed",
+            created,
+            len(docket_ids) - created - failed,
+            failed,
+        )
+
+
 def _print_emit_results(
     cfg: dict[str, Any], results: dict[str, dict[str, Any]]
 ) -> None:
@@ -245,6 +277,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     log.info("LLM: %s", llm.provider_info())
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
+        _maybe_ensure_docket_alerts(cfg, cl, cases)
         syncer = CaseSyncer(cl, store)
         for case in cases:
             stats = syncer.sync_case(case)
@@ -730,6 +763,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
                 )
 
     with CourtListener() as cl:
+        _maybe_ensure_docket_alerts(cfg, cl, cases)
         serve(
             host=args.host,
             port=args.port,

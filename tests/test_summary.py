@@ -905,6 +905,148 @@ class TestFindPrimaryDocuments:
         primary, _ = find_primary_documents(_BoomCourtListener(), 1, store=store)
         assert [e["id"] for e in primary] == [10]
 
+    def test_stale_disposition_falls_through_and_refreshes_cache(self, store):
+        # Symmetric to the stale-primary test, but the empty plain_text
+        # is on a DISPOSITION (judgment). The staleness detector covers
+        # both classifications; the disposition's cached row must get
+        # rewritten with the fresh CourtListener data so subsequent
+        # summary calls short-circuit.
+        store.mark_entry(
+            1,
+            20,
+            "2024-06-01T00:00:00Z",
+            "fp-fresh-prim",
+            date_filed="2024-01-01",
+            entry_number=1,
+            description="INDICTMENT",
+            recap_documents=[
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": "Indictment body text — non-empty.",
+                }
+            ],
+        )
+        store.mark_entry(
+            1,
+            30,
+            "2024-06-01T00:00:00Z",
+            "fp-stale-disp",
+            date_filed="2024-06-01",
+            entry_number=99,
+            description="JUDGMENT in a Criminal Case",
+            # Stale: available main doc with no plain_text.
+            recap_documents=[
+                {
+                    "id": 600,
+                    "document_number": "99",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": None,
+                }
+            ],
+        )
+        fresh_indictment = {
+            "id": 20,
+            "description": "INDICTMENT",
+            "date_filed": "2024-01-01",
+            "entry_number": 1,
+            "recap_documents": [
+                {
+                    "id": 500,
+                    "document_number": "1",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": "Indictment body text — non-empty.",
+                }
+            ],
+        }
+        fresh_judgment = {
+            "id": 30,
+            "description": "JUDGMENT in a Criminal Case",
+            "date_filed": "2024-06-01",
+            "entry_number": 99,
+            "recap_documents": [
+                {
+                    "id": 600,
+                    "document_number": "99",
+                    "attachment_number": None,
+                    "is_available": True,
+                    "is_sealed": False,
+                    "plain_text": "Defendant sentenced to 60 months.",
+                }
+            ],
+        }
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [fresh_indictment, fresh_judgment],
+                (1, "-date_filed"): [fresh_judgment, fresh_indictment],
+            }
+        )
+        primary, dispositions = find_primary_documents(cl, 1, store=store)
+        assert [e["id"] for e in primary] == [20]
+        assert [e["id"] for e in dispositions] == [30]
+        # The disposition's local cache got rewritten with the fresh
+        # plain_text — next summary call would short-circuit.
+        refreshed = store.get_entries_with_body(1)
+        judgment = next(e for e in refreshed if e["id"] == 30)
+        assert (
+            judgment["recap_documents"][0]["plain_text"]
+            == "Defendant sentenced to 60 months."
+        )
+
+
+class TestEntryMainDocHasPlainText:
+    """Direct unit tests for the helper used by the group-dedup upgrade
+    rule. Same shape as the staleness detector but checks for text
+    presence rather than its absence."""
+
+    def test_returns_true_when_main_doc_has_text(self):
+        from case_calendar.summary import _entry_main_doc_has_plain_text
+
+        entry = {
+            "recap_documents": [
+                {"attachment_number": None, "plain_text": "real text"},
+            ]
+        }
+        assert _entry_main_doc_has_plain_text(entry) is True
+
+    def test_returns_false_when_main_doc_is_empty(self):
+        from case_calendar.summary import _entry_main_doc_has_plain_text
+
+        entry = {
+            "recap_documents": [
+                {"attachment_number": None, "plain_text": ""},
+            ]
+        }
+        assert _entry_main_doc_has_plain_text(entry) is False
+
+    def test_attachment_with_text_does_not_count(self):
+        # Attachments are skipped — the dedup decision is about the
+        # main document body, not exhibit text. An entry whose only
+        # populated text is on an attachment shouldn't outrank an
+        # entry whose main doc has text elsewhere.
+        from case_calendar.summary import _entry_main_doc_has_plain_text
+
+        entry = {
+            "recap_documents": [
+                {"attachment_number": None, "plain_text": ""},
+                {"attachment_number": 1, "plain_text": "exhibit text"},
+            ]
+        }
+        assert _entry_main_doc_has_plain_text(entry) is False
+
+    def test_entry_without_recap_documents_returns_false(self):
+        from case_calendar.summary import _entry_main_doc_has_plain_text
+
+        assert _entry_main_doc_has_plain_text({}) is False
+        assert _entry_main_doc_has_plain_text({"recap_documents": None}) is False
+
 
 class TestFindPrimaryDocumentsForGroup:
     """Pool primary documents and dispositions across every CL docket_id in
@@ -1012,6 +1154,148 @@ class TestFindPrimaryDocumentsForGroup:
         primary, dispositions = find_primary_documents_for_group(cl, [])
         assert primary == []
         assert dispositions == []
+
+    def test_later_sibling_with_plain_text_replaces_earlier_empty(self):
+        # The us-v-schmitz regression: the freshest CL sibling carries
+        # the indictment recap_document with an EMPTY plain_text while
+        # an older sibling has the same logical entry populated. The
+        # dedup must pick the populated copy so the summary LLM gets
+        # the document body, not just the metadata.
+        cl = _FakeCourtListener(
+            {
+                # First CL docket walked — entry #1 with empty plain_text.
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "document_number": "1",
+                                "is_available": True,
+                                "is_sealed": False,
+                                "plain_text": "",  # empty!
+                                "filepath_ia": "https://archive.org/a.pdf",
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+                # Second CL docket walked — same logical entry, populated.
+                (2, "date_filed"): [
+                    {
+                        "id": 999,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {
+                                "id": 501,
+                                "document_number": "1",
+                                "is_available": True,
+                                "is_sealed": False,
+                                "plain_text": "Full text of the indictment.",
+                                "filepath_ia": "https://archive.org/b.pdf",
+                            }
+                        ],
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        primary, _ = find_primary_documents_for_group(cl, [1, 2])
+        assert len(primary) == 1
+        # Second sibling's copy wins because it has plain_text on the
+        # main recap_document.
+        assert primary[0]["id"] == 999
+        assert (
+            primary[0]["recap_documents"][0]["plain_text"]
+            == "Full text of the indictment."
+        )
+
+    def test_first_seen_wins_when_both_copies_have_plain_text(self):
+        # The original first-seen-wins rule still applies when neither
+        # sibling has an edge on data completeness. The freshest CL
+        # docket_id is walked first; its copy wins.
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "document_number": "1",
+                                "is_available": True,
+                                "plain_text": "Fresh copy text.",
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 999,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {
+                                "id": 501,
+                                "document_number": "1",
+                                "is_available": True,
+                                "plain_text": "Older copy text.",
+                            }
+                        ],
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        primary, _ = find_primary_documents_for_group(cl, [1, 2])
+        assert len(primary) == 1
+        assert primary[0]["id"] == 10  # first-seen wins
+
+    def test_first_seen_wins_when_both_copies_have_empty_plain_text(self):
+        # If neither sibling has plain_text, the upgrade rule has no
+        # signal to act on — first-seen still wins (no churn between
+        # equally-empty copies).
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {"id": 500, "is_available": True, "plain_text": ""}
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 999,
+                        "description": "INDICTMENT as to defendant",
+                        "date_filed": "2024-04-03",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {"id": 501, "is_available": True, "plain_text": ""}
+                        ],
+                    }
+                ],
+                (2, "-date_filed"): [],
+            }
+        )
+        primary, _ = find_primary_documents_for_group(cl, [1, 2])
+        assert len(primary) == 1
+        assert primary[0]["id"] == 10  # first-seen wins
 
 
 # ---------------------------------------------------------------------------

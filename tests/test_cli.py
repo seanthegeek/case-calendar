@@ -2645,6 +2645,96 @@ class TestCmdSyncCaseFilter:
         assert sync_calls == ["us-v-x"]
 
 
+class TestEnsureDocketAlertsWiring:
+    """Verifies the ensure-alerts wire-up in cmd_sync and cmd_serve.
+
+    The feature defaults to on; `ensure_docket_alerts: false` in the
+    top-level config opts out. cmd_sync runs the reconciliation once
+    before iterating cases; cmd_serve runs it once before starting
+    the webhook listener. Both paths converge on the same helper
+    (`_maybe_ensure_docket_alerts`) so we test it directly with
+    representative cmd_sync / cmd_serve scaffolding.
+    """
+
+    def test_helper_skips_when_flag_false(self, monkeypatch):
+        from case_calendar.cli import _maybe_ensure_docket_alerts
+        from .conftest import FakeCourtListener
+
+        ensure_calls: list[Any] = []
+
+        def _fake_ensure(cl, docket_ids):
+            ensure_calls.append(list(docket_ids))
+            return {}
+
+        monkeypatch.setattr("case_calendar.alerts.ensure_docket_alerts", _fake_ensure)
+        case = cli.CaseConfig(case_id="x", name="X", dockets=[100], calendar="cyber")
+        _maybe_ensure_docket_alerts(
+            {"ensure_docket_alerts": False}, FakeCourtListener(), [case]
+        )
+        assert ensure_calls == []
+
+    def test_helper_runs_by_default(self, monkeypatch):
+        from case_calendar.cli import _maybe_ensure_docket_alerts
+        from .conftest import FakeCourtListener
+
+        ensure_calls: list[Any] = []
+
+        def _fake_ensure(cl, docket_ids):
+            ensure_calls.append(list(docket_ids))
+            return {100: "created", 200: "exists"}
+
+        monkeypatch.setattr("case_calendar.alerts.ensure_docket_alerts", _fake_ensure)
+        cases = [
+            cli.CaseConfig(case_id="a", name="A", dockets=[100, 200], calendar="cyber"),
+            cli.CaseConfig(case_id="b", name="B", dockets=[200, 300], calendar="cyber"),
+        ]
+        # Empty cfg → flag defaults to true → reconciliation runs.
+        _maybe_ensure_docket_alerts({}, FakeCourtListener(), cases)
+        # De-duplicated and sorted docket ids reach the helper.
+        assert ensure_calls == [[100, 200, 300]]
+
+    def test_helper_skips_when_no_dockets_configured(self, monkeypatch):
+        from case_calendar.cli import _maybe_ensure_docket_alerts
+        from .conftest import FakeCourtListener
+
+        called = {"n": 0}
+
+        def _fake_ensure(*_a, **_kw):
+            called["n"] += 1
+            return {}
+
+        monkeypatch.setattr("case_calendar.alerts.ensure_docket_alerts", _fake_ensure)
+        _maybe_ensure_docket_alerts({}, FakeCourtListener(), [])
+        assert called["n"] == 0
+
+    def test_helper_logs_summary_only_when_something_happened(
+        self, monkeypatch, caplog
+    ):
+        from case_calendar.cli import _maybe_ensure_docket_alerts
+        from .conftest import FakeCourtListener
+
+        # all-exists -> no log line (the all-zero counters skip the
+        # summary log to keep quiet syncs quiet).
+        monkeypatch.setattr(
+            "case_calendar.alerts.ensure_docket_alerts",
+            lambda cl, dids: {d: "exists" for d in dids},
+        )
+        case = cli.CaseConfig(case_id="a", name="A", dockets=[100], calendar="cyber")
+        with caplog.at_level("INFO", logger="case_calendar.cli"):
+            _maybe_ensure_docket_alerts({}, FakeCourtListener(), [case])
+        assert not any("docket alerts:" in r.message for r in caplog.records)
+
+        # created -> log the summary so operators see what changed.
+        caplog.clear()
+        monkeypatch.setattr(
+            "case_calendar.alerts.ensure_docket_alerts",
+            lambda cl, dids: {d: "created" for d in dids},
+        )
+        with caplog.at_level("INFO", logger="case_calendar.cli"):
+            _maybe_ensure_docket_alerts({}, FakeCourtListener(), [case])
+        assert any("docket alerts: 1 created" in r.message for r in caplog.records)
+
+
 class TestCmdSummarizeCoverage:
     """Branches in cmd_summarize that the main happy-path test skips."""
 

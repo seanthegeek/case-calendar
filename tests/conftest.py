@@ -110,11 +110,18 @@ class FakeCourtListener(CourtListener):
         entries: dict[int, list[dict]] | None = None,
         courts: dict[str, dict] | None = None,
         recap_docs: dict[int, dict] | None = None,
+        existing_alerts: list[dict] | None = None,
     ):
         self._dockets = dockets or {}
         self._entries = entries or {}
         self._courts = courts or {}
         self._recap_docs = recap_docs or {}
+        # Authenticated user's existing docket-alert subscriptions. Each
+        # entry shape mirrors CourtListener's API response:
+        # {"docket": <id>, "alert_type": 1, ...}. Tests that want
+        # alert-reconciliation behavior pass a starting list; tests that
+        # don't care leave it empty.
+        self._docket_alerts: list[dict] = list(existing_alerts or [])
         self.calls: list[tuple[str, Any]] = []
 
     def get_docket(self, docket_id: int) -> dict:
@@ -144,6 +151,24 @@ class FakeCourtListener(CourtListener):
             if modified_after and (e.get("date_modified") or "") < modified_after:
                 return
             yield e
+
+    def iter_docket_alerts(self, **_):
+        self.calls.append(("list_alerts", None))
+        # Return a shallow copy so callers consuming the iterator don't
+        # see writes from concurrent create_docket_alert calls — the real
+        # CL API would only reflect those on a subsequent GET anyway.
+        for a in list(self._docket_alerts):
+            yield a
+
+    def create_docket_alert(self, docket_id: int, *, alert_type: int = 1) -> dict:
+        self.calls.append(("create_alert", docket_id))
+        row = {
+            "docket": docket_id,
+            "alert_type": alert_type,
+            "id": len(self._docket_alerts) + 1,
+        }
+        self._docket_alerts.append(row)
+        return row
 
     def close(self) -> None:
         pass
