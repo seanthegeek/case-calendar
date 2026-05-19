@@ -1111,6 +1111,34 @@ class TestCallGemini:
         assert exc_info.value.provider == "gemini"
         assert exc_info.value.max_tokens == 2048
 
+    def test_no_candidates_returns_text_without_truncation_check(self, monkeypatch):
+        # Gemini responses without a `candidates` list (or with an empty
+        # one) should fall through to the plain text return — the
+        # truncation check only applies when at least one candidate is
+        # present. Pin both shapes so a refactor can't drop this fast
+        # path silently.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock()
+        fake_types = MagicMock()
+        fake_types.GenerateContentConfig = lambda **kw: object()
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        resp = fake_client.models.generate_content.return_value
+        resp.text = '{"actions": []}'
+        resp.candidates = []  # explicit empty — bypasses the truncation branch
+
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+        out = llm._call_gemini("s", "u", 50)
+        assert out == '{"actions": []}'
+
 
 # --- verify_deadline (parallel to verify_hearing) ---
 
