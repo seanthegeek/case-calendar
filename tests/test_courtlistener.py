@@ -348,7 +348,9 @@ class TestTransportErrorRetry:
         with caplog.at_level("WARNING", logger="case_calendar.courtlistener"):
             assert cl.get_docket(42)["id"] == 42
 
-        warning_messages = [r.getMessage() for r in caplog.records if r.levelname == "WARNING"]
+        warning_messages = [
+            r.getMessage() for r in caplog.records if r.levelname == "WARNING"
+        ]
         assert any("courtlistener 429" in m for m in warning_messages), warning_messages
         assert any("Retry-After" in m for m in warning_messages), warning_messages
         assert cl._no_request_before > 0.0
@@ -419,7 +421,9 @@ class TestFollowsRedirects:
             if req.url.path == "/api/rest/v4/dockets/42/":
                 return httpx.Response(
                     302,
-                    headers={"Location": "https://www.courtlistener.com/api/rest/v4/dockets/42/new/"},
+                    headers={
+                        "Location": "https://www.courtlistener.com/api/rest/v4/dockets/42/new/"
+                    },
                 )
             assert req.url.path == "/api/rest/v4/dockets/42/new/"
             return httpx.Response(200, json={"id": 42, "case_name": "Redirected"})

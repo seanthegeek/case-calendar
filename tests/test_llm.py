@@ -381,9 +381,9 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '{"type": "CONFIRM", "reason": "still scheduled"}',
+            lambda system, user, max_tokens: (
+                '{"type": "CONFIRM", "reason": "still scheduled"}'
+            ),
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -399,10 +399,10 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
-            '"local_time": "10:00", "reason": "moved"}',
+            lambda system, user, max_tokens: (
+                '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
+                '"local_time": "10:00", "reason": "moved"}'
+            ),
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -419,9 +419,9 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '```json\n{"type": "CANCEL", "reason": "vacated"}\n```',
+            lambda system, user, max_tokens: (
+                '```json\n{"type": "CANCEL", "reason": "vacated"}\n```'
+            ),
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -438,9 +438,9 @@ class TestVerifyHearing:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}',
+            lambda system, user, max_tokens: (
+                '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}'
+            ),
         )
         out = llm.verify_hearing(
             case_name="US v. X",
@@ -1285,9 +1285,11 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: '{"type": "MERGE_INTO", '
-            '"target_key": "msj-hearing-anthropic-v-usdw", '
-            '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}',
+            lambda system, user, max_tokens: (
+                '{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "Same slot — order called the SJ hearing a Motion Hearing."}'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="Anthropic v. DOW",
@@ -1305,9 +1307,9 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}',
+            lambda system, user, max_tokens: (
+                '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="US v. X",
@@ -1323,9 +1325,11 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system, user, max_tokens: '```json\n{"type": "MERGE_INTO", '
-            '"target_key": "msj-hearing-anthropic-v-usdw", '
-            '"reason": "..."}\n```',
+            lambda system, user, max_tokens: (
+                '```json\n{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "..."}\n```'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",
@@ -1341,9 +1345,9 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_anthropic",
-            lambda system,
-            user,
-            max_tokens: '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}',
+            lambda system, user, max_tokens: (
+                '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",
@@ -1494,9 +1498,11 @@ class TestResolveDuplicateHearings:
         monkeypatch.setattr(
             llm,
             "_call_openai",
-            lambda system, user, max_tokens: '{"type": "MERGE_INTO", '
-            '"target_key": "msj-hearing-anthropic-v-usdw", '
-            '"reason": "..."}',
+            lambda system, user, max_tokens: (
+                '{"type": "MERGE_INTO", '
+                '"target_key": "msj-hearing-anthropic-v-usdw", '
+                '"reason": "..."}'
+            ),
         )
         out = llm.resolve_duplicate_hearings(
             case_name="X",

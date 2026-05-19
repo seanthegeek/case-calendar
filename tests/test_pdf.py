@@ -119,8 +119,10 @@ class TestExtractText:
         monkeypatch.setattr(
             pdf,
             "ocr_with_tesseract",
-            lambda data: "Defendants VICTORIA EDUARDOVNA DUBRANOVA "
-            "were members of NoName057(16) " * 20,
+            lambda data: (
+                "Defendants VICTORIA EDUARDOVNA DUBRANOVA "
+                "were members of NoName057(16) " * 20
+            ),
         )
         result = pdf.extract_text(rd)
         assert result and "NoName057" in result
@@ -455,7 +457,8 @@ class TestFetchPdfBytes:
             == pdf._PDF_RETRY_TOTAL
         )
         assert any(
-            u.host == "storage.courtlistener.com" or (u.host or "").endswith(".storage.courtlistener.com")
+            u.host == "storage.courtlistener.com"
+            or (u.host or "").endswith(".storage.courtlistener.com")
             for u in urls_seen
         )
 

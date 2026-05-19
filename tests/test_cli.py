@@ -1128,15 +1128,17 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: synced_ids.append(case.case_id)
-            or {
-                "dockets_skipped": 0,
-                "entries_seen": 0,
-                "entries_processed": 0,
-                "actions": 0,
-                "verified": 0,
-                "auto_passed": 0,
-            },
+            lambda self, case: (
+                synced_ids.append(case.case_id)
+                or {
+                    "dockets_skipped": 0,
+                    "entries_seen": 0,
+                    "entries_processed": 0,
+                    "actions": 0,
+                    "verified": 0,
+                    "auto_passed": 0,
+                }
+            ),
         )
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
 
