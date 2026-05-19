@@ -57,7 +57,7 @@ store_path: data/case-calendar.sqlite
 
 # Optional — auto-subscribe configured dockets to CourtListener docket
 # alerts so the webhook receiver gets DOCKET_ALERT pushes for every
-# tracked docket without manual subscription clicks in the CL UI.
+# tracked docket without manual subscription clicks in the CourtListener UI.
 #
 # When enabled (the default), every `case-calendar sync` and
 # `case-calendar serve` startup lists the account's existing alert

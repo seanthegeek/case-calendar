@@ -747,7 +747,7 @@ class TestHearings:
         self,
         store: Store,
     ):
-        # The cross-CL-sibling case: two CL docket_ids in the same
+        # The cross-CourtListener-sibling case: two CourtListener docket_ids in the same
         # (docket_number, court_id) group hold same-slot future hearings
         # under different keys. The cluster key uses (docket_number,
         # court_id, starts_at_utc) so they group together.
@@ -777,8 +777,8 @@ class TestHearings:
         self,
         store: Store,
     ):
-        # Cross-CL-sibling held-row drift — the verbatim didenko shape.
-        # Two CL docket_ids in the same (docket_number, court_id) group;
+        # Cross-CourtListener-sibling held-row drift — the verbatim didenko shape.
+        # Two CourtListener docket_ids in the same (docket_number, court_id) group;
         # both have a HELD hearing at the same UTC slot under different
         # keys. The held-cluster helper picks them up.
         for did in (4001, 4002):
@@ -1307,9 +1307,9 @@ class TestCaseSummaries:
         assert row["source_entry_ids"] == []
 
     def test_pool_groups_one_summary_across_cl_splits(self, store: Store):
-        # The canonical Akhter case: three CL docket_ids share one
+        # The canonical Akhter case: three CourtListener docket_ids share one
         # (docket_number, court_id). The summary lives on the GROUP, so
-        # all three CL ids round-trip to the same row.
+        # all three CourtListener ids round-trip to the same row.
         for did in (71989485, 73333500, 73320754):
             store.upsert_docket_meta(
                 did,
@@ -1327,7 +1327,7 @@ class TestCaseSummaries:
             summary="pooled",
             model="m",
         )
-        # Every CL docket_id in the group resolves to the same summary.
+        # Every CourtListener docket_id in the group resolves to the same summary.
         for did in (71989485, 73333500, 73320754):
             meta = must(store.get_docket_meta(did))
             row = must(
@@ -1520,7 +1520,7 @@ class TestCaseSummariesGroupMigration:
             s.close()
 
     def test_collision_keeps_newest_generated_at(self, tmp_path):
-        # Three CL docket_ids sharing one (docket_number, court_id) —
+        # Three CourtListener docket_ids sharing one (docket_number, court_id) —
         # the migration must collapse to ONE row and keep the newest.
         path = tmp_path / "akhter.sqlite"
         c = self._seed_pre_migration_db(path)
@@ -1581,7 +1581,7 @@ class TestCaseSummariesGroupMigration:
         s = Store(path)
         try:
             rows = s.get_case_summaries("us-v-akhter")
-            # Three CL docket_ids → ONE summary row post-migration.
+            # Three CourtListener docket_ids → ONE summary row post-migration.
             assert len(rows) == 1
             assert rows[0]["summary"] == "newest"
         finally:
@@ -2094,7 +2094,7 @@ class TestPruneHelpers:
         docket_number: str,
         case_id: str = "us-v-akhter",
     ) -> None:
-        # Sibling docket variant of _seed_docket — sibling CL docket_ids
+        # Sibling docket variant of _seed_docket — sibling CourtListener docket_ids
         # share `(docket_number, court_id)` so they belong to one logical
         # PACER docket group. Used for the case-summaries-stay-with-
         # surviving-siblings tests.
@@ -2125,7 +2125,7 @@ class TestPruneHelpers:
     def test_count_docket_rows_skips_case_summaries_when_group_has_siblings(
         self, store: Store
     ):
-        # Two CL docket_ids share one logical PACER docket — case_summaries
+        # Two CourtListener docket_ids share one logical PACER docket — case_summaries
         # is keyed by (docket_number, court_id), so deleting docket_id=100
         # alone would NOT orphan the summary (docket_id=101 is still in the
         # group). count_docket_rows therefore reports case_summaries=0 for
@@ -2176,7 +2176,7 @@ class TestPruneHelpers:
     def test_delete_docket_preserves_case_summary_when_group_has_siblings(
         self, store: Store
     ):
-        # Same shape as the count test: deleting one CL docket_id out of a
+        # Same shape as the count test: deleting one CourtListener docket_id out of a
         # multi-sibling group must NOT delete the case_summaries row,
         # because the summary belongs to the LOGICAL PACER docket and a
         # surviving sibling still references it. Deleting the LAST

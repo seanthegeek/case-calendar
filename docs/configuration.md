@@ -131,7 +131,7 @@ based on whichever slice that `docket_id` happens to hold.
   name: "United States v. Akhter"
   calendar: cybercrime
   dockets: [71989485, 73333500, 73320754]
-  # Same docket: 1:25-cr-00307 (E.D. Va.) — three CL docket_id rows
+  # Same docket: 1:25-cr-00307 (E.D. Va.) — three CourtListener docket_id rows
   # because the upstream pacer_case_id changed mid-life. Each carries
   # a different slice of the entries; the AI summary needs all three
   # to see the indictment, motions, and judgment together.
@@ -143,7 +143,7 @@ one logical PACER docket: one summary, one paragraph in the rendered
 index, one link to a CourtListener docket page. **The link goes to
 whichever `docket_id` you listed first in `dockets:`**, so put your
 preferred CourtListener page first (typically the one with the most
-content visible on the CL side).
+content visible on the CourtListener side).
 
 To know whether to list one or multiple `docket_id`s, check each on
 the CourtListener docket page (`courtlistener.com/docket/<id>/...`):

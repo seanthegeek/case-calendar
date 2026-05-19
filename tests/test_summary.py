@@ -1049,15 +1049,15 @@ class TestEntryMainDocHasPlainText:
 
 
 class TestFindPrimaryDocumentsForGroup:
-    """Pool primary documents and dispositions across every CL docket_id in
+    """Pool primary documents and dispositions across every CourtListener docket_id in
     a (docket_number, court_id) group. The canonical case is Akhter
-    (1:25-cr-00307, E.D. Va.): three CL docket_ids each carry a partial,
+    (1:25-cr-00307, E.D. Va.): three CourtListener docket_ids each carry a partial,
     non-overlapping slice of the PACER entries — only the pool sees the
     full picture.
     """
 
     def test_pools_non_overlapping_entries(self):
-        # Two CL docket_ids in the same group, each holding a different
+        # Two CourtListener docket_ids in the same group, each holding a different
         # entry. The group view shows both.
         cl = _FakeCourtListener(
             {
@@ -1088,8 +1088,8 @@ class TestFindPrimaryDocumentsForGroup:
         assert [e["id"] for e in dispositions] == [99]
 
     def test_dedupes_by_entry_number(self):
-        # Same logical PACER entry (entry_number=1) on two CL siblings
-        # under DIFFERENT CL ids. Pool returns it ONCE — first-seen wins.
+        # Same logical PACER entry (entry_number=1) on two CourtListener siblings
+        # under DIFFERENT CourtListener ids. Pool returns it ONCE — first-seen wins.
         cl = _FakeCourtListener(
             {
                 (1, "date_filed"): [
@@ -1104,7 +1104,7 @@ class TestFindPrimaryDocumentsForGroup:
                 (1, "-date_filed"): [],
                 (2, "date_filed"): [
                     {
-                        "id": 999,  # DIFFERENT CL id, SAME PACER entry_number
+                        "id": 999,  # DIFFERENT CourtListener id, SAME PACER entry_number
                         "description": "INDICTMENT",
                         "date_filed": "2025-11-13",
                         "entry_number": 1,
@@ -1115,13 +1115,13 @@ class TestFindPrimaryDocumentsForGroup:
             }
         )
         primary, _ = find_primary_documents_for_group(cl, [1, 2])
-        # ONE entry — fresh CL docket (id 1, walked first) wins.
+        # ONE entry — fresh CourtListener docket (id 1, walked first) wins.
         assert len(primary) == 1
         assert primary[0]["id"] == 10
 
     def test_paperless_dedup_uses_description_and_date(self):
         # Paperless entries have null entry_number. Dedup falls back to
-        # (date_filed, description prefix) — same logical event on two CL
+        # (date_filed, description prefix) — same logical event on two CourtListener
         # siblings collapses to one.
         cl = _FakeCourtListener(
             {
@@ -1156,14 +1156,14 @@ class TestFindPrimaryDocumentsForGroup:
         assert dispositions == []
 
     def test_later_sibling_with_plain_text_replaces_earlier_empty(self):
-        # The us-v-schmitz regression: the freshest CL sibling carries
+        # The us-v-schmitz regression: the freshest CourtListener sibling carries
         # the indictment recap_document with an EMPTY plain_text while
         # an older sibling has the same logical entry populated. The
         # dedup must pick the populated copy so the summary LLM gets
         # the document body, not just the metadata.
         cl = _FakeCourtListener(
             {
-                # First CL docket walked — entry #1 with empty plain_text.
+                # First CourtListener docket walked — entry #1 with empty plain_text.
                 (1, "date_filed"): [
                     {
                         "id": 10,
@@ -1183,7 +1183,7 @@ class TestFindPrimaryDocumentsForGroup:
                     }
                 ],
                 (1, "-date_filed"): [],
-                # Second CL docket walked — same logical entry, populated.
+                # Second CourtListener docket walked — same logical entry, populated.
                 (2, "date_filed"): [
                     {
                         "id": 999,
@@ -1217,7 +1217,7 @@ class TestFindPrimaryDocumentsForGroup:
 
     def test_first_seen_wins_when_both_copies_have_plain_text(self):
         # The original first-seen-wins rule still applies when neither
-        # sibling has an edge on data completeness. The freshest CL
+        # sibling has an edge on data completeness. The freshest CourtListener
         # docket_id is walked first; its copy wins.
         cl = _FakeCourtListener(
             {
@@ -1693,7 +1693,7 @@ class TestSummarizeDocket:
         assert patch_llm == []
 
     def test_pools_entries_across_cl_docket_group(self, store, patch_llm, patch_pdf):
-        # The canonical Akhter case: three CL docket_ids share the same
+        # The canonical Akhter case: three CourtListener docket_ids share the same
         # (docket_number, court_id) group. Each carries a partial slice of
         # the entries — the indictment on one, the judgment on another.
         # summarize_docket(docket_id=N) for ANY N in the group pools all
@@ -1709,7 +1709,7 @@ class TestSummarizeDocket:
         patch_pdf["texts"] = {500: "INDICTMENT body", 600: "JUDGMENT body"}
         cl = _FakeCourtListener(
             {
-                # CL docket 71989485 has the indictment (early entries).
+                # CourtListener docket 71989485 has the indictment (early entries).
                 (71989485, "date_filed"): [
                     {
                         "id": 10,
@@ -1720,7 +1720,7 @@ class TestSummarizeDocket:
                     }
                 ],
                 (71989485, "-date_filed"): [],
-                # CL docket 73333500 has the judgment (later entries).
+                # CourtListener docket 73333500 has the judgment (later entries).
                 (73333500, "date_filed"): [],
                 (73333500, "-date_filed"): [
                     {
@@ -1747,7 +1747,7 @@ class TestSummarizeDocket:
         assert row["docket_number"] == "1:25-cr-00307"
         assert row["court_id"] == "vaed"
         # The LLM received BOTH the indictment and the judgment, drawn
-        # from two different CL siblings.
+        # from two different CourtListener siblings.
         assert len(patch_llm) == 1
         call = patch_llm[0]
         primary_descs = [p["description"] for p in call["primary_documents"]]
@@ -2641,9 +2641,9 @@ class TestExtraDocuments:
         # extra_documents scope to one LOGICAL PACER docket via the
         # `docket` field. When summarize_docket runs on group A, extras
         # pointing at a docket_id in a DIFFERENT group must NOT be
-        # fetched. An extra pinned to a sibling CL docket_id in the SAME
-        # group applies (the canonical Akhter-style CL-split case).
-        # Group A: docket_id 1 + 2 share (docket_number, court_id) (CL split).
+        # fetched. An extra pinned to a sibling CourtListener docket_id in the SAME
+        # group applies (the canonical Akhter-style CourtListener-split case).
+        # Group A: docket_id 1 + 2 share (docket_number, court_id) (CourtListener split).
         _seed_docket_meta(store, 1)  # 1:24-cr-100 / dcd
         _seed_docket_meta(store, 2)  # 1:24-cr-100 / dcd (same group)
         # Group B: docket_id 3 is a separate logical docket.
@@ -2912,16 +2912,16 @@ class TestExtraDocuments:
 class TestGroupDocketsOnCase:
     """Direct coverage for `summary._group_dockets_on_case`'s sibling dedup.
 
-    When `case.dockets` lists multiple CL docket_ids that map to the same
+    When `case.dockets` lists multiple CourtListener docket_ids that map to the same
     logical PACER docket `(docket_number, court_id)` — the Akhter
-    `1:25-cr-00307` shape where one PACER docket lives under three CL
+    `1:25-cr-00307` shape where one PACER docket lives under three CourtListener
     docket_ids — the loop must yield ONE group entry, not N. Without
-    the dedup we'd run `summarize_docket` once per CL sibling and write
+    the dedup we'd run `summarize_docket` once per CourtListener sibling and write
     near-duplicate summary rows for the same logical docket.
     """
 
     def test_collapses_sibling_docket_ids_to_one_group_entry(self, store):
-        # Three CL docket_ids share `(docket_number, court_id)`.
+        # Three CourtListener docket_ids share `(docket_number, court_id)`.
         for did in (100, 101, 102):
             store.upsert_docket_meta(
                 did,
@@ -2948,7 +2948,7 @@ class TestGroupDocketsOnCase:
         assert canonical == 100
 
     def test_mixes_distinct_and_sibling_dockets(self, store):
-        # Two CL docket_ids on a 1:25-cr-00307 group + one standalone
+        # Two CourtListener docket_ids on a 1:25-cr-00307 group + one standalone
         # docket on a different group. The standalone gets its own entry;
         # the siblings collapse to one. Distinct group order matches
         # config order (100 first, then 200).
@@ -2980,7 +2980,7 @@ class TestGroupDocketsOnCase:
 
 class TestRefreshStale:
     def test_skips_dockets_with_no_metadata_yet(self, store, patch_llm, patch_pdf):
-        # case.dockets references a CL docket_id that has no `dockets`
+        # case.dockets references a CourtListener docket_id that has no `dockets`
         # row yet (sync hasn't run, or interrupted before
         # upsert_docket_meta). _group_dockets_on_case can't resolve the
         # group key, so the docket is skipped with a warning.

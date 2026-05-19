@@ -1593,7 +1593,7 @@ class TestCmdServe:
         #      (sync interrupted before upsert_docket_meta, or operator
         #      added a docket that hasn't been synced yet) — skipped via
         #      ``if not docket_number or not court_id: continue``.
-        #   2. Sibling CL docket_ids on the same logical PACER docket
+        #   2. Sibling CourtListener docket_ids on the same logical PACER docket
         #      (the Akhter shape) — the second sibling skips via
         #      ``if group_key in seen_groups: continue`` so we don't
         #      double-query `is_summary_stale` for the same logical

@@ -202,11 +202,11 @@ adheres to [Semantic Versioning][semver].
 - `find_primary_documents_for_group` no longer drops the populated copy
   of a logical PACER entry when one CourtListener sibling carries it
   with empty `plain_text` while another sibling in the same group has
-  the extracted body. The dedup was "first-seen wins, freshest CL
+  the extracted body. The dedup was "first-seen wins, freshest CourtListener
   docket_id first," which silently discarded the good copy whenever
   the freshest sibling happened to have the empty one. The us-v-schmitz
   indictment (`1:24-cr-00234`, D.N.J.) was the canonical instance —
-  freshest CL sibling 73292090's recap_document had `plain_text=""`,
+  freshest CourtListener sibling 73292090's recap_document had `plain_text=""`,
   while older sibling 73353898 carried 20 KB of text; the summary LLM
   received metadata only and emitted the "insufficient documents"
   refusal. The dedup now upgrades the first-seen entry when a later
@@ -224,7 +224,7 @@ adheres to [Semantic Versioning][semver].
   Renames the staleness helper to `_cached_entries_look_stale`
   (generic) and splits the per-entry signature into
   `_entry_looks_stale`. Only the entries that look stale are dropped
-  from the cache view; fresh ones stay so the CL fallthrough doesn't
+  from the cache view; fresh ones stay so the CourtListener fallthrough doesn't
   re-fetch their text unnecessarily.
 - `pdf.looks_garbled` now also flags PACER-page-header-only output,
   not just font-encoding gibberish. Image-only scans with a thin OCR
@@ -599,9 +599,9 @@ adheres to [Semantic Versioning][semver].
   `pacer_case_id` changed mid-life (see
   [CourtListener issue #7345](https://github.com/freelawproject/courtlistener/issues/7345));
   the canonical example is the Akhter twins case (`1:25-cr-00307`,
-  E.D. Va.) where three CL `docket_id`s carry non-overlapping slices of
+  E.D. Va.) where three CourtListener `docket_id`s carry non-overlapping slices of
   the PACER entries. The summary pipeline now pools entries across
-  every CL `docket_id` in the same `(docket_number, court_id)` group
+  every CourtListener `docket_id` in the same `(docket_number, court_id)` group
   via `summary.find_primary_documents_for_group` (deduplicated by PACER
   `entry_number`, falling back to `(date_filed, description)` for
   paperless minute orders), so each logical docket gets one pooled
@@ -623,9 +623,9 @@ adheres to [Semantic Versioning][semver].
 - `Store.find_concurrent_hearing_clusters` now clusters scheduled rows
   by `(docket_number, court_id, starts_at_utc)` instead of
   `(docket_id, starts_at_utc)`. The existing LLM-driven
-  `_dedupe_concurrent_hearings` therefore picks up cross-CL-sibling
+  `_dedupe_concurrent_hearings` therefore picks up cross-CourtListener-sibling
   drift on SCHEDULED rows too (the Akhter-shape future-trial scenario
-  with two CL docket_ids holding same-slot trials under different
+  with two CourtListener docket_ids holding same-slot trials under different
   keys). Orphan dockets that lack `dockets` metadata fall back to the
   pre-grouping `docket_id` key so this is non-breaking for the rare
   edge case where a hearing row exists without its parent metadata.
@@ -652,9 +652,9 @@ adheres to [Semantic Versioning][semver].
   deterministic (no LLM call) — a court physically can't have held two
   hearings simultaneously, so same-slot held clusters are
   unambiguously key-drift duplicates. The motivating case is
-  cross-CL-sibling drift exposed by the docket grouping work:
-  `sentencing-didenko` (from prior sync of one CL sibling) and
-  `sentencing-didenko-2` (from today's sync of the sibling CL docket
+  cross-CourtListener-sibling drift exposed by the docket grouping work:
+  `sentencing-didenko` (from prior sync of one CourtListener sibling) and
+  `sentencing-didenko-2` (from today's sync of the sibling CourtListener docket
   with a different `pacer_case_id`) at the exact same UTC slot. The
   canonical row keeps its key and gets the siblings' `source_entry_ids`
   merged in; siblings are cancelled with a `[dedupe-held]` audit note

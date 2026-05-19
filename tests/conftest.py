@@ -156,7 +156,7 @@ class FakeCourtListener(CourtListener):
         self.calls.append(("list_alerts", None))
         # Return a shallow copy so callers consuming the iterator don't
         # see writes from concurrent create_docket_alert calls — the real
-        # CL API would only reflect those on a subsequent GET anyway.
+        # CourtListener API would only reflect those on a subsequent GET anyway.
         for a in list(self._docket_alerts):
             yield a
 
