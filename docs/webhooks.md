@@ -123,11 +123,28 @@ CourtListener fires a `Test` event you can use to confirm the connection.
 
 ## 6. Subscribe to docket alerts
 
-The webhook fires only for dockets you have a docket alert on. For each
-docket in `config.yaml`, open its CourtListener page and click "Get
-alerts". (You can script this with the
+The webhook fires only for dockets you have a docket alert on, but
+Case Calendar maintains that subscription list for you: every
+`case-calendar sync` and `case-calendar serve` startup lists your
+account's existing alerts via CourtListener's
 [Docket Alerts API](https://www.courtlistener.com/help/api/rest/recap/#docket-alerts-endpoint),
-but the UI is usually faster for a small case list.)
+compares against the union of docket ids configured under `cases:`,
+and POSTs a subscription for any docket that isn't already covered.
+Adding a case to `config.yaml` automatically wires up the docket alert
+on the next sync; removing a case leaves the existing subscription
+in place (no automatic cleanup).
+
+Failures are logged but don't abort sync / serve — polling still works
+without webhook alerts, and a temporary CourtListener outage during
+the reconcile shouldn't block the rest of the pipeline. The summary
+line in the log reads
+`docket alerts: <created> created, <exists> already subscribed,
+<failed> failed`.
+
+To opt out — say you maintain alerts through some other surface (a
+bulk CSV upload, a separate admin tool) — set
+`ensure_docket_alerts: false` at the top level of `config.yaml`. The
+reconciler then skips the list + create calls entirely on every run.
 
 That's it. New entries on any of those dockets now flow into the ICS
 file within seconds of CourtListener calling your receiver. When your

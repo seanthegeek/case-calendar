@@ -8,7 +8,30 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [0.2.8] - 2026-05-18
+## [0.3.0] - 2026-05-18
+
+### Added
+
+- New top-level config flag `ensure_docket_alerts` (default true) and
+  new module `case_calendar.alerts`. On every `case-calendar sync` and
+  `case-calendar serve` startup, the project now lists the
+  authenticated CourtListener account's existing docket-alert
+  subscriptions and POSTs new ones for any docket configured under
+  `cases:` that isn't already covered. Adding a case to `config.yaml`
+  automatically wires up its docket alert on the next sync, so
+  webhook deliveries start flowing without the manual "click Get
+  alerts on each docket page" step the README used to require.
+  Reconcile is one-way (it adds missing subscriptions but never
+  deletes stale ones); per-docket failures log at WARNING and don't
+  abort sync/serve; a full list-call failure marks every docket
+  `'failed'` and skips creates to avoid spamming duplicates against
+  an unknown baseline. Set `ensure_docket_alerts: false` to opt out
+  if you maintain subscriptions through some other surface.
+- `CourtListener.iter_docket_alerts()` and
+  `CourtListener.create_docket_alert(docket_id)` expose the new
+  endpoints. Both share the same retry / rate-limit machinery as the
+  GET methods via a new private `_request(method, url, ...)` that
+  `_get` and `_post` delegate to.
 
 ### Fixed
 
@@ -57,13 +80,21 @@ adheres to [Semantic Versioning][semver].
 
 ### Changed
 
-- AGENTS.md's "Entry dedup across a docket group" and "Automatically
-  rebuild stale cached recap_documents" rules now document the
-  upgrade-on-better-text dedup and the disposition-staleness sweep
-  respectively, with us-v-schmitz documented as the canonical case
-  alongside the existing us-v-moucka reference.
+- AGENTS.md gains a new "Docket alerts are reconciled automatically"
+  key design decision and matching architecture entries for the new
+  `case_calendar/alerts.py` module and the extended CourtListener
+  client. The existing "Entry dedup across a docket group" and
+  "Automatically rebuild stale cached recap_documents" rules now
+  document the upgrade-on-better-text dedup and the
+  disposition-staleness sweep respectively, with us-v-schmitz
+  documented as the canonical case alongside the existing us-v-moucka
+  reference.
+- `docs/webhooks.md` step 6 ("Subscribe to docket alerts") rewritten:
+  the manual "click Get alerts on each docket page" instructions are
+  replaced with a description of the automatic reconciler, the
+  opt-out flag, and the per-run log line.
 
-[0.2.8]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.2.8
+[0.3.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.0
 
 ## [0.2.7] - 2026-05-18
 

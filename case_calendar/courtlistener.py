@@ -78,10 +78,17 @@ class CourtListener:
         if self._no_request_before > now:
             time.sleep(self._no_request_before - now)
 
-    def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
-        """GET with retry on 429 (Retry-After), 5xx (exponential backoff), and
-        transient transport exceptions (ReadTimeout / ConnectError /
-        RemoteProtocolError).
+    def _request(
+        self,
+        method: str,
+        url: str,
+        *,
+        params: Optional[dict[str, Any]] = None,
+        json_body: Optional[dict[str, Any]] = None,
+    ) -> httpx.Response:
+        """Issue a request with retry on 429 (Retry-After), 5xx (exponential
+        backoff), and transient transport exceptions (ReadTimeout /
+        ConnectError / RemoteProtocolError).
 
         Honors any Retry-After value, even multi-hour ones — CourtListener's free tier
         caps at 300/day and the daily bucket can legitimately ask for a wait
@@ -101,6 +108,10 @@ class CourtListener:
         so a stretch of transient transport errors doesn't consume the
         429/5xx retry budget that may still be needed for response-status
         handling on the same call.
+
+        ``method`` is "GET" or "POST"; both share the same retry shape
+        because CourtListener applies the same rate-limit + transient-
+        failure characteristics to either verb.
         """
         delay = 2.0
         transport_delay = 0.5
@@ -109,7 +120,7 @@ class CourtListener:
         for attempt in range(6):
             self._wait_for_window()
             try:
-                r = self.client.get(url, params=params)
+                r = self.client.request(method, url, params=params, json=json_body)
             except _RETRYABLE_TRANSPORT_EXCEPTIONS as e:
                 transport_attempts += 1
                 if transport_attempts > _TRANSPORT_RETRY_BUDGET:
@@ -171,6 +182,14 @@ class CourtListener:
         if last_response is not None:
             last_response.raise_for_status()
         raise RuntimeError(f"courtlistener: no response from {url}")
+
+    def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
+        """Thin GET wrapper around :meth:`_request`."""
+        return self._request("GET", url, params=params)
+
+    def _post(self, url: str, json_body: dict[str, Any]) -> httpx.Response:
+        """Thin POST wrapper around :meth:`_request`."""
+        return self._request("POST", url, json_body=json_body)
 
     def close(self) -> None:
         self.client.close()
@@ -240,3 +259,39 @@ class CourtListener:
 
     def get_court(self, court_id: str) -> dict:
         return self._get(f"{API_BASE}/courts/{court_id}/").json()
+
+    # --- Docket alerts (webhook subscriptions) ---
+
+    def iter_docket_alerts(
+        self, *, page_size: int = 100, max_pages: int = 20
+    ) -> Iterator[dict]:
+        """Iterate the authenticated user's docket-alert subscriptions.
+
+        Each result has at minimum ``docket`` (int), ``alert_type`` (int —
+        1 means subscribed), ``date_created`` / ``date_modified``, and
+        ``secret_key``. Paginated; we walk forward via the ``next`` link
+        so the caller sees everything that fits within ``max_pages``.
+        """
+        params: Optional[dict[str, Any]] = {"page_size": page_size}
+        url: Optional[str] = f"{API_BASE}/docket-alerts/"
+        pages = 0
+        while url and pages < max_pages:
+            r = self._get(url, params=params if pages == 0 else None)
+            data = r.json()
+            for alert in data.get("results", []):
+                yield alert
+            url = data.get("next")
+            pages += 1
+
+    def create_docket_alert(self, docket_id: int, *, alert_type: int = 1) -> dict:
+        """Create a docket-alert subscription. Returns the new alert row.
+
+        ``alert_type`` defaults to 1 (subscribe). CourtListener also
+        accepts 0 (unsubscribe) but this client doesn't expose that —
+        the project's only need is the subscribe-on-startup feature.
+        """
+        r = self._post(
+            f"{API_BASE}/docket-alerts/",
+            json_body={"docket": docket_id, "alert_type": alert_type},
+        )
+        return r.json()
