@@ -25,7 +25,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-from typing import TYPE_CHECKING, Any, Iterable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
 
 from . import llm, pdf
 from .courtlistener import API_BASE, CourtListener
@@ -178,53 +178,122 @@ def _entry_description_head(entry: dict[str, Any]) -> str:
     return ""
 
 
-def _primary_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
-    """Recap_documents on this entry whose own description matches the
-    primary-document regex.
+# ---------------------------------------------------------------------------
+# Document-type predicates
+# ---------------------------------------------------------------------------
+#
+# Each predicate below classifies ONE piece of text (an entry's description,
+# or a single recap_document's description) and returns True iff it looks
+# like that document type. They're pure text functions so the generic
+# helpers below (entry-level classifier + per-recap_document scan) and the
+# extractor can share the exact same matching logic.
+#
+# Adding a new document type — for instance, if we ever wanted to single
+# out "operative scheduling order" or "motion for preliminary injunction"
+# specifically — is just defining one more `_matches_*` predicate and
+# wrapping it with the generic helpers; the entry-level classifier and
+# extractor priority don't need to change.
 
-    The us-v-stryzhak shape: entry 1 is a "CONSENT TO TRANSFER
-    JURISDICTION (Rule 20)" filing where the indictment from the
-    sending district is ``attachment_number=1`` on the entry. The
-    parent entry's ``description`` heads with "CONSENT TO TRANSFER",
-    which never matches ``_PRIMARY_DOCUMENT_RE``. But the attachment's
-    own ``description`` is ``"Indictment"``, which does. The same
-    pattern occurs whenever a primary document is filed as an exhibit
-    on a procedural parent filing (transfer-in, motion to seal /
-    unseal an attached charging document, certain reassignments).
 
-    Used by both :func:`is_primary_document` (so detection picks up
-    the attachment) and :func:`_entry_doc_text` (so the extraction
-    chain reads from the attachment carrying the substance rather
-    than the parent's procedural main doc).
+def _matches_primary_document(text: str) -> bool:
+    """Indictment / Information / Complaint / Petition at the head."""
+    return bool(_PRIMARY_DOCUMENT_RE.match((text or "").strip()))
+
+
+def _matches_disposition_broad(text: str) -> bool:
+    """Broad disposition signal — used for stale-flag flipping.
+
+    Wider than :func:`_matches_disposition_document` — a "Motion for
+    Preliminary Injunction" matches here (the motion's outcome is a
+    disposition-class signal worth refreshing the summary on), but the
+    motion itself is NOT the ruling document and the stricter
+    predicate rejects it.
     """
-    out: list[dict[str, Any]] = []
+    text = (text or "").strip()
+    if not text or _DISPOSITION_NEGATIVE_RE.search(text):
+        return False
+    if _DISPOSITION_RE.match(text):
+        return True
+    return bool(_DISPOSITION_KEYWORD_RE.search(text))
+
+
+def _matches_disposition_document(text: str) -> bool:
+    """Strict disposition-document classifier — picks the documents the
+    LLM document set should include. Rejects motions / briefs / status
+    reports / notices-of-filing that mention disposition vocabulary in
+    passing; accepts actual orders / judgments / minute-entries-of-
+    decision whose head IS a disposition phrase.
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    if _DISPOSITION_NEGATIVE_RE.search(text):
+        return False
+    if _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(text):
+        return False
+    if _DISPOSITION_RE.match(text):
+        return True
+    if not _DISPOSITION_DOCUMENT_HEAD_RE.match(text):
+        return False
+    return bool(_DISPOSITION_KEYWORD_RE.search(text))
+
+
+# ---------------------------------------------------------------------------
+# Generic helpers — entry-level classifier + per-recap_document scan
+# ---------------------------------------------------------------------------
+#
+# Both helpers take a predicate and apply it consistently to the entry's
+# head (description / short_description / first recap_doc description fallback)
+# and/or each recap_document's own description. This is the abstraction that
+# replaces what used to be three parallel hand-coded entry classifiers and
+# two parallel per-attachment scans (one for primaries, one for dispositions).
+#
+# Detecting substance documents filed as attachments on procedural parents
+# (the us-v-stryzhak Rule 20 transfer-with-attached-indictment shape, and
+# the disposition analogue with plea agreements attached to "Notice of
+# Filing" parents) requires checking BOTH the entry head AND each
+# recap_document's own description; ``_entry_matches`` is the shared
+# implementation, ``_recap_documents_matching`` is the per-document
+# version the extractor uses to pick which recap_doc to read text from.
+
+
+def _entry_matches(
+    entry: dict[str, Any], predicate: Callable[[str], bool]
+) -> bool:
+    """True if the entry's head OR any of its recap_documents'
+    descriptions matches the given predicate."""
+    if predicate(_entry_description_head(entry)):
+        return True
     for rd in entry.get("recap_documents") or []:
-        desc = (rd.get("description") or "").strip()
-        if _PRIMARY_DOCUMENT_RE.match(desc):
-            out.append(rd)
-    return out
+        if predicate(rd.get("description") or ""):
+            return True
+    return False
+
+
+def _recap_documents_matching(
+    entry: dict[str, Any], predicate: Callable[[str], bool]
+) -> list[dict[str, Any]]:
+    """Return the recap_documents on ``entry`` whose own description
+    matches the predicate. Used by the extractor when a procedural
+    parent has the substance doc filed as an attachment."""
+    return [
+        rd
+        for rd in (entry.get("recap_documents") or [])
+        if predicate(rd.get("description") or "")
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Named classifiers — thin wrappers over the generic helpers
+# ---------------------------------------------------------------------------
 
 
 def is_primary_document(entry: dict[str, Any]) -> bool:
-    if _PRIMARY_DOCUMENT_RE.match(_entry_description_head(entry)):
-        return True
-    # Also match when a recap_document (typically an attachment) on
-    # this entry carries the primary-document signal — see
-    # :func:`_primary_recap_documents` for the canonical us-v-stryzhak
-    # transfer-in shape that drove this branch.
-    return bool(_primary_recap_documents(entry))
+    return _entry_matches(entry, _matches_primary_document)
 
 
 def is_disposition(entry: dict[str, Any]) -> bool:
-    head = _entry_description_head(entry)
-    # Conference-class entries are scheduling, not dispositions. Reject
-    # outright so a "Telephonic Status Conference re: Sentencing" doesn't
-    # trip the broad keyword match below.
-    if _DISPOSITION_NEGATIVE_RE.search(head):
-        return False
-    if _DISPOSITION_RE.match(head):
-        return True
-    return bool(_DISPOSITION_KEYWORD_RE.search(head))
+    return _entry_matches(entry, _matches_disposition_broad)
 
 
 # Stricter sibling used by ``find_primary_documents`` to pick the documents
@@ -307,29 +376,7 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
 
 
 def _is_disposition_document(entry: dict[str, Any]) -> bool:
-    """Strict — the LLM document set in ``find_primary_documents``.
-
-    Accepts entries whose head is a head-anchored disposition phrase
-    (``_DISPOSITION_RE``) outright, plus any order / minute-entry whose
-    body carries disposition keywords. Rejects motions, briefs,
-    responses, status reports, and notices of filing that mention
-    disposition vocabulary in passing — those still flip the
-    case_summaries row stale via the broader ``is_disposition``, but they
-    are not themselves the ruling document and must not be fed to the
-    summary LLM as one.
-    """
-    head = _entry_description_head(entry)
-    if not head:
-        return False
-    if _DISPOSITION_NEGATIVE_RE.search(head):
-        return False
-    if _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(head):
-        return False
-    if _DISPOSITION_RE.match(head):
-        return True
-    if not _DISPOSITION_DOCUMENT_HEAD_RE.match(head):
-        return False
-    return bool(_DISPOSITION_KEYWORD_RE.search(head))
+    return _entry_matches(entry, _matches_disposition_document)
 
 
 # ---------------------------------------------------------------------------
@@ -854,38 +901,73 @@ def detect_sealing(
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Substance-document predicates fed to the extractor
+# ---------------------------------------------------------------------------
+#
+# The document types that the summary LLM should read. Adding a new type
+# (a category of motion, a specific class of order, etc.) is just defining
+# one more `_matches_*` predicate above and adding it to this tuple; the
+# extractor's priority logic doesn't need to change.
+_SUBSTANCE_PREDICATES: tuple[Callable[[str], bool], ...] = (
+    _matches_primary_document,
+    _matches_disposition_document,
+)
+
+
+def _substance_recap_documents(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Recap_documents on ``entry`` that look like a substance document
+    under ANY of ``_SUBSTANCE_PREDICATES``. Deduplicated by recap_doc
+    id (in case a single doc matches multiple substance predicates).
+    """
+    seen_ids: set[int] = set()
+    out: list[dict[str, Any]] = []
+    for predicate in _SUBSTANCE_PREDICATES:
+        for rd in _recap_documents_matching(entry, predicate):
+            rid = rd.get("id")
+            if rid is not None and rid in seen_ids:
+                continue
+            if rid is not None:
+                seen_ids.add(rid)
+            out.append(rd)
+    return out
+
+
 def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
     """Concatenate text from the relevant recap_documents on an entry.
 
     Priority order — first non-empty wins (the rest aren't consulted):
 
-      1. **Primary-marked recap_documents** (per
-         :func:`_primary_recap_documents`). When the indictment is
-         attached as an exhibit to a procedural parent filing (Rule 20
-         transfer-in, motion to seal/unseal a charging document, etc.),
-         the parent's main doc is just procedural boilerplate; the
-         actual substance is on the attachment. Pulling text from the
-         attachment carrying ``description='Indictment'`` (or similar
-         primary signal) keeps the summary LLM's input focused on the
-         charging document rather than the transfer notice.
+      1. **Substance-marked recap_documents** — those whose own
+         description matches any of the ``_SUBSTANCE_PREDICATES``
+         (primary documents and strict-disposition documents today;
+         the tuple is the single source of truth for which document
+         types we'll prioritize as attachments). When the actual
+         charging document or ruling is filed as an attachment to a
+         procedural parent (Rule 20 transfer-in with attached
+         indictment, Notice of Filing with attached plea agreement,
+         order parent with attached memorandum opinion), the parent's
+         main doc is just procedural boilerplate; the substance is on
+         the attachment. Pulling text from the substance-marked
+         attachment keeps the summary LLM's input focused on the
+         actual document rather than the wrapper.
       2. **Main recap_document(s)** (``attachment_number`` falsy). The
          common case — the indictment / complaint / judgment IS the
          entry's main filing.
       3. **All attachments**. Last-resort fallback when neither the
-         primary-marked docs nor the main doc produced text — covers
+         substance-marked docs nor the main doc produced text — covers
          entries whose main doc isn't on RECAP yet but where some
          exhibit happens to be.
 
-    Exhibits not matching the primary pattern at step 1 add noise but
-    are truncated downstream by the LLM's character budget anyway, so
-    the fallback at step 3 isn't aggressive about filtering.
+    Exhibits not matching any substance pattern at step 1 add noise
+    but are truncated downstream by the LLM's character budget anyway,
+    so the fallback at step 3 isn't aggressive about filtering.
     """
     rds = entry.get("recap_documents") or []
 
-    # 1. Primary-marked recap_documents (handles the Stryzhak Rule 20
-    #    transfer-with-attached-indictment shape).
+    # 1. Substance-marked recap_documents (any predicate).
     parts: list[str] = []
-    for rd in _primary_recap_documents(entry):
+    for rd in _substance_recap_documents(entry):
         text = pdf.extract_text(rd, allow_ocr=allow_ocr)
         if text:
             parts.append(text)

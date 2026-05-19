@@ -12,22 +12,33 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
-- **Primary documents filed as attachments on procedural parent
-  entries are now picked up.** When the indictment for a transferred-in
-  criminal case is attached to a "CONSENT TO TRANSFER JURISDICTION
-  (Rule 20)" parent entry (or any procedural parent whose description
-  doesn't head with the primary-document regex), the matcher used to
-  return False and the summary pipeline emitted the "no primary
-  document identified" refusal. `is_primary_document` now also returns
-  True when any recap_document on the entry — including attachments —
-  has its own description match `_PRIMARY_DOCUMENT_RE`, and
-  `_entry_doc_text` prioritizes those primary-marked attachments over
-  the parent's main doc so the summary LLM gets the charging document
-  rather than the procedural Rule 20 text. The us-v-stryzhak
-  (`1:25-cr-00381`, E.D.N.Y.) docket was the canonical case — entry 1
-  had the indictment as `attachment_number=1`. Same fix applies to
-  motions to seal/unseal an attached charging document and other
-  procedural parents.
+- **Substance documents filed as attachments on procedural parent
+  entries are now picked up — primaries AND dispositions.** When the
+  substantive document (indictment, complaint, plea agreement,
+  memorandum opinion, judgment, etc.) is filed as an attachment to a
+  procedural parent entry whose description doesn't head-match the
+  matcher regex, the entry-level classifier used to return False and
+  the summary pipeline emitted the "no primary document identified"
+  refusal. The us-v-stryzhak (`1:25-cr-00381`, E.D.N.Y.) docket was
+  the trigger case — entry 1 was a "CONSENT TO TRANSFER JURISDICTION
+  (Rule 20)" filing with the indictment as `attachment_number=1`. The
+  same shape occurs whenever ANY substance document is filed as an
+  exhibit on a procedural parent: Rule 20 transfers, motions to
+  seal/unseal an attached charging document, "Notice of Filing of
+  Plea Agreement" parents with the plea agreement as an attachment,
+  parent orders with memorandum opinions filed as separate
+  attachments. `is_primary_document`, `is_disposition`, and
+  `_is_disposition_document` now ALL return True when the entry's head
+  OR any of its recap_documents' descriptions matches the relevant
+  predicate, and `_entry_doc_text` prioritizes substance-marked
+  attachments over the parent's main doc so the summary LLM gets the
+  actual document body rather than the procedural wrapper. The
+  detection / extraction logic is factored as one pair of generic
+  helpers (`_entry_matches(entry, predicate)` and
+  `_recap_documents_matching(entry, predicate)`) plus per-type
+  predicate functions and a `_SUBSTANCE_PREDICATES` tuple — adding a
+  new document type is one predicate definition, no parallel
+  per-type entry classifier or extractor branch needed.
 - **PDF text extraction no longer bails on a stale `is_available=False`
   flag.** The cached recap_document flag can drift behind upstream
   state (the PDF lands on RECAP, CourtListener flips `is_available`

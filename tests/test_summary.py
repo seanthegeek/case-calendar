@@ -3440,3 +3440,101 @@ class TestIndictmentAttachedToProceduralParent:
         monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
         out = _entry_doc_text(self._stryzhak_rule20_entry())
         assert "Rule 20 transfer notice" in out
+
+
+class TestDispositionAttachedToProceduralParent:
+    """The disposition analogue of TestIndictmentAttachedToProceduralParent.
+
+    Rarer than the primary case but does occur: a "Notice of Filing
+    of Plea Agreement" parent entry with the actual plea agreement as
+    ``attachment_number=1``; a parent order with a memorandum opinion
+    filed as a separate attachment. The matcher AND the extractor
+    must both recognize the attachment so the summary LLM gets the
+    ruling document's body rather than the procedural wrapper.
+    """
+
+    def _notice_of_plea_entry(self):
+        # "Notice of Filing" with plea agreement as attachment 1. The
+        # parent description doesn't head-match disposition patterns
+        # (in fact "Notice of Filing" reads like a procedural notice),
+        # but attachment 1's description IS "Plea Agreement" which
+        # head-matches _DISPOSITION_RE.
+        return {
+            "id": 9001,
+            "description": (
+                "Notice of Filing of Plea Agreement by USA as to "
+                "Defendant Doe. (Attachments: # 1 Plea Agreement) (AM)"
+            ),
+            "short_description": None,
+            "recap_documents": [
+                {
+                    "id": 700,
+                    "document_number": "12",
+                    "attachment_number": None,
+                    "description": "Notice of Filing",
+                },
+                {
+                    "id": 701,
+                    "document_number": "12",
+                    "attachment_number": 1,
+                    "description": "Plea Agreement",
+                },
+            ],
+        }
+
+    def test_is_disposition_document_matches_via_attachment(self):
+        from case_calendar.summary import _is_disposition_document
+
+        # Parent description heads with "Notice of Filing" — the
+        # _DISPOSITION_DOCUMENT_NEGATIVE_RE rejects "notice of filing"
+        # at the entry level. But the attached "Plea Agreement"
+        # head-matches _DISPOSITION_RE, so the strict matcher must
+        # return True via the attachment.
+        assert _is_disposition_document(self._notice_of_plea_entry()) is True
+
+    def test_is_disposition_broad_matches_via_attachment(self):
+        from case_calendar.summary import is_disposition
+
+        # Broad version (stale-flag): same behavior — attachment
+        # carrying the broad signal flips the entry.
+        assert is_disposition(self._notice_of_plea_entry()) is True
+
+    def test_entry_doc_text_extracts_from_disposition_attachment(
+        self, monkeypatch
+    ):
+        # Same priority as primaries: substance-marked attachment wins
+        # over the parent's procedural main doc.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            700: "Notice of Filing — procedural cover sheet " * 20,
+            701: "Plea Agreement body — defendant agrees to plead guilty " * 20,
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._notice_of_plea_entry())
+        assert "Plea Agreement body" in out
+        assert "Notice of Filing — procedural" not in out
+
+    def test_entry_doc_text_falls_through_when_disposition_attachment_empty(
+        self, monkeypatch
+    ):
+        # Symmetric to the primary fallthrough: when the substance-
+        # marked attachment extracts to nothing, fall through to the
+        # main doc.
+        from case_calendar import pdf as pdf_mod
+
+        texts = {
+            700: "Notice of Filing body that is at least usable",
+            701: "",  # plea agreement extracts to nothing
+        }
+
+        def fake_extract(rd, **_):
+            return texts[rd["id"]]
+
+        monkeypatch.setattr(pdf_mod, "extract_text", fake_extract)
+        out = _entry_doc_text(self._notice_of_plea_entry())
+        assert "Notice of Filing body" in out
