@@ -1182,11 +1182,79 @@ def summarize_docket(
         )
 
     if not primary_documents and not extra_documents:
-        log.warning(
-            "summary: skipping docket %s — no primary document text could be extracted",
-            docket_id,
+        # No extractable document text on this docket. Two distinct
+        # failure modes, two distinct subscriber-facing messages so
+        # operators (and readers) can tell them apart at a glance:
+        #   - ``primary`` is non-empty but ``primary_documents`` came
+        #     back empty: the matcher identified an indictment / complaint
+        #     / information on the docket (a recap_document carrying the
+        #     matcher signal, e.g. ``description='Indictment'``) but
+        #     ``_attach_text`` couldn't extract text from any of them
+        #     (PDF not on RECAP / IA yet, image-only scan with no
+        #     recoverable layer, OCR tools absent). The us-v-lytvynenko
+        #     shape: we know the case has an indictment, we just can't
+        #     read it. Write the "primary document(s) could not be read"
+        #     message.
+        #   - ``primary`` is empty: no entry on the docket matched
+        #     ``is_primary_document`` at all (appellate filings whose
+        #     opener is a clerical "case opened" entry, dockets carrying
+        #     only procedural notices, paperless-only filings). Write
+        #     the broader ``SUMMARY_INSUFFICIENT_DOCUMENTS`` refusal.
+        # Both paths write directly without an LLM round-trip — there's
+        # nothing for the LLM to summarize from. WARN log carries the
+        # primary/disposition counts so the operator can investigate the
+        # right thing (RECAP availability + OCR-tool install for the
+        # first case; CourtListener docket inspection + possible
+        # `extra_documents` workaround for the second).
+        if primary:
+            summary_text = llm.SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+            log.warning(
+                "summary: docket %s — primary document(s) identified "
+                "(primary=%d disposition=%d) but no text extractable; "
+                "writing the 'primary documents could not be read' "
+                "message so subscribers see the docket on the index.",
+                docket_id,
+                len(primary),
+                len(dispositions),
+            )
+        else:
+            summary_text = llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+            log.warning(
+                "summary: docket %s — no primary document identified "
+                "(primary=0 disposition=%d); writing the insufficient-"
+                "documents refusal so subscribers see the docket on the index.",
+                docket_id,
+                len(dispositions),
+            )
+        model_id = "n/a (no document text)"
+        source_ids = [
+            e["id"]
+            for e in (primary + dispositions)
+            if e.get("id") is not None
+        ]
+        store.upsert_case_summary(
+            case.case_id,
+            docket_number,
+            court_id,
+            summary=summary_text,
+            model=model_id,
+            source_entry_ids=source_ids,
         )
-        return None
+        log.info(
+            "summary: wrote %s (%s) refusal (%d chars, model=%s)",
+            docket_number,
+            court_id,
+            len(summary_text),
+            model_id,
+        )
+        return {
+            "docket_number": docket_number,
+            "court_id": court_id,
+            "group_docket_ids": list(group_docket_ids),
+            "summary": summary_text,
+            "model": model_id,
+            "source_entry_ids": source_ids,
+        }
 
     hearings = _hearings_for_group(store, case.case_id, group_docket_ids)
     deadlines = _deadlines_for_group(store, case.case_id, group_docket_ids)

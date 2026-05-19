@@ -1797,11 +1797,25 @@ class TestSummarizeDocket:
         assert call["docket"]["court_tz"] is not None
         assert [d["entry_id"] for d in call["primary_documents"]] == [10]
 
-    def test_returns_none_when_no_primary_text_extractable(
-        self, store, patch_llm, patch_pdf
+    def test_writes_unreadable_message_when_primary_identified_but_text_missing(
+        self, store, patch_llm, patch_pdf, caplog
     ):
+        # us-v-lytvynenko shape: CourtListener returned an entry whose
+        # recap_document carries the matcher signal (description='Indictment',
+        # so is_primary_document matches) but the PDF isn't on RECAP / IA
+        # and OCR finds nothing — _attach_text produces an empty
+        # primary_documents list. The matcher DID find a primary, so the
+        # subscriber-facing message is the specific
+        # SUMMARY_PRIMARY_DOCUMENT_UNREADABLE ("we know there's an
+        # indictment, we just can't read it") rather than the broader
+        # SUMMARY_INSUFFICIENT_DOCUMENTS refusal. The two messages
+        # distinguish the failure modes so operators can read the index
+        # and tell which dockets need an OCR-tool install / RECAP retry
+        # vs which dockets are genuinely missing an identifiable primary.
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+
         _seed_docket_meta(store, 1)
-        # Primary document present but PDF text is empty for every doc.
+        # Primary document identified but PDF text is empty for every doc.
         patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
@@ -1820,9 +1834,80 @@ class TestSummarizeDocket:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
 
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        # LLM is NOT called — we synthesize the message directly.
         assert patch_llm == []
-        assert store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP) is None
+        # Row IS returned and persisted with the "could not be read" message.
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # source_entry_ids preserves the entry we tried to summarize from
+        # so the audit trail captures it.
+        assert row["source_entry_ids"] == [10]
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert persisted["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+        # WARN fired with primary>0 in the count so the operator can find
+        # dockets needing the extra_documents workaround / OCR-tool install
+        # (vs the "primary=0" log line for the truly-cold case).
+        assert any(
+            "primary=1" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
+
+    def test_writes_refusal_when_no_primary_or_disposition_identified(
+        self, store, patch_llm, patch_pdf, caplog
+    ):
+        # Truly cold docket: no entry on the docket matches
+        # is_primary_document or _is_disposition_document. The behavior
+        # matches the identified-but-no-text case — both write the
+        # canonical SUMMARY_INSUFFICIENT_DOCUMENTS refusal so subscribers
+        # always see SOMETHING under the docket link regardless of which
+        # failure mode produced the empty document set. The WARN log
+        # carries counts so the operator can still distinguish the two.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
+        _seed_docket_meta(store, 1)
+        cl = _FakeCourtListener(
+            {
+                # Only a procedural notice — neither primary nor disposition.
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "NOTICE of attorney appearance",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert patch_llm == []
+        assert row is not None
+        assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        # source_entry_ids is empty because no primary/disposition entry
+        # was identified to attribute the refusal to.
+        assert row["source_entry_ids"] == []
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert persisted["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
+        # WARN log carries the "primary=0" signal so the operator can
+        # tell this is the matcher-missed-everything shape, not the
+        # identified-but-unreadable shape.
+        assert any(
+            "primary=0" in r.message and "docket 1" in r.message
+            for r in caplog.records
+        ), [r.message for r in caplog.records]
 
     def test_insufficient_documents_fallback_is_stored_and_warns(
         self,
@@ -2114,12 +2199,19 @@ class TestSummarizeDocket:
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
 
-    def test_returns_none_when_no_sibling_has_primary(
+    def test_writes_refusal_when_no_sibling_has_primary(
         self,
         store,
         patch_llm,
         patch_pdf,
     ):
+        # Multi-docket case where neither the canonical docket nor any
+        # sibling carries a primary-document entry — the borrow path
+        # produces nothing either. Under the unified refusal behavior we
+        # write SUMMARY_INSUFFICIENT_DOCUMENTS (no primary was identified
+        # anywhere) rather than dropping the docket from the index.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
         _seed_docket_meta(store, 1, docket_number="24-1", court_id="ca9")
         _seed_docket_meta(store, 2, docket_number="24-2", court_id="ca9")
         cl = _FakeCourtListener(
@@ -2132,7 +2224,9 @@ class TestSummarizeDocket:
         )
         case = _Case(case_id="case-x", name="X", dockets=[1, 2], calendar="cyber")
 
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert row["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
         assert patch_llm == []
 
     def test_attaches_dispositions_when_present(self, store, patch_llm, patch_pdf):
@@ -2212,7 +2306,7 @@ class TestSummarizeDocket:
         # The sentence figures must reach the LLM — that's the whole point.
         assert "92 months imprisonment" in dispositions[0]["text"]
 
-    def test_primary_document_without_pdf_is_still_dropped(
+    def test_primary_document_without_pdf_does_not_use_description_fallback(
         self,
         store,
         patch_llm,
@@ -2221,7 +2315,14 @@ class TestSummarizeDocket:
         # By design the description fallback is scoped to dispositions only.
         # Primary documents are indictments / complaints — a clerk's
         # minute-entry stub isn't an acceptable substitute, and feeding one
-        # in would produce a vacuous summary. Confirm the asymmetry.
+        # in would produce a vacuous summary. Confirm the asymmetry: when
+        # the PDF text is empty, the primary entry's description is NOT
+        # used as a synthetic body — instead we write the
+        # SUMMARY_PRIMARY_DOCUMENT_UNREADABLE message directly without an
+        # LLM call. The asymmetry survives the message-on-identification
+        # behavior change (no vacuous summary is ever produced).
+        from case_calendar.llm import SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
+
         _seed_docket_meta(store, 1)
         patch_pdf["texts"] = {}  # no PDF text extracts
         cl = _FakeCourtListener(
@@ -2240,8 +2341,14 @@ class TestSummarizeDocket:
         case = _Case(
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
-        assert summarize_docket(cl=cl, store=store, case=case, docket_id=1) is None
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        # LLM is NOT called — the description is NOT used as a fallback
+        # body to manufacture a summary. The asymmetry stands.
         assert patch_llm == []
+        # The "could not be read" message is what gets persisted, not a
+        # description-derived synthetic summary.
+        assert row is not None
+        assert row["summary"] == SUMMARY_PRIMARY_DOCUMENT_UNREADABLE
 
     def test_falls_back_to_attachments_when_main_doc_has_no_text(
         self,
@@ -2958,25 +3065,27 @@ class TestRefreshStale:
         )
         assert patch_llm[0]["aggregation_note"] == "Parallel district + appellate."
 
-    def test_skipped_docket_not_added_to_written_set(
+    def test_truly_cold_docket_writes_refusal_and_is_in_written_set(
         self,
         store,
         patch_llm,
         patch_pdf,
     ):
-        # When `summarize_docket` returns None (no extractable primary
-        # document text), the row stays out of the `written` map so the
-        # caller's emit logic doesn't think the index needs re-rendering
-        # for that docket. Covers the `if row:` falsy branch.
+        # Under the unified refusal behavior, even a truly-cold docket
+        # (no entry matches is_primary_document or _is_disposition_document)
+        # produces a row — the SUMMARY_INSUFFICIENT_DOCUMENTS refusal —
+        # so the index never shows a docket link without a summary block
+        # underneath. refresh_stale therefore adds the group to the
+        # written set so the caller knows to re-render the index, the
+        # same way it would for any other newly-landed summary.
         _seed_docket_meta(store, 1)
-        # Empty PDF text → summarize_docket returns None.
-        patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
+                # Only a procedural notice — no primary or disposition match.
                 (1, "date_filed"): [
                     {
                         "id": 10,
-                        "description": "INDICTMENT",
+                        "description": "NOTICE of attorney appearance",
                         "date_filed": "2024-01-01",
                         "recap_documents": [{"id": 500}],
                     }
@@ -2988,8 +3097,9 @@ class TestRefreshStale:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         written = refresh_stale(cl=cl, store=store, cases=[case])
-        # Nothing summarized → empty written map (or no entry for this case).
-        assert "us-v-doe" not in written or written["us-v-doe"] == set()
+        # The refusal row landed in the store and refresh_stale flagged
+        # the group for re-emit.
+        assert written.get("us-v-doe") == {_DEFAULT_GROUP}
 
 
 class TestSummarizeCase:
@@ -3048,20 +3158,23 @@ class TestSummarizeCase:
         assert rows == []
         assert patch_llm == []
 
-    def test_skipped_docket_not_in_returned_rows(self, store, patch_llm, patch_pdf):
-        # `summarize_docket` returns None when no primary document text
-        # could be extracted. `summarize_case` must skip that docket
-        # rather than append None to the result list. Covers the
-        # `if row:` falsy branch.
+    def test_truly_cold_docket_returns_refusal_row(self, store, patch_llm, patch_pdf):
+        # Under the unified refusal behavior, even a truly-cold docket
+        # (no entry matches is_primary_document / _is_disposition_document)
+        # produces a row — the SUMMARY_INSUFFICIENT_DOCUMENTS refusal.
+        # summarize_case forwards the row through, so the caller still
+        # sees ONE row per docket on the case regardless of whether the
+        # documents were readable, identified-but-unreadable, or absent.
+        from case_calendar.llm import SUMMARY_INSUFFICIENT_DOCUMENTS
+
         _seed_docket_meta(store, 1)
-        # Empty PDF text → summarize_docket returns None.
-        patch_pdf["texts"] = {}
         cl = _FakeCourtListener(
             {
+                # Only a procedural notice — no primary or disposition match.
                 (1, "date_filed"): [
                     {
                         "id": 10,
-                        "description": "INDICTMENT",
+                        "description": "NOTICE of attorney appearance",
                         "date_filed": "2024-01-01",
                         "recap_documents": [{"id": 500}],
                     }
@@ -3073,8 +3186,9 @@ class TestSummarizeCase:
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
-        # No row added because summarize_docket returned None.
-        assert rows == []
+        # ONE row — the refusal — even on a truly-cold docket.
+        assert len(rows) == 1
+        assert rows[0]["summary"] == SUMMARY_INSUFFICIENT_DOCUMENTS
 
 
 class TestEntryDescriptionHeadFallback:

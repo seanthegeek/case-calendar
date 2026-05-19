@@ -1448,6 +1448,22 @@ SUMMARY_INSUFFICIENT_DOCUMENTS = (
 )
 
 
+# Specific fallback for the case where one or more primary documents
+# WERE identified on the docket (a recap_document carrying the matcher
+# signal, e.g. ``description='Indictment'``) but text extraction failed
+# on all of them — PDF not on RECAP / IA yet, image-only scan with no
+# recoverable layer, OCR tools absent. Distinct from
+# ``SUMMARY_INSUFFICIENT_DOCUMENTS`` (which is what we fall back to when
+# no primary document was identified at all, or what the LLM emits when
+# fed garbled text it cannot trust) so subscribers and operators can
+# tell the failure modes apart at a glance: "we found the indictment
+# but couldn't read its bytes" vs "we don't have an indictment on this
+# docket". Both are written by ``summary.summarize_docket`` without an
+# LLM round-trip; ``summary.py`` greps for either string when deciding
+# what to log.
+SUMMARY_PRIMARY_DOCUMENT_UNREADABLE = "The primary document(s) could not be read."
+
+
 SUMMARY_SYSTEM_PROMPT = """\
 You write a short factual summary of one federal court docket for a public
 calendar tracker's index page.
