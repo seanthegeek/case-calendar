@@ -8,6 +8,43 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.3.2] - 2026-05-19
+
+### Fixed
+
+- **LLM output truncation at `max_tokens` is now detected explicitly
+  and reported with a clear failure reason.** A complex docket whose
+  briefing schedule touches dozens of known deadlines could push the
+  per-entry extractor past its 2048-token output cap, leaving the
+  JSON response cut off mid-string. The user-visible symptom was a
+  confusing `json.JSONDecodeError: Unterminated string` WARNING in
+  logs (observed on entry 461544129 with `known_deadlines=32` on a
+  joint stipulation touching multiple briefing rows) — the
+  RESCHEDULE_DEADLINE action that triggered it fell through to the
+  IGNORE-on-failure path, and the operator had no way to tell
+  truncation from genuinely malformed model output. New
+  `OutputTruncatedError` carries the partial text and the cap; each
+  per-provider call function (`_call_anthropic`, `_call_openai`,
+  `_call_gemini`) checks the provider-native truncation signal —
+  Anthropic's `stop_reason="max_tokens"`, OpenAI's
+  `finish_reason="length"`, Gemini's candidate
+  `finish_reason.name == "MAX_TOKENS"` — and raises it before
+  returning. Both `extract_actions` and the shared `_call_lm_and_parse`
+  used by verify / dedupe catch the new exception, log a single named
+  WARNING (no traceback, no confusing JSON-parse error), and return
+  an IGNORE / UNCLEAR with `reason="llm output truncated"` so log
+  greps can distinguish truncation from "llm call failed" and
+  "json parse error".
+
+### Changed
+
+- **`extract_actions` default `max_tokens` raised from 2048 to 8192.**
+  The previous cap was tight enough that one complex docket with a
+  briefing schedule touching 30+ known deadlines could legitimately
+  exceed it. 8192 leaves headroom for any extraction-shaped response
+  without affecting verify / dedupe calls (still 512 tokens each) or
+  the summary track (independent default).
+
 ## [0.3.1] - 2026-05-19
 
 ### Fixed
@@ -257,6 +294,10 @@ adheres to [Semantic Versioning][semver].
   the manual "click Get alerts on each docket page" instructions are
   replaced with a description of the automatic reconciler, the
   opt-out flag, and the per-run log line.
+
+[0.3.2]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.2
+
+[0.3.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.1
 
 [0.3.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.3.0
 

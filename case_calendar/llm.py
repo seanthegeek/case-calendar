@@ -16,6 +16,25 @@ from typing import Any, Optional
 logger = logging.getLogger(__name__)
 
 
+class OutputTruncatedError(RuntimeError):
+    """The provider stopped generation because it hit ``max_tokens``.
+
+    The partial text is preserved on ``.partial`` so callers can log a
+    useful prefix; the parsed JSON is almost always unrecoverable
+    (truncation mid-string), so callers should treat this as a hard
+    failure and skip the entry rather than try to parse around it.
+    """
+
+    def __init__(self, provider: str, partial: str, max_tokens: int) -> None:
+        super().__init__(
+            f"{provider} stopped at max_tokens={max_tokens}; "
+            f"got {len(partial)} chars of partial output"
+        )
+        self.provider = provider
+        self.partial = partial
+        self.max_tokens = max_tokens
+
+
 # ---------------------------------------------------------------------------
 # Prompts
 # ---------------------------------------------------------------------------
@@ -693,10 +712,16 @@ def _call_anthropic(
         ],
         messages=[{"role": "user", "content": user}],
     )
+    text: str | None = None
     for block in resp.content:
         if block.type == "text":
-            return block.text
-    raise ValueError("No text block in Anthropic response")
+            text = block.text
+            break
+    if text is None:
+        raise ValueError("No text block in Anthropic response")
+    if getattr(resp, "stop_reason", None) == "max_tokens":
+        raise OutputTruncatedError("anthropic", text, max_tokens)
+    return text
 
 
 def _call_openai(
@@ -726,9 +751,12 @@ def _call_openai(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
-    text = resp.choices[0].message.content
+    choice = resp.choices[0]
+    text = choice.message.content
     if not text:
         raise ValueError("No content in OpenAI response")
+    if getattr(choice, "finish_reason", None) == "length":
+        raise OutputTruncatedError("openai", text, max_tokens)
     return text
 
 
@@ -758,6 +786,14 @@ def _call_gemini(
     )
     if not resp.text:
         raise ValueError("No content in Gemini response")
+    # Gemini's finish_reason is an enum on the candidate; the truncation
+    # value is named MAX_TOKENS. Compare by `.name` so we don't need to
+    # import the enum class.
+    candidates = getattr(resp, "candidates", None) or []
+    if candidates:
+        finish = getattr(candidates[0], "finish_reason", None)
+        if getattr(finish, "name", None) == "MAX_TOKENS":
+            raise OutputTruncatedError("gemini", resp.text, max_tokens)
     return resp.text
 
 
@@ -810,7 +846,7 @@ def extract_actions(
     referenced_entries: list[dict[str, Any]] | None = None,
     known_deadlines: list[dict[str, Any]] | None = None,
     extract_deadlines: bool = False,
-    max_tokens: int = 2048,
+    max_tokens: int = 8192,
 ) -> list[dict[str, Any]]:
     """Run the configured LLM against one docket entry and return actions.
 
@@ -853,6 +889,17 @@ def extract_actions(
             raw = _call_openai(system, user, max_tokens)
         else:
             raw = _call_gemini(system, user, max_tokens)
+    except OutputTruncatedError as exc:
+        logger.warning(
+            "LLM output truncated at max_tokens=%d for entry %s (provider=%s, "
+            "partial=%d chars); skipping. Next sync will retry once the entry's "
+            "fingerprint changes or with a larger max_tokens.",
+            exc.max_tokens,
+            entry.get("id"),
+            exc.provider,
+            len(exc.partial),
+        )
+        return [{"type": "IGNORE", "reason": "llm output truncated"}]
     except Exception:
         logger.exception("LLM call failed for entry %s", entry.get("id"))
         return [{"type": "IGNORE", "reason": "llm call failed"}]
@@ -1029,6 +1076,15 @@ def _call_lm_and_parse(
             raw = _call_openai(system_prompt, user_message, max_tokens)
         else:
             raw = _call_gemini(system_prompt, user_message, max_tokens)
+    except OutputTruncatedError as exc:
+        logger.warning(
+            "LLM %s output truncated at max_tokens=%d (provider=%s, partial=%d chars)",
+            label,
+            exc.max_tokens,
+            exc.provider,
+            len(exc.partial),
+        )
+        return {"type": "UNCLEAR", "reason": "llm output truncated"}
     except Exception:
         logger.exception("LLM %s call failed", label)
         return {"type": "UNCLEAR", "reason": "llm call failed"}
