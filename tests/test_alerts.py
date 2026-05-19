@@ -111,13 +111,12 @@ class TestEnsureDocketAlerts:
         # .response.status_code of 401 or 403, the log should call it
         # out as an auth error (operator needs to check the token /
         # scope) rather than the generic transport classification.
+        class _Resp:
+            status_code: int = 0
+
         class _AuthError(Exception):
-            def __init__(self, status_code):
+            def __init__(self, status_code: int):
                 super().__init__(f"HTTP {status_code}")
-
-                class _Resp:
-                    pass
-
                 self.response = _Resp()
                 self.response.status_code = status_code
 
@@ -138,15 +137,13 @@ class TestEnsureDocketAlerts:
         # "HTTP {n} from CourtListener" classification — distinct from
         # both the auth category and the no-response-attached transport
         # category.
+        class _Resp:
+            status_code: int = 500
+
         class _ServerError(Exception):
             def __init__(self):
                 super().__init__("HTTP 500")
-
-                class _Resp:
-                    pass
-
                 self.response = _Resp()
-                self.response.status_code = 500
 
         class _Failing(FakeCourtListener):
             def iter_docket_alerts(self, **_):
