@@ -303,6 +303,36 @@ class TestExtractActionsErrors:
         assert result[0]["type"] == "IGNORE"
         assert "llm call failed" in result[0]["reason"]
 
+    def test_output_truncated_returns_ignore_with_named_reason(
+        self, monkeypatch, caplog
+    ):
+        # Provider hit max_tokens mid-output. The partial JSON would
+        # otherwise show up as the generic "malformed JSON" warning in
+        # logs and the failure mode (truncation vs malformed-from-model)
+        # would be invisible to operators. We surface it explicitly.
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+        def boom(*a, **kw):
+            raise llm.OutputTruncatedError("anthropic", '{"actions": [', 2048)
+
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            result = llm.extract_actions(
+                case_name="x",
+                court_id="x",
+                court_tz="x",
+                entry={"id": 42, "description": "", "recap_documents": []},
+                pdf_texts=[],
+                known_hearings=[],
+            )
+        assert result == [{"type": "IGNORE", "reason": "llm output truncated"}]
+        # Operator-visible WARNING names the truncation; no traceback.
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "truncated" in msg
+        assert "max_tokens=2048" in msg
+        assert "anthropic" in msg
+
 
 # --- provider_info ---
 
@@ -533,6 +563,27 @@ class TestVerifyHearing:
             recent_entries=[],
         )
         assert out["type"] == "UNCLEAR"
+
+    def test_output_truncated_returns_unclear_with_named_reason(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+        def boom(system, user, max_tokens):
+            raise llm.OutputTruncatedError("anthropic", '{"type":', 512)
+
+        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            out = llm.verify_hearing(
+                case_name="US v. X",
+                court_id="mad",
+                court_tz="America/New_York",
+                hearing=_hearing(),
+                recent_entries=[],
+            )
+        assert out == {"type": "UNCLEAR", "reason": "llm output truncated"}
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "truncated" in msg and "max_tokens=512" in msg
 
     def test_user_message_includes_hearing_and_entries(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
@@ -829,6 +880,28 @@ class TestCallAnthropic:
         ctor_kwargs = fake_mod.Anthropic.call_args.kwargs
         assert ctor_kwargs["max_retries"] >= 5
 
+    def test_max_tokens_stop_reason_raises_truncated(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = '{"actions": [{"type": "RESCHEDULE_DEADLINE", "notes":'
+        resp = fake_client.messages.create.return_value
+        resp.content = [block]
+        resp.stop_reason = "max_tokens"
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+
+        with pytest.raises(llm.OutputTruncatedError) as exc_info:
+            llm._call_anthropic("s", "u", 2048)
+        assert exc_info.value.provider == "anthropic"
+        assert exc_info.value.max_tokens == 2048
+        # Partial text is preserved on the exception for logging.
+        assert exc_info.value.partial.startswith('{"actions":')
+
 
 class TestCallOpenAI:
     def test_returns_message_content(self, monkeypatch):
@@ -905,6 +978,26 @@ class TestCallOpenAI:
         llm._call_openai("s", "u", 10)
         ctor_kwargs = fake_mod.OpenAI.call_args.kwargs
         assert ctor_kwargs["max_retries"] >= 5
+
+    def test_length_finish_reason_raises_truncated(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = '{"actions": [{"type":'
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "length"
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+        with pytest.raises(llm.OutputTruncatedError) as exc_info:
+            llm._call_openai("s", "u", 2048)
+        assert exc_info.value.provider == "openai"
+        assert exc_info.value.max_tokens == 2048
 
 
 class TestCallGemini:
@@ -987,6 +1080,36 @@ class TestCallGemini:
 
         with pytest.raises(ValueError, match="No content"):
             llm._call_gemini("s", "u", 10)
+
+    def test_max_tokens_finish_reason_raises_truncated(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock()
+        fake_types = MagicMock()
+        fake_types.GenerateContentConfig = lambda **kw: object()
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        resp = fake_client.models.generate_content.return_value
+        resp.text = '{"actions": [{"type":'
+        # Gemini's finish_reason is an enum with `.name == "MAX_TOKENS"`.
+        finish = MagicMock()
+        finish.name = "MAX_TOKENS"
+        candidate = MagicMock()
+        candidate.finish_reason = finish
+        resp.candidates = [candidate]
+
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+        with pytest.raises(llm.OutputTruncatedError) as exc_info:
+            llm._call_gemini("s", "u", 2048)
+        assert exc_info.value.provider == "gemini"
+        assert exc_info.value.max_tokens == 2048
 
 
 # --- verify_deadline (parallel to verify_hearing) ---
