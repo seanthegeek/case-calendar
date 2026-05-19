@@ -209,14 +209,45 @@ class TestExtractText:
         assert pdf.extract_text(rd) is None
         assert called == []
 
-    def test_unavailable_returns_none_without_fetch(self, monkeypatch):
-        rd = {"plain_text": "", "is_available": False}
-        called = []
+    def test_unavailable_still_attempts_fetch(self, monkeypatch):
+        # us-v-lytvynenko regression: ``is_available=False`` is NOT a
+        # gate on the fetch. The cached flag can drift behind the
+        # actual storage state (CourtListener flipped is_available
+        # upstream between our last sync and now), so the pipeline must
+        # still try the URLs in the recap_doc. ``fetch_pdf_bytes``
+        # itself returns None cleanly when no URL fields are populated;
+        # ``is_sealed`` remains the only hard "don't bother" gate.
+        rd = {
+            "plain_text": "",
+            "is_available": False,
+            "filepath_local": "recap/x.pdf",
+        }
+        called: list[str] = []
+
+        def fake_fetch(rd_arg, **kw):
+            called.append("fetched")
+            return b"%PDF fake bytes"
+
+        monkeypatch.setattr(pdf, "fetch_pdf_bytes", fake_fetch)
         monkeypatch.setattr(
-            pdf, "fetch_pdf_bytes", lambda *a, **kw: called.append("nope")
+            pdf, "extract_with_pypdf", lambda data: "real body text " * 50
         )
+        result = pdf.extract_text(rd)
+        assert called == ["fetched"], "fetch must run despite is_available=False"
+        assert result and "real body text" in result
+
+    def test_unavailable_with_no_urls_returns_none_cleanly(self, monkeypatch):
+        # When is_available=False AND the recap_doc has no URL fields,
+        # fetch_pdf_bytes returns None on its own (no HTTP round-trip
+        # since both ``filepath_ia`` and ``filepath_local`` are empty).
+        # We still call it — that's the contract — and end up at the
+        # same outcome (None) the old is_available=False gate produced,
+        # just via fetch_pdf_bytes' own URL check instead of an upstream
+        # bail.
+        rd = {"plain_text": "", "is_available": False}  # no URLs
+        # Use the real fetch_pdf_bytes — it'll see no URLs and return
+        # None without touching the network.
         assert pdf.extract_text(rd) is None
-        assert called == []
 
     def test_falls_back_to_pypdf(self, monkeypatch):
         rd = {

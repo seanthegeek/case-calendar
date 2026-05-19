@@ -807,8 +807,22 @@ def _attach_text(
         if not text and allow_description_fallback:
             text = _entry_description_head(entry)
         if not text:
+            # Drop the entry from the document set. The PER-recap_document
+            # reason (sealed / not available / fetched-but-pipeline-failed)
+            # is logged by ``pdf.extract_text`` at INFO or WARNING and
+            # carries the recap_doc id; this entry-level line is just the
+            # summary outcome ("we couldn't get text for THIS entry from
+            # any source") so the operator can correlate the per-doc
+            # diagnostic with the per-entry drop. Stay neutral on the
+            # cause — saying "no PDF text extractable" here was wrong
+            # when the actual reason was "we never fetched because the
+            # cached flag said sealed / not available", which is what
+            # the us-v-lytvynenko diagnostic trail kept blurring.
             log.info(
-                "summary: skipping entry %s (%s) — no PDF text extractable",
+                "summary: dropping entry %s (%s) from document set — "
+                "no usable text from any of its recap_documents (see "
+                "pdf.extract_text logs above for the per-recap_document "
+                "cause)",
                 entry.get("id"),
                 _entry_description_head(entry)[:80],
             )
