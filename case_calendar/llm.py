@@ -1675,8 +1675,19 @@ OUTPUT — return PLAIN PROSE, no JSON, no markdown, no bullet points.
       or a Rule 29 judgment of acquittal)
     - "the charges against X were dismissed" (only when there is a court
       order of dismissal; cite whether with or without prejudice if known)
-    - "remains a fugitive" (when the defendant is charged but has not
-      appeared and no apparent arrest is reflected in the docket)
+    - a defendant's custody / appearance status ("remains a fugitive",
+      "remains at large", "is abroad", "was arrested", "is in custody"):
+      state it ONLY when a source document (the indictment, a disposition,
+      or an operator NOTE) affirmatively establishes it. NEVER infer
+      custody status from the ABSENCE of an arrest or appearance entry in
+      the docket — docket silence is not evidence that a defendant is a
+      fugitive. When no document establishes the status, the honest
+      statement is that it is UNKNOWN ("X's custody status cannot be
+      determined from the available record" / "the public record does not
+      establish whether X has been arrested"), or omit the topic. "X
+      remains a fugitive" / "X remains at large" asserted from missing
+      docket entries is a FORBIDDEN inference (see the documents-only and
+      absence-of-record rules below).
   For civil: "judgment entered for [party]", "summary judgment granted to
   [party] on [claim]", "settled and dismissed", "voluntarily dismissed".
 
@@ -1769,7 +1780,30 @@ a state worth describing:
        briefing underway or a scheduled hearing with a date, not by
        asserting the absence of a disposition document)
 - BAD: "no disposition has been entered"
+- BAD: "no disposition documents have been entered"
 - BAD: "the docket shows no recent activity"
+- BAD: "no new public scheduling order is reflected"
+- BAD: "no public docket entries reflecting arrests or initial appearances"
+- BAD: "no apparent arrest is reflected in the docket"
+The last three are the custody-status form of this error — characterizing
+the absence of an arrest / appearance / scheduling entry as if it were a
+documented fact. State a defendant's custody status only when a document
+establishes it; otherwise say it is unknown (per the custody-status rule
+above), never derive it from what the docket omits.
+This rule is about the CLAIM, not the wording — rephrasing it does not make
+it acceptable. "No disposition documents have been FILED", "the docket DOES
+NOT REFLECT any scheduled hearings", "no judgment is reflected in the
+available record" are the SAME forbidden claim as the examples above. And
+hedging with "in the available record" / "on the public docket" / "in the
+materials available" does NOT rescue it: for hearings, deadlines, and
+dispositions the required output is SILENCE — describe the charges and any
+documented disposition, then stop, and simply do not raise the topic of what
+is or isn't scheduled. (The ONE exception is a defendant's CUSTODY status,
+which the custody-status rule above lets you mark "unknown / cannot be
+determined from the available record" — because for custody, unlike
+procedural posture, saying nothing would let a reader wrongly assume the
+defendant is in custody. That exception does not extend to hearings,
+deadlines, or dispositions.)
 State what IS in evidence — the charges, any disposition you can
 document from the disposition set, the parties' status as the
 documents reflect them — and stop. A docket whose scaffold is empty
@@ -1838,6 +1872,21 @@ restitution") rather than vague phrasing like "was sentenced." If the
 judgment document was unavailable and you have only a notice of
 sentencing, say "was sentenced on [date]" without speculating about the
 terms.
+
+CRITICAL — state a specific dollar figure (restitution, forfeiture,
+fine, special assessment, loss amount) ONLY when that figure appears
+LEGIBLY in the document text you were given. Do NOT reconstruct a number
+from garbled extraction. Court forms with hand-filled or stamped amounts
+(restitution schedules especially) routinely OCR into noise — e.g. a
+"Total" line may arrive as "Total AD2, O52. 1S" or "£S,S60./6". When the
+amount is garbled, partial, or simply not in the provided text, state
+that the obligation exists WITHOUT a number ("was ordered to pay
+restitution"; "a forfeiture money judgment was entered") and stop. A
+confident-looking dollar figure decoded from OCR garbage is a
+fabrication — the wrong number reaching a subscriber is worse than no
+number. This applies even when you can tell roughly what the digits
+might be; if they are not cleanly legible in the text, do not print
+them.
 
 CRITICAL — when a forfeiture money judgment against the same
 defendant equals the restitution amount, OMIT the forfeiture money
@@ -1910,8 +1959,11 @@ victims as set forth in the attached schedule" — but a per-victim
 itemization in any form is N orders, not one.
 
 For multi-defendant cases, name each appearing defendant explicitly with
-their individual status. Fugitives are named explicitly ("X remains a
-fugitive abroad"). Severed defendants are noted.
+their individual status. A defendant may be described as a fugitive / at
+large / abroad ONLY when a source document states it (see the custody-status
+rule above); when the record does not establish a defendant's status, say it
+is unknown rather than inferring flight from missing arrest or appearance
+entries. Severed defendants are noted.
 
 CRITICAL — conditional deadlines: any deadline row in the structured
 events scaffold whose `due_at_utc` is null is a CONDITIONAL deadline.
@@ -2132,6 +2184,7 @@ def generate_docket_summary(
     primary_char_budget: int = 60_000,
     disposition_char_budget: int = 40_000,
     extra_char_budget: int = 40_000,
+    correction: Optional[str] = None,
 ) -> tuple[str, str]:
     """Generate a per-docket prose summary.
 
@@ -2180,6 +2233,25 @@ def generate_docket_summary(
         disposition_char_budget=disposition_char_budget,
         extra_char_budget=extra_char_budget,
     )
+
+    if correction:
+        # Retry feedback from the post-generation truthfulness guard: the
+        # prior draft asserted facts from docket silence / unsupported by
+        # the documents. Append the specific correction so the regeneration
+        # avoids the same phrasing. Kept as a trailing user-message block
+        # (not a system edit) so it rides the same prompt-cache prefix.
+        user = (
+            f"{user}\n\nCORRECTION REQUIRED — your previous draft of this "
+            "summary contained content that is NOT supported by the provided "
+            "documents or asserts a fact from the ABSENCE of docket entries:\n"
+            f"{correction}\n"
+            "Regenerate the summary WITHOUT that content. Describe only what "
+            "the documents and the structured-events scaffold affirmatively "
+            "establish. Do not characterize what is missing from the record; "
+            "if a defendant's custody status is not documented, say it is "
+            "unknown or omit it — do not call anyone a fugitive or 'at large' "
+            "based on missing arrest entries."
+        )
 
     logger.info(
         "case-summary llm provider=%s model=%s docket=%s primary=%d disposition=%d hearings=%d deadlines=%d user_chars=%d",
