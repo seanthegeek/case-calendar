@@ -1887,6 +1887,14 @@ fabrication — the wrong number reaching a subscriber is worse than no
 number. This applies even when you can tell roughly what the digits
 might be; if they are not cleanly legible in the text, do not print
 them.
+OMIT the figure SILENTLY — do NOT tell the subscriber why it's missing.
+The garbling is OUR extraction limitation (these orders are perfectly
+legible to a person reading the PDF), not a property of the document,
+and it is not subscriber-facing. Phrasings like "the precise amount is
+not clearly legible", "the total could not be read from the order", or
+"the restitution figure is not available in the documents" are
+FORBIDDEN — they misdescribe a human-legible document and narrate a
+tooling problem. Just write "the court ordered restitution" and move on.
 
 CRITICAL — when a forfeiture money judgment against the same
 defendant equals the restitution amount, OMIT the forfeiture money

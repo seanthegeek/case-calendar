@@ -2300,10 +2300,13 @@ class TestGenerateDocketSummary:
         # OCR'd to "AD2, O52. 1S" and the model decoded that garble into a
         # confident-looking figure that differed between runs (no clean source
         # for the real amount exists). The prompt must tell it to state the
-        # obligation WITHOUT a number rather than reconstruct one from garble.
+        # obligation WITHOUT a number rather than reconstruct one from garble,
+        # and to OMIT it silently — never narrate the extraction limitation
+        # ("not clearly legible"), since the document is legible to a human.
         p = llm.SUMMARY_SYSTEM_PROMPT.lower()
         assert "garbled" in p
         assert "legibly" in p or "legible" in p
+        assert "silently" in p
 
     def test_strips_code_fences_from_response(self, monkeypatch):
         monkeypatch.setattr(

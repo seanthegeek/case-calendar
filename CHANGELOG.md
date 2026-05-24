@@ -44,7 +44,10 @@ adheres to [Semantic Versioning][semver].
 - **Summaries no longer print a dollar figure that isn't legible in the
   documents.** Hand-filled restitution schedules OCR into noise; rather
   than reconstruct a number from garble, the summary states the
-  obligation exists without an amount.
+  obligation exists without an amount — and omits it *silently*, without
+  narrating the OCR limitation ("not clearly legible" misdescribes a
+  document that's perfectly legible to a human; the gap is ours, and
+  isn't subscriber-facing).
 
 ### Fixed
 
