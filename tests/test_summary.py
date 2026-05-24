@@ -3801,6 +3801,7 @@ class TestSummaryGuardRetry:
         cl, case = self._setup(store, patch_pdf)
         calls = _queue_llm(monkeypatch, "X was charged and pled guilty on May 1, 2026.")
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 1  # no retry
         assert "correction" not in calls[0]
         assert row["summary"].startswith("X was charged")
@@ -3813,6 +3814,7 @@ class TestSummaryGuardRetry:
             "X is charged with wire fraud; the status is unknown.",  # clean retry
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 2  # retried once
         assert calls[1].get("correction")  # retry carried the correction
         # The clean retry is what gets stored.
@@ -3834,6 +3836,7 @@ class TestSummaryGuardRetry:
         )
         with caplog.at_level(logging.WARNING):
             row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 2
         assert "No disposition" in row["summary"]  # the fewer-violation retry
         assert any("STILL tripped" in r.message for r in caplog.records)
@@ -3848,6 +3851,7 @@ class TestSummaryGuardRetry:
             "No hearings have been recorded. The docket does not reflect any deadlines.",
         )
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 2
         assert "remains pending" in row["summary"]  # original kept
 
@@ -3863,6 +3867,7 @@ class TestSummaryGuardRetry:
         )
         calls = _queue_llm(monkeypatch, "The defendants remain at large.")
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 1  # no retry — grounded in the document
         assert "at large" in row["summary"]
 
@@ -4014,6 +4019,7 @@ class TestSummaryGroundingGuard:
         )
         with caplog.at_level(logging.WARNING):
             row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
         assert len(calls) == 1  # WARN-only — no retry
         assert "June 9, 2026" in row["summary"]  # stored as-is, not blocked
         assert any("possible fabricated facts" in r.message for r in caplog.records)
