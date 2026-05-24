@@ -2297,8 +2297,9 @@ class TestGenerateDocketSummary:
 
     def test_prompt_forbids_decoding_dollar_figures_from_ocr_garble(self):
         # The us-v-chapman regression: the restitution order's "Total" line
-        # OCR'd to "AD2, O52. 1S" and the model guessed $402,052.15 / then
-        # $492,052.15 on different runs. The prompt must tell it to state the
+        # OCR'd to "AD2, O52. 1S" and the model decoded that garble into a
+        # confident-looking figure that differed between runs (no clean source
+        # for the real amount exists). The prompt must tell it to state the
         # obligation WITHOUT a number rather than reconstruct one from garble.
         p = llm.SUMMARY_SYSTEM_PROMPT.lower()
         assert "garbled" in p

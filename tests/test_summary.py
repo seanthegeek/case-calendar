@@ -3924,11 +3924,13 @@ class TestSummaryGroundingGuard:
         )
 
     def test_amount_in_corpus_not_flagged(self):
+        # Synthetic figure — the test checks "amount present in corpus is not
+        # flagged", independent of any real case's restitution.
         assert (
             summary._audit_summary_grounding(
-                "ordered $402,052.15 in restitution",
+                "ordered $123,456.78 in restitution",
                 known_dates=set(),
-                source_text="restitution of $402,052.15 to six victims",
+                source_text="restitution of $123,456.78 to the victims",
             )
             == []
         )
