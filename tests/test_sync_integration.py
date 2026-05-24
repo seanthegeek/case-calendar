@@ -3936,3 +3936,72 @@ class TestSummaryStaleMarkOnPrimaryOrDisposition:
         # No body-bearing entries on the docket: stub still works for dedup
         # but doesn't show up in summary's local-cache lookup.
         assert store.get_entries_with_body(100) == []
+
+
+class TestSummaryStaleOnPostureChange:
+    """End-to-end: an end-of-sync sweep that changes a hearing's posture
+    (the verify pass flipping a scheduled hearing to 'held') must flag the
+    docket's summary stale so the next emit regenerates the prose — even
+    though no primary-document / disposition ENTRY landed this sync.
+
+    The canonical regression is anthropic-v-dow 26-1049 (D.C. Cir.): the
+    oral argument was correctly marked 'held' by the verify pass, but the
+    summary stayed frozen at "oral argument is scheduled for May 19" because
+    the post-argument docket entries (an "ORAL ARGUMENT HELD" notice and
+    supplemental-briefing per-curiam orders) matched neither
+    is_primary_document nor is_disposition, so the document-only stale
+    trigger never fired.
+    """
+
+    def _seed(self, store):
+        from datetime import datetime, timedelta, timezone
+
+        d = _docket()
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": d["court_id"],
+                "docket_number": d["docket_number"],
+                "case_name": d["case_name"],
+                "absolute_url": d["absolute_url"],
+            },
+        )
+        future_iso = (datetime.now(timezone.utc) + timedelta(days=3)).isoformat()
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "oral-arg",
+                "title": "Oral argument",
+                "starts_at_utc": future_iso,
+                "duration_minutes": 30,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [42],
+            }
+        )
+        group = (d["docket_number"], d["court_id"])
+        # Reset stale=0 AFTER seeding the hearing so the precondition holds
+        # regardless of the seed's own flip.
+        store.upsert_case_summary(
+            "us-v-x", *group, summary="oral argument is scheduled", model="m"
+        )
+        assert store.is_summary_stale("us-v-x", *group) is False
+        return group
+
+    def test_verify_mark_held_flags_summary_stale(self, store, case, monkeypatch):
+        group = self._seed(store)
+        stub_verify(
+            monkeypatch,
+            by_key={
+                "oral-arg": {"type": "MARK_HELD", "reason": "minute entry shows held"},
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        assert store.get_hearings("us-v-x")[0]["status"] == "held"
+        # The fix: the held-flip flags the summary stale even though no
+        # primary-document / disposition entry landed this sync.
+        assert store.is_summary_stale("us-v-x", *group) is True

@@ -3663,3 +3663,363 @@ class TestRefreshStaleSummarizeDocketReturnsNone:
         )
         rows = summarize_case(cl=cl, store=store, case=case, force=True)
         assert rows == []
+
+
+class TestSummaryTruthfulnessGuard:
+    """Deterministic post-generation guard — the hard backstop for the soft
+    SUMMARY_SYSTEM_PROMPT rules against asserting facts from docket silence.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "X is charged. No disposition documents have been entered on the docket.",
+            "X is charged. No disposition has been entered.",
+            "X is charged; the case remains pending.",
+            "X is charged. No hearings have been recorded.",
+            "X is charged. No deadlines are set.",
+            "X is charged. The docket shows no recent activity.",
+            "Trial was cancelled and no new public scheduling order is reflected.",
+            "X is charged with no apparent arrest reflected.",
+            "X is charged; no public docket entries reflect an arrest.",
+            # Reworded variants the original literal patterns missed (the
+            # us-v-berezhnoy regression): "filed" not "entered", and the
+            # "docket does not reflect any hearings" form. Hedging with "in
+            # the available record" must not exempt procedural posture.
+            "X is charged. No disposition documents have been filed in the available record.",
+            "X is charged. The public docket does not reflect any scheduled hearings.",
+            "X is charged; no judgment is reflected in the available record.",
+        ],
+    )
+    def test_absence_claims_flagged(self, text):
+        assert summary._audit_summary_text(text) != []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Documented custody status (past-tense, attributed to a source) —
+            # not an absence-of-record construction.
+            "The information sheet indicates he had not been arrested as of that date.",
+            # The allowed custody "unknown" framing (the deliberate exception).
+            "The custody status of the remaining defendants cannot be "
+            "determined from the available record.",
+            # Ordinary documented financial fact — "restitution" is not a
+            # procedural-posture noun, so "no restitution" must not trip.
+            "He was sentenced to 60 months with no restitution ordered.",
+        ],
+    )
+    def test_documented_or_unknown_framing_not_flagged(self, text):
+        assert summary._audit_summary_text(text, source_text="") == []
+
+    def test_custody_claim_flagged_when_ungrounded(self):
+        # No source document mentions custody status -> "at large" is an
+        # inference from docket silence -> flagged.
+        v = summary._audit_summary_text(
+            "All four defendants remain at large.", source_text="indictment body text"
+        )
+        assert v and "custody/flight" in v[0]
+
+    def test_fugitive_claim_flagged_when_ungrounded(self):
+        assert (
+            summary._audit_summary_text("X remains a fugitive.", source_text="") != []
+        )
+
+    def test_custody_claim_allowed_when_grounded_in_documents(self):
+        # A source document actually states the defendants are at large ->
+        # the summary is permitted to repeat it -> NOT flagged.
+        assert (
+            summary._audit_summary_text(
+                "The defendants remain at large.",
+                source_text="The indictment notes the defendants remain at large abroad.",
+            )
+            == []
+        )
+
+    def test_clean_summary_has_no_violations(self):
+        assert (
+            summary._audit_summary_text(
+                "X was charged with wire fraud and pled guilty on May 1, 2026.",
+                source_text="plea agreement text",
+            )
+            == []
+        )
+
+    def test_refusal_sentence_is_exempt(self):
+        assert (
+            summary._audit_summary_text(summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS)
+            == []
+        )
+
+    def test_empty_text_has_no_violations(self):
+        assert summary._audit_summary_text("") == []
+
+
+def _queue_llm(monkeypatch, *texts):
+    """Stub generate_docket_summary to return queued texts per call.
+
+    The last queued text repeats if called more times than provided. Records
+    each call's kwargs so tests can assert whether `correction` was passed on
+    the retry.
+    """
+    calls: list[dict[str, Any]] = []
+
+    def _fake(**kwargs):
+        calls.append(kwargs)
+        text = texts[min(len(calls) - 1, len(texts) - 1)]
+        return (text, "fake/model-v1")
+
+    monkeypatch.setattr(summary.llm, "generate_docket_summary", _fake)
+    return calls
+
+
+class TestSummaryGuardRetry:
+    """End-to-end retry-then-keep+WARN behavior through summarize_docket."""
+
+    def _setup(self, store, patch_pdf, *, primary_text="INDICTMENT body text..."):
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: primary_text}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        return cl, case
+
+    def test_clean_draft_no_retry(self, store, patch_pdf, monkeypatch):
+        cl, case = self._setup(store, patch_pdf)
+        calls = _queue_llm(monkeypatch, "X was charged and pled guilty on May 1, 2026.")
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1  # no retry
+        assert "correction" not in calls[0]
+        assert row["summary"].startswith("X was charged")
+
+    def test_tripping_draft_retried_and_cleared(self, store, patch_pdf, monkeypatch):
+        cl, case = self._setup(store, patch_pdf)
+        calls = _queue_llm(
+            monkeypatch,
+            "X is charged. No disposition has been entered.",  # draft trips
+            "X is charged with wire fraud; the status is unknown.",  # clean retry
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2  # retried once
+        assert calls[1].get("correction")  # retry carried the correction
+        # The clean retry is what gets stored.
+        assert "No disposition" not in row["summary"]
+        assert row["summary"].endswith("the status is unknown.")
+
+    def test_persistent_violation_keeps_fewer_and_warns(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        import logging
+
+        cl, case = self._setup(store, patch_pdf)
+        # Draft has TWO violations (distinct patterns: no-hearings + remains-
+        # pending); retry still trips but with ONE -> keep the retry.
+        calls = _queue_llm(
+            monkeypatch,
+            "No hearings have been recorded; the case remains pending.",
+            "X is charged. No disposition has been entered.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "No disposition" in row["summary"]  # the fewer-violation retry
+        assert any("STILL tripped" in r.message for r in caplog.records)
+
+    def test_retry_worse_keeps_original(self, store, patch_pdf, monkeypatch):
+        cl, case = self._setup(store, patch_pdf)
+        # Draft: ONE violation; retry: TWO (distinct patterns: no-hearings +
+        # docket-does-not-reflect) -> keep the original draft.
+        calls = _queue_llm(
+            monkeypatch,
+            "X is charged. The case remains pending.",
+            "No hearings have been recorded. The docket does not reflect any deadlines.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "remains pending" in row["summary"]  # original kept
+
+    def test_custody_claim_grounded_in_doc_not_retried(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # The indictment text itself says the defendants are at large, so the
+        # summary repeating it is grounded -> guard does not fire -> no retry.
+        cl, case = self._setup(
+            store,
+            patch_pdf,
+            primary_text="Indictment: defendants remain at large abroad.",
+        )
+        calls = _queue_llm(monkeypatch, "The defendants remain at large.")
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1  # no retry — grounded in the document
+        assert "at large" in row["summary"]
+
+
+class TestSummaryGroundingGuard:
+    """WARN-only tier-3 guard — dates / dollar amounts not traceable to the
+    scaffold or the source documents are flagged for operator review.
+    """
+
+    def test_date_in_known_dates_not_flagged(self):
+        assert (
+            summary._audit_summary_grounding(
+                "Sentenced on May 6, 2026.", known_dates={"2026-05-06"}, source_text=""
+            )
+            == []
+        )
+
+    def test_date_in_corpus_various_formats_not_flagged(self):
+        for corpus in (
+            "judgment dated May 6, 2026",
+            "entered 5/6/2026 by the court",
+            "filed 2026-05-06",
+        ):
+            assert (
+                summary._audit_summary_grounding(
+                    "Sentenced on May 6, 2026.", known_dates=set(), source_text=corpus
+                )
+                == []
+            ), corpus
+
+    def test_fabricated_date_flagged(self):
+        out = summary._audit_summary_grounding(
+            "A hearing was set for June 9, 2026.", known_dates=set(), source_text="x"
+        )
+        assert out and "ungrounded date" in out[0]
+
+    def test_date_split_across_lines_in_corpus_not_flagged(self):
+        # The us-v-stryzhak false positive: pypdf extracted the forfeiture
+        # order's date as "June 26,\n\n2024". Whitespace normalization must
+        # let the summary's "June 26, 2024" match it.
+        assert (
+            summary._audit_summary_grounding(
+                "seized on June 26, 2024 in Barcelona",
+                known_dates=set(),
+                source_text="one Apple MacBook Pro seized on or about June 26,\n\n2024,",
+            )
+            == []
+        )
+
+    def test_month_only_range_not_flagged(self):
+        # No day -> not extracted -> never flagged (offense-conduct ranges).
+        assert (
+            summary._audit_summary_grounding(
+                "between December 2020 and October 2022",
+                known_dates=set(),
+                source_text="",
+            )
+            == []
+        )
+
+    def test_amount_in_corpus_not_flagged(self):
+        # Synthetic figure — the test checks "amount present in corpus is not
+        # flagged", independent of any real case's restitution.
+        assert (
+            summary._audit_summary_grounding(
+                "ordered $123,456.78 in restitution",
+                known_dates=set(),
+                source_text="restitution of $123,456.78 to the victims",
+            )
+            == []
+        )
+
+    def test_fabricated_amount_flagged(self):
+        out = summary._audit_summary_grounding(
+            "a $5,000,000 forfeiture judgment",
+            known_dates=set(),
+            source_text="no figures here",
+        )
+        assert out and "ungrounded amount" in out[0]
+
+    def test_million_approximation_skipped(self):
+        # "X million" is an approximation we can't reliably verify -> never flag.
+        assert (
+            summary._audit_summary_grounding(
+                "extorted over $16 million in Bitcoin",
+                known_dates=set(),
+                source_text="",
+            )
+            == []
+        )
+
+    def test_refusal_sentence_exempt(self):
+        assert (
+            summary._audit_summary_grounding(
+                summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS,
+                known_dates=set(),
+                source_text="",
+            )
+            == []
+        )
+
+    def test_grounding_dates_collects_scaffold_and_doc_filing_dates(self):
+        kd = summary._grounding_dates(
+            {
+                # A dateless hearing / deadline (null date column) is skipped,
+                # not crashed on.
+                "hearings": [
+                    {"starts_at_utc": "2026-07-06T16:00:00+00:00"},
+                    {"starts_at_utc": None},
+                ],
+                "deadlines": [
+                    {"due_at_utc": "2026-06-04T21:00:00+00:00"},
+                    {"deadline_key": "conditional-no-date"},
+                ],
+                "primary_documents": [{"date_filed": "2025-06-24"}],
+                "disposition_documents": [],
+            }
+        )
+        assert kd == {"2026-07-06", "2026-06-04", "2025-06-24"}
+
+    def test_warn_only_does_not_block_or_retry(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        # A fabricated date is logged for review but the summary is stored
+        # as-is and NO retry fires (WARN-only enforcement).
+        import logging
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text with no dates."}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        calls = _queue_llm(
+            monkeypatch, "X was charged; a hearing is set for June 9, 2026."
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1  # WARN-only — no retry
+        assert "June 9, 2026" in row["summary"]  # stored as-is, not blocked
+        assert any("possible fabricated facts" in r.message for r in caplog.records)

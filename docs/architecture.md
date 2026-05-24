@@ -209,7 +209,12 @@ The SQLite store has five operational tables:
 - **`deadlines`** — parallel structure to hearings, with statuses
   `pending` / `met` / `passed` / `cancelled`.
 - **`case_summaries`** — per-docket prose summary plus a `stale` flag the
-  syncer flips whenever a new primary document or disposition lands.
+  syncer flips whenever a new primary document or disposition lands — or
+  whenever a hearing or deadline changes posture (marked held / cancelled /
+  rescheduled), so a verify-pass outcome with no accompanying document entry
+  still refreshes the prose. The flip happens in `Store.upsert_hearing` /
+  `upsert_deadline`, the one chokepoint every posture-changing mutation
+  passes through.
 - **`webhook_events`** — idempotency-key dedup for the webhook receiver.
 
 WAL journaling + a 5-second `busy_timeout` let the polling `sync`
@@ -262,6 +267,21 @@ more than a missing one.
   shows its siblings *in the same court* — a "stay appellate proceedings"
   order on the circuit docket must not trigger cancellations on the
   district docket's hearings.
+- **Summaries state only what the documents support — a guard enforces
+  it.** The summary prompt forbids inferring a defendant's custody status
+  from missing arrest entries (say "unknown", not "remains a fugitive",
+  unless a document says so), asserting the absence of hearings /
+  deadlines / a disposition (stay silent on what isn't in the record),
+  and printing a dollar figure that isn't legibly in the documents (court
+  forms with hand-filled restitution amounts OCR into noise, and the model
+  would otherwise guess — it states the obligation without the number, and
+  *silently*, since "not legible" would misdescribe a document that's
+  perfectly readable to a human). Because prompt rules are soft, a deterministic
+  post-generation guard backs them: it scans the generated prose,
+  regenerates once (feeding the violation back) on an absence / unsupported-
+  custody claim, and logs a warning for any ungrounded date or amount it
+  can't trace to the scaffold or the documents. The wrong fact on a public
+  calendar is worse than a missing one.
 
 ## AGENTS.md and the runtime prompts
 
@@ -292,13 +312,13 @@ in both places.
 The runtime prompts all live in
 [`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py):
 
-- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L23) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
-- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L83) — per-entry hearing extraction (and, with the addendum below, deadlines).
-- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L373) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
-- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L872) — the end-of-sync hearing verify pass.
-- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1157) — the parallel verify pass for filing deadlines.
-- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1261) — same-docket same-slot duplicate resolver.
-- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1486) — the higher-tier case-summary prompt.
+- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L42) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
+- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L102) — per-entry hearing extraction (and, with the addendum below, deadlines).
+- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L407) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
+- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1024) — the end-of-sync hearing verify pass.
+- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1313) — the parallel verify pass for filing deadlines.
+- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1417) — same-docket same-slot duplicate resolver.
+- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1640) — the higher-tier case-summary prompt.
 
 Reading any of those alongside the corresponding entry in
 [`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)

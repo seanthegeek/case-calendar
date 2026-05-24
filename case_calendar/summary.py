@@ -1256,6 +1256,282 @@ def _borrow_primary_from_siblings(
 
 
 # ---------------------------------------------------------------------------
+# Post-generation truthfulness guard
+# ---------------------------------------------------------------------------
+#
+# The SUMMARY_SYSTEM_PROMPT rules against asserting facts from docket silence
+# (absence-of-record claims, fugitive-by-inference) are SOFT — the model can
+# ignore them, and for a brand-new case there is no prior good summary to fall
+# back to, so a falsehood would reach subscribers. This is the HARD backstop:
+# a deterministic scan of the generated text. ``summarize_docket`` runs it,
+# retries generation once with the violation fed back, and keeps the cleaner
+# attempt (logging a WARNING) if it still trips. See the AGENTS.md design
+# decision "Post-generation truthfulness guard on case summaries."
+
+# Tier 1 — absence-of-record claims. These characterize what is NOT in the
+# record as a positive fact; no court document narrates the absence of itself,
+# so they are ALWAYS unsupported (sealing / partial-RECAP can hide activity
+# the model then wrongly reports as nonexistent). Matched by CONSTRUCTION
+# (negation + a procedural-record noun), not by literal strings — the model
+# reworded around literal patterns in the us-v-berezhnoy regression ("no
+# disposition documents have been FILED" / "the docket does not REFLECT any
+# scheduled hearings", neither of which the original entered-only pattern
+# caught). Hedging with "in the available record" does NOT exempt these — for
+# procedural posture the rule is silence (the custody-status exception, where
+# "unknown" is allowed, is handled separately and is deliberately NOT in the
+# noun list below). The noun list is scoped to procedural-posture terms so
+# "no restitution" / "no fewer than three counts" — legitimate documented
+# facts — don't trip it.
+_GUARD_PROC_NOUN = (
+    r"(?:disposition|judgments?|hearings?|deadlines?|scheduling\s+orders?|"
+    r"docket\s+entr(?:y|ies)|trial\s+dates?|recent\s+activity|"
+    r"arrests?|initial\s+appearances?)"
+)
+_GUARD_ABSENCE_RES = [
+    # "no <up to 3 words> <procedural noun>" — "no disposition documents",
+    # "no scheduled hearings", "no public docket entries", "no recent
+    # activity", "no new public scheduling order", "no apparent arrest".
+    re.compile(rf"\bno\s+(?:\w+\s+){{0,3}}{_GUARD_PROC_NOUN}\b", re.I),
+    # "(docket|record) does/do/did not reflect/show/indicate/contain/list ..."
+    re.compile(
+        r"\b(?:docket|record)\s+(?:does|do|did)\s+not\s+"
+        r"(?:reflect|show|indicate|contain|list|record)\b",
+        re.I,
+    ),
+    # "<procedural noun> ... (have|has) not been filed/entered/recorded/..."
+    re.compile(
+        rf"{_GUARD_PROC_NOUN}\s+(?:\w+\s+){{0,3}}(?:have|has)\s+not\s+been\s+"
+        r"(?:filed|entered|recorded|scheduled|set|reflected)",
+        re.I,
+    ),
+    # closing "the case remains pending" positive claim.
+    re.compile(r"\bthe case remains pending\b", re.I),
+]
+
+# Tier 2 — custody / flight status. Legitimate ONLY when a source document
+# says so (the indictment, a press release the operator added via
+# extra_documents, etc.), so these are grounded against the document corpus:
+# flagged only when no custody-status keyword appears in the source text. The
+# canonical regression is us-v-jin / us-v-berezhnoy, where the model wrote
+# "remain at large" inferred from missing arrest entries (no document said it).
+_GUARD_CUSTODY_RES = [
+    re.compile(r"\bremains?\s+(?:a\s+)?fugitive\b", re.I),
+    re.compile(r"\bis\s+a\s+fugitive\b", re.I),
+    re.compile(
+        r"\b(?:remain|remains|remaining|appears?\s+to\s+remain)\s+at\s+large\b", re.I
+    ),
+]
+_GUARD_CUSTODY_GROUND_RE = re.compile(
+    r"\b(?:fugitive|at large|apprehend|in custody|remains? abroad|not been arrested)\b",
+    re.I,
+)
+
+
+def _audit_summary_text(text: str, *, source_text: str = "") -> list[str]:
+    """Return guard violations for one generated summary; empty == clean.
+
+    Tier-1 (absence-of-record) matches always count. Tier-2 (custody / flight)
+    counts only when the claim is NOT grounded in ``source_text`` (the
+    concatenated document corpus the LLM read), so a fugitive status that a
+    real document actually states is allowed through. The canonical refusal
+    sentence is exempt — it is an honest "not enough material," not an
+    absence-of-record claim about the case.
+    """
+    if not text or text.strip() == llm.SUMMARY_INSUFFICIENT_DOCUMENTS.strip():
+        return []
+    violations: list[str] = []
+    for rx in _GUARD_ABSENCE_RES:
+        m = rx.search(text)
+        if m:
+            violations.append(f"absence-of-record claim: {m.group(0)!r}")
+    grounded = bool(_GUARD_CUSTODY_GROUND_RE.search(source_text or ""))
+    if not grounded:
+        for rx in _GUARD_CUSTODY_RES:
+            m = rx.search(text)
+            if m:
+                violations.append(f"unsupported custody/flight claim: {m.group(0)!r}")
+    return violations
+
+
+# Tier 3 — fabricated dates / dollar amounts. A hard fact in the prose (a
+# "Month D, YYYY" date or a "$N" figure) that appears in NEITHER the
+# structured-events scaffold NOR the source documents the LLM was given is a
+# possible hallucination. Unlike tiers 1-2 this is WARN-ONLY (it does not
+# trigger a retry): every summary mentions dates, and formatting variance
+# ("5/6/26" vs "May 6, 2026", "$16M" vs "16,000,000") gives this check a real
+# false-positive rate — making it retry-triggering would risk a systematic
+# double-cost on nearly every docket. So it logs for operator review instead,
+# automating the cross-check against the calendar tables / documents. The
+# matching is deliberately liberal (many date formats; comma-insensitive
+# amounts; "X million" approximations skipped) so it BIASES toward silence —
+# under-flagging a real fabrication is preferred to crying wolf on a
+# correctly-stated fact written in a different format.
+_GUARD_MONTHS = {
+    m: i
+    for i, m in enumerate(
+        [
+            "jan",
+            "feb",
+            "mar",
+            "apr",
+            "may",
+            "jun",
+            "jul",
+            "aug",
+            "sep",
+            "oct",
+            "nov",
+            "dec",
+        ],
+        1,
+    )
+}
+_GUARD_PROSE_DATE_RE = re.compile(
+    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4})\b",
+    re.I,
+)
+_GUARD_MONEY_RE = re.compile(
+    r"\$\s?\d[\d,]*(?:\.\d{1,2})?(?:\s*(?:million|billion))?", re.I
+)
+
+
+def _grounding_dates(gen_kwargs: dict[str, Any]) -> set[str]:
+    """ISO dates the summary may legitimately cite — the scaffold's hearing /
+    deadline dates plus each provided document's filing date."""
+    dates: set[str] = set()
+    for h in gen_kwargs.get("hearings") or []:
+        d = h.get("starts_at_utc")
+        if d:
+            dates.add(str(d)[:10])
+    for dl in gen_kwargs.get("deadlines") or []:
+        d = dl.get("due_at_utc")
+        if d:
+            dates.add(str(d)[:10])
+    for key in ("primary_documents", "disposition_documents", "extra_documents"):
+        for doc in gen_kwargs.get(key) or []:
+            d = doc.get("date_filed")
+            if d:
+                dates.add(str(d)[:10])
+    return dates
+
+
+def _date_in_corpus(iso: str, raw: str, corpus: str) -> bool:
+    # ``corpus`` is whitespace-normalized by the caller; normalize ``raw`` the
+    # same way so a PDF line-break artifact ("June 26,\n\n2024") still matches
+    # the summary's "June 26, 2024" (the us-v-stryzhak false positive).
+    if re.sub(r"\s+", " ", raw).lower() in corpus.lower():
+        return True
+    y, m, d = iso.split("-")
+    candidates = [
+        f"{int(m)}/{int(d)}/{y}",
+        f"{int(m)}/{int(d)}/{y[2:]}",
+        f"{int(m):02d}/{int(d):02d}/{y}",
+        iso,
+    ]
+    return any(c in corpus for c in candidates)
+
+
+def _audit_summary_grounding(
+    text: str, *, known_dates: set[str], source_text: str = ""
+) -> list[str]:
+    """Return WARN-only grounding findings — dates / dollar amounts in the
+    summary not traceable to the scaffold or the source documents.
+
+    Biased toward silence: month-only ranges (no day) aren't matched at all,
+    "X million" approximations are skipped, and amounts are matched
+    comma-insensitively as substrings (so a real figure formatted differently
+    still passes). The refusal sentence is exempt.
+    """
+    if not text or text.strip() == llm.SUMMARY_INSUFFICIENT_DOCUMENTS.strip():
+        return []
+    # Collapse whitespace runs (PDF extraction sprinkles newlines mid-phrase)
+    # so a real date/amount split across lines still matches.
+    corpus = re.sub(r"\s+", " ", source_text or "")
+    corpus_nc = corpus.replace(",", "")
+    out: list[str] = []
+    for m in _GUARD_PROSE_DATE_RE.finditer(text):
+        mon = _GUARD_MONTHS[m.group(1).lower()[:3]]
+        iso = f"{int(m.group(3)):04d}-{mon:02d}-{int(m.group(2)):02d}"
+        if iso in known_dates or _date_in_corpus(iso, m.group(0), corpus):
+            continue
+        out.append(f"ungrounded date: {m.group(0)!r}")
+    for m in _GUARD_MONEY_RE.finditer(text):
+        raw = m.group(0)
+        if re.search(r"million|billion", raw, re.I):
+            continue  # approximate figure — too unreliable to verify
+        amt = raw.lstrip("$").strip().replace(",", "")
+        if amt and amt in corpus_nc:
+            continue
+        out.append(f"ungrounded amount: {raw!r}")
+    return out
+
+
+def _generate_guarded_summary(
+    *,
+    source_text: str,
+    docket_id: Optional[int],
+    **gen_kwargs: Any,
+) -> tuple[str, str]:
+    """Call ``llm.generate_docket_summary`` behind the truthfulness guard.
+
+    Generates once; if the draft trips :func:`_audit_summary_text`, regenerates
+    ONCE with the violations fed back as a correction, then keeps whichever
+    attempt has fewer violations (ties favor the corrected retry). Persistent
+    violations are logged at WARNING for operator review — the summary is never
+    blocked, matching the "keep + WARN" enforcement choice.
+
+    Finally, the chosen summary is run through :func:`_audit_summary_grounding`
+    (dates / amounts not traceable to the scaffold or documents). That is
+    WARN-only — it never retries or blocks — so a fabricated figure is surfaced
+    for an operator to verify without risking false-positive retries.
+    """
+    known_dates = _grounding_dates(gen_kwargs)
+    summary_text, model_id = llm.generate_docket_summary(**gen_kwargs)
+    violations = _audit_summary_text(summary_text, source_text=source_text)
+    if violations:
+        log.warning(
+            "summary: docket %s draft tripped truthfulness guard %s; "
+            "retrying generation once with correction",
+            docket_id,
+            violations,
+        )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction="; ".join(violations), **gen_kwargs
+        )
+        retry_violations = _audit_summary_text(retry_text, source_text=source_text)
+        if not retry_violations:
+            log.info(
+                "summary: docket %s retry cleared the truthfulness guard", docket_id
+            )
+            summary_text, model_id = retry_text, retry_model
+        else:
+            log.warning(
+                "summary: docket %s STILL tripped truthfulness guard after retry "
+                "(draft=%s retry=%s); keeping the attempt with fewer violations "
+                "for operator review — investigate the source documents",
+                docket_id,
+                violations,
+                retry_violations,
+            )
+            if len(retry_violations) <= len(violations):
+                summary_text, model_id = retry_text, retry_model
+
+    ungrounded = _audit_summary_grounding(
+        summary_text, known_dates=known_dates, source_text=source_text
+    )
+    if ungrounded:
+        log.warning(
+            "summary: docket %s — possible fabricated facts not found in the "
+            "structured-events scaffold or the source documents: %s; verify "
+            "against the docket before trusting these figures",
+            docket_id,
+            ungrounded,
+        )
+    return summary_text, model_id
+
+
+# ---------------------------------------------------------------------------
 # Per-docket entry point
 # ---------------------------------------------------------------------------
 
@@ -1547,7 +1823,16 @@ def summarize_docket(
             sealing_advisory.get("available_post_seal_entries"),
         )
 
-    summary_text, model_id = llm.generate_docket_summary(
+    # Corpus the truthfulness guard grounds tier-2 (custody/flight) claims
+    # against — the document text the LLM actually reads. A "remains a
+    # fugitive" / "at large" claim is allowed only if it appears here.
+    source_text = "\n".join(
+        d.get("text") or ""
+        for d in primary_documents + disposition_documents + (extra_documents or [])
+    )
+    summary_text, model_id = _generate_guarded_summary(
+        source_text=source_text,
+        docket_id=docket_id,
         case_name=case.name,
         aggregation_note=aggregation_note,
         docket=docket_for_prompt,

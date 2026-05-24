@@ -2242,6 +2242,72 @@ class TestGenerateDocketSummary:
         assert ident.startswith("gemini/")
         assert called["json_mode"] is False
 
+    def test_correction_appended_to_user_message(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "A corrected summary."
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+            correction="absence-of-record claim: 'no disposition has been entered'",
+        )
+        assert "CORRECTION REQUIRED" in captured["user"]
+        assert "no disposition has been entered" in captured["user"]
+
+    def test_no_correction_block_when_absent(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "A summary."
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+        )
+        assert "CORRECTION REQUIRED" not in captured["user"]
+
+    def test_prompt_does_not_license_fugitive_by_absence(self):
+        # AGENTS.md "documents-only — never inference": fugitive/at-large
+        # status must NOT be inferred from missing arrest entries. The prompt
+        # previously licensed exactly that ("...no apparent arrest is
+        # reflected in the docket)"); the rule is now documents-only with an
+        # explicit "unknown" framing for the undocumented case.
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "no apparent arrest is reflected in the docket)" not in p
+        assert "custody" in p.lower()
+        assert "unknown" in p.lower()
+
+    def test_prompt_forbids_decoding_dollar_figures_from_ocr_garble(self):
+        # The us-v-chapman regression: the restitution order's "Total" line
+        # OCR'd to "AD2, O52. 1S" and the model decoded that garble into a
+        # confident-looking figure that differed between runs (no clean source
+        # for the real amount exists). The prompt must tell it to state the
+        # obligation WITHOUT a number rather than reconstruct one from garble,
+        # and to OMIT it silently — never narrate the extraction limitation
+        # ("not clearly legible"), since the document is legible to a human.
+        p = llm.SUMMARY_SYSTEM_PROMPT.lower()
+        assert "garbled" in p
+        assert "legibly" in p or "legible" in p
+        assert "silently" in p
+
     def test_strips_code_fences_from_response(self, monkeypatch):
         monkeypatch.setattr(
             llm,

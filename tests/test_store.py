@@ -1365,6 +1365,150 @@ class TestCaseSummaries:
         assert 99 not in ids
 
 
+class TestSummaryStalePostureChange:
+    """upsert_hearing / upsert_deadline flag the docket's summary stale on a
+    posture change — a new event, a status change (scheduled→held / cancelled
+    / reinstated), or a reschedule — but NOT on a metadata-only re-save.
+
+    This is the complement to the primary-document / disposition trigger in
+    sync.process_entry (TestSummaryStaleMarkOnPrimaryOrDisposition). The
+    end-of-sync verify and dedupe sweeps change a hearing's posture WITHOUT
+    any new document entry, so before this hook a verify-pass MARK_HELD (an
+    oral argument flipped to 'held' the day after it happened) left the
+    summary frozen at its pre-event prose. The canonical regression is
+    anthropic-v-dow 26-1049 (D.C. Cir.).
+    """
+
+    DKT = "26-1049"
+    COURT = "cadc"
+    HDID = 12345  # _hearing() default docket_id
+    DLID = 72380208  # _deadline() default docket_id
+
+    def _cache_docket(self, store: Store, docket_id: int):
+        store.upsert_docket_meta(
+            docket_id,
+            {
+                "court_id": self.COURT,
+                "docket_number": self.DKT,
+                "case_name": "Anthropic PBC v. United States Department of War",
+                "absolute_url": "/docket/x/",
+            },
+        )
+
+    def _seed_summary(self, store: Store, case_id: str):
+        # Reset stale=0; call AFTER any seeding upsert so the precondition
+        # holds regardless of what the seed itself flipped.
+        store.upsert_case_summary(
+            case_id, self.DKT, self.COURT, summary="pre-event prose", model="m"
+        )
+        assert store.is_summary_stale(case_id, self.DKT, self.COURT) is False
+
+    # --- hearings ---
+
+    def test_status_change_flags_stale(self, store: Store):
+        # The anthropic-v-dow regression: scheduled oral argument → 'held'.
+        self._cache_docket(store, self.HDID)
+        store.upsert_hearing(_hearing(status="scheduled"))
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(status="held"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is True
+
+    def test_reschedule_flags_stale(self, store: Store):
+        self._cache_docket(store, self.HDID)
+        store.upsert_hearing(_hearing())
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(starts_at_utc="2026-09-01T15:00:00+00:00"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is True
+
+    def test_new_event_flags_existing_summary_stale(self, store: Store):
+        self._cache_docket(store, self.HDID)
+        self._seed_summary(store, "us-v-x")
+        # A brand-new hearing key on a docket that already has a summary.
+        store.upsert_hearing(_hearing(key="oral-arg", status="scheduled"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is True
+
+    def test_metadata_only_change_does_not_flag_stale(self, store: Store):
+        # Same status, same starts_at_utc — only notes / source_entry_ids
+        # differ (the dedupe-target source-id merge shape). No churn.
+        self._cache_docket(store, self.HDID)
+        store.upsert_hearing(_hearing())
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(notes="dial-in changed", source_entry_ids=[1, 2]))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+
+    def test_incoming_null_docket_resolves_via_prior_row(self, store: Store):
+        # A sibling-docket CANCEL passes docket_id=None (sticky-docket logic);
+        # the flip must still resolve the docket via the prior row.
+        self._cache_docket(store, self.HDID)
+        store.upsert_hearing(_hearing(docket_id=self.HDID, status="scheduled"))
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(docket_id=None, status="cancelled"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is True
+
+    def test_no_docket_meta_is_noop(self, store: Store):
+        # Hearing's docket was never cached → get_docket_meta is None → the
+        # flip is a silent no-op (the document-trigger path still covers it).
+        store.upsert_hearing(_hearing(status="scheduled"))
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(status="held"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+
+    def test_meta_without_court_id_is_noop(self, store: Store):
+        # Warm-up shape: docket row exists but court_id not yet known.
+        store.upsert_docket_meta(
+            self.HDID,
+            {
+                "court_id": None,
+                "docket_number": self.DKT,
+                "case_name": "x",
+                "absolute_url": "/x/",
+            },
+        )
+        store.upsert_hearing(_hearing(status="scheduled"))
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(status="held"))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+
+    def test_new_event_with_null_docket_is_noop(self, store: Store):
+        # docket_id None on a brand-new row → nothing to resolve, no crash.
+        self._cache_docket(store, self.HDID)
+        self._seed_summary(store, "us-v-x")
+        store.upsert_hearing(_hearing(key="ghost", docket_id=None))
+        assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
+
+    # --- deadlines (parallel structure) ---
+
+    def test_deadline_status_change_flags_stale(self, store: Store):
+        self._cache_docket(store, self.DLID)
+        store.upsert_deadline(_deadline(status="pending"))
+        self._seed_summary(store, "anthropic-v-dow")
+        store.upsert_deadline(_deadline(status="met"))
+        assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is True
+
+    def test_deadline_reschedule_flags_stale(self, store: Store):
+        self._cache_docket(store, self.DLID)
+        store.upsert_deadline(_deadline())
+        self._seed_summary(store, "anthropic-v-dow")
+        store.upsert_deadline(_deadline(due_at_utc="2026-06-07T21:00:00+00:00"))
+        assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is True
+
+    def test_deadline_metadata_only_change_does_not_flag_stale(self, store: Store):
+        self._cache_docket(store, self.DLID)
+        store.upsert_deadline(_deadline())
+        self._seed_summary(store, "anthropic-v-dow")
+        store.upsert_deadline(_deadline(notes="clarified", source_entry_ids=[1, 9]))
+        assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is False
+
+    def test_deadline_incoming_null_docket_resolves_via_prior_row(self, store: Store):
+        # Mirror of the hearing case: a sibling-docket CANCEL passes
+        # docket_id=None; the flip resolves the docket via the prior row.
+        self._cache_docket(store, self.DLID)
+        store.upsert_deadline(_deadline(docket_id=self.DLID, status="pending"))
+        self._seed_summary(store, "anthropic-v-dow")
+        store.upsert_deadline(_deadline(docket_id=None, status="cancelled"))
+        assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is True
+
+
 class TestSchemaMigration:
     def test_old_db_gets_new_columns_added(self, tmp_path):
         # Simulate a pre-migration DB by creating a minimal schema by hand.

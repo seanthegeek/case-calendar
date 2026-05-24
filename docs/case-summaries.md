@@ -70,11 +70,13 @@ case_summaries:
 | `debounce_seconds` | no | Webhook-only. How many seconds of quiet to wait after the last summary-relevant entry before re-running the LLM. Defaults to 300. Polling syncs ignore this — they regenerate immediately. |
 
 When `enabled: true`, summaries auto-refresh as part of `sync` and `serve`:
-whenever the syncer sees a new primary document or disposition, it flips
-the row's `stale` flag. At the end of the sync (or after the debounce
-timer fires in `serve`), the pipeline regenerates every stale row before
-re-emitting the index. The page reflects the case's current posture without
-you running anything manually.
+whenever the syncer sees a new primary document or disposition — or whenever
+a hearing or deadline changes posture (gets marked held / cancelled, or
+rescheduled), even when no new document accompanies it — it flips the row's
+`stale` flag. At the end of the sync (or after the debounce timer fires in
+`serve`), the pipeline regenerates every stale row before re-emitting the
+index. The page reflects the case's current posture without you running
+anything manually.
 
 ## Cost
 
@@ -133,10 +135,50 @@ also told:
 - When a judgment is provided, the imposed sentence (term of
   imprisonment, supervised release, fine, restitution) must appear in
   the summary verbatim.
+- A defendant's custody status ("remains a fugitive", "in custody",
+  "at large") may be stated only when a document establishes it. When the
+  record doesn't, the status is described as **unknown** — never inferred
+  from the absence of an arrest entry on the docket.
+- Don't assert the absence of hearings, deadlines, or a disposition.
+  A docket can be sealed or only partly mirrored in RECAP, so "no hearings
+  are set" / "no disposition has been entered" can be quietly wrong; the
+  summary states what *is* in the record and stays silent on the rest.
+- State a specific dollar figure (restitution, forfeiture, fine) only when
+  it appears legibly in the documents. Hand-filled court forms OCR into
+  noise, and a number reconstructed from garbled text is a fabrication —
+  the summary says "ordered to pay restitution" without inventing an amount,
+  and **omits it silently**: it does not explain *why* the number is missing
+  ("not clearly legible", "could not be read"), because the order is legible
+  to a human — the gap is our OCR's, not the document's, and it isn't
+  subscriber-facing.
 - The system prompt does NOT render the legal disclaimers ("AI-generated,
   may contain mistakes" + presumption of innocence) — those are baked
   into the page template so the language stays stable regardless of
   model output.
+
+## The post-generation guard
+
+Prompt rules are *soft* — a model can ignore them, and for a brand-new
+case there's no earlier good summary to fall back on, so a slip would reach
+subscribers. So a deterministic guard runs on every generated summary
+before it's stored, as a hard backstop to the prompt rules above:
+
+- **Absence-of-record and unsupported-custody claims** (a "no disposition
+  has been entered" in any phrasing, or a "remains at large" the documents
+  don't support) trigger **one regeneration** with the specific problem
+  fed back to the model. Whichever attempt is cleaner is kept; if the
+  problem persists, the summary is still stored but a warning is logged
+  for review. The summary is never blocked.
+- **Dates and dollar amounts** that can't be traced to the hearings /
+  deadlines scaffold or the source documents are **logged for operator
+  review** (not retried — dates appear in nearly every summary and
+  harmless formatting differences would otherwise cause churn). This is
+  the check that catches a hallucinated restitution figure or an invented
+  hearing date.
+
+The guard is why the project can run summaries unattended: a wrong fact on
+a public calendar is worse than a missing one, and the guard makes the
+wrong-fact case either self-correct or surface in the logs.
 
 ## Multi-docket aggregation
 

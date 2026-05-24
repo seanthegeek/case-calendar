@@ -8,6 +8,69 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.5.0] - 2026-05-24
+
+### Added
+
+- **Post-generation truthfulness guard on case summaries.** A
+  deterministic backstop runs on every generated summary, independent of
+  the prompt rules (which a model can ignore, and on a brand-new case
+  there is no earlier good summary to fall back to). Absence-of-record
+  and unsupported custody/flight claims trigger a single regeneration
+  with the specific violation fed back to the model; the cleaner attempt
+  is kept and a WARNING is logged if any persists (the summary is never
+  blocked). Ungrounded dates and dollar amounts — figures traceable to
+  neither the hearings/deadlines scaffold nor the source documents — are
+  logged for operator review (WARN-only, since formatting variance makes
+  that class false-positive-prone). On first real use it caught a
+  hallucinated restitution figure that differed from one run to the next.
+
+### Changed
+
+- **Case summaries are now strictly documents-only about custody status.**
+  A defendant is described as a fugitive / at large / in custody ONLY
+  when a source document establishes it; when the record doesn't, the
+  status is stated as unknown rather than inferred from the absence of an
+  arrest entry. The summary prompt previously *licensed* that inference,
+  which produced false "remains at large" claims on charged-but-not-yet-
+  arrested defendants (and would have been flatly wrong for one defendant
+  since arrested and extradited).
+- **Summaries stay silent on absent scheduling / disposition.** The rule
+  against "no hearings have been recorded" / "no disposition has been
+  entered" now covers reworded and hedged variants ("...have been filed",
+  "the docket does not reflect...", "...in the available record") — a
+  docket can be sealed or only partly mirrored, so asserting absence can
+  be quietly wrong.
+- **Summaries no longer print a dollar figure that isn't legible in the
+  documents.** Hand-filled restitution schedules OCR into noise; rather
+  than reconstruct a number from garble, the summary states the
+  obligation exists without an amount — and omits it *silently*, without
+  narrating the OCR limitation ("not clearly legible" misdescribes a
+  document that's perfectly legible to a human; the gap is ours, and
+  isn't subscriber-facing).
+
+### Fixed
+
+- **Case summaries regenerate when a hearing or deadline changes posture,
+  not only when a new document lands.** The end-of-sync verify and dedupe
+  sweeps mark hearings/deadlines held / cancelled / rescheduled without a
+  new document entry, so the document-only stale trigger missed them and
+  a summary could freeze — an oral argument flipped to "held" while the
+  prose still read "oral argument is scheduled." `Store.upsert_hearing` /
+  `upsert_deadline` now flag the docket's summary stale on a new event or
+  a status / date change, the one chokepoint every posture-changing
+  mutation passes through. Metadata-only re-saves don't, so there's no
+  churn.
+
+### Internal
+
+- Architecture docs (`docs/architecture.md`, `docs/case-summaries.md`)
+  and the AGENTS.md design-decision reference updated for the
+  posture-change refresh and the truthfulness guard; refreshed the stale
+  GitHub line anchors for the runtime prompt constants.
+
+[0.5.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.5.0
+
 ## [0.4.0] - 2026-05-19
 
 ### Added
