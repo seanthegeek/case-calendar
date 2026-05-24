@@ -1890,11 +1890,16 @@ them.
 OMIT the figure SILENTLY — do NOT tell the subscriber why it's missing.
 The garbling is OUR extraction limitation (these orders are perfectly
 legible to a person reading the PDF), not a property of the document,
-and it is not subscriber-facing. Phrasings like "the precise amount is
-not clearly legible", "the total could not be read from the order", or
-"the restitution figure is not available in the documents" are
-FORBIDDEN — they misdescribe a human-legible document and narrate a
-tooling problem. Just write "the court ordered restitution" and move on.
+and it is not subscriber-facing. This is about the CLASS of statement,
+not the exact words: do NOT describe the amount's absence in ANY
+phrasing. All of these are FORBIDDEN, and so is anything like them —
+"the precise amount is not clearly legible", "the total could not be
+read from the order", "the restitution figure is not available in the
+documents", "in an amount that cannot be precisely stated from the
+available record", "an unspecified amount", "an amount not reflected in
+the record". Write "the court ordered restitution" (or "restitution was
+ordered") and STOP — exactly as if the amount were simply not the point.
+Never gesture at the gap.
 
 CRITICAL — when a forfeiture money judgment against the same
 defendant equals the restitution amount, OMIT the forfeiture money

@@ -146,7 +146,11 @@ also told:
 - State a specific dollar figure (restitution, forfeiture, fine) only when
   it appears legibly in the documents. Hand-filled court forms OCR into
   noise, and a number reconstructed from garbled text is a fabrication —
-  the summary says "ordered to pay restitution" without inventing an amount.
+  the summary says "ordered to pay restitution" without inventing an amount,
+  and **omits it silently**: it does not explain *why* the number is missing
+  ("not clearly legible", "could not be read"), because the order is legible
+  to a human — the gap is our OCR's, not the document's, and it isn't
+  subscriber-facing.
 - The system prompt does NOT render the legal disclaimers ("AI-generated,
   may contain mistakes" + presumption of innocence) — those are baked
   into the page template so the language stays stable regardless of

@@ -274,7 +274,9 @@ more than a missing one.
   deadlines / a disposition (stay silent on what isn't in the record),
   and printing a dollar figure that isn't legibly in the documents (court
   forms with hand-filled restitution amounts OCR into noise, and the model
-  would otherwise guess). Because prompt rules are soft, a deterministic
+  would otherwise guess — it states the obligation without the number, and
+  *silently*, since "not legible" would misdescribe a document that's
+  perfectly readable to a human). Because prompt rules are soft, a deterministic
   post-generation guard backs them: it scans the generated prose,
   regenerates once (feeding the violation back) on an absence / unsupported-
   custody claim, and logs a warning for any ungrounded date or amount it
