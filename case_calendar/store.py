@@ -1063,6 +1063,16 @@ class Store:
         return self._row_to_hearing(row) if row else None
 
     def upsert_hearing(self, h: dict[str, Any]) -> None:
+        # Read the prior row first so we can tell a posture change (new
+        # event / status change / reschedule) from a metadata-only re-save
+        # (notes, dial-in, source_entry_ids merge). Only posture changes
+        # flag the docket's summary stale — see
+        # _flag_summary_stale_for_docket.
+        prior = self.conn.execute(
+            "SELECT status, starts_at_utc, docket_id FROM hearings "
+            "WHERE case_id=? AND hearing_key=?",
+            (h["case_id"], h["hearing_key"]),
+        ).fetchone()
         self.conn.execute(
             """
             INSERT INTO hearings
@@ -1107,6 +1117,18 @@ class Store:
                 _now(),
             ),
         )
+        if (
+            prior is None
+            or prior["status"] != h["status"]
+            or prior["starts_at_utc"] != h.get("starts_at_utc")
+        ):
+            # docket_id is COALESCE-sticky in the UPDATE above, so an
+            # incoming None on an existing row keeps the stored docket —
+            # use the prior row's docket_id to resolve the summary group.
+            docket_id = h.get("docket_id")
+            if docket_id is None and prior is not None:
+                docket_id = prior["docket_id"]
+            self._flag_summary_stale_for_docket(h["case_id"], docket_id)
 
     def set_gcal_id(self, case_id: str, hearing_key: str, gcal_event_id: str) -> None:
         self.conn.execute(
@@ -1177,6 +1199,14 @@ class Store:
         return self._row_to_deadline(row) if row else None
 
     def upsert_deadline(self, d: dict[str, Any]) -> None:
+        # Mirror of upsert_hearing: read the prior row so a posture change
+        # (new deadline / status change / reschedule) flags the summary
+        # stale while a metadata-only re-save does not.
+        prior = self.conn.execute(
+            "SELECT status, due_at_utc, docket_id FROM deadlines "
+            "WHERE case_id=? AND deadline_key=?",
+            (d["case_id"], d["deadline_key"]),
+        ).fetchone()
         self.conn.execute(
             """
             INSERT INTO deadlines
@@ -1215,6 +1245,15 @@ class Store:
                 _now(),
             ),
         )
+        if (
+            prior is None
+            or prior["status"] != d["status"]
+            or prior["due_at_utc"] != d.get("due_at_utc")
+        ):
+            docket_id = d.get("docket_id")
+            if docket_id is None and prior is not None:
+                docket_id = prior["docket_id"]
+            self._flag_summary_stale_for_docket(d["case_id"], docket_id)
 
     def set_m365_id_for_deadline(
         self,
@@ -1298,6 +1337,51 @@ class Store:
                 "WHERE case_id=? AND docket_number=? AND court_id=?",
                 (_now(), case_id, docket_number, court_id),
             )
+
+    def _flag_summary_stale_for_docket(
+        self, case_id: str, docket_id: Optional[int]
+    ) -> None:
+        """Flag the docket's logical-PACER summary stale, joining the
+        caller's transaction (NO commit of its own).
+
+        Called from :meth:`upsert_hearing` / :meth:`upsert_deadline` whenever
+        a posture-changing mutation lands — a brand-new event, a status
+        change (scheduled→held / cancelled / reinstated), or a reschedule.
+        This is the complement to :meth:`mark_summary_stale`, which
+        ``sync.process_entry`` calls when a primary-document or disposition
+        ENTRY lands.
+
+        Document landings and calendar-posture changes are both "where does
+        the case stand?" signals, but the end-of-sync verify / dedupe sweeps
+        change posture WITHOUT any new document entry, so the document-only
+        trigger missed them. The canonical case: an oral argument flipped to
+        'held' by the verify pass the day after it happened (anthropic-v-dow
+        26-1049, D.C. Cir.) while the post-argument docket entries were
+        supplemental-briefing orders that match neither ``is_primary_document``
+        nor ``is_disposition`` — so the summary stayed frozen at its
+        pre-argument "oral argument is scheduled for May 19" prose.
+
+        No commit of its own so it can't split a sync's per-entry / per-sweep
+        batch into partial commits; the caller's existing commit flushes it.
+        Resolves docket_number / court_id from the dockets row — a docket
+        we've never cached (NULL meta) or a logical docket with no summary
+        row yet is a silent no-op, exactly like :meth:`mark_summary_stale`
+        (the absent row is itself the "needs regen" signal).
+        """
+        if docket_id is None:
+            return
+        meta = self.get_docket_meta(docket_id)
+        if not meta:
+            return
+        docket_number = meta.get("docket_number")
+        court_id = meta.get("court_id")
+        if not docket_number or not court_id:
+            return
+        self.conn.execute(
+            "UPDATE case_summaries SET stale=1, stale_since=? "
+            "WHERE case_id=? AND docket_number=? AND court_id=?",
+            (_now(), case_id, docket_number, court_id),
+        )
 
     def get_summary_stale_since(
         self,
