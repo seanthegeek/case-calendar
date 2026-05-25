@@ -151,6 +151,14 @@ also told:
   ("not clearly legible", "could not be read"), because the order is legible
   to a human — the gap is our OCR's, not the document's, and it isn't
   subscriber-facing.
+- When a restitution order is on the docket but its amount can't be read,
+  the summary drops *all* specific monetary figures — not just restitution.
+  Otherwise the legible penalties (say, a separately-printed forfeiture
+  order) would read as the defendant's total liability while the larger,
+  unknown restitution stays invisible. The pipeline detects this (a granted
+  restitution order with no extractable figure) and the summary says
+  "ordered to pay restitution" with no amounts; only the fixed special
+  assessment is kept.
 - The system prompt does NOT render the legal disclaimers ("AI-generated,
   may contain mistakes" + presumption of innocence) — those are baked
   into the page template so the language stays stable regardless of

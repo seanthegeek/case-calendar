@@ -4067,3 +4067,85 @@ class TestSummaryGroundingGuard:
         assert row is not None
         # The date is sourced from the aggregation note -> grounded, no WARN.
         assert not any("possible fabricated facts" in r.message for r in caplog.records)
+
+
+class TestRestitutionUnreadableDetector:
+    """`_restitution_amount_unreadable`: a granted restitution order present
+    but with no legibly-extractable dollar figure (us-v-chapman: handwritten
+    amounts that OCR to noise)."""
+
+    def test_restitution_order_no_figure_flags(self):
+        # Chapman shape: restitution order garbled, forfeiture order clean.
+        # Only the restitution order is consulted, so the readable forfeiture
+        # figure does NOT make it "readable".
+        docs = [
+            {
+                "description": "ORDER ... Government's motion for order of restitution",
+                "text": "restitution as follows: Total AD2, O52. 1S",
+            },
+            {
+                "description": "ORDER OF FORFEITURE",
+                "text": "forfeit $284,666.92 in identified funds",
+            },
+        ]
+        assert summary._restitution_amount_unreadable(docs) is True
+
+    def test_restitution_order_with_clean_figure_not_flagged(self):
+        docs = [
+            {
+                "description": "AMENDED JUDGMENT ... restitution",
+                "text": "ordered to pay $402,052.15 in restitution to six victims",
+            }
+        ]
+        assert summary._restitution_amount_unreadable(docs) is False
+
+    def test_no_restitution_order_not_flagged(self):
+        docs = [
+            {"description": "ORDER OF FORFEITURE", "text": "forfeit $284,666.92"},
+            {"description": "JUDGMENT in a Criminal Case", "text": "92 months"},
+        ]
+        assert summary._restitution_amount_unreadable(docs) is False
+
+    def test_empty_not_flagged(self):
+        assert summary._restitution_amount_unreadable([]) is False
+
+
+class TestRestitutionAdvisoryWiring:
+    def test_summarize_docket_passes_restitution_flag(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # When the detector fires, summarize_docket must pass
+        # restitution_unreadable=True into the generator (which renders the
+        # DOCKET FINANCIAL ADVISORY). Detector is forced here so the wiring
+        # test is decoupled from the disposition classifier.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text for the case."}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        monkeypatch.setattr(
+            summary, "_restitution_amount_unreadable", lambda docs: True
+        )
+        calls = []
+
+        def fake(**kw):
+            calls.append(kw)
+            return ("X was ordered to pay restitution.", "fake/model-v1")
+
+        monkeypatch.setattr(summary.llm, "generate_docket_summary", fake)
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert calls and calls[0]["restitution_unreadable"] is True

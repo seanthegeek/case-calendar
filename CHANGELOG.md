@@ -24,6 +24,19 @@ adheres to [Semantic Versioning][semver].
   aggregation note. The guard is not weakened — a date or amount absent
   from the documents, the structured-events scaffold, AND the operator
   metadata is still flagged.
+- **Case summaries no longer report a misleading partial financial
+  picture.** When a granted restitution order is on the docket but its
+  amount isn't legibly extractable (hand-filled / garbled OCR), the
+  pipeline now detects that — the entry's description marks it a restitution
+  order, yet no clean dollar figure extracts — and tells the summary LLM
+  (via a `DOCKET FINANCIAL ADVISORY`) to omit specific dollar amounts for
+  *all* monetary penalties and say the defendant "was ordered to pay
+  restitution." Previously the summary could state the legible figures from
+  a separate printed forfeiture order while the (larger, unknown)
+  restitution was invisible, which a subscriber would read as the total
+  liability. The fixed special assessment is the one exception. The detector
+  uses the strict disposition classifier, so it keys only off *granted*
+  orders — never a typed *proposed* order attached to a motion. (us-v-chapman.)
 
 [0.5.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.5.1
 

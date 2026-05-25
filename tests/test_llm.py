@@ -2295,6 +2295,52 @@ class TestGenerateDocketSummary:
         assert "custody" in p.lower()
         assert "unknown" in p.lower()
 
+    def test_financial_advisory_rendered_when_restitution_unreadable(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "X was ordered to pay restitution."
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+            restitution_unreadable=True,
+        )
+        assert "DOCKET FINANCIAL ADVISORY" in captured["user"]
+
+    def test_no_financial_advisory_by_default(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "summary"
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+        )
+        assert "DOCKET FINANCIAL ADVISORY" not in captured["user"]
+
+    def test_prompt_has_financial_advisory_rule(self):
+        # The us-v-chapman partial-picture rule: when restitution is ordered
+        # but unreadable, suppress all monetary figures (forfeiture included).
+        assert "DOCKET FINANCIAL ADVISORY" in llm.SUMMARY_SYSTEM_PROMPT
+
     def test_prompt_forbids_decoding_dollar_figures_from_ocr_garble(self):
         # The us-v-chapman regression: the restitution order's "Total" line
         # OCR'd to "AD2, O52. 1S" and the model decoded that garble into a

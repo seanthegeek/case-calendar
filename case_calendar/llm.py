@@ -1901,6 +1901,27 @@ the record". Write "the court ordered restitution" (or "restitution was
 ordered") and STOP — exactly as if the amount were simply not the point.
 Never gesture at the gap.
 
+CRITICAL — when a DOCKET FINANCIAL ADVISORY block appears in the user
+message, a granted restitution order is on the docket but its amount is
+not legibly extractable. In that situation the financial picture is
+INCOMPLETE: the restitution dollar figure is unknown, so reporting only
+the OTHER monetary penalties that DID extract (a printed forfeiture
+order's amounts, etc.) would let a subscriber read those figures as the
+defendant's total liability when a larger, unknown restitution exists.
+So when the advisory is present, do NOT state any specific dollar amount
+for restitution OR for forfeiture (money judgments or dollar-sum
+forfeiture) — even if some of those amounts ARE legible in their own
+documents. Say the defendant "was ordered to pay restitution" (and "and
+forfeiture", generically, if a forfeiture order exists), without figures.
+The fixed statutory special assessment ($100 / $200 / $300) is the one
+exception and may still be stated — it is a small fixed amount no reader
+would mistake for the total. Identified-property forfeiture of specific
+NON-dollar assets (a named house, vehicle, or cryptocurrency wallet) may
+also still be named, since it isn't a dollar figure that sums into a
+total. This rule overrides the "imposed sentence figures must appear"
+and "identified-property forfeiture stays" guidance ONLY for the
+dollar-amount monetary penalties, and ONLY while the advisory is present.
+
 CRITICAL — when a forfeiture money judgment against the same
 defendant equals the restitution amount, OMIT the forfeiture money
 judgment from the summary. Subscribers reading the summary haven't
@@ -2064,11 +2085,26 @@ def _build_summary_user_message(
     extra_documents: Optional[list[dict[str, Any]]] = None,
     extra_char_budget: int = 40_000,
     sealing_advisory: Optional[dict[str, Any]] = None,
+    restitution_unreadable: bool = False,
 ) -> str:
     parts = [
         f"CASE: {case_name}",
         f"DOCKET: {docket.get('docket_number')} ({docket.get('court_citation') or docket.get('court_id')})",
     ]
+    if restitution_unreadable:
+        parts.append("")
+        parts.append(
+            "DOCKET FINANCIAL ADVISORY (programmatic detection — trusted "
+            "operator-supplied signal, not document text): A restitution order "
+            "is on this docket, but its dollar amount is NOT legibly extractable "
+            "(hand-filled / garbled in the source). Per the matching rule in the "
+            'system prompt: say the defendant "was ordered to pay restitution" '
+            "WITHOUT a figure, and do NOT state specific dollar amounts for any "
+            "other monetary penalty either (forfeiture money judgments, "
+            "forfeiture of dollar sums) — listing only the legible ones would "
+            "imply they are the total liability. The fixed special assessment "
+            "may still be stated."
+        )
     if aggregation_note:
         parts.append(f"AGGREGATION NOTE (from operator): {aggregation_note}")
     if sealing_advisory:
@@ -2191,6 +2227,7 @@ def generate_docket_summary(
     deadlines: list[dict[str, Any]],
     extra_documents: Optional[list[dict[str, Any]]] = None,
     sealing_advisory: Optional[dict[str, Any]] = None,
+    restitution_unreadable: bool = False,
     provider: Optional[str] = None,
     model: Optional[str] = None,
     max_tokens: int = 800,
@@ -2242,6 +2279,7 @@ def generate_docket_summary(
         hearings=hearings,
         deadlines=deadlines,
         sealing_advisory=sealing_advisory,
+        restitution_unreadable=restitution_unreadable,
         primary_char_budget=primary_char_budget,
         disposition_char_budget=disposition_char_budget,
         extra_char_budget=extra_char_budget,

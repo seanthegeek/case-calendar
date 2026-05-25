@@ -1467,6 +1467,44 @@ def _audit_summary_grounding(
     return out
 
 
+# A clean, substantial dollar figure ($NNN and up). Used to tell whether a
+# restitution order's amount actually extracted vs came through as garbled
+# hand-filled-form OCR.
+_RESTITUTION_FIGURE_RE = re.compile(r"\$\s?\d[\d,]{2,}(?:\.\d{2})?")
+
+
+def _restitution_amount_unreadable(
+    disposition_documents: list[dict[str, Any]],
+) -> bool:
+    """True when a granted restitution order is among the dispositions but no
+    clean dollar figure extracts from any of them.
+
+    The amount is hand-filled / garbled (CourtListener / our OCR produces
+    noise for handwriting), so the summary must NOT state specific monetary
+    figures: reporting only the OTHER, legible monetary penalties (e.g. a
+    printed forfeiture order) would read to a subscriber as the defendant's
+    total liability while a larger, unknown restitution exists. The
+    us-v-chapman case is canonical — the entered restitution order (#49) has
+    handwritten amounts that OCR'd to noise ("Total AD2, O52. 1S"), while the
+    separate forfeiture order (#43) carries clean printed figures.
+
+    ``disposition_documents`` is already the strict-classifier-granted set
+    (``_is_disposition_document`` excludes motions / notices / *proposed*
+    orders), so this only ever keys off ACTUAL granted restitution orders —
+    never the typed proposed order a motion attaches.
+    """
+    restitution_orders = [
+        d
+        for d in disposition_documents
+        if re.search(r"restitution", d.get("description") or "", re.I)
+    ]
+    if not restitution_orders:
+        return False
+    return not any(
+        _RESTITUTION_FIGURE_RE.search(d.get("text") or "") for d in restitution_orders
+    )
+
+
 def _generate_guarded_summary(
     *,
     source_text: str,
@@ -1838,6 +1876,22 @@ def summarize_docket(
     grounding_parts += [d.get("operator_note") for d in (extra_documents or [])]
     grounding_parts.append(aggregation_note)
     source_text = "\n".join(p for p in grounding_parts if p)
+
+    # When a granted restitution order is present but its amount didn't
+    # extract (hand-filled / garbled OCR), tell the LLM to omit ALL specific
+    # monetary figures and say "ordered to pay restitution" — otherwise the
+    # legible penalties (e.g. a printed forfeiture order) read as the total
+    # liability while the larger unknown restitution is invisible. See the
+    # us-v-chapman case and the DOCKET FINANCIAL ADVISORY prompt rule.
+    restitution_unreadable = _restitution_amount_unreadable(disposition_documents)
+    if restitution_unreadable:
+        log.info(
+            "summary: %s (%s) — restitution ordered but amount not legibly "
+            "extractable; advising the LLM to omit specific monetary figures",
+            docket_number,
+            court_id,
+        )
+
     summary_text, model_id = _generate_guarded_summary(
         source_text=source_text,
         docket_id=docket_id,
@@ -1850,6 +1904,7 @@ def summarize_docket(
         hearings=hearings,
         deadlines=deadlines,
         sealing_advisory=sealing_advisory,
+        restitution_unreadable=restitution_unreadable,
         provider=provider,
         model=model,
     )
