@@ -4023,3 +4023,47 @@ class TestSummaryGroundingGuard:
         assert len(calls) == 1  # WARN-only — no retry
         assert "June 9, 2026" in row["summary"]  # stored as-is, not blocked
         assert any("possible fabricated facts" in r.message for r in caplog.records)
+
+    def test_aggregation_note_date_is_grounded_not_flagged(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        # us-v-gholinejad: a date that lives ONLY in the operator's
+        # aggregation_note (a sentencing date from a sibling district docket,
+        # absent from this appeal docket's own records) must NOT trip the
+        # grounding guard — the note is trusted metadata the model may cite.
+        import logging
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body, no dates."}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        _queue_llm(
+            monkeypatch,
+            "X was sentenced on November 3, 2025; this is the direct appeal.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(
+                cl=cl,
+                store=store,
+                case=case,
+                docket_id=1,
+                aggregation_note="Sentenced on November 3, 2025 to 72 months imprisonment.",
+            )
+        assert row is not None
+        # The date is sourced from the aggregation note -> grounded, no WARN.
+        assert not any("possible fabricated facts" in r.message for r in caplog.records)

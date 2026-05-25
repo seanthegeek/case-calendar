@@ -1823,13 +1823,21 @@ def summarize_docket(
             sealing_advisory.get("available_post_seal_entries"),
         )
 
-    # Corpus the truthfulness guard grounds tier-2 (custody/flight) claims
-    # against — the document text the LLM actually reads. A "remains a
-    # fugitive" / "at large" claim is allowed only if it appears here.
-    source_text = "\n".join(
-        d.get("text") or ""
+    # Corpus the guards ground claims against — everything the LLM was given
+    # and may legitimately cite: the document text PLUS operator-supplied
+    # trusted metadata (the aggregation note and any extra_documents operator
+    # notes). Without the metadata, a date or amount an operator puts in a
+    # note — e.g. a sentencing date conveyed via aggregation_note for an
+    # appeal docket whose own record holds no judgment (the us-v-gholinejad
+    # case) — would be falsely flagged as ungrounded. A custody/flight claim
+    # or a date/amount is allowed only if it appears somewhere in here.
+    grounding_parts: list[Optional[str]] = [
+        d.get("text")
         for d in primary_documents + disposition_documents + (extra_documents or [])
-    )
+    ]
+    grounding_parts += [d.get("operator_note") for d in (extra_documents or [])]
+    grounding_parts.append(aggregation_note)
+    source_text = "\n".join(p for p in grounding_parts if p)
     summary_text, model_id = _generate_guarded_summary(
         source_text=source_text,
         docket_id=docket_id,
