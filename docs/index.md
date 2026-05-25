@@ -92,6 +92,7 @@ These pages are short on purpose. Read the one you need, skip the rest.
 | [AI case summaries](case-summaries.md) | The optional 2-4 sentence prose summary rendered on the index page, how it stays current, and how to fill CourtListener gaps. |
 | [Public index page](public-page.md) | Generate a static `index.html` that lists every calendar, with subscribe buttons and case details — ready to put behind any HTTP server. |
 | [Architecture](architecture.md) | What's going on under the hood: pipeline shape, design choices, and the data model. |
+| [LLM prompts](llm-prompts.md) | The exact system prompt behind every extraction, verification, and summary call, reproduced verbatim. |
 
 ## See it live
 

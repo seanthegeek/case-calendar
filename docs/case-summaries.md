@@ -137,8 +137,19 @@ also told:
   the summary verbatim.
 - A defendant's custody status ("remains a fugitive", "in custody",
   "at large") may be stated only when a document establishes it. When the
-  record doesn't, the status is described as **unknown** — never inferred
-  from the absence of an arrest entry on the docket.
+  record doesn't, the status is **omitted entirely** — the summary says
+  nothing about custody, and in particular does *not* announce that the
+  status is "unknown" or "cannot be determined", which is pointless noise
+  about what the record doesn't show. Custody is never inferred from the
+  absence of an arrest entry on the docket.
+- Speculative or conditional future outcomes and routine sentencing
+  boilerplate are dropped. A scheduled event keeps its date, but the
+  hypothetical consequence is cut: "sentencing is scheduled for June 3,
+  2026, at which time X will be remanded to the Bureau of Prisons if a term
+  of imprisonment is imposed" becomes just "sentencing is scheduled for
+  June 3, 2026". Phrasings like "if convicted" and "should the court
+  impose" are forbidden — the summary states what *has* happened and what
+  *is* scheduled, nothing hypothetical.
 - Don't assert the absence of hearings, deadlines, or a disposition.
   A docket can be sealed or only partly mirrored in RECAP, so "no hearings
   are set" / "no disposition has been entered" can be quietly wrong; the
@@ -174,11 +185,16 @@ subscribers. So a deterministic guard runs on every generated summary
 before it's stored, as a hard backstop to the prompt rules above:
 
 - **Absence-of-record and unsupported-custody claims** (a "no disposition
-  has been entered" in any phrasing, or a "remains at large" the documents
-  don't support) trigger **one regeneration** with the specific problem
-  fed back to the model. Whichever attempt is cleaner is kept; if the
-  problem persists, the summary is still stored but a warning is logged
-  for review. The summary is never blocked.
+  has been entered" in any phrasing, a "remains at large" the documents
+  don't support, a "custody status cannot be determined" that should have
+  been omitted, or a speculative "if convicted…" / "if a term of
+  imprisonment is imposed…" outcome) trigger **one regeneration** with the
+  specific problem fed back to the model. The patterns match by
+  *construction* — a negation plus a procedural-record noun, a custody
+  keyword plus a "we-don't-know" qualifier, a conditional-outcome phrase —
+  so rewording around a literal string doesn't slip past. Whichever attempt
+  is cleaner is kept; if the problem persists, the summary is still stored
+  but a warning is logged for review. The summary is never blocked.
 - **Dates and dollar amounts** that can't be traced to the hearings /
   deadlines scaffold, the source documents, or the operator-supplied notes
   (the `aggregation_note` and any `extra_documents` notes) are **logged for

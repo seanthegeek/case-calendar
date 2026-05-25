@@ -3689,6 +3689,17 @@ class TestSummaryTruthfulnessGuard:
             "X is charged. No disposition documents have been filed in the available record.",
             "X is charged. The public docket does not reflect any scheduled hearings.",
             "X is charged; no judgment is reflected in the available record.",
+            # Custody "we don't know" noise — pointless, must be OMITTED, not
+            # announced (us-v-jin / us-v-gholinejad).
+            "The custody status of the remaining defendants cannot be "
+            "determined from the available record.",
+            "It is unknown whether the defendant has been arrested.",
+            # Speculative / conditional outcomes + obvious boilerplate — keep
+            # the scheduled event, drop the hypothetical consequence
+            # (us-v-martino).
+            "Sentencing is set for June 3, 2026; X will be remanded to the "
+            "Bureau of Prisons if a term of imprisonment is imposed.",
+            "If convicted, the defendant faces up to 20 years.",
         ],
     )
     def test_absence_claims_flagged(self, text):
@@ -3698,17 +3709,16 @@ class TestSummaryTruthfulnessGuard:
         "text",
         [
             # Documented custody status (past-tense, attributed to a source) —
-            # not an absence-of-record construction.
+            # not an absence-of-record construction, and not a "we don't know".
             "The information sheet indicates he had not been arrested as of that date.",
-            # The allowed custody "unknown" framing (the deliberate exception).
-            "The custody status of the remaining defendants cannot be "
-            "determined from the available record.",
             # Ordinary documented financial fact — "restitution" is not a
             # procedural-posture noun, so "no restitution" must not trip.
             "He was sentenced to 60 months with no restitution ordered.",
+            # A scheduled event WITH its date and no conditional consequence.
+            "Sentencing is scheduled for June 3, 2026.",
         ],
     )
-    def test_documented_or_unknown_framing_not_flagged(self, text):
+    def test_documented_or_scheduled_facts_not_flagged(self, text):
         assert summary._audit_summary_text(text, source_text="") == []
 
     def test_custody_claim_flagged_when_ungrounded(self):

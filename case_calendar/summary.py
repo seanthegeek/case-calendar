@@ -1277,11 +1277,12 @@ def _borrow_primary_from_siblings(
 # disposition documents have been FILED" / "the docket does not REFLECT any
 # scheduled hearings", neither of which the original entered-only pattern
 # caught). Hedging with "in the available record" does NOT exempt these — for
-# procedural posture the rule is silence (the custody-status exception, where
-# "unknown" is allowed, is handled separately and is deliberately NOT in the
-# noun list below). The noun list is scoped to procedural-posture terms so
-# "no restitution" / "no fewer than three counts" — legitimate documented
-# facts — don't trip it.
+# procedural posture the rule is silence. Custody-status "we don't know"
+# phrasings ("cannot be determined", "status is unknown") and speculative
+# conditional outcomes ("if convicted", "if a term of imprisonment is
+# imposed") get their own patterns below — all the same omit-the-pointless-
+# content rule. The procedural-noun list is scoped so "no restitution" / "no
+# fewer than three counts" — legitimate documented facts — don't trip it.
 _GUARD_PROC_NOUN = (
     r"(?:disposition|judgments?|hearings?|deadlines?|scheduling\s+orders?|"
     r"docket\s+entr(?:y|ies)|trial\s+dates?|recent\s+activity|"
@@ -1306,6 +1307,28 @@ _GUARD_ABSENCE_RES = [
     ),
     # closing "the case remains pending" positive claim.
     re.compile(r"\bthe case remains pending\b", re.I),
+    # Custody / arrest "we don't know" noise — stating what the record does
+    # NOT establish about a defendant's custody is pointless; OMIT it, don't
+    # announce "unknown" (us-v-jin / us-v-gholinejad).
+    re.compile(r"\bcannot be determined from the\b", re.I),
+    re.compile(r"\bit is unknown whether\b", re.I),
+    re.compile(
+        r"\b(?:custody|arrest|appearance)\s+status\b[^.]{0,40}?"
+        r"\b(?:unknown|cannot be|not (?:known|clear|established))\b",
+        re.I,
+    ),
+    # Speculative / conditional future outcomes — hypothetical consequences we
+    # don't know and usually obvious boilerplate ("will be remanded to the BOP
+    # if a term of imprisonment is imposed", "if convicted, X faces ..."). Keep
+    # the scheduled event and its date; drop the conditional consequence
+    # clause. (us-v-martino.)
+    re.compile(r"\bif (?:convicted|found guilty)\b", re.I),
+    re.compile(
+        r"\bif a (?:term of )?(?:imprisonment|incarceration|sentence)\s+"
+        r"(?:is|were|is to be)\s+(?:imposed|ordered)\b",
+        re.I,
+    ),
+    re.compile(r"\bshould the court impose\b", re.I),
 ]
 
 # Tier 2 — custody / flight status. Legitimate ONLY when a source document

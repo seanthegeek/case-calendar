@@ -40,6 +40,26 @@ adheres to [Semantic Versioning][semver].
   uses the strict disposition classifier, so it keys only off *granted*
   orders — never a typed *proposed* order attached to a motion. (us-v-chapman.)
 
+### Changed
+
+- **Case summaries omit pointless "we don't know" and speculative
+  content.** Two classes of low-value text are now suppressed, in the
+  prompt and by the deterministic guard:
+  - *Undocumented custody status* is omitted entirely rather than
+    announced. When no document establishes whether a defendant has been
+    arrested or appeared, the summary now says nothing about custody —
+    previously it could emit "X's custody status cannot be determined from
+    the available record," which restates what the record doesn't show
+    without informing the subscriber. (us-v-jin / us-v-gholinejad.)
+  - *Speculative or conditional future outcomes* and routine sentencing
+    boilerplate are dropped. A scheduled event keeps its date, but the
+    hypothetical consequence clause is removed: "sentencing is scheduled
+    for June 3, 2026, at which time X will be remanded to the custody of
+    the Bureau of Prisons if a term of imprisonment is imposed" becomes
+    "sentencing is scheduled for June 3, 2026." Phrasings like "if
+    convicted," "if a term of imprisonment is imposed," and "should the
+    court impose" are forbidden. (us-v-martino.)
+
 [0.5.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.5.1
 
 ## [0.5.0] - 2026-05-24
