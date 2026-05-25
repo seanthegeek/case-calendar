@@ -457,7 +457,7 @@ class TestFetchPdfBytes:
         # is precise about which host was hit.
         hosts = [urlparse(u).hostname for u in seen]
         assert hosts[0] == "storage.courtlistener.com"
-        assert "archive.org" in hosts
+        assert any(h == "archive.org" for h in hosts)
 
     def test_network_error_falls_through(self, monkeypatch):
         # First URL throws; second URL succeeds. Tests the try/except path.
