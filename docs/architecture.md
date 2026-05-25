@@ -269,19 +269,26 @@ more than a missing one.
   district docket's hearings.
 - **Summaries state only what the documents support — a guard enforces
   it.** The summary prompt forbids inferring a defendant's custody status
-  from missing arrest entries (say "unknown", not "remains a fugitive",
-  unless a document says so), asserting the absence of hearings /
-  deadlines / a disposition (stay silent on what isn't in the record),
-  and printing a dollar figure that isn't legibly in the documents (court
-  forms with hand-filled restitution amounts OCR into noise, and the model
-  would otherwise guess — it states the obligation without the number, and
-  *silently*, since "not legible" would misdescribe a document that's
-  perfectly readable to a human). Because prompt rules are soft, a deterministic
+  from missing arrest entries (when no document establishes it, the status
+  is *omitted entirely* — not even announced as "unknown" / "cannot be
+  determined", which just restates what the record doesn't show);
+  asserting the absence of hearings / deadlines / a disposition (stay
+  silent on what isn't in the record); stating a speculative or
+  conditional future outcome ("X will be remanded to the Bureau of Prisons
+  if a term of imprisonment is imposed", "if convicted, X faces…") — a
+  scheduled event keeps its date but the hypothetical-consequence clause is
+  dropped; and printing a dollar figure that isn't legibly in the documents
+  (court forms with hand-filled restitution amounts OCR into noise, and the
+  model would otherwise guess — it states the obligation without the
+  number, and *silently*, since "not legible" would misdescribe a document
+  that's perfectly readable to a human). Because prompt rules are soft, a deterministic
   post-generation guard backs them: it scans the generated prose,
   regenerates once (feeding the violation back) on an absence / unsupported-
   custody claim, and logs a warning for any ungrounded date or amount it
-  can't trace to the scaffold or the documents. The wrong fact on a public
-  calendar is worse than a missing one.
+  can't trace to the scaffold, the documents, or the operator-supplied
+  notes (the aggregation note and any `extra_documents` notes the model is
+  also given). The wrong fact on a public calendar is worse than a missing
+  one.
 
 ## AGENTS.md and the runtime prompts
 
@@ -310,7 +317,10 @@ gets sharpened (e.g., the no-fabrication refusal, or the
 in both places.
 
 The runtime prompts all live in
-[`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py):
+[`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py),
+and each one is reproduced **verbatim** on the
+[LLM prompts](llm-prompts.md) page so you can read exactly what the model
+is told without opening the source:
 
 - [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L42) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
 - [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L102) — per-entry hearing extraction (and, with the addendum below, deadlines).

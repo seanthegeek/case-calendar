@@ -3689,6 +3689,17 @@ class TestSummaryTruthfulnessGuard:
             "X is charged. No disposition documents have been filed in the available record.",
             "X is charged. The public docket does not reflect any scheduled hearings.",
             "X is charged; no judgment is reflected in the available record.",
+            # Custody "we don't know" noise — pointless, must be OMITTED, not
+            # announced (us-v-jin / us-v-gholinejad).
+            "The custody status of the remaining defendants cannot be "
+            "determined from the available record.",
+            "It is unknown whether the defendant has been arrested.",
+            # Speculative / conditional outcomes + obvious boilerplate — keep
+            # the scheduled event, drop the hypothetical consequence
+            # (us-v-martino).
+            "Sentencing is set for June 3, 2026; X will be remanded to the "
+            "Bureau of Prisons if a term of imprisonment is imposed.",
+            "If convicted, the defendant faces up to 20 years.",
         ],
     )
     def test_absence_claims_flagged(self, text):
@@ -3698,17 +3709,16 @@ class TestSummaryTruthfulnessGuard:
         "text",
         [
             # Documented custody status (past-tense, attributed to a source) —
-            # not an absence-of-record construction.
+            # not an absence-of-record construction, and not a "we don't know".
             "The information sheet indicates he had not been arrested as of that date.",
-            # The allowed custody "unknown" framing (the deliberate exception).
-            "The custody status of the remaining defendants cannot be "
-            "determined from the available record.",
             # Ordinary documented financial fact — "restitution" is not a
             # procedural-posture noun, so "no restitution" must not trip.
             "He was sentenced to 60 months with no restitution ordered.",
+            # A scheduled event WITH its date and no conditional consequence.
+            "Sentencing is scheduled for June 3, 2026.",
         ],
     )
-    def test_documented_or_unknown_framing_not_flagged(self, text):
+    def test_documented_or_scheduled_facts_not_flagged(self, text):
         assert summary._audit_summary_text(text, source_text="") == []
 
     def test_custody_claim_flagged_when_ungrounded(self):
@@ -4023,3 +4033,151 @@ class TestSummaryGroundingGuard:
         assert len(calls) == 1  # WARN-only — no retry
         assert "June 9, 2026" in row["summary"]  # stored as-is, not blocked
         assert any("possible fabricated facts" in r.message for r in caplog.records)
+
+    def test_aggregation_note_date_is_grounded_not_flagged(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        # us-v-gholinejad: a date that lives ONLY in the operator's
+        # aggregation_note (a sentencing date from a sibling district docket,
+        # absent from this appeal docket's own records) must NOT trip the
+        # grounding guard — the note is trusted metadata the model may cite.
+        import logging
+
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body, no dates."}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        _queue_llm(
+            monkeypatch,
+            "X was sentenced on November 3, 2025; this is the direct appeal.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(
+                cl=cl,
+                store=store,
+                case=case,
+                docket_id=1,
+                aggregation_note="Sentenced on November 3, 2025 to 72 months imprisonment.",
+            )
+        assert row is not None
+        # The date is sourced from the aggregation note -> grounded, no WARN.
+        assert not any("possible fabricated facts" in r.message for r in caplog.records)
+
+
+class TestRestitutionUnreadableDetector:
+    """`_restitution_amount_unreadable`: a granted restitution order present
+    but with no legibly-extractable dollar figure (us-v-chapman: handwritten
+    amounts that OCR to noise)."""
+
+    def test_restitution_order_no_figure_flags(self):
+        # Chapman shape: restitution order garbled, forfeiture order clean.
+        # Only the restitution order is consulted, so the readable forfeiture
+        # figure does NOT make it "readable".
+        docs = [
+            {
+                "description": "ORDER ... Government's motion for order of restitution",
+                "text": "restitution as follows: Total AD2, O52. 1S",
+            },
+            {
+                "description": "ORDER OF FORFEITURE",
+                "text": "forfeit $284,666.92 in identified funds",
+            },
+        ]
+        assert summary._restitution_amount_unreadable(docs) is True
+
+    def test_restitution_order_with_clean_figure_not_flagged(self):
+        docs = [
+            {
+                "description": "AMENDED JUDGMENT ... restitution",
+                "text": "ordered to pay $402,052.15 in restitution to six victims",
+            }
+        ]
+        assert summary._restitution_amount_unreadable(docs) is False
+
+    def test_no_restitution_order_not_flagged(self):
+        docs = [
+            {"description": "ORDER OF FORFEITURE", "text": "forfeit $284,666.92"},
+            {"description": "JUDGMENT in a Criminal Case", "text": "92 months"},
+        ]
+        assert summary._restitution_amount_unreadable(docs) is False
+
+    def test_empty_not_flagged(self):
+        assert summary._restitution_amount_unreadable([]) is False
+
+    def test_not_uploaded_restitution_order_flags(self, patch_pdf):
+        # Same suppression when the restitution order's DOCUMENT isn't
+        # uploaded to RECAP (or is sealed): _attach_text falls back to the
+        # docket description, which carries no dollar amount, so the detector
+        # fires exactly as it does for the garbled hand-filled case.
+        patch_pdf["texts"] = {}  # no extractable PDF text for the order
+        entry = {
+            "id": 99,
+            "entry_number": 49,
+            "description": (
+                "ORDER as to Defendant (1): Upon consideration of the "
+                "Government's Unopposed Motion for order of restitution, it is "
+                "hereby ORDERED that the motion is GRANTED."
+            ),
+            "short_description": "",
+            "recap_documents": [{"id": 600, "is_available": False}],
+            "date_filed": "2025-08-25",
+        }
+        docs = summary._attach_text([entry], allow_description_fallback=True)
+        assert docs and summary._RESTITUTION_FIGURE_RE.search(docs[0]["text"]) is None
+        assert summary._restitution_amount_unreadable(docs) is True
+
+
+class TestRestitutionAdvisoryWiring:
+    def test_summarize_docket_passes_restitution_flag(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # When the detector fires, summarize_docket must pass
+        # restitution_unreadable=True into the generator (which renders the
+        # DOCKET FINANCIAL ADVISORY). Detector is forced here so the wiring
+        # test is decoupled from the disposition classifier.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text for the case."}
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+        monkeypatch.setattr(
+            summary, "_restitution_amount_unreadable", lambda docs: True
+        )
+        calls = []
+
+        def fake(**kw):
+            calls.append(kw)
+            return ("X was ordered to pay restitution.", "fake/model-v1")
+
+        monkeypatch.setattr(summary.llm, "generate_docket_summary", fake)
+        summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert calls and calls[0]["restitution_unreadable"] is True

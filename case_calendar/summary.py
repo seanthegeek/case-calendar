@@ -1277,11 +1277,12 @@ def _borrow_primary_from_siblings(
 # disposition documents have been FILED" / "the docket does not REFLECT any
 # scheduled hearings", neither of which the original entered-only pattern
 # caught). Hedging with "in the available record" does NOT exempt these — for
-# procedural posture the rule is silence (the custody-status exception, where
-# "unknown" is allowed, is handled separately and is deliberately NOT in the
-# noun list below). The noun list is scoped to procedural-posture terms so
-# "no restitution" / "no fewer than three counts" — legitimate documented
-# facts — don't trip it.
+# procedural posture the rule is silence. Custody-status "we don't know"
+# phrasings ("cannot be determined", "status is unknown") and speculative
+# conditional outcomes ("if convicted", "if a term of imprisonment is
+# imposed") get their own patterns below — all the same omit-the-pointless-
+# content rule. The procedural-noun list is scoped so "no restitution" / "no
+# fewer than three counts" — legitimate documented facts — don't trip it.
 _GUARD_PROC_NOUN = (
     r"(?:disposition|judgments?|hearings?|deadlines?|scheduling\s+orders?|"
     r"docket\s+entr(?:y|ies)|trial\s+dates?|recent\s+activity|"
@@ -1306,6 +1307,28 @@ _GUARD_ABSENCE_RES = [
     ),
     # closing "the case remains pending" positive claim.
     re.compile(r"\bthe case remains pending\b", re.I),
+    # Custody / arrest "we don't know" noise — stating what the record does
+    # NOT establish about a defendant's custody is pointless; OMIT it, don't
+    # announce "unknown" (us-v-jin / us-v-gholinejad).
+    re.compile(r"\bcannot be determined from the\b", re.I),
+    re.compile(r"\bit is unknown whether\b", re.I),
+    re.compile(
+        r"\b(?:custody|arrest|appearance)\s+status\b[^.]{0,40}?"
+        r"\b(?:unknown|cannot be|not (?:known|clear|established))\b",
+        re.I,
+    ),
+    # Speculative / conditional future outcomes — hypothetical consequences we
+    # don't know and usually obvious boilerplate ("will be remanded to the BOP
+    # if a term of imprisonment is imposed", "if convicted, X faces ..."). Keep
+    # the scheduled event and its date; drop the conditional consequence
+    # clause. (us-v-martino.)
+    re.compile(r"\bif (?:convicted|found guilty)\b", re.I),
+    re.compile(
+        r"\bif a (?:term of )?(?:imprisonment|incarceration|sentence)\s+"
+        r"(?:is|were|is to be)\s+(?:imposed|ordered)\b",
+        re.I,
+    ),
+    re.compile(r"\bshould the court impose\b", re.I),
 ]
 
 # Tier 2 — custody / flight status. Legitimate ONLY when a source document
@@ -1465,6 +1488,53 @@ def _audit_summary_grounding(
             continue
         out.append(f"ungrounded amount: {raw!r}")
     return out
+
+
+# A clean, substantial dollar figure ($NNN and up). Used to tell whether a
+# restitution order's amount actually extracted vs came through as garbled
+# hand-filled-form OCR.
+_RESTITUTION_FIGURE_RE = re.compile(r"\$\s?\d[\d,]{2,}(?:\.\d{2})?")
+
+
+def _restitution_amount_unreadable(
+    disposition_documents: list[dict[str, Any]],
+) -> bool:
+    """True when a granted restitution order is among the dispositions but no
+    clean dollar figure extracts from any of them.
+
+    The amount is hand-filled / garbled (CourtListener / our OCR produces
+    noise for handwriting), so the summary must NOT state specific monetary
+    figures: reporting only the OTHER, legible monetary penalties (e.g. a
+    printed forfeiture order) would read to a subscriber as the defendant's
+    total liability while a larger, unknown restitution exists. The
+    us-v-chapman case is canonical — the entered restitution order (#49) has
+    handwritten amounts that OCR'd to noise ("Total AD2, O52. 1S"), while the
+    separate forfeiture order (#43) carries clean printed figures.
+
+    ``disposition_documents`` is already the strict-classifier-granted set
+    (``_is_disposition_document`` excludes motions / notices / *proposed*
+    orders), so this only ever keys off ACTUAL granted restitution orders —
+    never the typed proposed order a motion attaches.
+
+    This also covers a restitution order whose document isn't uploaded to
+    RECAP yet (or is sealed): ``_attach_text`` falls back to the docket
+    description for dispositions with no extractable PDF text, and that
+    description carries no dollar amount — so there's no clean figure and
+    the order is treated as unreadable, exactly like the hand-filled case.
+    The only time a no-document order reads as "readable" is when its docket
+    description itself states the amount, in which case the figure genuinely
+    IS available and stating it is correct.
+    """
+    restitution_orders = [
+        d
+        for d in disposition_documents
+        if re.search(r"restitution", d.get("description") or "", re.I)
+    ]
+    if not restitution_orders:
+        return False
+    return not any(
+        _RESTITUTION_FIGURE_RE.search(d.get("text") or "") for d in restitution_orders
+    )
 
 
 def _generate_guarded_summary(
@@ -1823,13 +1893,37 @@ def summarize_docket(
             sealing_advisory.get("available_post_seal_entries"),
         )
 
-    # Corpus the truthfulness guard grounds tier-2 (custody/flight) claims
-    # against — the document text the LLM actually reads. A "remains a
-    # fugitive" / "at large" claim is allowed only if it appears here.
-    source_text = "\n".join(
-        d.get("text") or ""
+    # Corpus the guards ground claims against — everything the LLM was given
+    # and may legitimately cite: the document text PLUS operator-supplied
+    # trusted metadata (the aggregation note and any extra_documents operator
+    # notes). Without the metadata, a date or amount an operator puts in a
+    # note — e.g. a sentencing date conveyed via aggregation_note for an
+    # appeal docket whose own record holds no judgment (the us-v-gholinejad
+    # case) — would be falsely flagged as ungrounded. A custody/flight claim
+    # or a date/amount is allowed only if it appears somewhere in here.
+    grounding_parts: list[Optional[str]] = [
+        d.get("text")
         for d in primary_documents + disposition_documents + (extra_documents or [])
-    )
+    ]
+    grounding_parts += [d.get("operator_note") for d in (extra_documents or [])]
+    grounding_parts.append(aggregation_note)
+    source_text = "\n".join(p for p in grounding_parts if p)
+
+    # When a granted restitution order is present but its amount didn't
+    # extract (hand-filled / garbled OCR), tell the LLM to omit ALL specific
+    # monetary figures and say "ordered to pay restitution" — otherwise the
+    # legible penalties (e.g. a printed forfeiture order) read as the total
+    # liability while the larger unknown restitution is invisible. See the
+    # us-v-chapman case and the DOCKET FINANCIAL ADVISORY prompt rule.
+    restitution_unreadable = _restitution_amount_unreadable(disposition_documents)
+    if restitution_unreadable:
+        log.info(
+            "summary: %s (%s) — restitution ordered but amount not legibly "
+            "extractable; advising the LLM to omit specific monetary figures",
+            docket_number,
+            court_id,
+        )
+
     summary_text, model_id = _generate_guarded_summary(
         source_text=source_text,
         docket_id=docket_id,
@@ -1842,6 +1936,7 @@ def summarize_docket(
         hearings=hearings,
         deadlines=deadlines,
         sealing_advisory=sealing_advisory,
+        restitution_unreadable=restitution_unreadable,
         provider=provider,
         model=model,
     )

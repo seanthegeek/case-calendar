@@ -137,8 +137,19 @@ also told:
   the summary verbatim.
 - A defendant's custody status ("remains a fugitive", "in custody",
   "at large") may be stated only when a document establishes it. When the
-  record doesn't, the status is described as **unknown** — never inferred
-  from the absence of an arrest entry on the docket.
+  record doesn't, the status is **omitted entirely** — the summary says
+  nothing about custody, and in particular does *not* announce that the
+  status is "unknown" or "cannot be determined", which is pointless noise
+  about what the record doesn't show. Custody is never inferred from the
+  absence of an arrest entry on the docket.
+- Speculative or conditional future outcomes and routine sentencing
+  boilerplate are dropped. A scheduled event keeps its date, but the
+  hypothetical consequence is cut: "sentencing is scheduled for June 3,
+  2026, at which time X will be remanded to the Bureau of Prisons if a term
+  of imprisonment is imposed" becomes just "sentencing is scheduled for
+  June 3, 2026". Phrasings like "if convicted" and "should the court
+  impose" are forbidden — the summary states what *has* happened and what
+  *is* scheduled, nothing hypothetical.
 - Don't assert the absence of hearings, deadlines, or a disposition.
   A docket can be sealed or only partly mirrored in RECAP, so "no hearings
   are set" / "no disposition has been entered" can be quietly wrong; the
@@ -151,6 +162,16 @@ also told:
   ("not clearly legible", "could not be read"), because the order is legible
   to a human — the gap is our OCR's, not the document's, and it isn't
   subscriber-facing.
+- When a restitution order is on the docket but its amount can't be read —
+  whether the figures are hand-filled/garbled or the order's document
+  simply isn't uploaded to RECAP yet — the summary drops *all* specific
+  monetary figures, not just restitution.
+  Otherwise the legible penalties (say, a separately-printed forfeiture
+  order) would read as the defendant's total liability while the larger,
+  unknown restitution stays invisible. The pipeline detects this (a granted
+  restitution order with no extractable figure) and the summary says
+  "ordered to pay restitution" with no amounts; only the fixed special
+  assessment is kept.
 - The system prompt does NOT render the legal disclaimers ("AI-generated,
   may contain mistakes" + presumption of innocence) — those are baked
   into the page template so the language stays stable regardless of
@@ -164,17 +185,24 @@ subscribers. So a deterministic guard runs on every generated summary
 before it's stored, as a hard backstop to the prompt rules above:
 
 - **Absence-of-record and unsupported-custody claims** (a "no disposition
-  has been entered" in any phrasing, or a "remains at large" the documents
-  don't support) trigger **one regeneration** with the specific problem
-  fed back to the model. Whichever attempt is cleaner is kept; if the
-  problem persists, the summary is still stored but a warning is logged
-  for review. The summary is never blocked.
+  has been entered" in any phrasing, a "remains at large" the documents
+  don't support, a "custody status cannot be determined" that should have
+  been omitted, or a speculative "if convicted…" / "if a term of
+  imprisonment is imposed…" outcome) trigger **one regeneration** with the
+  specific problem fed back to the model. The patterns match by
+  *construction* — a negation plus a procedural-record noun, a custody
+  keyword plus a "we-don't-know" qualifier, a conditional-outcome phrase —
+  so rewording around a literal string doesn't slip past. Whichever attempt
+  is cleaner is kept; if the problem persists, the summary is still stored
+  but a warning is logged for review. The summary is never blocked.
 - **Dates and dollar amounts** that can't be traced to the hearings /
-  deadlines scaffold or the source documents are **logged for operator
-  review** (not retried — dates appear in nearly every summary and
+  deadlines scaffold, the source documents, or the operator-supplied notes
+  (the `aggregation_note` and any `extra_documents` notes) are **logged for
+  operator review** (not retried — dates appear in nearly every summary and
   harmless formatting differences would otherwise cause churn). This is
   the check that catches a hallucinated restitution figure or an invented
-  hearing date.
+  hearing date — while still allowing a figure you deliberately supply in a
+  note (e.g. a sentencing date conveyed to an appeal docket's summary).
 
 The guard is why the project can run summaries unattended: a wrong fact on
 a public calendar is worse than a missing one, and the guard makes the

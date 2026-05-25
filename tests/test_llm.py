@@ -2288,12 +2288,74 @@ class TestGenerateDocketSummary:
         # AGENTS.md "documents-only — never inference": fugitive/at-large
         # status must NOT be inferred from missing arrest entries. The prompt
         # previously licensed exactly that ("...no apparent arrest is
-        # reflected in the docket)"); the rule is now documents-only with an
-        # explicit "unknown" framing for the undocumented case.
+        # reflected in the docket)"). The rule is now documents-only, and when
+        # the record doesn't establish custody the model must OMIT it — not
+        # even state that it's "unknown" / "cannot be determined" (that's
+        # pointless noise about what the record doesn't show).
         p = llm.SUMMARY_SYSTEM_PROMPT
         assert "no apparent arrest is reflected in the docket)" not in p
         assert "custody" in p.lower()
-        assert "unknown" in p.lower()
+        assert "OMIT it entirely" in p  # undocumented custody is omitted, not "unknown"
+        assert "pointless noise" in p.lower()
+
+    def test_prompt_forbids_speculative_conditional_outcomes(self):
+        # A consequence that hangs on an unhappened event (sentence yet to be
+        # imposed, conviction yet to be returned) is an unknown dressed up as a
+        # fact, and routine sentencing mechanics are boilerplate. The prompt
+        # must keep the scheduled event + date but drop the conditional
+        # consequence clause (us-v-martino). See SUMMARY_SYSTEM_PROMPT.
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "speculative or conditional future outcomes" in p
+        assert "if a term of imprisonment is imposed" in p
+        assert "should the court impose" in p
+        # The scheduled event itself is explicitly KEPT (only the clause drops).
+        assert "sentencing is scheduled for June 3, 2026" in p
+
+    def test_financial_advisory_rendered_when_restitution_unreadable(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "X was ordered to pay restitution."
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+            restitution_unreadable=True,
+        )
+        assert "DOCKET FINANCIAL ADVISORY" in captured["user"]
+
+    def test_no_financial_advisory_by_default(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None):
+            captured["user"] = user
+            return "summary"
+
+        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+        )
+        assert "DOCKET FINANCIAL ADVISORY" not in captured["user"]
+
+    def test_prompt_has_financial_advisory_rule(self):
+        # The us-v-chapman partial-picture rule: when restitution is ordered
+        # but unreadable, suppress all monetary figures (forfeiture included).
+        assert "DOCKET FINANCIAL ADVISORY" in llm.SUMMARY_SYSTEM_PROMPT
 
     def test_prompt_forbids_decoding_dollar_figures_from_ocr_garble(self):
         # The us-v-chapman regression: the restitution order's "Total" line

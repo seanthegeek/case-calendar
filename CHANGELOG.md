@@ -8,6 +8,60 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.5.1] - 2026-05-25
+
+### Fixed
+
+- **The case-summary grounding guard no longer false-positives on
+  operator-supplied facts.** A date or dollar amount an operator provides
+  via `aggregation_note` or an `extra_documents` note — which the summary
+  model is given and may legitimately cite — was flagged as a "possible
+  fabricated fact," because the guard's grounding corpus only included
+  document text. The corpus now also includes the aggregation note and the
+  `extra_documents` operator notes. Surfaced on us-v-gholinejad, where the
+  Fourth Circuit appeal docket (whose own record holds no judgment) cited a
+  sentencing date conveyed from the sibling district docket via the
+  aggregation note. The guard is not weakened — a date or amount absent
+  from the documents, the structured-events scaffold, AND the operator
+  metadata is still flagged.
+- **Case summaries no longer report a misleading partial financial
+  picture.** When a granted restitution order is on the docket but its
+  amount isn't legibly extractable — hand-filled / garbled OCR, or the
+  order's document not yet uploaded to RECAP (it falls back to the docket
+  description, which carries no amount) — the pipeline now detects that:
+  the entry's description marks it a restitution order, yet no clean dollar
+  figure extracts. It then tells the summary LLM
+  (via a `DOCKET FINANCIAL ADVISORY`) to omit specific dollar amounts for
+  *all* monetary penalties and say the defendant "was ordered to pay
+  restitution." Previously the summary could state the legible figures from
+  a separate printed forfeiture order while the (larger, unknown)
+  restitution was invisible, which a subscriber would read as the total
+  liability. The fixed special assessment is the one exception. The detector
+  uses the strict disposition classifier, so it keys only off *granted*
+  orders — never a typed *proposed* order attached to a motion. (us-v-chapman.)
+
+### Changed
+
+- **Case summaries omit pointless "we don't know" and speculative
+  content.** Two classes of low-value text are now suppressed, in the
+  prompt and by the deterministic guard:
+  - *Undocumented custody status* is omitted entirely rather than
+    announced. When no document establishes whether a defendant has been
+    arrested or appeared, the summary now says nothing about custody —
+    previously it could emit "X's custody status cannot be determined from
+    the available record," which restates what the record doesn't show
+    without informing the subscriber. (us-v-jin / us-v-gholinejad.)
+  - *Speculative or conditional future outcomes* and routine sentencing
+    boilerplate are dropped. A scheduled event keeps its date, but the
+    hypothetical consequence clause is removed: "sentencing is scheduled
+    for June 3, 2026, at which time X will be remanded to the custody of
+    the Bureau of Prisons if a term of imprisonment is imposed" becomes
+    "sentencing is scheduled for June 3, 2026." Phrasings like "if
+    convicted," "if a term of imprisonment is imposed," and "should the
+    court impose" are forbidden. (us-v-martino.)
+
+[0.5.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.5.1
+
 ## [0.5.0] - 2026-05-24
 
 ### Added
