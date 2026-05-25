@@ -151,8 +151,10 @@ also told:
   ("not clearly legible", "could not be read"), because the order is legible
   to a human — the gap is our OCR's, not the document's, and it isn't
   subscriber-facing.
-- When a restitution order is on the docket but its amount can't be read,
-  the summary drops *all* specific monetary figures — not just restitution.
+- When a restitution order is on the docket but its amount can't be read —
+  whether the figures are hand-filled/garbled or the order's document
+  simply isn't uploaded to RECAP yet — the summary drops *all* specific
+  monetary figures, not just restitution.
   Otherwise the legible penalties (say, a separately-printed forfeiture
   order) would read as the defendant's total liability while the larger,
   unknown restitution stays invisible. The pipeline detects this (a granted

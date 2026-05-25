@@ -4109,6 +4109,28 @@ class TestRestitutionUnreadableDetector:
     def test_empty_not_flagged(self):
         assert summary._restitution_amount_unreadable([]) is False
 
+    def test_not_uploaded_restitution_order_flags(self, patch_pdf):
+        # Same suppression when the restitution order's DOCUMENT isn't
+        # uploaded to RECAP (or is sealed): _attach_text falls back to the
+        # docket description, which carries no dollar amount, so the detector
+        # fires exactly as it does for the garbled hand-filled case.
+        patch_pdf["texts"] = {}  # no extractable PDF text for the order
+        entry = {
+            "id": 99,
+            "entry_number": 49,
+            "description": (
+                "ORDER as to Defendant (1): Upon consideration of the "
+                "Government's Unopposed Motion for order of restitution, it is "
+                "hereby ORDERED that the motion is GRANTED."
+            ),
+            "short_description": "",
+            "recap_documents": [{"id": 600, "is_available": False}],
+            "date_filed": "2025-08-25",
+        }
+        docs = summary._attach_text([entry], allow_description_fallback=True)
+        assert docs and summary._RESTITUTION_FIGURE_RE.search(docs[0]["text"]) is None
+        assert summary._restitution_amount_unreadable(docs) is True
+
 
 class TestRestitutionAdvisoryWiring:
     def test_summarize_docket_passes_restitution_flag(

@@ -1492,6 +1492,15 @@ def _restitution_amount_unreadable(
     (``_is_disposition_document`` excludes motions / notices / *proposed*
     orders), so this only ever keys off ACTUAL granted restitution orders —
     never the typed proposed order a motion attaches.
+
+    This also covers a restitution order whose document isn't uploaded to
+    RECAP yet (or is sealed): ``_attach_text`` falls back to the docket
+    description for dispositions with no extractable PDF text, and that
+    description carries no dollar amount — so there's no clean figure and
+    the order is treated as unreadable, exactly like the hand-filled case.
+    The only time a no-document order reads as "readable" is when its docket
+    description itself states the amount, in which case the figure genuinely
+    IS available and stating it is correct.
     """
     restitution_orders = [
         d

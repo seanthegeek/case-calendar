@@ -26,9 +26,11 @@ adheres to [Semantic Versioning][semver].
   metadata is still flagged.
 - **Case summaries no longer report a misleading partial financial
   picture.** When a granted restitution order is on the docket but its
-  amount isn't legibly extractable (hand-filled / garbled OCR), the
-  pipeline now detects that — the entry's description marks it a restitution
-  order, yet no clean dollar figure extracts — and tells the summary LLM
+  amount isn't legibly extractable — hand-filled / garbled OCR, or the
+  order's document not yet uploaded to RECAP (it falls back to the docket
+  description, which carries no amount) — the pipeline now detects that:
+  the entry's description marks it a restitution order, yet no clean dollar
+  figure extracts. It then tells the summary LLM
   (via a `DOCKET FINANCIAL ADVISORY`) to omit specific dollar amounts for
   *all* monetary penalties and say the defendant "was ordered to pay
   restitution." Previously the summary could state the legible figures from
