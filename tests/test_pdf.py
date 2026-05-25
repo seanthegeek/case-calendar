@@ -452,9 +452,12 @@ class TestFetchPdfBytes:
             "filepath_local": "recap/foo.pdf",
         }
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF ia bytes"
-        # CourtListener storage is tried first, then the IA fallback.
-        assert seen[0].startswith("https://storage.courtlistener.com")
-        assert any("archive.org" in u for u in seen)
+        # CourtListener storage is tried first, then the IA fallback. Compare
+        # parsed hostnames exactly (not URL-substring checks) so the assertion
+        # is precise about which host was hit.
+        hosts = [urlparse(u).hostname for u in seen]
+        assert hosts[0] == "storage.courtlistener.com"
+        assert "archive.org" in hosts
 
     def test_network_error_falls_through(self, monkeypatch):
         # First URL throws; second URL succeeds. Tests the try/except path.
