@@ -170,11 +170,13 @@ before it's stored, as a hard backstop to the prompt rules above:
   problem persists, the summary is still stored but a warning is logged
   for review. The summary is never blocked.
 - **Dates and dollar amounts** that can't be traced to the hearings /
-  deadlines scaffold or the source documents are **logged for operator
-  review** (not retried — dates appear in nearly every summary and
+  deadlines scaffold, the source documents, or the operator-supplied notes
+  (the `aggregation_note` and any `extra_documents` notes) are **logged for
+  operator review** (not retried — dates appear in nearly every summary and
   harmless formatting differences would otherwise cause churn). This is
   the check that catches a hallucinated restitution figure or an invented
-  hearing date.
+  hearing date — while still allowing a figure you deliberately supply in a
+  note (e.g. a sentencing date conveyed to an appeal docket's summary).
 
 The guard is why the project can run summaries unattended: a wrong fact on
 a public calendar is worse than a missing one, and the guard makes the

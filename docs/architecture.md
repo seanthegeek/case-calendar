@@ -280,8 +280,10 @@ more than a missing one.
   post-generation guard backs them: it scans the generated prose,
   regenerates once (feeding the violation back) on an absence / unsupported-
   custody claim, and logs a warning for any ungrounded date or amount it
-  can't trace to the scaffold or the documents. The wrong fact on a public
-  calendar is worse than a missing one.
+  can't trace to the scaffold, the documents, or the operator-supplied
+  notes (the aggregation note and any `extra_documents` notes the model is
+  also given). The wrong fact on a public calendar is worse than a missing
+  one.
 
 ## AGENTS.md and the runtime prompts
 

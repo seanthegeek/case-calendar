@@ -8,6 +8,25 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.5.1] - 2026-05-25
+
+### Fixed
+
+- **The case-summary grounding guard no longer false-positives on
+  operator-supplied facts.** A date or dollar amount an operator provides
+  via `aggregation_note` or an `extra_documents` note — which the summary
+  model is given and may legitimately cite — was flagged as a "possible
+  fabricated fact," because the guard's grounding corpus only included
+  document text. The corpus now also includes the aggregation note and the
+  `extra_documents` operator notes. Surfaced on us-v-gholinejad, where the
+  Fourth Circuit appeal docket (whose own record holds no judgment) cited a
+  sentencing date conveyed from the sibling district docket via the
+  aggregation note. The guard is not weakened — a date or amount absent
+  from the documents, the structured-events scaffold, AND the operator
+  metadata is still flagged.
+
+[0.5.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.5.1
+
 ## [0.5.0] - 2026-05-24
 
 ### Added
