@@ -13,7 +13,7 @@ same fields, so the formatting lives here. Each event gets, in order:
   * case citation: "<docket_number> (<court citation>)"
   * link to the CourtListener docket page
   * direct URLs to each attached document on the source docket entries
-    (IA mirror preferred, CourtListener storage fallback) so subscribers can open the
+    (CourtListener storage preferred, Internet Archive mirror fallback) so subscribers can open the
     filing without re-navigating the docket. Sealed / not-yet-uploaded docs
     show their status instead of a URL.
   * the list of source PACER docket entry numbers (what subscribers see in
@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Iterable, Optional
+
+from ..pdf import recap_document_url
 
 CL_BASE = "https://www.courtlistener.com"
 
@@ -202,11 +204,5 @@ def _document_label(d: dict) -> Optional[str]:
 
 
 def _document_url(d: dict) -> Optional[str]:
-    """Prefer IA mirror (public, stable); fall back to CourtListener storage."""
-    ia = d.get("filepath_ia")
-    if ia:
-        return ia
-    fp = d.get("filepath_local")
-    if fp:
-        return f"https://storage.courtlistener.com/{fp}"
-    return None
+    """Prefer CourtListener storage; fall back to the Internet Archive mirror."""
+    return recap_document_url(d)

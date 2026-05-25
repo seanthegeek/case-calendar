@@ -1942,6 +1942,73 @@ class TestBuildSummaryUserMessage:
         assert "Sentencing" in msg
         assert "Reply ISO MTD" in msg
 
+    def test_reference_tokens_rendered_when_present(self):
+        # When the summary pipeline has stamped a `ref` on each doc, the
+        # block header leads with the prompt-only "[D1]" token the model
+        # uses to link a phrase to that document.
+        msg = llm._build_summary_user_message(
+            case_name="X",
+            aggregation_note=None,
+            docket={"docket_number": "1:24-cr-1"},
+            primary_documents=[
+                {
+                    "ref": "D1",
+                    "entry_number": 1,
+                    "description": "INDICTMENT",
+                    "date_filed": "2024-01-01",
+                    "text": "body",
+                }
+            ],
+            disposition_documents=[
+                {
+                    "ref": "D2",
+                    "entry_number": 9,
+                    "description": "JUDGMENT",
+                    "date_filed": "2025-01-01",
+                    "text": "body",
+                }
+            ],
+            extra_documents=[
+                {
+                    "ref": "D3",
+                    "source_url": "https://op/doc.pdf",
+                    "operator_note": "the unsealed indictment",
+                    "text": "body",
+                }
+            ],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+        )
+        assert "[D1] entry #1" in msg
+        assert "[D2] entry #9" in msg
+        assert "[D3] OPERATOR-PROVIDED DOCUMENT" in msg
+
+    def test_no_reference_token_when_unstamped(self):
+        # Direct callers (and any path that doesn't assign refs) must not get
+        # a stray "[None]" token in the header.
+        msg = llm._build_summary_user_message(
+            case_name="X",
+            aggregation_note=None,
+            docket={"docket_number": "1:24-cr-1"},
+            primary_documents=[
+                {
+                    "entry_number": 1,
+                    "description": "INDICTMENT",
+                    "date_filed": "2024-01-01",
+                    "text": "body",
+                }
+            ],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+        )
+        assert "[None]" not in msg
+        assert "entry #1" in msg
+
     def test_empty_hearings_and_deadlines_show_placeholders(self):
         msg = llm._build_summary_user_message(
             case_name="X",
@@ -2985,3 +3052,108 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
         assert (
             '"restitution to victims as set forth in the attached schedule"'
         ) in normalized
+
+
+class TestSummaryPromptInlineLinks:
+    """The INLINE LINKS rule: link the action phrase the way a news article
+    does, using the prompt-only document reference tokens."""
+
+    def test_inline_links_rule_present(self):
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "INLINE LINKS" in p
+        # News-article framing — the words themselves are the link.
+        assert "the way a news article does" in p
+        # The token-marker syntax the resolver looks for, on a SHORT phrase.
+        assert "[were charged](doc:D1)" in p
+
+    def test_links_are_short_phrases_not_bare_words_or_full_clauses(self):
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        # Short action phrase (two or three words), not a single bare word.
+        assert "Keep the linked span SHORT" in p
+        assert 'a single bare word either ("charged", "sentenced")' in p
+        # And NOT the trailing detail — link the action, not the specifics.
+        assert "Do NOT extend the link across the trailing detail" in p
+        assert 'Link "were charged", NOT "charged with wire fraud' in p
+
+    def test_leading_verb_in_trailing_preposition_out(self):
+        # The span boundaries: auxiliary verb inside, dangling preposition out.
+        import re
+
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        norm = re.sub(r"\s+", " ", p)
+        assert "Include the leading verb; stop before the trailing preposition" in norm
+        assert 'link "was charged", NOT "was charged with"' in norm
+        assert 'link "was convicted at trial", NOT "convicted at trial of"' in norm
+
+    def test_brief_direct_object_allowed_in_span(self):
+        # A short object that names what the action applies to may stay in the
+        # link ("dismissed count three") — but not the prepositional detail.
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "A brief direct object that names WHAT the action applies to" in norm
+        assert (
+            'link "dismissed count three", NOT "dismissed count three on the '
+            "government's motion\"" in norm
+        )
+
+
+class TestSummaryPromptDocketScope:
+    """Each docket's summary stays scoped to that docket's own proceedings —
+    appellate-only events belong in the appellate docket's summary."""
+
+    def test_appellate_events_kept_out_of_district_summary(self):
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "keep each docket's summary to that docket's own proceedings" in norm
+        # The canonical appellate-only events that must not be narrated in the
+        # district docket's summary.
+        assert "appointment of appellate counsel" in norm
+        assert "do not narrate them there" in norm
+        # A bare "has appealed" after the sentence is the district summary's cap.
+        assert 'the defendant "has appealed"' in norm
+
+
+class TestSummaryPromptVerdictContent:
+    """A blank verdict form's text is the template, not the result — the model
+    must not pad with a vacuous 'covering all N counts' clause (us-v-ding)."""
+
+    def test_verdict_form_blank_template_rule(self):
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        # A verdict form confirms a verdict was returned but not the findings.
+        assert "checkbox verdict form's text is the blank TEMPLATE" in norm
+        # State per-count outcome only when the text states it.
+        assert (
+            "state the actual per-count OUTCOME" in norm
+            and "ONLY when the provided text states it" in norm
+        )
+        # The vacuous coverage clause is forbidden.
+        assert (
+            '"the jury returned a verdict covering all fourteen counts" conveys '
+            "nothing" in norm
+        )
+        # Fall back to verdict-returned + date.
+        assert (
+            'say only that "a jury trial was held and the jury returned its '
+            'verdict on [date]"' in norm
+        )
+
+    def test_forbids_footnote_style_markers(self):
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        # Explicitly NOT a footnote / "[1]" / "(see Doc 1)".
+        assert "NOT a footnote" in p
+        assert "(see Doc 1)" in p
+
+    def test_only_provided_tokens_may_be_used(self):
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "Never invent a token" in p
+
+    def test_no_url_rule_retained_with_token_exception(self):
+        # The "do not include URLs" rule still holds — the model writes the
+        # token, the pipeline fills in the link.
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "Do not include URLs" in p
+        assert "you never write a URL" in p

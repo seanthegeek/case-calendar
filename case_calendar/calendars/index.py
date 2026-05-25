@@ -14,6 +14,7 @@ extension treats it as a dark-aware site and skips applying its own filter.
 from __future__ import annotations
 
 import html
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
@@ -24,6 +25,49 @@ def _esc(value: Any) -> str:
     if value is None:
         return ""
     return html.escape(str(value), quote=True)
+
+
+# Inline document links in a stored summary, shaped like a markdown link with
+# an http(s) target: ``[the words](https://...)``. These are written by
+# summary._resolve_document_links (resolved from the LLM's document tokens);
+# the renderer turns them into anchors on the words themselves, newspaper-
+# style. Only http(s) targets are treated as links — anything else is left as
+# literal text. The URL stops at whitespace or a closing paren.
+_SUMMARY_LINK_RE = re.compile(r"\[([^\]]+)\]\((https?://[^\s)]+)\)")
+
+
+def _render_summary_body(body: str) -> str:
+    """Render summary prose to HTML, turning inline document-link markers into
+    anchors on the linked words.
+
+    The surrounding prose, the linked words, AND the URL are all HTML-escaped,
+    so the model's (untrusted) output can't inject markup — the only thing the
+    marker controls is which words become an ``<a>`` and what href they carry,
+    both escaped. Text that isn't a well-formed http(s) marker is emitted as
+    plain escaped text, so a stray bracket or a non-link parenthetical renders
+    verbatim rather than disappearing.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _SUMMARY_LINK_RE.finditer(body):
+        out.append(_esc(body[pos : m.start()]))
+        words, url = m.group(1), m.group(2)
+        out.append(
+            f'<a href="{_esc(url)}" target="_blank" rel="noopener">{_esc(words)}</a>'
+        )
+        pos = m.end()
+    out.append(_esc(body[pos:]))
+    return "".join(out)
+
+
+def _summary_plain_text(body: str) -> str:
+    """Strip inline document-link markers down to their linked words.
+
+    The client-side search haystack wants the prose a reader sees, not the
+    ``[words](url)`` link syntax, so each http(s) marker collapses to just its
+    words. Non-marker text is unchanged.
+    """
+    return _SUMMARY_LINK_RE.sub(lambda m: m.group(1), body)
 
 
 def _format_date(iso: Optional[str]) -> str:
@@ -242,6 +286,19 @@ ol.cases h3 { font-size: 1.15rem; margin: 0 0 0.3rem 0; font-weight: 600; }
 .dockets li:not(:last-child)::after { content: " · "; color: var(--muted); }
 .dockets a { color: var(--accent); text-decoration: none; }
 .dockets a:hover { text-decoration: underline; }
+/* "CourtListener records (same docket)" line — the muted, subordinate list of
+   the multiple CourtListener records that mirror one logical PACER docket.
+   Smaller and muted so it reads as a footnote to the docket number above, not
+   as additional dockets. */
+.cl-records {
+  font-size: 0.82rem;
+  color: var(--muted);
+  margin: 0.2rem 0 0;
+  line-height: 1.5;
+}
+.cl-records .cl-records-label { font-weight: 600; }
+.cl-records a { color: var(--accent); text-decoration: none; padding: 0 0.15rem; }
+.cl-records a:hover { text-decoration: underline; }
 .dates {
   font-size: 0.9rem;
   color: var(--muted);
@@ -623,9 +680,9 @@ def _render_summaries(
             label_html = (
                 f'<span class="docket-label">{_esc(label)}</span> — ' if label else ""
             )
-            paragraphs.append(f"<p>{label_html}{_esc(body)}</p>")
+            paragraphs.append(f"<p>{label_html}{_render_summary_body(body)}</p>")
         else:
-            paragraphs.append(f"<p>{_esc(body)}</p>")
+            paragraphs.append(f"<p>{_render_summary_body(body)}</p>")
     if not paragraphs:
         return ""
     return f'<div class="summary">{"".join(paragraphs)}</div>'
@@ -652,7 +709,9 @@ def _case_search_text(case: dict[str, Any]) -> str:
     for s in case.get("summaries") or []:
         body = (s.get("summary") or "").strip()
         if body:
-            parts.append(body)
+            # Strip link markup so subscribers search the words they read,
+            # not the embedded URLs.
+            parts.append(_summary_plain_text(body))
     for tag in case.get("tags") or []:
         if tag:
             parts.append(str(tag))
@@ -705,6 +764,58 @@ def _render_tags(tags: list[str]) -> str:
     return f'<ul class="tags">{chips}</ul>'
 
 
+def _cl_full_url(url: str) -> str:
+    """Promote a CourtListener ``absolute_url`` path (``/docket/123/foo/``) to a
+    full https URL so links work regardless of where index.html is hosted."""
+    return f"https://www.courtlistener.com{url}" if url.startswith("/") else url
+
+
+def _render_cl_records(docket: dict[str, Any], *, multi_docket: bool) -> str:
+    """Render the muted "CourtListener records (same docket)" line for a
+    logical docket that CourtListener split into multiple records.
+
+    CourtListener can store ONE PACER docket as several ``docket_id`` records
+    (an upstream case-id change). Those are the SAME docket — not separate
+    cases — so the docket number is shown once as the primary link above, and
+    this line lists every record as small, clearly-labeled, individually-
+    clickable links so a reader (or operator hunting documents) can reach each.
+    The visible "(same docket)" label and the tooltip make clear they're one
+    docket. Returns '' for the common single-record case. When the case spans
+    multiple logical dockets, the line is prefixed with this docket's number so
+    it's unambiguous which docket the records belong to.
+    """
+    records = docket.get("cl_records") or []
+    if len(records) < 2:
+        return ""
+    links: list[str] = []
+    for i, rec in enumerate(records, 1):
+        url = rec.get("absolute_url")
+        if url:
+            links.append(
+                f'<a href="{_esc(_cl_full_url(url))}" target="_blank" '
+                f'rel="noopener">{i}</a>'
+            )
+        else:
+            # Record with no CourtListener URL yet (unsynced sibling) — show
+            # the number un-linked rather than omit it, so the count is honest.
+            links.append(f"<span>{i}</span>")
+    base_label = "CourtListener records (same docket):"
+    if multi_docket and docket.get("docket_number"):
+        label_html = f"{_esc(docket['docket_number'])} — {base_label}"
+    else:
+        label_html = base_label
+    title = (
+        "The same court docket — CourtListener stores it as several records "
+        "(an upstream case-id change). Each link opens the same case; they are "
+        "not separate cases."
+    )
+    return (
+        f'<p class="cl-records" title="{_esc(title)}">'
+        f'<span class="cl-records-label">{label_html}</span> '
+        f"{' · '.join(links)}</p>"
+    )
+
+
 def _render_case(case: dict[str, Any]) -> str:
     """Render one <li> for a case row.
 
@@ -715,8 +826,10 @@ def _render_case(case: dict[str, Any]) -> str:
             {"docket_number": "1:24-cr-12345", "court_citation": "S.D.N.Y.",
              "absolute_url": "https://www.courtlistener.com/docket/...",
              "docket_id": 12345,
-             "sibling_docket_ids": [12346, 12347]},  # optional — other CourtListener
-                                                     # ids in the same group
+             "sibling_docket_ids": [12346, 12347],  # optional — other CourtListener
+                                                    # ids in the same group
+             "cl_records": [{"docket_id": 12345, "absolute_url": "..."},
+                            ...]},  # one per CourtListener record, primary first
             ...
         ],
         "summaries": [
@@ -749,12 +862,7 @@ def _render_case(case: dict[str, Any]) -> str:
             label_parts.append(f"({_esc(d['court_citation'])})")
         label = " ".join(label_parts) or _esc(d.get("docket_id"))
         if d.get("absolute_url"):
-            url = d["absolute_url"]
-            # CourtListener absolute_url is a path like /docket/12345/foo/; promote to
-            # a full URL when needed so the link works regardless of where
-            # the index.html is hosted.
-            if url.startswith("/"):
-                url = f"https://www.courtlistener.com{url}"
+            url = _cl_full_url(d["absolute_url"])
             dockets_html.append(
                 f'<li><a href="{_esc(url)}" target="_blank" rel="noopener">{label}</a></li>'
             )
@@ -762,6 +870,13 @@ def _render_case(case: dict[str, Any]) -> str:
             dockets_html.append(f"<li>{label}</li>")
     dockets_block = (
         f'<ul class="dockets">{"".join(dockets_html)}</ul>' if dockets_html else ""
+    )
+    # When a logical docket was split into multiple CourtListener records, list
+    # them under the dockets block as a muted "same docket" line. Prefixed with
+    # the docket number only when the case has more than one logical docket.
+    multi_docket = len(dockets) > 1
+    records_block = "".join(
+        _render_cl_records(d, multi_docket=multi_docket) for d in dockets
     )
     summary_block = _render_summaries(case, dockets)
     tags_block = _render_tags(list(case.get("tags") or []))
@@ -773,7 +888,7 @@ def _render_case(case: dict[str, Any]) -> str:
     dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
     return (
         f"<li {data}><h3>{name}</h3>"
-        f"{dockets_block}{summary_block}{tags_block}{dates_block}</li>"
+        f"{dockets_block}{records_block}{summary_block}{tags_block}{dates_block}</li>"
     )
 
 
@@ -960,13 +1075,19 @@ def build_calendar_models(
                     court_citation = store.get_court_citation(meta["court_id"])
                 docket_number = meta.get("docket_number")
                 court_id = meta.get("court_id")
+                # Each CourtListener docket_id in the group is one "record" of
+                # the same logical PACER docket; carry its own absolute_url so
+                # the renderer can link every record (see `_render_cl_records`).
+                record = {"docket_id": did, "absolute_url": meta.get("absolute_url")}
                 if docket_number and court_id:
                     group_key: tuple[Any, Any] = (docket_number, court_id)
                     if group_key in group_index:
                         # Already have an entry for this group — append the
-                        # docket_id to the sibling list and keep going.
+                        # docket_id to the sibling list and the records list
+                        # and keep going.
                         existing = dockets_meta[group_index[group_key]]
                         existing.setdefault("sibling_docket_ids", []).append(did)
+                        existing["cl_records"].append(record)
                         continue
                     group_index[group_key] = len(dockets_meta)
                 dockets_meta.append(
@@ -976,6 +1097,7 @@ def build_calendar_models(
                         "court_id": court_id,
                         "court_citation": court_citation,
                         "absolute_url": meta.get("absolute_url"),
+                        "cl_records": [record],
                     }
                 )
             agg = store.get_case_aggregates(docket_ids)

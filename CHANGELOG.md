@@ -8,6 +8,59 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.6.0] - 2026-05-25
+
+### Added
+
+- **Inline document links in case summaries.** The per-docket summaries on
+  the index page now hyperlink the words themselves, the way a news article
+  does — the defendants "**were charged**" links to the indictment, "**pled
+  guilty**" links to the plea agreement, "**was sentenced**" links to the
+  judgment, and so on. Only the short action phrase is linked — the leading
+  verb is kept inside the link ("was charged", not just "charged") and the
+  trailing detail (the connecting preposition, the charges, the sentence
+  terms, the dollar amounts, the dates) stays as plain text. The
+  links land on the supporting document's PDF (CourtListener storage, with
+  the Internet Archive mirror as a fallback — the same URL the calendar event
+  bodies use). The summary LLM decides which phrase each document supports
+  (it is the one that read them), so the feature works for any document the
+  pipeline feeds it — primary documents, dispositions, and operator-supplied
+  `extra_documents` — not a fixed vocabulary. Each document is shown to the
+  model with a prompt-only reference token; the model links a phrase to a
+  token, and the pipeline resolves the token to a real URL before storing.
+  A token the model invents, or one whose document has no reachable URL
+  (paperless minute orders, not-yet-uploaded or sealed PDFs), drops back to
+  unlinked prose — so a summary can never link to a document that wasn't in
+  the set the model was given. The post-generation truthfulness guards run
+  on the prose before links are resolved, so the links don't perturb them,
+  and the index page's search box matches the words a reader sees rather than
+  the embedded URLs.
+- **Index links every CourtListener record of a split docket.** When
+  CourtListener stores one logical PACER docket as several `docket_id`
+  records (an upstream case-id change — the Akhter `1:25-cr-00307` case is
+  three records), the index now shows the docket number once as the primary
+  link and lists every record beneath it as a muted, individually-clickable
+  "CourtListener records (same docket): 1 · 2 · 3" line. That gives full
+  transparency and one-click access to each record (each carries a different
+  slice of the docket's entries) without misleading a lay reader into thinking
+  the separate CourtListener records are separate dockets or cases — the
+  docket number appears once, and the "(same docket)" label plus a tooltip
+  make the relationship explicit. Genuinely distinct proceedings (a district
+  case and its appeal) still render as separate dockets, as before.
+
+### Changed
+
+- **Document links and downloads now prefer CourtListener over the Internet
+  Archive.** Both the URLs surfaced to subscribers (calendar event-body
+  `Documents:` links and the new inline summary links) and the bytes the
+  pipeline downloads for text extraction now use the CourtListener storage URL
+  (`storage.courtlistener.com/<filepath_local>`) first, falling back to the
+  Internet Archive mirror (`filepath_ia`) only when CourtListener has no copy.
+  This reverses the previous Internet-Archive-first preference: the Internet
+  Archive is a downstream mirror of CourtListener today (it once was upstream),
+  so it can lag or omit documents, and CourtListener is the authoritative,
+  current source. Shared in one helper, `pdf.recap_document_url`.
+
 ## [0.5.1] - 2026-05-25
 
 ### Fixed

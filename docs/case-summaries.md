@@ -48,6 +48,36 @@ The page-rendered output looks like:
 A live deployment with real summaries on real federal-court dockets is
 at [casecalendar.net](https://casecalendar.net/).
 
+## Inline document links
+
+Summaries hyperlink the words themselves, the way a news article does. In the
+example above, **were charged** would link to the indictment, **pled guilty**
+to the plea agreement, and (on a concluded case) **was sentenced** to the
+judgment. Only the short action phrase is linked — the leading verb is kept
+inside the link ("was charged", not just "charged"), and the trailing detail
+(the connecting preposition and everything after it: what they were charged
+with, the sentence terms, the dollar amounts, the dates) stays as plain text,
+so a charge or sentence never turns into one long run-on link. The link lands on the supporting document's PDF —
+CourtListener's own copy (`storage.courtlistener.com`) when available, with
+the Internet Archive mirror as a fallback (the same URL the calendar event
+bodies link to). There are no footnote numbers or "(see Doc 1)" markers — just
+the phrase a reader would naturally tap.
+
+The model decides which phrase each document supports (it is the one that read
+them), so any document the pipeline feeds it can be linked — primary documents,
+dispositions, and operator-provided [`extra_documents`](#extra_documents)
+alike, not a fixed list of phrases. Under the hood, each document is shown to
+the model with a short reference token that never reaches the page; the model
+links a phrase to a token, and Case Calendar resolves the token to a real URL
+before storing the summary. A phrase the model can't tie to a document it was
+actually given — or one whose document has no openable URL (a paperless minute
+order, a not-yet-uploaded or sealed PDF) — is left as plain, unlinked text. A
+summary can never link to a document that wasn't in the set the model
+summarized from.
+
+There is nothing to configure; links appear automatically once summaries are
+enabled.
+
 ## Enabling summaries
 
 Add a top-level block to `config.yaml`:

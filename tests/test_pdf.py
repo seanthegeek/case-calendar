@@ -13,6 +13,38 @@ from urllib.parse import urlparse
 from case_calendar import pdf
 
 
+class TestRecapDocumentUrl:
+    """The shared CourtListener-storage-then-Internet-Archive URL preference.
+
+    CourtListener is the authoritative, current source; the Internet Archive
+    is a downstream mirror that can lag, so CourtListener links come first.
+    """
+
+    def test_prefers_courtlistener_storage(self):
+        rd = {
+            "filepath_ia": "https://archive.org/download/x/x.pdf",
+            "filepath_local": "recap/x.pdf",
+        }
+        assert (
+            pdf.recap_document_url(rd)
+            == "https://storage.courtlistener.com/recap/x.pdf"
+        )
+
+    def test_falls_back_to_internet_archive(self):
+        # Only the IA mirror is known (no CourtListener storage path).
+        rd = {
+            "filepath_ia": "https://archive.org/download/x/x.pdf",
+            "filepath_local": None,
+        }
+        assert pdf.recap_document_url(rd) == "https://archive.org/download/x/x.pdf"
+
+    def test_returns_none_when_no_source(self):
+        assert (
+            pdf.recap_document_url({"filepath_ia": "", "filepath_local": None}) is None
+        )
+        assert pdf.recap_document_url({}) is None
+
+
 class TestIsUsableText:
     """Single positive predicate for the extraction chain.
 
@@ -384,8 +416,10 @@ class TestFetchPdfBytes:
         rd = {"filepath_ia": "https://archive.org/x.pdf"}
         assert pdf.fetch_pdf_bytes(rd) == b"%PDF-1.4 bytes"
 
-    def test_falls_through_to_cl_storage_url(self, monkeypatch):
-        # IA returns 404; CourtListener storage URL returns 200 — second branch in the loop.
+    def test_falls_through_to_ia_mirror(self, monkeypatch):
+        # CourtListener storage (tried first) returns 404; the IA mirror
+        # returns 200 — the fallback branch in the loop. (CourtListener is
+        # preferred; IA is the backstop.)
         import httpx
 
         seen: list[str] = []
@@ -408,17 +442,19 @@ class TestFetchPdfBytes:
             def get(self, url):
                 seen.append(url)
                 host = (urlparse(url).hostname or "").lower()
-                if host == "archive.org" or host.endswith(".archive.org"):
+                if host == "storage.courtlistener.com":
                     return _Resp(404, b"")
-                return _Resp(200, b"%PDF cl bytes")
+                return _Resp(200, b"%PDF ia bytes")
 
         monkeypatch.setattr(httpx, "Client", _Client)
         rd = {
             "filepath_ia": "https://archive.org/x.pdf",
             "filepath_local": "recap/foo.pdf",
         }
-        assert pdf.fetch_pdf_bytes(rd) == b"%PDF cl bytes"
-        assert any("storage.courtlistener.com" in u for u in seen)
+        assert pdf.fetch_pdf_bytes(rd) == b"%PDF ia bytes"
+        # CourtListener storage is tried first, then the IA fallback.
+        assert seen[0].startswith("https://storage.courtlistener.com")
+        assert any("archive.org" in u for u in seen)
 
     def test_network_error_falls_through(self, monkeypatch):
         # First URL throws; second URL succeeds. Tests the try/except path.
@@ -542,10 +578,10 @@ class TestFetchPdfBytes:
     def test_transport_error_budget_exhausted_falls_through_to_next_url(
         self, monkeypatch
     ):
-        # When every retry attempt against the IA mirror raises a
-        # transport error, `_get_with_retry` returns None and
-        # `fetch_pdf_bytes` falls through to the CourtListener storage
-        # fallback. Without that fallthrough, a flaky IA mirror would
+        # When every retry attempt against CourtListener storage (tried first)
+        # raises a transport error, `_get_with_retry` returns None and
+        # `fetch_pdf_bytes` falls through to the Internet Archive mirror.
+        # Without that fallthrough, a flaky CourtListener host would
         # masquerade as a missing PDF.
         import httpx
 
@@ -556,9 +592,11 @@ class TestFetchPdfBytes:
         def handler(req):
             urls_seen.append(req.url)
             host = req.url.host or ""
-            if host == "archive.org" or host.endswith(".archive.org"):
-                raise httpx.ReadTimeout("flaky IA", request=req)
-            return httpx.Response(200, content=b"%PDF from CourtListener storage")
+            if host == "storage.courtlistener.com" or host.endswith(
+                ".storage.courtlistener.com"
+            ):
+                raise httpx.ReadTimeout("flaky CourtListener storage", request=req)
+            return httpx.Response(200, content=b"%PDF from Internet Archive")
 
         real_client = httpx.Client
 
@@ -574,20 +612,22 @@ class TestFetchPdfBytes:
                 "filepath_local": "recap/cand/x.pdf",
             }
         )
-        assert result == b"%PDF from CourtListener storage"
-        # IA was retried up to the budget, then CourtListener storage succeeded
-        # first try.
+        assert result == b"%PDF from Internet Archive"
+        # CourtListener storage was retried up to the budget, then the IA
+        # mirror succeeded first try.
         assert (
             sum(
                 1
                 for u in urls_seen
-                if (u.host == "archive.org" or (u.host or "").endswith(".archive.org"))
+                if (
+                    u.host == "storage.courtlistener.com"
+                    or (u.host or "").endswith(".storage.courtlistener.com")
+                )
             )
             == pdf._PDF_RETRY_TOTAL
         )
         assert any(
-            u.host == "storage.courtlistener.com"
-            or (u.host or "").endswith(".storage.courtlistener.com")
+            u.host == "archive.org" or (u.host or "").endswith(".archive.org")
             for u in urls_seen
         )
 

@@ -8,13 +8,17 @@ import pytest
 
 from case_calendar.calendars.index import (
     _case_search_text,
+    _cl_full_url,
     _esc,
     _format_date,
     _ics_links,
     _normalize_tags,
     _render_case,
+    _render_cl_records,
     _render_summaries,
+    _render_summary_body,
     _render_tags,
+    _summary_plain_text,
     build_calendar_models,
     render_index,
     write_index,
@@ -214,6 +218,171 @@ class TestRenderSummaries:
         assert "<script>" not in html
         assert "&lt;script&gt;" in html
 
+    def test_inline_links_render_as_anchors(self):
+        html = _render_summaries(
+            {
+                "summaries": [
+                    {
+                        "docket_number": "1:24-cr-1",
+                        "court_id": "nysd",
+                        "summary": "He was [charged](https://ia/ind.pdf) with fraud.",
+                    }
+                ]
+            },
+            dockets=[],
+        )
+        assert '<a href="https://ia/ind.pdf"' in html
+        assert ">charged</a>" in html
+
+
+class TestRenderSummaryBody:
+    """Inline document links: ``[words](https://...)`` markers become anchors
+    on the words themselves; everything else is escaped literal text."""
+
+    def test_resolves_inline_link_to_anchor_on_the_words(self):
+        out = _render_summary_body(
+            "The defendants were [charged with wire fraud](https://ia/ind.pdf) in NY."
+        )
+        assert (
+            '<a href="https://ia/ind.pdf" target="_blank" rel="noopener">'
+            "charged with wire fraud</a>" in out
+        )
+        assert out.startswith("The defendants were ")
+        assert out.endswith(" in NY.")
+
+    def test_non_http_marker_renders_literally(self):
+        # A leftover ``doc:`` token (shouldn't happen — the resolver strips
+        # them) or any non-http(s) parenthetical is NOT a link; render the
+        # bracket text verbatim rather than dropping it.
+        out = _render_summary_body("a [not a link](doc:D1) here")
+        assert "[not a link](doc:D1)" in out
+        assert "<a " not in out
+
+    def test_surrounding_markup_is_escaped(self):
+        out = _render_summary_body("a <b>x</b> & y")
+        assert "<b>" not in out
+        assert "&lt;b&gt;x&lt;/b&gt;" in out
+        assert "&amp;" in out
+
+    def test_anchor_words_and_href_are_escaped(self):
+        # Model output is untrusted: both the linked words and the href are
+        # HTML-escaped so neither can break out of the tag.
+        out = _render_summary_body('was [<i>sentenced</i>](https://x/"y) today')
+        assert "<i>sentenced</i>" not in out
+        assert "&lt;i&gt;sentenced&lt;/i&gt;" in out
+        assert 'href="https://x/&quot;y"' in out
+
+
+class TestSummaryPlainText:
+    def test_strips_markers_to_their_words(self):
+        assert (
+            _summary_plain_text("He [pled guilty](https://ia/plea.pdf) today.")
+            == "He pled guilty today."
+        )
+
+    def test_leaves_non_marker_text_unchanged(self):
+        assert _summary_plain_text("No links here (2024).") == "No links here (2024)."
+
+
+class TestCourtListenerRecords:
+    """The "CourtListener records (same docket)" line for a logical docket
+    split across multiple CourtListener docket_id records."""
+
+    def test_full_url_promotes_path(self):
+        assert (
+            _cl_full_url("/docket/123/x/")
+            == "https://www.courtlistener.com/docket/123/x/"
+        )
+        assert _cl_full_url("https://x/y") == "https://x/y"
+
+    def test_single_record_renders_no_line(self):
+        d = {"cl_records": [{"docket_id": 1, "absolute_url": "/docket/1/x/"}]}
+        assert _render_cl_records(d, multi_docket=False) == ""
+        # Missing cl_records is also a no-op.
+        assert _render_cl_records({}, multi_docket=False) == ""
+
+    def test_multiple_records_render_labeled_links(self):
+        d = {
+            "docket_number": "1:25-cr-00307",
+            "cl_records": [
+                {"docket_id": 71989485, "absolute_url": "/docket/71989485/a/"},
+                {"docket_id": 73333500, "absolute_url": "/docket/73333500/a/"},
+                {"docket_id": 73320754, "absolute_url": "/docket/73320754/a/"},
+            ],
+        }
+        html = _render_cl_records(d, multi_docket=False)
+        # The "(same docket)" label disambiguates without a tooltip (mobile).
+        assert "CourtListener records (same docket):" in html
+        # Three individually-clickable records, numbered, full-URL promoted.
+        assert (
+            '<a href="https://www.courtlistener.com/docket/71989485/a/" '
+            'target="_blank" rel="noopener">1</a>' in html
+        )
+        assert ">2</a>" in html and ">3</a>" in html
+        # Single-logical-docket case: no docket-number prefix on the label.
+        assert "1:25-cr-00307 —" not in html
+
+    def test_multi_docket_case_prefixes_label_with_number(self):
+        d = {
+            "docket_number": "1:25-cr-00307",
+            "cl_records": [
+                {"docket_id": 1, "absolute_url": "/docket/1/a/"},
+                {"docket_id": 2, "absolute_url": "/docket/2/a/"},
+            ],
+        }
+        html = _render_cl_records(d, multi_docket=True)
+        # Prefixed so it's clear which logical docket the records belong to.
+        assert "1:25-cr-00307 — CourtListener records (same docket):" in html
+
+    def test_record_without_url_renders_unlinked_number(self):
+        d = {
+            "docket_number": "x",
+            "cl_records": [
+                {"docket_id": 1, "absolute_url": "/docket/1/a/"},
+                {"docket_id": 2, "absolute_url": None},
+            ],
+        }
+        html = _render_cl_records(d, multi_docket=False)
+        assert ">1</a>" in html
+        assert "<span>2</span>" in html  # no URL -> un-linked number
+
+    def test_render_case_includes_records_line(self):
+        # End-to-end through _render_case: the records line appears after the
+        # dockets list for a split docket.
+        html = _render_case(
+            {
+                "name": "US v. Akhter",
+                "dockets": [
+                    {
+                        "docket_number": "1:25-cr-00307",
+                        "court_citation": "E.D. Va.",
+                        "absolute_url": "/docket/71989485/a/",
+                        "docket_id": 71989485,
+                        "cl_records": [
+                            {
+                                "docket_id": 71989485,
+                                "absolute_url": "/docket/71989485/a/",
+                            },
+                            {
+                                "docket_id": 73333500,
+                                "absolute_url": "/docket/73333500/a/",
+                            },
+                        ],
+                    }
+                ],
+                "date_filed": None,
+                "last_filing_date": None,
+            }
+        )
+        # The docket number is the primary link (shown once as a label, not
+        # repeated as a separate docket)...
+        assert ">1:25-cr-00307 (E.D. Va.)</a>" in html
+        # ...the records line is rendered after the dockets list...
+        assert 'class="cl-records"' in html
+        assert "CourtListener records (same docket):" in html
+        # ...and a single-logical-docket case carries no number prefix on it.
+        assert "1:25-cr-00307 — CourtListener" not in html
+
 
 class TestRenderCaseEdges:
     def test_docket_without_absolute_url_renders_plain_label(self):
@@ -307,6 +476,20 @@ class TestCaseSearchText:
             "appeal pending.",
         ]:
             assert needle in text, needle
+
+    def test_summary_link_markup_stripped_from_haystack(self):
+        # Subscribers search the words they read, not the embedded URLs: the
+        # ``[words](url)`` markers collapse to their words in the haystack.
+        text = _case_search_text(
+            {
+                "summaries": [
+                    {"summary": "He [pled guilty](https://ia/plea.pdf) to fraud."}
+                ]
+            }
+        )
+        assert "pled guilty to fraud" in text
+        assert "ia/plea.pdf" not in text
+        assert "https" not in text
 
     def test_skips_empty_or_missing_fields(self):
         # Missing name, no dockets, blank/whitespace summary -> empty string,
@@ -829,6 +1012,15 @@ class TestBuildCalendarModels:
         # The two siblings are listed under `sibling_docket_ids` (order
         # is config order).
         assert d.get("sibling_docket_ids") == [73333500, 73320754]
+        # And every record (primary first) is carried in `cl_records` with its
+        # own absolute_url, so the renderer can link each one.
+        assert [r["docket_id"] for r in d["cl_records"]] == [
+            71989485,
+            73333500,
+            73320754,
+        ]
+        assert d["cl_records"][0]["absolute_url"] == "/docket/71989485/akhter/"
+        assert d["cl_records"][2]["absolute_url"] == "/docket/73320754/akhter/"
 
     def test_handles_unseen_docket(self, store):
         # Case configured but no sync has happened yet — every aggregate
