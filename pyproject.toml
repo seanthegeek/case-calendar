@@ -1,6 +1,6 @@
 [project]
 name = "case-calendar"
-version = "0.5.1"
+version = "0.6.0"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.40",

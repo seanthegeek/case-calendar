@@ -412,11 +412,15 @@ class TestValidateActionDialIn:
             "validate_url",
             lambda u, **kw: None,
         )
-        action = {"dial_in": "https://broken.example.com/x"}
+        url = "https://broken.example.com/x"
+        action = {"dial_in": url}
         _validate_action_dial_in(action)
         assert action["dial_in"] is None
-        assert "Dial-in (unverified)" in action["notes"]
-        assert "broken.example.com" in action["notes"]
+        # Exact-equality (not a URL-substring check) so the assertion is precise
+        # AND CodeQL doesn't flag it as incomplete URL sanitization: the broken
+        # dial-in URL is preserved verbatim in notes behind the "unverified"
+        # marker.
+        assert action["notes"] == f"Dial-in (unverified): {url}"
 
     def test_invalid_url_appends_to_existing_notes(self, monkeypatch):
         from case_calendar import url_validator

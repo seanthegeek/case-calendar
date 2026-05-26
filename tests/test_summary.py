@@ -15,9 +15,12 @@ import pytest
 from case_calendar import summary
 from case_calendar.courtlistener import CourtListener
 from case_calendar.summary import (
+    _assign_document_refs,
     _entry_description_head,
     _entry_doc_text,
+    _entry_document_url,
     _is_disposition_document,
+    _resolve_document_links,
     find_primary_documents,
     find_primary_documents_for_group,
     is_disposition,
@@ -1677,6 +1680,188 @@ def _seed_docket_meta(store, docket_id, *, court_id="dcd", docket_number="1:24-c
 _DEFAULT_GROUP = ("1:24-cr-100", "dcd")
 
 
+class TestEntryDocumentUrl:
+    """Link target for an entry's inline citation — mirrors _entry_doc_text
+    priority (substance-marked, then main, then attachment), skips sealed."""
+
+    def test_substance_marked_doc_wins_over_main(self, make_recap_doc):
+        # An indictment filed as an attachment to a procedural parent: the
+        # link points at the doc that IS the indictment, not the parent's
+        # boilerplate main doc that happens to be listed first.
+        entry = {
+            "recap_documents": [
+                make_recap_doc(
+                    doc_id=1,
+                    description="Notice of Filing",
+                    filepath_ia="https://ia/parent.pdf",
+                ),
+                make_recap_doc(
+                    doc_id=2,
+                    description="Indictment",
+                    filepath_ia="https://ia/indictment.pdf",
+                ),
+            ]
+        }
+        assert _entry_document_url(entry) == "https://ia/indictment.pdf"
+
+    def test_skips_sealed_document(self, make_recap_doc):
+        entry = {
+            "recap_documents": [
+                make_recap_doc(
+                    doc_id=1, is_sealed=True, filepath_ia="https://ia/sealed.pdf"
+                ),
+                make_recap_doc(doc_id=2, filepath_ia="https://ia/ok.pdf"),
+            ]
+        }
+        assert _entry_document_url(entry) == "https://ia/ok.pdf"
+
+    def test_main_doc_storage_fallback(self, make_recap_doc):
+        entry = {
+            "recap_documents": [make_recap_doc(doc_id=1, filepath_local="recap/x.pdf")]
+        }
+        assert (
+            _entry_document_url(entry)
+            == "https://storage.courtlistener.com/recap/x.pdf"
+        )
+
+    def test_none_when_no_reachable_url(self, make_recap_doc):
+        assert (
+            _entry_document_url({"recap_documents": [make_recap_doc(doc_id=1)]}) is None
+        )
+        assert _entry_document_url({"recap_documents": []}) is None
+
+
+class TestAssignDocumentRefs:
+    def test_sequential_tokens_across_lists(self):
+        primary = [{"url": "https://ia/ind.pdf"}]
+        disp = [{"url": "https://ia/judg.pdf"}, {"url": None}]
+        extras = [{"source_url": "https://op/doc.pdf"}]
+        link_map = _assign_document_refs(primary, disp, extras)
+        # Tokens run D1.. in render order (primary, then disposition, then extra).
+        assert primary[0]["ref"] == "D1"
+        assert disp[0]["ref"] == "D2"
+        assert disp[1]["ref"] == "D3"
+        assert extras[0]["ref"] == "D4"
+        # The map keys EVERY assigned ref; a URL-less doc maps to None so the
+        # resolver can tell "known but unreachable" from "invented token".
+        assert link_map == {
+            "D1": "https://ia/ind.pdf",
+            "D2": "https://ia/judg.pdf",
+            "D3": None,
+            "D4": "https://op/doc.pdf",
+        }
+
+    def test_empty_lists_produce_empty_map(self):
+        assert _assign_document_refs([], [], []) == {}
+
+    def test_verdict_form_is_not_a_link_target(self):
+        # A "Verdict Form" doc still gets a ref (it rides into the prompt as
+        # context) but maps to None even though it has a URL, so the model
+        # can't turn "returned a verdict" into a link to a checkbox template.
+        primary = [{"url": "https://ia/ind.pdf", "description": "INDICTMENT"}]
+        disp = [
+            {
+                "url": "https://ia/verdict.pdf",
+                "description": "Verdict Form. Signed by Judge ...",
+            }
+        ]
+        link_map = _assign_document_refs(primary, disp)
+        assert link_map["D1"] == "https://ia/ind.pdf"
+        assert link_map["D2"] is None  # verdict form: known ref, no link
+        assert disp[0]["ref"] == "D2"
+
+    def test_verdict_form_marker_drops_to_plain_text(self):
+        # End-to-end through the resolver: a verdict-form ref (url None) makes
+        # "returned a verdict" render as plain prose.
+        link_map = _assign_document_refs(
+            [
+                {
+                    "url": "https://ia/verdict.pdf",
+                    "description": "Verdict Form. Signed ...",
+                }
+            ]
+        )
+        out = _resolve_document_links(
+            "The jury [returned a verdict](doc:D1) on all counts.", link_map
+        )
+        assert out == "The jury returned a verdict on all counts."
+
+    def test_completed_verdict_minute_entry_is_still_linkable(self):
+        # Only "Verdict Form" is excluded; a result-bearing "Jury Verdict"
+        # minute entry / judgment is not, so it keeps its URL.
+        link_map = _assign_document_refs(
+            [{"url": "https://ia/judgment.pdf", "description": "JUDGMENT as to X"}]
+        )
+        assert link_map["D1"] == "https://ia/judgment.pdf"
+
+
+class TestResolveDocumentLinks:
+    def test_known_token_with_url_becomes_link(self):
+        # Clean span (verb already inside, no trailing preposition) so this
+        # isolates token->URL resolution from the span-tidy below.
+        out = _resolve_document_links(
+            "The defendants [were charged](doc:D1) in NY.",
+            {"D1": "https://ia/ind.pdf"},
+        )
+        assert out == "The defendants [were charged](https://ia/ind.pdf) in NY."
+
+    def test_known_token_without_url_drops_to_bare_words(self):
+        out = _resolve_document_links("He [pled guilty](doc:D2) today.", {"D2": None})
+        assert out == "He pled guilty today."
+
+    def test_unknown_token_drops_to_bare_words_and_warns(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.WARNING, logger="case_calendar.summary"):
+            out = _resolve_document_links(
+                "She was [sentenced to 60 months](doc:D9) on Friday.",
+                {"D1": "https://ia/x.pdf"},
+            )
+        assert out == "She was sentenced to 60 months on Friday."
+        assert "unknown document token" in caplog.text
+
+    def test_plain_parentheticals_and_brackets_untouched(self):
+        text = "Filed in 2024 (see also Smith) [sic] with no links."
+        assert _resolve_document_links(text, {}) == text
+
+    def test_leading_auxiliary_verb_pulled_into_link(self):
+        # "was [charged]" -> "[was charged]" so the verb is part of the link.
+        out = _resolve_document_links(
+            "He was [charged](doc:D1) with fraud.", {"D1": "https://ia/x.pdf"}
+        )
+        assert out == "He [was charged](https://ia/x.pdf) with fraud."
+
+    def test_compound_auxiliary_fully_absorbed(self):
+        out = _resolve_document_links(
+            "She has been [charged](doc:D1).", {"D1": "https://ia/x.pdf"}
+        )
+        assert out == "She [has been charged](https://ia/x.pdf)."
+
+    def test_trailing_preposition_pushed_out_of_link(self):
+        # "[convicted at trial of]" -> "[convicted at trial] of" — the prep
+        # that introduces the charges stays plain.
+        out = _resolve_document_links(
+            "He [was convicted at trial of](doc:D1) all counts.",
+            {"D1": "https://ia/x.pdf"},
+        )
+        assert out == "He [was convicted at trial](https://ia/x.pdf) of all counts."
+
+    def test_verb_in_and_preposition_out_together(self):
+        out = _resolve_document_links(
+            "He was [charged with](doc:D1) wire fraud.", {"D1": "https://ia/x.pdf"}
+        )
+        assert out == "He [was charged](https://ia/x.pdf) with wire fraud."
+
+    def test_non_auxiliary_preceding_word_left_alone(self):
+        # "the court [sentenced him]" — "court" is not an auxiliary verb, and
+        # the anchor doesn't end in a preposition, so the span is unchanged.
+        out = _resolve_document_links(
+            "The court [sentenced him](doc:D1) to 60 months.",
+            {"D1": "https://ia/x.pdf"},
+        )
+        assert out == "The court [sentenced him](https://ia/x.pdf) to 60 months."
+
+
 class TestSummarizeDocket:
     def test_returns_none_when_docket_metadata_missing(
         self, store, patch_llm, patch_pdf
@@ -1796,6 +1981,64 @@ class TestSummarizeDocket:
         assert call["docket"]["court_citation"] == "D.D.C."
         assert call["docket"]["court_tz"] is not None
         assert [d["entry_id"] for d in call["primary_documents"]] == [10]
+
+    def test_inline_links_resolved_in_stored_summary(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # The model links an action phrase to the indictment by its prompt
+        # token (D1); summarize_docket resolves the token to the document's
+        # real URL before persisting, so the stored prose carries the link
+        # on the words themselves.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text..."}
+
+        captured: dict[str, Any] = {}
+
+        def _fake(**kwargs):
+            captured.update(kwargs)
+            # Short action phrase linked; the trailing detail stays plain.
+            return (
+                "The defendants [were charged](doc:D1) with wire fraud.",
+                "fake/model-v1",
+            )
+
+        monkeypatch.setattr(summary.llm, "generate_docket_summary", _fake)
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [
+                            {
+                                "id": 500,
+                                "is_available": True,
+                                "filepath_ia": "https://ia/ind.pdf",
+                            }
+                        ],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert row is not None
+        assert row["summary"] == (
+            "The defendants [were charged](https://ia/ind.pdf) with wire fraud."
+        )
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert "https://ia/ind.pdf" in persisted["summary"]
+        # The primary doc was shown to the LLM with a D1 token and its URL,
+        # so the token the model emitted resolves.
+        assert captured["primary_documents"][0]["ref"] == "D1"
+        assert captured["primary_documents"][0]["url"] == "https://ia/ind.pdf"
 
     def test_writes_not_available_message_when_primary_has_no_source(
         self, store, patch_llm, patch_pdf, caplog

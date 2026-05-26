@@ -992,6 +992,31 @@ def _entry_doc_text(entry: dict[str, Any], *, allow_ocr: bool = True) -> str:
     return "\n\n".join(parts)
 
 
+def _entry_document_url(entry: dict[str, Any]) -> Optional[str]:
+    """Public URL of the document a summary citation should open for ``entry``.
+
+    Mirrors :func:`_entry_doc_text`'s priority so the link points at the
+    SAME filing whose text the LLM read: a substance-marked recap_document
+    first (the indictment / judgment filed as an attachment to a procedural
+    parent), then the entry's main document, then any other attachment.
+    Sealed documents are skipped — they have no openable URL — and the
+    first recap_document that yields a URL wins. Returns None when nothing
+    on the entry is reachable (paperless minute orders, not-yet-uploaded
+    PDFs), in which case the caller leaves the cited phrase unlinked.
+    """
+    candidates = list(_substance_recap_documents(entry))
+    rds = entry.get("recap_documents") or []
+    candidates += [rd for rd in rds if not rd.get("attachment_number")]
+    candidates += [rd for rd in rds if rd.get("attachment_number")]
+    for rd in candidates:
+        if rd.get("is_sealed"):
+            continue
+        url = pdf.recap_document_url(rd)
+        if url:
+            return url
+    return None
+
+
 def _attach_text(
     entries: Iterable[dict[str, Any]],
     *,
@@ -1038,6 +1063,12 @@ def _attach_text(
                 "description": _entry_description_head(entry),
                 "date_filed": entry.get("date_filed"),
                 "text": text,
+                # Public URL for the inline-citation link (None when the
+                # document isn't reachable — paperless minute orders, a
+                # description-fallback disposition with no PDF, a sealed
+                # doc). A doc that reaches the summary LLM with no URL can
+                # still be summarized; the cited phrase just renders unlinked.
+                "url": _entry_document_url(entry),
             }
         )
     return out
@@ -1602,6 +1633,164 @@ def _generate_guarded_summary(
 
 
 # ---------------------------------------------------------------------------
+# Inline document links
+# ---------------------------------------------------------------------------
+#
+# Links in the summary prose are newspaper-style: the action WORD itself is
+# the link ("the defendants were <charged> with ...", "<pled guilty> to ..."),
+# not a footnote marker or a "(see Doc 1)" citation. The reader sees and taps
+# the word.
+#
+# To let the LLM decide which word links to which document, each document fed
+# to it is shown with a short reference token ("[D1]", "[D2]", ...) — a
+# prompt-only handle that NEVER reaches the page. The prompt asks the model to
+# wrap the linked word in a marker shaped like a markdown link but pointing at
+# the token rather than a URL: ``[charged](doc:D1)``, ``[pled guilty](doc:D3)``.
+# We assign the tokens HERE so the prompt rendering (llm._append_doc_block) and
+# the resolution below agree by construction, then resolve the markers to each
+# document's public URL after generation and BEFORE the prose is stored.
+#
+# The model can link the wrong document for a word, or point at a document
+# with no reachable URL, but it can never produce a link to a document that
+# isn't in the set we fed it: a token we never assigned is dropped back to its
+# bare word and logged. This keeps the feature "dynamic enough to support any
+# document referenced in any generated summary" (any document we show the LLM
+# is linkable) while staying inside the truthfulness discipline the rest of
+# the pipeline follows. See the AGENTS.md design decision "Inline document
+# links in case summaries."
+
+_DOC_REF_PREFIX = "D"
+
+# Matches a link marker the LLM emits: ``[linked words](doc:D1)``. The anchor
+# admits anything but a closing bracket; the token is alnum / dash / underscore
+# so ordinary parentheticals ("(2024)", "[sic]") are left alone.
+_DOC_LINK_RE = re.compile(r"\[([^\]]+)\]\(doc:([A-Za-z0-9_-]+)\)")
+
+# A jury VERDICT FORM is a checkbox template — its extracted text is the form
+# layout, identical whether blank or filled, because the jury's actual findings
+# are mark-ups not in the text layer. So it's a misleading link target ("the
+# jury returned a verdict" pointing at a blank-looking form), and we never link
+# it. It still rides into the prompt as summary context; the result-bearing
+# link target, when one exists, is a judgment (which states the outcome in
+# text). The actual verdict is often a paperless minute entry with no PDF.
+_VERDICT_FORM_RE = re.compile(r"\bverdict\s+form\b", re.IGNORECASE)
+
+
+def _is_verdict_form(doc: dict[str, Any]) -> bool:
+    return bool(_VERDICT_FORM_RE.search(doc.get("description") or ""))
+
+
+def _assign_document_refs(
+    *doc_lists: list[dict[str, Any]],
+) -> dict[str, Optional[str]]:
+    """Stamp each document with a reference token and return ``{ref: url}``.
+
+    Mutates the doc dicts in place, setting ``ref`` ("D1", "D2", ...) in the
+    order the lists are passed (the same order they're rendered in the
+    prompt). The returned map is keyed by EVERY assigned ref so the resolver
+    can tell a known-but-unreachable document (ref present, url ``None`` —
+    drop the marker silently) from a token the model invented (ref absent —
+    drop and warn). A document's URL is its CourtListener ``url`` (set by
+    :func:`_attach_text`) or, for an operator extra, its ``source_url``.
+
+    A jury verdict form is deliberately mapped to ``None`` even when it has a
+    URL (see :func:`_is_verdict_form`): the document stays in the prompt as
+    context but is never a link target, so any marker the model puts on it
+    collapses back to plain text.
+    """
+    link_map: dict[str, Optional[str]] = {}
+    n = 0
+    for docs in doc_lists:
+        for doc in docs:
+            n += 1
+            ref = f"{_DOC_REF_PREFIX}{n}"
+            doc["ref"] = ref
+            url = doc.get("url") or doc.get("source_url")
+            if url and _is_verdict_form(doc):
+                url = None
+            link_map[ref] = url
+    return link_map
+
+
+# Span-boundary tidy applied AFTER markers resolve to ``[words](url)``. The
+# model is inconsistent about exactly where a link span starts and ends, so two
+# deterministic fixes make every link read as a clean action phrase:
+#   - pull an immediately-preceding auxiliary / linking verb INTO the link, so
+#     "was [charged](url)" becomes "[was charged](url)" (looped, so compound
+#     "has been [charged]" fully absorbs);
+#   - push a DANGLING trailing preposition that introduces the detail OUT of
+#     the link, so "[convicted at trial of](url)" becomes
+#     "[convicted at trial](url) of" and "[charged with](url)" becomes
+#     "[charged](url) with".
+# Only fires on a verb/preposition sitting flush against the link; the charge
+# names, counts, amounts, and dates after the preposition stay plain text.
+_LINK_LEADING_VERB_RE = re.compile(
+    r"\b(was|were|is|are|be|been|has|have|had)\s+\[([^\]]+)\]\((https?://[^\s)]+)\)",
+    re.IGNORECASE,
+)
+_LINK_TRAILING_PREP_RE = re.compile(
+    r"\[([^\]]+?)\s+(of|to|with|for|on|in|against|upon|into)\]"
+    r"\((https?://[^\s)]+)\)",
+    re.IGNORECASE,
+)
+
+
+def _tidy_link_spans(text: str) -> str:
+    """Normalize link-span boundaries: leading verb in, trailing preposition out.
+
+    Repeats to a fixpoint so a compound auxiliary ("has been charged") and a
+    verb+preposition pair ("was charged with") both fully settle. Termination
+    is guaranteed: trailing-preposition stripping only ever shrinks an anchor
+    from the back and leading-verb absorption only ever grows it from the
+    front, each drawing from a finite supply of flush words, so the text
+    reaches a fixpoint after a couple of passes and the loop returns.
+    """
+    while True:
+        new = _LINK_TRAILING_PREP_RE.sub(
+            lambda m: f"[{m.group(1)}]({m.group(3)}) {m.group(2)}", text
+        )
+        new = _LINK_LEADING_VERB_RE.sub(
+            lambda m: f"[{m.group(1)} {m.group(2)}]({m.group(3)})", new
+        )
+        if new == text:
+            return text
+        text = new
+
+
+def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> str:
+    """Replace ``[words](doc:Dn)`` markers with resolved markdown links.
+
+    A known ref with a URL becomes ``[words](url)`` (the index renderer turns
+    that into an ``<a>`` on the words themselves); a known ref with no URL, or
+    an unknown ref, collapses back to the bare ``words`` so the prose still
+    reads cleanly. Unknown refs are logged — they mean the model linked a
+    token we never assigned, the link analogue of the grounding guard's
+    warning.
+
+    After resolution, :func:`_tidy_link_spans` normalizes each link's span so
+    the leading verb is inside and a dangling trailing preposition is outside.
+    """
+
+    def repl(m: "re.Match[str]") -> str:
+        anchor, ref = m.group(1), m.group(2)
+        if ref not in link_map:
+            log.warning(
+                "summary: dropping link to unknown document token %r "
+                "(linked words=%r) — the model linked a reference that was "
+                "not in the document set",
+                ref,
+                anchor,
+            )
+            return anchor
+        url = link_map[ref]
+        if not url:
+            return anchor
+        return f"[{anchor}]({url})"
+
+    return _tidy_link_spans(_DOC_LINK_RE.sub(repl, text))
+
+
+# ---------------------------------------------------------------------------
 # Per-docket entry point
 # ---------------------------------------------------------------------------
 
@@ -1924,6 +2113,15 @@ def summarize_docket(
             court_id,
         )
 
+    # Stamp each document with a citation token (D1, D2, ...) and build the
+    # ref->url map. The LLM cites documents by token in the prose; we resolve
+    # the tokens to URLs right after generation. Assigning here keeps the
+    # prompt rendering and the resolution in lockstep on which token is which
+    # document.
+    link_map = _assign_document_refs(
+        primary_documents, disposition_documents, extra_documents
+    )
+
     summary_text, model_id = _generate_guarded_summary(
         source_text=source_text,
         docket_id=docket_id,
@@ -1940,6 +2138,14 @@ def summarize_docket(
         provider=provider,
         model=model,
     )
+
+    # Resolve inline document citations to real links before storing. The
+    # truthfulness guards inside _generate_guarded_summary run on the
+    # token-bearing prose (the tokens carry no dates / amounts / URLs, so
+    # they don't perturb the guards); resolution happens after so the stored
+    # summary carries real ``[anchor](https://...)`` links the renderer can
+    # turn into anchors.
+    summary_text = _resolve_document_links(summary_text, link_map)
 
     if llm.SUMMARY_INSUFFICIENT_DOCUMENTS in summary_text:
         # The model exercised its prompt-level refusal — store and render

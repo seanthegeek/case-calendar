@@ -3,8 +3,9 @@
 CourtListener's ``plain_text`` is the success path. When it's empty for an
 otherwise-available PDF, we try, in order:
 
-  1. Pull the PDF from Internet Archive (``filepath_ia``) and run pypdf —
-     handles any PDF that has embedded text.
+  1. Download the PDF — from CourtListener storage (``filepath_local``)
+     first, the Internet Archive mirror (``filepath_ia``) as a fallback —
+     and run pypdf, which handles any PDF that has embedded text.
   2. If pypdf yields nothing usable AND the local system has ``tesseract``
      and ``pdftoppm`` (poppler) installed, OCR each page.
 
@@ -30,10 +31,10 @@ import httpx
 log = logging.getLogger(__name__)
 
 # Transport-level exceptions worth retrying when fetching a PDF. Without
-# retry, a single mid-fetch read timeout on the IA mirror would push us
-# straight to the CourtListener storage fallback (which has stricter
-# rate limits and is more likely to fail too), and a blip on both would
-# surface as a permanent fetch failure for the entry.
+# retry, a single mid-fetch read timeout on CourtListener storage would push
+# us straight to the Internet Archive fallback (a downstream mirror that may
+# lag or omit the document), and a blip on both would surface as a permanent
+# fetch failure for the entry.
 _PDF_RETRYABLE_EXCEPTIONS: tuple[type[Exception], ...] = (
     httpx.TimeoutException,
     httpx.NetworkError,
@@ -224,20 +225,49 @@ def _get_with_retry(client: httpx.Client, url: str) -> Optional[httpx.Response]:
         attempt += 1
 
 
+def recap_document_url(rd: dict) -> Optional[str]:
+    """Public URL for a recap_document, or None when no source is known.
+
+    Prefers the CourtListener storage URL built from ``filepath_local``
+    (``https://storage.courtlistener.com/...``), falling back to the
+    Internet Archive mirror (``filepath_ia``) only when CourtListener has no
+    storage path. CourtListener is the authoritative, current source today;
+    the Internet Archive is a downstream mirror that can lag or omit
+    documents, so CourtListener links come first across the project. This is
+    the single source of truth for "where does this document live"; both the
+    calendar event-body renderer and the case-summary inline-link resolver
+    use it so they point subscribers at the same URL the fetch pipeline would
+    download.
+    """
+    fp_local = rd.get("filepath_local")
+    if fp_local:
+        return f"https://storage.courtlistener.com/{fp_local}"
+    ia = rd.get("filepath_ia")
+    if ia:
+        return ia
+    return None
+
+
 def fetch_pdf_bytes(rd: dict, *, timeout: float = 30.0) -> Optional[bytes]:
     """Try to download the PDF for a recap_document. Returns None if no source.
 
-    We avoid CourtListener's storage URL (which can require auth or rate
-    limits) and prefer the Internet Archive mirror, then fall back to
-    constructing a CourtListener storage URL from ``filepath_local``.
+    Prefers the CourtListener storage URL (built from ``filepath_local``),
+    falling back to the Internet Archive mirror (``filepath_ia``). CourtListener
+    is the authoritative, current source today; the Internet Archive is a
+    downstream mirror that can lag or omit documents, so we read from
+    CourtListener first and keep IA only as a backstop. The CourtListener file
+    host ``storage.courtlistener.com`` is a separate static-file host from the
+    rate-limited REST API; the per-URL retry/backoff in ``_get_with_retry``
+    covers a transient failure on either, and the IA fallback covers a document
+    CourtListener storage doesn't have.
     """
     urls: list[str] = []
-    ia = rd.get("filepath_ia")
-    if ia:
-        urls.append(ia)
     fp_local = rd.get("filepath_local")
     if fp_local:
         urls.append(f"https://storage.courtlistener.com/{fp_local}")
+    ia = rd.get("filepath_ia")
+    if ia:
+        urls.append(ia)
 
     for url in urls:
         try:

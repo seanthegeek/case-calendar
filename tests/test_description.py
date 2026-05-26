@@ -427,23 +427,26 @@ class TestDocumentLabel:
 
 
 class TestDocumentUrl:
-    def test_prefers_ia(self):
+    def test_prefers_cl_storage(self):
+        # CourtListener is the authoritative current source; IA is a downstream
+        # mirror, so the CourtListener storage URL wins when both are present.
         url = _document_url(
             {
                 "filepath_ia": "https://archive.org/65.pdf",
                 "filepath_local": "recap/x/65.pdf",
             }
         )
-        assert url == "https://archive.org/65.pdf"
+        assert url == "https://storage.courtlistener.com/recap/x/65.pdf"
 
-    def test_falls_back_to_cl_storage(self):
+    def test_falls_back_to_ia(self):
+        # Only the IA mirror is known (no CourtListener storage path).
         url = _document_url(
             {
-                "filepath_ia": None,
-                "filepath_local": "recap/x/65.pdf",
+                "filepath_ia": "https://archive.org/65.pdf",
+                "filepath_local": None,
             }
         )
-        assert url == "https://storage.courtlistener.com/recap/x/65.pdf"
+        assert url == "https://archive.org/65.pdf"
 
     def test_returns_none_when_no_paths(self):
         assert _document_url({}) is None

@@ -35,6 +35,12 @@ Features:
   last-filing date, and the AI summary paragraph when summaries are
   enabled. Multi-docket cases get one summary paragraph per docket, each
   prefixed with the docket number + court citation.
+- **Inline document links in summaries.** Short action phrases in the
+  summary prose link to the supporting document the way a news article
+  links a word — "were charged" to the indictment, "pled guilty" to the
+  plea agreement, "sentenced him" to the judgment (the charge and sentence
+  details stay as plain text). See
+  [AI case summaries](case-summaries.md#inline-document-links).
 - **Client-side sort.** Each section has a dropdown (case name, date
   filed, last filing) and an ascending / descending toggle. Default is
   "Last filing" descending so a recent flurry of activity surfaces first.
