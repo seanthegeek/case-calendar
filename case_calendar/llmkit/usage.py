@@ -155,14 +155,26 @@ class TokenLedger:
         self._lock = threading.Lock()
         self._by_docket: dict[str, TokenUsage] = {}
         self._calls_by_docket: dict[str, int] = {}
+        # Per-model subtotals. Model is the natural axis for "where did the
+        # tokens / dollars go": the extractor and the summarizer run on
+        # different models (a cheap small/fast tier vs a higher synthesis
+        # tier), so a per-model split separates the two tracks in the run
+        # summary. The ledger treats the model string opaquely — it doesn't
+        # know which model is "the extractor" — so this stays domain-free.
+        self._by_model: dict[str, TokenUsage] = {}
+        self._calls_by_model: dict[str, int] = {}
         self._total = TokenUsage()
         self._calls = 0
         # Cost estimation (opt-in). `_price_fn` is None until a consumer sets
         # one; when set, per-call costs are accumulated here and `_unpriced`
         # counts calls whose model had no price entry (so the estimate is
-        # flagged partial rather than silently undercounting).
+        # flagged partial rather than silently undercounting). A model is
+        # priced-or-not deterministically, so `_cost_by_model` containing a
+        # model key (even at $0.0000) means that model was priced; its
+        # absence while a price fn is set means it was unpriced.
         self._price_fn: Optional[PriceFn] = None
         self._cost_by_docket: dict[str, float] = {}
+        self._cost_by_model: dict[str, float] = {}
         self._cost_total = 0.0
         self._unpriced = 0
 
@@ -201,6 +213,8 @@ class TokenLedger:
         with self._lock:
             self._by_docket[key] = self._by_docket.get(key, TokenUsage()) + tokens
             self._calls_by_docket[key] = self._calls_by_docket.get(key, 0) + 1
+            self._by_model[model] = self._by_model.get(model, TokenUsage()) + tokens
+            self._calls_by_model[model] = self._calls_by_model.get(model, 0) + 1
             self._total = self._total + tokens
             self._calls += 1
             if price_fn is not None:
@@ -208,20 +222,32 @@ class TokenLedger:
                     self._cost_by_docket[key] = (
                         self._cost_by_docket.get(key, 0.0) + cost
                     )
+                    self._cost_by_model[model] = (
+                        self._cost_by_model.get(model, 0.0) + cost
+                    )
                     self._cost_total += cost
                 else:
                     self._unpriced += 1
 
     def log_summary(self, *, scope: str = "run") -> None:
         """Log a per-docket subtotal line for every docket seen this run, then
-        a grand-total line. No-op when no calls were recorded. When a price
-        estimator is set, each line also carries a `cost_est=` field; the TOTAL
-        notes how many calls had no price entry so a partial estimate is
-        obvious."""
+        a per-model subtotal line for every model, then a grand-total line.
+        No-op when no calls were recorded. When a price estimator is set, each
+        line also carries a `cost_est=` field; a model with no price entry
+        shows `cost_est=?`, and the TOTAL notes how many calls were unpriced so
+        a partial estimate is obvious.
+
+        The per-model lines are what separate the cost of the extractor track
+        from the summary track: the two run on different models, so reading the
+        run total by model tells you which one spent what. The startup log
+        names which model is the extractor vs the summarizer."""
         with self._lock:
             by_docket = dict(self._by_docket)
             calls_by_docket = dict(self._calls_by_docket)
             cost_by_docket = dict(self._cost_by_docket)
+            by_model = dict(self._by_model)
+            calls_by_model = dict(self._calls_by_model)
+            cost_by_model = dict(self._cost_by_model)
             total = self._total
             calls = self._calls
             priced = self._price_fn is not None
@@ -240,16 +266,34 @@ class TokenLedger:
                 by_docket[key],
                 cost_field,
             )
+        for model in sorted(by_model):
+            if priced:
+                # A priced model is in cost_by_model (even at $0.0000); a model
+                # absent there while a price fn is set had no price entry.
+                if model in cost_by_model:
+                    cost_field = f" cost_est=${cost_by_model[model]:.4f}"
+                else:
+                    cost_field = " cost_est=?"
+            else:
+                cost_field = ""
+            logger.info(
+                "llm-tokens model=%s calls=%d %s%s",
+                model,
+                calls_by_model[model],
+                by_model[model],
+                cost_field,
+            )
         if priced:
             note = f" ({unpriced} call(s) had no price entry)" if unpriced else ""
             cost_field = f" cost_est=${cost_total:.4f}{note}"
         else:
             cost_field = ""
         logger.info(
-            "llm-tokens %s TOTAL calls=%d dockets=%d %s%s",
+            "llm-tokens %s TOTAL calls=%d dockets=%d models=%d %s%s",
             scope,
             calls,
             len(by_docket),
+            len(by_model),
             total,
             cost_field,
         )
@@ -261,10 +305,13 @@ class TokenLedger:
         with self._lock:
             self._by_docket.clear()
             self._calls_by_docket.clear()
+            self._by_model.clear()
+            self._calls_by_model.clear()
             self._total = TokenUsage()
             self._calls = 0
             self._price_fn = None
             self._cost_by_docket.clear()
+            self._cost_by_model.clear()
             self._cost_total = 0.0
             self._unpriced = 0
 

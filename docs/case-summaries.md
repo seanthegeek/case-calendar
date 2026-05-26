@@ -148,13 +148,22 @@ llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket
 `verify_hearing`, `verify_deadline`, `dedupe_hearings`) from the higher-tier
 `summary` calls, and `docket` is the CourtListener docket id.
 
-At the end of a `sync` or `summarize` run, a per-docket subtotal and a grand
-total are logged so you don't have to add them up yourself:
+At the end of a `sync` or `summarize` run, a per-docket subtotal, a per-model
+subtotal, and a grand total are logged so you don't have to add them up
+yourself:
 
 ```text
 llm-tokens docket=12345 calls=9 in=63140 out=540 cached=58000 cache_write=2100 cost_est=$0.0241
-llm-tokens sync TOTAL calls=37 dockets=4 in=210880 out=2010 cached=190400 cache_write=2100 cost_est=$0.0612
+llm-tokens model=claude-haiku-4-5 calls=32 in=58400 out=1700 cached=52000 cache_write=0 cost_est=$0.0120
+llm-tokens model=claude-sonnet-4-6 calls=5 in=152480 out=310 cached=138400 cache_write=2100 cost_est=$0.0492
+llm-tokens sync TOTAL calls=37 dockets=4 models=2 in=210880 out=2010 cached=190400 cache_write=2100 cost_est=$0.0612
 ```
+
+The per-model lines are what let you read the cheap extractor track's spend
+(here `claude-haiku-4-5`) apart from the higher-tier summary track's
+(`claude-sonnet-4-6`) — the two run on different models, so the by-model split
+is the by-track split. The `extraction LLM:` / `summary LLM:` lines logged at
+the start of the run name which model is which.
 
 The token counts are normalized so `in` always means the same thing across
 providers (Anthropic reports cache reads/writes separately from its input
