@@ -364,13 +364,13 @@ and each one is reproduced **verbatim** on the
 [LLM prompts](llm-prompts.md) page so you can read exactly what the model
 is told without opening the source:
 
-- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L42) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
-- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L102) — per-entry hearing extraction (and, with the addendum below, deadlines).
-- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L407) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
-- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1024) — the end-of-sync hearing verify pass.
-- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1313) — the parallel verify pass for filing deadlines.
-- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1417) — same-docket same-slot duplicate resolver.
-- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1640) — the higher-tier case-summary prompt.
+- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L26) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
+- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing extraction (and, with the addendum below, deadlines).
+- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L391) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
+- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L828) — the end-of-sync hearing verify pass.
+- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1128) — the parallel verify pass for filing deadlines.
+- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.
+- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1451) — the higher-tier case-summary prompt.
 
 Reading any of those alongside the corresponding entry in
 [`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)

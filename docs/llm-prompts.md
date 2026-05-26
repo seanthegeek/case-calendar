@@ -21,7 +21,7 @@ Every prompt also receives a per-call **user message** assembled at runtime (the
 
 ## Hearing & deadline extraction — `SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L102)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86)
 
 Runs against one docket entry plus the case's known-hearings list (and known-deadlines list when deadlines are on) and returns zero or more structured actions. The major-vs-minor `SIGNIFICANCE_RULES` rubric is interpolated into this prompt and is reproduced inline below. This is the small/fast tier (Haiku / `gpt-5.4-nano` / Flash Lite by default).
 
@@ -382,7 +382,7 @@ Always emit at least one action. If nothing applies, emit a single IGNORE.
 
 ## Filing-deadline addendum — `DEADLINE_PROMPT_ADDENDUM`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L407)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L391)
 
 Appended to `SYSTEM_PROMPT` only for cases that opt into filing-deadline tracking, so the simpler hearings-only prompt stays cheap on cases that don't need it. Adds the deadline action vocabulary (`ADD_DEADLINE` / `RESCHEDULE_DEADLINE` / `CANCEL_DEADLINE` / `MARK_FILED`) and the separate `deadline_key` namespace.
 
@@ -577,7 +577,7 @@ schedule should emit one ADD plus several ADD_DEADLINE entries.
 
 ## Hearing verify pass — `VERIFY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1024)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L828)
 
 The end-of-sync per-hearing confidence pass. The model sees one candidate hearing plus the last 15 hearing-relevant entries on its docket and returns a single audit decision (`CONFIRM` / `RESCHEDULE` / `CANCEL` / `MARK_HELD` / `REINSTATE` / `DELETE_HALLUCINATION` / `UNCLEAR`).
 
@@ -709,7 +709,7 @@ Return ONLY a single JSON object, no markdown fences, no array, no explanation.
 
 ## Deadline verify pass — `VERIFY_DEADLINE_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1313)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1128)
 
 The deadline analogue of the hearing verify pass — one pending deadline plus recent docket context in, one of `CONFIRM` / `RESCHEDULE` / `CANCEL` / `MARK_FILED` / `DELETE_HALLUCINATION` / `UNCLEAR` out.
 
@@ -748,7 +748,7 @@ Return ONLY a single JSON object, no markdown fences, no array, no explanation.
 
 ## Duplicate-hearing resolver — `DEDUPE_HEARING_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1417)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234)
 
 The same-slot resolver. Receives a cluster of two or more scheduled hearings on the same logical docket sharing the exact same start time, plus recent entries, and returns `MERGE_INTO` (pick a target, cancel the others) / `KEEP_BOTH` / `UNCLEAR`.
 
@@ -797,7 +797,7 @@ no explanation.
 
 ## Case summary — `SUMMARY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1640)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1451)
 
 The higher-tier case-summary prompt (Sonnet / GPT-5.4 / Gemini Pro by default). Synthesizes the primary document, dispositions, and a structured hearings/deadlines scaffold into 2-4 sentences of prose. This is where the documents-only, absence-silence, custody-omit, speculative-outcome, and figure-grounding invariants live, as well as the `INLINE LINKS` rule that turns action phrases into newspaper-style links to the supporting documents (each document carries a prompt-only `[D1]`/`[D2]` reference token; the model links a phrase to a token and the pipeline resolves it to the document's URL).
 

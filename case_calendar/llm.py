@@ -13,28 +13,10 @@ import os
 import re
 from typing import Any, Optional
 
-from . import usage
+from .llmkit import providers
+from .llmkit.providers import OutputTruncatedError
 
 logger = logging.getLogger(__name__)
-
-
-class OutputTruncatedError(RuntimeError):
-    """The provider stopped generation because it hit ``max_tokens``.
-
-    The partial text is preserved on ``.partial`` so callers can log a
-    useful prefix; the parsed JSON is almost always unrecoverable
-    (truncation mid-string), so callers should treat this as a hard
-    failure and skip the entry rather than try to parse around it.
-    """
-
-    def __init__(self, provider: str, partial: str, max_tokens: int) -> None:
-        super().__init__(
-            f"{provider} stopped at max_tokens={max_tokens}; "
-            f"got {len(partial)} chars of partial output"
-        )
-        self.provider = provider
-        self.partial = partial
-        self.max_tokens = max_tokens
 
 
 # ---------------------------------------------------------------------------
@@ -687,235 +669,6 @@ Emit the JSON object as specified.
 
 
 # ---------------------------------------------------------------------------
-# Provider implementations
-# ---------------------------------------------------------------------------
-
-
-_DEFAULT_MODELS = {
-    "anthropic": "claude-haiku-4-5",
-    "openai": "gpt-5.4-nano",
-    "gemini": "gemini-2.5-flash-lite",
-}
-
-
-def _detect_provider() -> Optional[str]:
-    provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
-    if provider in ("anthropic", "openai", "gemini"):
-        return provider
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    return None
-
-
-def _call_anthropic(
-    system: str,
-    user: str,
-    max_tokens: int,
-    *,
-    model: Optional[str] = None,
-    purpose: str = "llm",
-    docket: Any = None,
-) -> str:
-    import anthropic
-
-    chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
-    # Bump from the SDK default of 2 retries to 8. The default gives up
-    # after ~1.5s of cumulative backoff (0.5s + 1s), which is not enough
-    # for the 529 Overloaded condition the API returns when capacity is
-    # tight — overload events routinely last tens of seconds, so the
-    # SDK gives up before the API clears and the per-entry call falls
-    # through to the IGNORE-on-failure path in `extract_actions`. With
-    # max_retries=8 the cumulative backoff ceiling is ~127s (0.5 + 1 +
-    # 2 + 4 + 8 + 16 + 32 + 64) before honoring any Retry-After header
-    # the server sends, which covers nearly every transient overload.
-    # The SDK uses exponential backoff with jitter and honors
-    # Retry-After, so steady-state cost is minimal — this just buys
-    # headroom for the worst case.
-    client = anthropic.Anthropic(timeout=120.0, max_retries=8)
-    resp = client.messages.create(
-        model=chosen,
-        max_tokens=max_tokens,
-        system=[
-            {
-                "type": "text",
-                "text": system,
-                "cache_control": {"type": "ephemeral"},
-            }
-        ],
-        messages=[{"role": "user", "content": user}],
-    )
-    usage.record(
-        purpose=purpose,
-        provider="anthropic",
-        model=chosen,
-        tokens=usage.from_anthropic(resp),
-        docket=docket,
-    )
-    text: str | None = None
-    for block in resp.content:
-        if block.type == "text":
-            text = block.text
-            break
-    if text is None:
-        raise ValueError("No text block in Anthropic response")
-    if getattr(resp, "stop_reason", None) == "max_tokens":
-        raise OutputTruncatedError("anthropic", text, max_tokens)
-    return text
-
-
-def _call_openai(
-    system: str,
-    user: str,
-    max_tokens: int,
-    *,
-    model: Optional[str] = None,
-    json_mode: bool = True,
-    purpose: str = "llm",
-    docket: Any = None,
-) -> str:
-    import openai
-
-    chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["openai"])
-    # See the matching comment on `_call_anthropic`: bump max_retries
-    # from the SDK default of 2 to give the cumulative backoff enough
-    # headroom to ride out a multi-second provider overload (~127s
-    # ceiling before any Retry-After header is honored).
-    client = openai.OpenAI(timeout=120.0, max_retries=8)
-    kwargs: dict[str, Any] = {
-        "model": chosen,
-        "max_tokens": max_tokens,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-    }
-    if json_mode:
-        kwargs["response_format"] = {"type": "json_object"}
-    resp = client.chat.completions.create(**kwargs)
-    usage.record(
-        purpose=purpose,
-        provider="openai",
-        model=chosen,
-        tokens=usage.from_openai(resp),
-        docket=docket,
-    )
-    choice = resp.choices[0]
-    text = choice.message.content
-    if not text:
-        raise ValueError("No content in OpenAI response")
-    if getattr(choice, "finish_reason", None) == "length":
-        raise OutputTruncatedError("openai", text, max_tokens)
-    return text
-
-
-def _call_gemini(
-    system: str,
-    user: str,
-    max_tokens: int,
-    *,
-    model: Optional[str] = None,
-    json_mode: bool = True,
-    purpose: str = "llm",
-    docket: Any = None,
-) -> str:
-    from google import genai
-    from google.genai import types as gtypes
-
-    chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["gemini"])
-    client = genai.Client()
-    config_kwargs: dict[str, Any] = {
-        "system_instruction": system,
-        "max_output_tokens": max_tokens,
-    }
-    if json_mode:
-        config_kwargs["response_mime_type"] = "application/json"
-    resp = client.models.generate_content(
-        model=chosen,
-        contents=user,
-        config=gtypes.GenerateContentConfig(**config_kwargs),
-    )
-    usage.record(
-        purpose=purpose,
-        provider="gemini",
-        model=chosen,
-        tokens=usage.from_gemini(resp),
-        docket=docket,
-    )
-    if not resp.text:
-        raise ValueError("No content in Gemini response")
-    # Gemini's finish_reason is an enum on the candidate; the truncation
-    # value is named MAX_TOKENS. Compare by `.name` so we don't need to
-    # import the enum class.
-    candidates = getattr(resp, "candidates", None) or []
-    if candidates:
-        finish = getattr(candidates[0], "finish_reason", None)
-        if getattr(finish, "name", None) == "MAX_TOKENS":
-            raise OutputTruncatedError("gemini", resp.text, max_tokens)
-    return resp.text
-
-
-# ---------------------------------------------------------------------------
-# Provider dispatch
-# ---------------------------------------------------------------------------
-
-
-def _dispatch_llm_call(
-    provider: str,
-    system: str,
-    user: str,
-    max_tokens: int,
-    *,
-    model: Optional[str] = None,
-    json_mode: bool = True,
-    purpose: str = "llm",
-    docket: Any = None,
-) -> str:
-    """Route to the per-provider call function by ``provider`` name.
-
-    Single home for the three-way ``anthropic | openai | gemini``
-    dispatch — previously inlined identically in ``extract_actions``,
-    ``_call_lm_and_parse``, and ``generate_docket_summary``. The
-    per-provider functions still own their SDK quirks (truncation
-    signal detection, json-mode kwargs, model-default selection); this
-    helper just picks which one to call so callers don't have to
-    rewrite the if/elif/else when a fourth provider is added or a
-    kwarg shape shifts. ``OutputTruncatedError`` and any other
-    exceptions propagate unchanged so callers can convert them into
-    their own caller-specific fallback shape (IGNORE list vs UNCLEAR
-    dict vs raise).
-    """
-    if provider == "anthropic":
-        # Anthropic has no `json_mode` knob (no JSON mode flag in the
-        # SDK; we just rely on the prompt and validate the response).
-        return _call_anthropic(
-            system, user, max_tokens, model=model, purpose=purpose, docket=docket
-        )
-    if provider == "openai":
-        return _call_openai(
-            system,
-            user,
-            max_tokens,
-            model=model,
-            json_mode=json_mode,
-            purpose=purpose,
-            docket=docket,
-        )
-    return _call_gemini(
-        system,
-        user,
-        max_tokens,
-        model=model,
-        json_mode=json_mode,
-        purpose=purpose,
-        docket=docket,
-    )
-
-
-# ---------------------------------------------------------------------------
 # Response parsing
 # ---------------------------------------------------------------------------
 
@@ -1014,7 +767,7 @@ def extract_actions(
     and the user message includes the case's known deadlines for matching.
     Returned actions are a flat list — callers dispatch on the ``type`` field.
     """
-    provider = _detect_provider()
+    provider = providers._detect_provider()
     if provider is None:
         raise RuntimeError(
             "No LLM provider configured. Set LLM_PROVIDER and the matching "
@@ -1042,7 +795,7 @@ def extract_actions(
     )
 
     try:
-        raw = _dispatch_llm_call(
+        raw = providers._dispatch_llm_call(
             provider, system, user, max_tokens, purpose="extract", docket=docket_id
         )
     except OutputTruncatedError as exc:
@@ -1228,7 +981,7 @@ def _call_lm_and_parse(
     treat UNCLEAR as a benign no-op.
     """
     try:
-        raw = _dispatch_llm_call(
+        raw = providers._dispatch_llm_call(
             provider,
             system_prompt,
             user_message,
@@ -1333,7 +1086,7 @@ def verify_hearing(
     response, returns {"type": "UNCLEAR", ...} so the caller leaves the
     row untouched rather than guessing.
     """
-    provider = _detect_provider()
+    provider = providers._detect_provider()
     if provider is None:
         raise RuntimeError(
             "No LLM provider configured. Set LLM_PROVIDER and the matching "
@@ -1444,7 +1197,7 @@ def verify_deadline(
     max_tokens: int = 512,
 ) -> dict[str, Any]:
     """Audit a single pending deadline against recent docket entries."""
-    provider = _detect_provider()
+    provider = providers._detect_provider()
     if provider is None:
         raise RuntimeError(
             "No LLM provider configured. Set LLM_PROVIDER and the matching "
@@ -1570,7 +1323,7 @@ def resolve_duplicate_hearings(
     error or unparseable response, returns UNCLEAR so the caller leaves
     the cluster alone rather than guessing.
     """
-    provider = _detect_provider()
+    provider = providers._detect_provider()
     if provider is None:
         raise RuntimeError(
             "No LLM provider configured. Set LLM_PROVIDER and the matching "
@@ -1605,14 +1358,6 @@ def resolve_duplicate_hearings(
     return obj
 
 
-def provider_info() -> str:
-    p = _detect_provider()
-    if p is None:
-        return "no provider configured"
-    model = os.environ.get("LLM_MODEL", _DEFAULT_MODELS[p])
-    return f"provider={p} model={model}"
-
-
 def summary_provider_info(
     *, provider: Optional[str] = None, model: Optional[str] = None
 ) -> str:
@@ -1636,7 +1381,7 @@ def summary_provider_info(
     chosen_provider = (
         provider
         or os.environ.get("LLM_SUMMARY_PROVIDER", "").lower().strip()
-        or _detect_provider()
+        or providers._detect_provider()
     )
     if not chosen_provider:
         return "no provider configured"
@@ -2438,7 +2183,7 @@ def generate_docket_summary(
     chosen_provider = (
         provider
         or os.environ.get("LLM_SUMMARY_PROVIDER", "").lower().strip()
-        or _detect_provider()
+        or providers._detect_provider()
     )
     if not chosen_provider:
         raise RuntimeError(
@@ -2503,7 +2248,7 @@ def generate_docket_summary(
         len(user),
     )
 
-    text = _dispatch_llm_call(
+    text = providers._dispatch_llm_call(
         chosen_provider,
         SUMMARY_SYSTEM_PROMPT,
         user,

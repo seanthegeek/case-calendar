@@ -29,9 +29,20 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
+
+# A price estimator maps (model, usage) -> estimated USD for one call, or None
+# when the model isn't in the caller's price table. llmkit ships no prices: the
+# consumer supplies this so the library stays domain- and pricing-free. When
+# set, the ledger logs a `cost_est=` field alongside the token counts.
+PriceFn = Callable[[str, "TokenUsage"], Optional[float]]
+
+
+def _fmt_cost(cost: Optional[float]) -> str:
+    """`$0.0123` for a known estimate, `?` when the model had no price entry."""
+    return f"${cost:.4f}" if cost is not None else "?"
 
 
 def _as_int(value: Any) -> int:
@@ -146,6 +157,20 @@ class TokenLedger:
         self._calls_by_docket: dict[str, int] = {}
         self._total = TokenUsage()
         self._calls = 0
+        # Cost estimation (opt-in). `_price_fn` is None until a consumer sets
+        # one; when set, per-call costs are accumulated here and `_unpriced`
+        # counts calls whose model had no price entry (so the estimate is
+        # flagged partial rather than silently undercounting).
+        self._price_fn: Optional[PriceFn] = None
+        self._cost_by_docket: dict[str, float] = {}
+        self._cost_total = 0.0
+        self._unpriced = 0
+
+    def set_price_estimator(self, fn: Optional[PriceFn]) -> None:
+        """Attach (or clear, with ``None``) the cost estimator. Once set, the
+        ledger logs a `cost_est=` field per call and in the summary."""
+        with self._lock:
+            self._price_fn = fn
 
     def record(
         self,
@@ -157,53 +182,91 @@ class TokenLedger:
         docket: Any = None,
     ) -> None:
         """Log one per-call line and fold the usage into the docket + total
-        subtotals. ``docket`` is stringified; ``None`` buckets under ``"?"``."""
+        subtotals. ``docket`` is stringified; ``None`` buckets under ``"?"``.
+        When a price estimator is set, the per-call line carries a `cost_est=`
+        field and the cost is accumulated for the summary."""
         key = "?" if docket is None else str(docket)
+        price_fn = self._price_fn
+        cost = price_fn(model, tokens) if price_fn is not None else None
+        cost_field = f" cost_est={_fmt_cost(cost)}" if price_fn is not None else ""
         logger.info(
-            "llm-tokens call purpose=%s provider=%s model=%s docket=%s %s",
+            "llm-tokens call purpose=%s provider=%s model=%s docket=%s %s%s",
             purpose,
             provider,
             model,
             key,
             tokens,
+            cost_field,
         )
         with self._lock:
             self._by_docket[key] = self._by_docket.get(key, TokenUsage()) + tokens
             self._calls_by_docket[key] = self._calls_by_docket.get(key, 0) + 1
             self._total = self._total + tokens
             self._calls += 1
+            if price_fn is not None:
+                if cost is not None:
+                    self._cost_by_docket[key] = (
+                        self._cost_by_docket.get(key, 0.0) + cost
+                    )
+                    self._cost_total += cost
+                else:
+                    self._unpriced += 1
 
     def log_summary(self, *, scope: str = "run") -> None:
         """Log a per-docket subtotal line for every docket seen this run, then
-        a grand-total line. No-op when no calls were recorded."""
+        a grand-total line. No-op when no calls were recorded. When a price
+        estimator is set, each line also carries a `cost_est=` field; the TOTAL
+        notes how many calls had no price entry so a partial estimate is
+        obvious."""
         with self._lock:
             by_docket = dict(self._by_docket)
             calls_by_docket = dict(self._calls_by_docket)
+            cost_by_docket = dict(self._cost_by_docket)
             total = self._total
             calls = self._calls
+            priced = self._price_fn is not None
+            cost_total = self._cost_total
+            unpriced = self._unpriced
         if calls == 0:
             return
         for key in sorted(by_docket):
+            cost_field = (
+                f" cost_est=${cost_by_docket.get(key, 0.0):.4f}" if priced else ""
+            )
             logger.info(
-                "llm-tokens docket=%s calls=%d %s",
+                "llm-tokens docket=%s calls=%d %s%s",
                 key,
                 calls_by_docket[key],
                 by_docket[key],
+                cost_field,
             )
+        if priced:
+            note = f" ({unpriced} call(s) had no price entry)" if unpriced else ""
+            cost_field = f" cost_est=${cost_total:.4f}{note}"
+        else:
+            cost_field = ""
         logger.info(
-            "llm-tokens %s TOTAL calls=%d dockets=%d %s",
+            "llm-tokens %s TOTAL calls=%d dockets=%d %s%s",
             scope,
             calls,
             len(by_docket),
             total,
+            cost_field,
         )
 
     def reset(self) -> None:
+        """Clear all accumulated data AND the price estimator — a full reset to
+        fresh state. Callers that want cost estimation must (re)attach the
+        estimator after a reset."""
         with self._lock:
             self._by_docket.clear()
             self._calls_by_docket.clear()
             self._total = TokenUsage()
             self._calls = 0
+            self._price_fn = None
+            self._cost_by_docket.clear()
+            self._cost_total = 0.0
+            self._unpriced = 0
 
 
 # Process-wide default ledger. `case-calendar sync` / `summarize` each run as a
@@ -225,6 +288,12 @@ def record(
     _LEDGER.record(
         purpose=purpose, provider=provider, model=model, tokens=tokens, docket=docket
     )
+
+
+def set_price_estimator(fn: Optional[PriceFn]) -> None:
+    """Attach (or clear) the cost estimator on the process-wide ledger. Cleared
+    by :func:`reset`, so set it once per run before any calls are recorded."""
+    _LEDGER.set_price_estimator(fn)
 
 
 def log_summary(*, scope: str = "run") -> None:

@@ -994,7 +994,7 @@ class TestLogLlmSetup:
     """
 
     def test_enabled_logs_both_extraction_and_summary_llm(self, monkeypatch, caplog):
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "anthropic/haiku")
         monkeypatch.setattr(
             cli.llm,
             "summary_provider_info",
@@ -1026,7 +1026,7 @@ class TestLogLlmSetup:
     def test_disabled_logs_extraction_only_with_summary_disabled_note(
         self, monkeypatch, caplog
     ):
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "anthropic/haiku")
         # summary_provider_info must NOT be called when disabled; sentinel
         # raises to enforce.
         monkeypatch.setattr(
@@ -1053,7 +1053,7 @@ class TestLogLlmSetup:
         # Defensive: a config without a case_summaries section at all is
         # the most common shape for users who haven't opted in. The helper
         # must not blow up on missing dict keys.
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "anthropic/haiku")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "anthropic/haiku")
         import logging
 
         with caplog.at_level(logging.INFO, logger="case_calendar.cli"):
@@ -1078,7 +1078,7 @@ class TestCmdSync:
     ):
         # Force CaseSyncer.sync_case to report actions, which should trigger
         # the auto-emit. Patch llm.provider_info to avoid the env detection.
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         def _fake_sync_case(self, case):
             return {
@@ -1121,7 +1121,7 @@ class TestCmdSync:
         # may have advanced, so its row position can shift). emit_calendars
         # is called with an empty `only_calendars` set, which skips
         # per-calendar ICS / gcal / M365 work but still writes the index.
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
@@ -1160,7 +1160,7 @@ class TestCmdSync:
         cfg["index_path"] = str(index_path)
         cfg_file.write_text(yaml.safe_dump(cfg))
 
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
@@ -1184,7 +1184,7 @@ class TestCmdSync:
         fake_cl_ctx,
         monkeypatch,
     ):
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
@@ -1218,7 +1218,7 @@ class TestCmdSync:
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True, "allow_ocr": False}
         cfg_file.write_text(yaml.safe_dump(cfg))
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
@@ -1274,7 +1274,7 @@ class TestCmdSync:
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True}
         cfg_file.write_text(yaml.safe_dump(cfg))
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
@@ -1352,7 +1352,7 @@ class TestCmdSync:
             pre_store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
         pre_store.close()
 
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         synced_ids: list[str] = []
         monkeypatch.setattr(
             cli.CaseSyncer,
@@ -1500,7 +1500,7 @@ class TestCmdServe:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         captured: dict[str, Any] = {}
 
         def _fake_serve(**kw):
@@ -1577,7 +1577,7 @@ class TestCmdServe:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -1665,7 +1665,7 @@ class TestCmdServe:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         # Pre-seed a NON-stale summary, so is_summary_stale returns False.
         s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
@@ -1760,7 +1760,7 @@ class TestCmdServe:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         s = cli.Store(yaml.safe_load(cfg_file.read_text())["store_path"])
         for did in (100, 101):
@@ -1902,7 +1902,7 @@ class TestCmdSummarize:
         cfg["case_summaries"] = {"enabled": True}
         cfg_file.write_text(yaml.safe_dump(cfg))
         monkeypatch.setattr(cli, "CourtListener", lambda *a, **kw: MagicMock())
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         args = Namespace(
             config=str(cfg_file),
             case="nope",
@@ -1921,7 +1921,7 @@ class TestCmdSummarize:
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True, "provider": "anthropic"}
         cfg_file.write_text(yaml.safe_dump(cfg))
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -2889,7 +2889,7 @@ class TestCmdSyncCaseFilter:
         fake_cl_ctx,
         monkeypatch,
     ):
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
         sync_calls: list[Any] = []
 
         class _FakeSyncer:
@@ -3023,7 +3023,7 @@ class TestCmdSummarizeCoverage:
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True}
         cfg_file.write_text(yaml.safe_dump(cfg))
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -3053,7 +3053,7 @@ class TestCmdSummarizeCoverage:
         cfg = yaml.safe_load(cfg_file.read_text())
         cfg["case_summaries"] = {"enabled": True}
         cfg_file.write_text(yaml.safe_dump(cfg))
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -3146,7 +3146,7 @@ class TestDebounceLifecycleBranches:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -3237,7 +3237,7 @@ class TestDebounceLifecycleBranches:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -3314,7 +3314,7 @@ class TestDebounceLifecycleBranches:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         from case_calendar import summary as summary_mod
 
@@ -3409,7 +3409,7 @@ class TestDebounceLifecycleBranches:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         s = cli.Store(cfg["store_path"])
         # Non-stale summary so any_stale stays False; the loop must traverse
@@ -3495,7 +3495,7 @@ class TestDebounceLifecycleBranches:
             "CASE_CALENDAR_WEBHOOK_SECRET",
             "this-is-a-sufficiently-long-secret",
         )
-        monkeypatch.setattr(cli.llm, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
         s = cli.Store(cfg["store_path"])
         s.upsert_docket_meta(

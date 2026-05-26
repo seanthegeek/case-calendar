@@ -20,7 +20,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from . import llm, usage
+from . import costs, llm, llmkit
 from .calendars.description import no_time_title_prefix
 from .calendars.ics import write_ics
 from .calendars.index import build_calendar_models, write_index
@@ -371,8 +371,14 @@ def _log_llm_setup(cfg: dict[str, Any]) -> None:
     LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL env > extractor provider
     auto-detect + default summary model) matches what
     ``generate_docket_summary`` actually uses at call time.
+
+    Also attaches the cost estimator to the token ledger so the
+    `llm-tokens` log lines carry a `cost_est=` field. The estimator is a
+    rough static-table estimate (see :mod:`case_calendar.costs`), cleared by
+    ``usage.reset`` at the end of the run, so it's (re)set here per command.
     """
-    log.info("extraction LLM: %s", llm.provider_info())
+    llmkit.usage.set_price_estimator(costs.estimate_cost)
+    log.info("extraction LLM: %s", llmkit.provider_info())
     summary_cfg = cfg.get("case_summaries") or {}
     if summary_cfg.get("enabled"):
         log.info(
@@ -482,8 +488,8 @@ def cmd_sync(args: argparse.Namespace) -> int:
         _print_emit_results(cfg, results)
     # Real token counts for this run (per call already streamed at INFO);
     # per-docket subtotals + a grand total to replace cost guesswork.
-    usage.log_summary(scope="sync")
-    usage.reset()
+    llmkit.usage.log_summary(scope="sync")
+    llmkit.usage.reset()
     store.close()
     return 0
 
@@ -1041,8 +1047,8 @@ def cmd_summarize(args: argparse.Namespace) -> int:
             only_calendars=affected_calendars,
         )
         _print_emit_results(cfg, results)
-    usage.log_summary(scope="summarize")
-    usage.reset()
+    llmkit.usage.log_summary(scope="summarize")
+    llmkit.usage.reset()
     store.close()
     return 0
 
