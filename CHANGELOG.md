@@ -36,6 +36,19 @@ adheres to [Semantic Versioning][semver].
   that came back 429 or 5xx and were retried, since those still spend quota.
   Compare the numbers against your Free Law Project / CourtListener tier's
   limits to see whether you need to upgrade.
+- **Optional USD cost estimate on the token-telemetry lines.** Layered on
+  top of the exact token counts above, each `llm-tokens call …` line can
+  now also carry a `cost_est=` field and the run `TOTAL` accumulates it. The
+  estimate prices each token slice (uncached input / cache read / cache write
+  / output) at its own published per-million-token rate — the cache split
+  matters because the system prompt is cached on nearly every call. It is
+  explicitly an estimate, not a bill: the rate table is hand-kept from each
+  provider's pricing page and dated (`PRICES_VERIFIED`), and a model that
+  isn't in the table (a legacy model, or an `LLM_MODEL` override the table
+  doesn't cover) logs `cost_est=?` and flags the run total as partial rather
+  than emitting a wrong number. Anthropic, Gemini, and the current OpenAI
+  5.4 / 5.5 families are priced at their standard tier; batch discounts,
+  long-context (>200k) tiers, and data-residency multipliers are not modeled.
 
 ### Changed
 
@@ -65,6 +78,22 @@ adheres to [Semantic Versioning][semver].
   deterministic backstops, which is what actually covers the gap.
 - **README "How it works" diagram** was missing the connector between the
   verify-pass step and the render / push step.
+
+### Internal
+
+- **Provider-agnostic LLM call layer extracted into a `case_calendar.llmkit`
+  subpackage.** The cross-provider dispatch (anthropic / openai / gemini),
+  provider auto-detection, small/fast model defaults, lazy SDK imports, the
+  Anthropic `cache_control: ephemeral` marker, output-truncation detection,
+  and the token telemetry now live in `llmkit` (`providers.py` + `usage.py`),
+  with no Case Calendar domain knowledge (no court prompts, no hearing /
+  deadline shapes) so it can be lifted out as a standalone library later.
+  `case_calendar.llm` keeps the domain prompts and entry points and calls
+  into `llmkit` through its stable re-exported API. The cost estimator stays
+  in the domain layer (`case_calendar/costs.py`) and plugs into the
+  price-free ledger via `llmkit.usage.set_price_estimator`, so `llmkit` ships
+  no prices. Behavior is unchanged; the llm.py source-link anchors in the
+  architecture docs were shifted by the extraction and were corrected.
 
 [0.7.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.7.0
 
