@@ -25,14 +25,30 @@ slightly dearer) rates instead of being lumped into plain input.
 from __future__ import annotations
 
 import re
-from typing import Optional
+from typing import Optional, TypedDict
 
 from .llmkit.usage import TokenUsage
 
 # Date the rates below were last checked against the providers' pricing pages.
 PRICES_VERIFIED = "2026-05-26"
 
-# Standard per-million-token USD rates: (input, cache_read, cache_write, output).
+
+class _Rates(TypedDict):
+    """Standard per-million-token USD rates for one model.
+
+    One key per token slice so the table reads without having to remember a
+    positional order, and so a missing slice is a type error rather than a
+    silently shifted tuple. ``cache_write`` is 0 for providers that don't
+    bill a separate per-token cache-write charge (Gemini, OpenAI).
+    """
+
+    input: float
+    cache_read: float
+    cache_write: float
+    output: float
+
+
+# Standard per-million-token USD rates, keyed by model id.
 #
 # Anthropic (https://platform.claude.com/docs/en/about-claude/pricing): cache
 #   figures are the documented multipliers off base input — 5-minute cache
@@ -58,36 +74,166 @@ PRICES_VERIFIED = "2026-05-26"
 #   aren't listed and log `cost_est=?` if used (the `_rates` snapshot fallback
 #   only resolves date/pin suffixes, never a different model, so they stay
 #   unpriced rather than mis-priced).
-_RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
+_RATES_USD_PER_MTOK: dict[str, _Rates] = {
     # Anthropic (cache_write = 5-minute ephemeral write rate)
-    "claude-opus-4-7": (5.00, 0.50, 6.25, 25.00),
-    "claude-opus-4-6": (5.00, 0.50, 6.25, 25.00),
-    "claude-opus-4-5": (5.00, 0.50, 6.25, 25.00),
-    "claude-opus-4-1": (15.00, 1.50, 18.75, 75.00),
-    "claude-sonnet-4-6": (3.00, 0.30, 3.75, 15.00),
-    "claude-sonnet-4-5": (3.00, 0.30, 3.75, 15.00),
-    "claude-haiku-4-5": (1.00, 0.10, 1.25, 5.00),
+    "claude-opus-4-7": {
+        "input": 5.00,
+        "cache_read": 0.50,
+        "cache_write": 6.25,
+        "output": 25.00,
+    },
+    "claude-opus-4-6": {
+        "input": 5.00,
+        "cache_read": 0.50,
+        "cache_write": 6.25,
+        "output": 25.00,
+    },
+    "claude-opus-4-5": {
+        "input": 5.00,
+        "cache_read": 0.50,
+        "cache_write": 6.25,
+        "output": 25.00,
+    },
+    "claude-opus-4-1": {
+        "input": 15.00,
+        "cache_read": 1.50,
+        "cache_write": 18.75,
+        "output": 75.00,
+    },
+    "claude-sonnet-4-6": {
+        "input": 3.00,
+        "cache_read": 0.30,
+        "cache_write": 3.75,
+        "output": 15.00,
+    },
+    "claude-sonnet-4-5": {
+        "input": 3.00,
+        "cache_read": 0.30,
+        "cache_write": 3.75,
+        "output": 15.00,
+    },
+    "claude-haiku-4-5": {
+        "input": 1.00,
+        "cache_read": 0.10,
+        "cache_write": 1.25,
+        "output": 5.00,
+    },
     # Gemini (standard <=200k tier, text input)
-    "gemini-3.5-flash": (1.50, 0.15, 0.0, 9.00),
-    "gemini-3.1-pro-preview": (2.00, 0.20, 0.0, 12.00),
-    "gemini-3.1-flash-lite": (0.25, 0.025, 0.0, 1.50),
-    "gemini-2.5-pro": (1.25, 0.125, 0.0, 10.00),
-    "gemini-2.5-flash": (0.30, 0.03, 0.0, 2.50),
-    "gemini-2.5-flash-lite": (0.10, 0.01, 0.0, 0.40),
+    "gemini-3.5-flash": {
+        "input": 1.50,
+        "cache_read": 0.15,
+        "cache_write": 0.0,
+        "output": 9.00,
+    },
+    "gemini-3.1-pro-preview": {
+        "input": 2.00,
+        "cache_read": 0.20,
+        "cache_write": 0.0,
+        "output": 12.00,
+    },
+    "gemini-3.1-flash-lite": {
+        "input": 0.25,
+        "cache_read": 0.025,
+        "cache_write": 0.0,
+        "output": 1.50,
+    },
+    "gemini-2.5-pro": {
+        "input": 1.25,
+        "cache_read": 0.125,
+        "cache_write": 0.0,
+        "output": 10.00,
+    },
+    "gemini-2.5-flash": {
+        "input": 0.30,
+        "cache_read": 0.03,
+        "cache_write": 0.0,
+        "output": 2.50,
+    },
+    "gemini-2.5-flash-lite": {
+        "input": 0.10,
+        "cache_read": 0.01,
+        "cache_write": 0.0,
+        "output": 0.40,
+    },
     # OpenAI (standard tier; -pro models have no cached rate -> cached = input)
-    "gpt-5.5": (5.00, 0.50, 0.0, 30.00),
-    "gpt-5.5-pro": (30.00, 30.00, 0.0, 180.00),
-    "gpt-5.4": (2.50, 0.25, 0.0, 15.00),
-    "gpt-5.4-mini": (0.75, 0.075, 0.0, 4.50),
-    "gpt-5.4-nano": (0.20, 0.02, 0.0, 1.25),
-    "gpt-5.4-pro": (30.00, 30.00, 0.0, 180.00),
-    "gpt-5.2": (1.75, 0.175, 0.0, 14.00),
-    "gpt-5.2-pro": (21.00, 21.00, 0.0, 168.00),
-    "gpt-5.1": (1.25, 0.125, 0.0, 10.00),
-    "gpt-5": (1.25, 0.125, 0.0, 10.00),
-    "gpt-5-mini": (0.25, 0.025, 0.0, 2.00),
-    "gpt-5-nano": (0.05, 0.005, 0.0, 0.40),
-    "gpt-5-pro": (15.00, 15.00, 0.0, 120.00),
+    "gpt-5.5": {
+        "input": 5.00,
+        "cache_read": 0.50,
+        "cache_write": 0.0,
+        "output": 30.00,
+    },
+    "gpt-5.5-pro": {
+        "input": 30.00,
+        "cache_read": 30.00,
+        "cache_write": 0.0,
+        "output": 180.00,
+    },
+    "gpt-5.4": {
+        "input": 2.50,
+        "cache_read": 0.25,
+        "cache_write": 0.0,
+        "output": 15.00,
+    },
+    "gpt-5.4-mini": {
+        "input": 0.75,
+        "cache_read": 0.075,
+        "cache_write": 0.0,
+        "output": 4.50,
+    },
+    "gpt-5.4-nano": {
+        "input": 0.20,
+        "cache_read": 0.02,
+        "cache_write": 0.0,
+        "output": 1.25,
+    },
+    "gpt-5.4-pro": {
+        "input": 30.00,
+        "cache_read": 30.00,
+        "cache_write": 0.0,
+        "output": 180.00,
+    },
+    "gpt-5.2": {
+        "input": 1.75,
+        "cache_read": 0.175,
+        "cache_write": 0.0,
+        "output": 14.00,
+    },
+    "gpt-5.2-pro": {
+        "input": 21.00,
+        "cache_read": 21.00,
+        "cache_write": 0.0,
+        "output": 168.00,
+    },
+    "gpt-5.1": {
+        "input": 1.25,
+        "cache_read": 0.125,
+        "cache_write": 0.0,
+        "output": 10.00,
+    },
+    "gpt-5": {
+        "input": 1.25,
+        "cache_read": 0.125,
+        "cache_write": 0.0,
+        "output": 10.00,
+    },
+    "gpt-5-mini": {
+        "input": 0.25,
+        "cache_read": 0.025,
+        "cache_write": 0.0,
+        "output": 2.00,
+    },
+    "gpt-5-nano": {
+        "input": 0.05,
+        "cache_read": 0.005,
+        "cache_write": 0.0,
+        "output": 0.40,
+    },
+    "gpt-5-pro": {
+        "input": 15.00,
+        "cache_read": 15.00,
+        "cache_write": 0.0,
+        "output": 120.00,
+    },
 }
 
 
@@ -102,7 +248,7 @@ _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
 _SNAPSHOT_SUFFIX_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{3,8})$")
 
 
-def _rates(model: str) -> Optional[tuple[float, float, float, float]]:
+def _rates(model: str) -> Optional[_Rates]:
     """Look up a model's rates by exact id, then — only for a dated/pinned
     snapshot id (``claude-haiku-4-5-20251001``, ``gpt-5.4-2026-01-15``,
     ``gemini-2.5-flash-002``) — by the base model with that suffix stripped."""
@@ -125,12 +271,11 @@ def estimate_cost(model: str, usage: TokenUsage) -> Optional[float]:
     rates = _rates(model)
     if rates is None:
         return None
-    input_rate, cache_read_rate, cache_write_rate, output_rate = rates
     uncached_input = max(0, usage.input - usage.cached - usage.cache_write)
     total_micro = (
-        uncached_input * input_rate
-        + usage.cached * cache_read_rate
-        + usage.cache_write * cache_write_rate
-        + usage.output * output_rate
+        uncached_input * rates["input"]
+        + usage.cached * rates["cache_read"]
+        + usage.cache_write * rates["cache_write"]
+        + usage.output * rates["output"]
     )
     return total_micro / 1_000_000
