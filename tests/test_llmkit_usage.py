@@ -163,8 +163,21 @@ class TestTokenLedger:
             "llm-tokens docket=2 calls=1 in=100 out=50 cached=80 cache_write=10" in msgs
         )
         assert (
-            "llm-tokens sync TOTAL calls=3 dockets=2 in=130 out=56 "
+            "llm-tokens sync TOTAL calls=3 dockets=2 models=2 in=130 out=56 "
             "cached=85 cache_write=11" in msgs
+        )
+
+    def test_log_summary_emits_per_model_subtotals(self, caplog):
+        # The per-model lines are what separate the extractor track (model "m"
+        # here: the two extract / verify calls) from the summary track (model
+        # "m2": the one summary call) in the run total.
+        led = self._seed()
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.log_summary(scope="sync")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert "llm-tokens model=m calls=2 in=30 out=6 cached=5 cache_write=1" in msgs
+        assert (
+            "llm-tokens model=m2 calls=1 in=100 out=50 cached=80 cache_write=10" in msgs
         )
 
     def test_empty_ledger_log_summary_is_noop(self, caplog):
@@ -205,7 +218,7 @@ class TestModuleFacade:
         with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             usage.log_summary(scope="run")
         assert any(
-            "run TOTAL calls=1 dockets=1 in=7 out=3" in r.getMessage()
+            "run TOTAL calls=1 dockets=1 models=1 in=7 out=3" in r.getMessage()
             for r in caplog.records
         )
         usage.reset()
@@ -297,6 +310,9 @@ class TestLedgerCostEstimation:
         msgs = [r.getMessage() for r in caplog.records]
         assert any("docket=1 calls=2" in m and "cost_est=$2.0000" in m for m in msgs)
         assert any("docket=2 calls=1" in m and "cost_est=$1.0000" in m for m in msgs)
+        # All three calls ran on model "m" -> one per-model line with the
+        # combined cost.
+        assert any("model=m calls=3" in m and "cost_est=$3.0000" in m for m in msgs)
         assert any("TOTAL calls=3" in m and "cost_est=$3.0000" in m for m in msgs)
 
     def test_unpriced_calls_flagged_partial(self, caplog):
@@ -327,6 +343,10 @@ class TestLedgerCostEstimation:
             and "1 call(s) had no price entry" in m
             for m in msgs
         )
+        # ...and the per-model lines show the priced model's dollar figure
+        # while the unpriced model is flagged with `?` rather than $0.0000.
+        assert any("model=known calls=1" in m and "cost_est=$0.5000" in m for m in msgs)
+        assert any("model=unknown calls=1" in m and "cost_est=?" in m for m in msgs)
 
     def test_unpriced_per_call_shows_question_mark(self, caplog):
         led = TokenLedger()
