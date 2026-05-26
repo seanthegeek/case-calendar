@@ -291,9 +291,8 @@ The summary prompt forbids whole classes of claim the documents don't
 establish — inferring a custody status no document supports, asserting the
 absence of hearings / deadlines / a disposition, stating speculative or
 conditional outcomes, printing dollar figures that aren't legibly in the
-text. The
-[case summaries](case-summaries.md#the-insufficient-documents-refusal) page
-enumerates each rule in full.
+text. The [LLM prompts](llm-prompts.md) page reproduces the prompt that
+encodes these rules, verbatim.
 
 But a prompt rule is *soft protection*. The model can ignore it, and for a
 brand-new case there's no earlier good summary to diff the output against,

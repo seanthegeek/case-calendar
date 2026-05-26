@@ -151,77 +151,11 @@ operators can grep for the sentence in the database to find dockets that
 need attention (typically: install poppler/tesseract for local OCR, or
 point `extra_documents` at an out-of-band source).
 
-This rule is one of several guardrails baked into the prompt. The model is
-also told:
-
-- A trial *date* in a scheduling order is not proof a trial occurred.
-  Don't say "tried before a jury" unless there's a verdict form or
-  judgment-after-trial.
-- If you mention a hearing, state the date. Vague phrasing
-  ("a hearing is scheduled") that hides whether the date is past or
-  unverified is forbidden.
-- Past-dated hearings that the docket hasn't confirmed as held or
-  vacated must be described as past-but-unconfirmed, not as upcoming.
-- When a judgment is provided, the imposed sentence (term of
-  imprisonment, supervised release, fine, restitution) must appear in
-  the summary verbatim.
-- A defendant's custody status ("remains a fugitive", "in custody",
-  "at large") may be stated only when a document establishes it. When the
-  record doesn't, the status is **omitted entirely** — the summary says
-  nothing about custody, and in particular does *not* announce that the
-  status is "unknown" or "cannot be determined", which is pointless noise
-  about what the record doesn't show. Custody is never inferred from the
-  absence of an arrest entry on the docket.
-- Speculative or conditional future outcomes and routine sentencing
-  boilerplate are dropped. A scheduled event keeps its date, but the
-  hypothetical consequence is cut: "sentencing is scheduled for June 3,
-  2026, at which time X will be remanded to the Bureau of Prisons if a term
-  of imprisonment is imposed" becomes just "sentencing is scheduled for
-  June 3, 2026". Phrasings like "if convicted" and "should the court
-  impose" are forbidden — the summary states what *has* happened and what
-  *is* scheduled, nothing hypothetical.
-- Don't assert the absence of hearings, deadlines, or a disposition.
-  A docket can be sealed or only partly mirrored in RECAP, so "no hearings
-  are set" / "no disposition has been entered" can be quietly wrong; the
-  summary states what *is* in the record and stays silent on the rest.
-- State a specific dollar figure (restitution, forfeiture, fine) only when
-  it appears legibly in the documents. Hand-filled court forms OCR into
-  noise, and a number reconstructed from garbled text is a fabrication —
-  the summary says "ordered to pay restitution" without inventing an amount,
-  and **omits it silently**: it does not explain *why* the number is missing
-  ("not clearly legible", "could not be read"), because the order is legible
-  to a human — the gap is our OCR, not the document's, and it isn't
-  subscriber-facing.
-- When a restitution order is on the docket but its amount can't be read —
-  whether the figures are hand-filled/garbled or the order's document
-  simply isn't uploaded to RECAP yet — the summary drops *all* specific
-  monetary figures, not just restitution.
-  Otherwise the legible penalties (say, a separately-printed forfeiture
-  order) would read as the defendant's total liability while the larger,
-  unknown restitution stays invisible. The pipeline detects this (a granted
-  restitution order with no extractable figure) and the summary says
-  "ordered to pay restitution" with no amounts; only the fixed special
-  assessment is kept.
-- The system prompt does NOT render the legal disclaimers ("AI-generated,
-  may contain mistakes" + presumption of innocence) — those are baked
-  into the page template so the language stays stable regardless of
-  model output.
-
-## The post-generation guard
-
-Prompt rules are *soft protection* — a model can ignore them, and for a
-brand-new case there's no earlier good summary to fall back on. So a
-deterministic guard runs on every generated summary before it's stored: it
-catches absence-of-record and unsupported-custody claims (and regenerates
-once, with the problem fed back, to give the model a chance to fix them),
-and it logs any date or dollar amount it can't trace to the documents, the
-hearings / deadlines scaffold, or your `aggregation_note` / `extra_documents`
-notes. A summary is never blocked — the worst case either self-corrects on
-the retry or surfaces in the logs for review.
-
-How the layers fit together, and why the guard retries some violations but
-only warns on others, is covered in
-[Data quality guardrails → Summaries state only what the documents support](architecture.md#summaries-state-only-what-the-documents-support)
+This refusal is one of several truthfulness guardrails the summary prompt
+enforces, all backed by a deterministic post-generation guard (prompt rules
+alone are soft). What the model is told, and how the guard's layers fit
+together, are covered in
+[Data quality guardrails](architecture.md#summaries-state-only-what-the-documents-support)
 in the architecture overview.
 
 ## Multi-docket aggregation
