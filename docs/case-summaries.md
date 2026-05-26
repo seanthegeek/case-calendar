@@ -51,7 +51,7 @@ at [casecalendar.net](https://casecalendar.net/).
 ## Inline document links
 
 Summaries hyperlink the words themselves, the way a news article does. In the
-example above, **were charged** would link to the indictment, **pled guilty**
+example above, **is charged** would link to the indictment, **pled guilty**
 to the plea agreement, and (on a concluded case) **was sentenced** to the
 judgment. Only the short action phrase is linked — the leading verb is kept
 inside the link ("was charged", not just "charged"), and the trailing detail
