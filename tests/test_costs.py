@@ -30,6 +30,15 @@ class TestEstimateCost:
         # $3 input + $15 output.
         assert costs.estimate_cost("claude-sonnet-4-6", usage) == pytest.approx(18.0)
 
+    def test_anthropic_other_non_deprecated_models(self):
+        # Opus + Sonnet versions an operator might switch to (1M input + 1M out).
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("claude-opus-4-7", usage) == pytest.approx(30.0)
+        assert costs.estimate_cost("claude-opus-4-6", usage) == pytest.approx(30.0)
+        assert costs.estimate_cost("claude-opus-4-5", usage) == pytest.approx(30.0)
+        assert costs.estimate_cost("claude-opus-4-1", usage) == pytest.approx(90.0)
+        assert costs.estimate_cost("claude-sonnet-4-5", usage) == pytest.approx(18.0)
+
     def test_gemini_flash_lite(self):
         usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
         # $0.10 input + $0.40 output.
@@ -83,23 +92,43 @@ class TestEstimateCost:
         assert costs.estimate_cost("gpt-5.4-nano", usage) == pytest.approx(0.02)
 
     def test_openai_variant_not_mispriced_as_base(self):
-        # gpt-5.4-mini must use its own rate, not prefix-fall-back to gpt-5.4.
+        # gpt-5.4-mini must use its own rate, not fall back to gpt-5.4.
         usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
         assert costs.estimate_cost("gpt-5.4-mini", usage) == pytest.approx(0.75)
         assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(2.50)
+
+    def test_openai_gpt5_family(self):
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5", usage) == pytest.approx(11.25)
+        assert costs.estimate_cost("gpt-5-mini", usage) == pytest.approx(2.25)
+        assert costs.estimate_cost("gpt-5-nano", usage) == pytest.approx(0.45)
+        assert costs.estimate_cost("gpt-5-pro", usage) == pytest.approx(135.0)
+        assert costs.estimate_cost("gpt-5.1", usage) == pytest.approx(11.25)
+        assert costs.estimate_cost("gpt-5.2", usage) == pytest.approx(15.75)
+        assert costs.estimate_cost("gpt-5.2-pro", usage) == pytest.approx(189.0)
 
     def test_unknown_model_returns_none(self):
         # A legacy/unlisted model (or any LLM_MODEL override we didn't price).
         usage = TokenUsage(input=1000, output=100)
         assert costs.estimate_cost("gpt-4o-mini", usage) is None
         assert costs.estimate_cost("some-future-model", usage) is None
+        # Snapshot suffix strips to a base that still isn't in the table -> None.
+        assert costs.estimate_cost("frob-9-001", usage) is None
 
-    def test_prefix_match_handles_dated_id(self):
-        # A dated/suffixed id resolves to its base model's rates.
+    def test_snapshot_suffix_resolves_to_base(self):
+        # Date/pin-suffixed ids resolve to the base model's rate...
         usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
         assert costs.estimate_cost("claude-haiku-4-5-20251001", usage) == pytest.approx(
             1.0
         )
+        assert costs.estimate_cost("gpt-5.4-2026-01-15", usage) == pytest.approx(2.50)
+
+    def test_unlisted_sibling_version_not_mispriced(self):
+        # ...but a sibling VERSION we don't list (a hypothetical gpt-5.3) is a
+        # word-suffix, not a snapshot, so it stays unpriced rather than being
+        # mis-priced as gpt-5.
+        usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.3", usage) is None
 
     def test_zero_usage_is_zero(self):
         assert costs.estimate_cost("claude-haiku-4-5", TokenUsage()) == 0.0

@@ -24,6 +24,7 @@ slightly dearer) rates instead of being lumped into plain input.
 
 from __future__ import annotations
 
+import re
 from typing import Optional
 
 from .llmkit.usage import TokenUsage
@@ -36,7 +37,9 @@ PRICES_VERIFIED = "2026-05-26"
 # Anthropic (https://platform.claude.com/docs/en/about-claude/pricing): cache
 #   figures are the documented multipliers off base input — 5-minute cache
 #   write = 1.25x, cache read (hit) = 0.1x — which is the ephemeral cache this
-#   project uses.
+#   project uses. All non-deprecated first-party models (Opus 4.7/4.6/4.5/4.1,
+#   Sonnet 4.6/4.5, Haiku 4.5) are listed; Opus 4 / Sonnet 4 (deprecated) and
+#   Haiku 3.5 (retired off the first-party API) are omitted.
 # Gemini (https://ai.google.dev/gemini-api/docs/pricing): the <=200k-prompt
 #   standard tier, text input; cache_read is the context-cache token rate, and
 #   there is no per-token cache write (Gemini bills cache by storage-time, not
@@ -50,13 +53,20 @@ PRICES_VERIFIED = "2026-05-26"
 #   separate per-token cache-write charge, so cache_write is 0 (and our usage
 #   reports 0 cache_write tokens for OpenAI). The `-pro` models publish no
 #   cached rate, so cached input is priced at the full input rate. The whole
-#   current 5.4 + 5.5 family is listed (every -mini/-nano/-pro variant) so the
-#   prefix fallback in `_rates` can't mis-price one variant as another; older
-#   / legacy OpenAI models aren't listed and log `cost_est=?` if used.
+#   current GPT-5 family is listed (5 / 5.1 / 5.2 / 5.4 / 5.5 and their
+#   mini/nano/pro tiers). The older GPT-4 / GPT-4o / o-series and legacy models
+#   aren't listed and log `cost_est=?` if used (the `_rates` snapshot fallback
+#   only resolves date/pin suffixes, never a different model, so they stay
+#   unpriced rather than mis-priced).
 _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
-    # Anthropic
-    "claude-haiku-4-5": (1.00, 0.10, 1.25, 5.00),
+    # Anthropic (cache_write = 5-minute ephemeral write rate)
+    "claude-opus-4-7": (5.00, 0.50, 6.25, 25.00),
+    "claude-opus-4-6": (5.00, 0.50, 6.25, 25.00),
+    "claude-opus-4-5": (5.00, 0.50, 6.25, 25.00),
+    "claude-opus-4-1": (15.00, 1.50, 18.75, 75.00),
     "claude-sonnet-4-6": (3.00, 0.30, 3.75, 15.00),
+    "claude-sonnet-4-5": (3.00, 0.30, 3.75, 15.00),
+    "claude-haiku-4-5": (1.00, 0.10, 1.25, 5.00),
     # Gemini (standard <=200k tier, text input)
     "gemini-3.5-flash": (1.50, 0.15, 0.0, 9.00),
     "gemini-3.1-pro-preview": (2.00, 0.20, 0.0, 12.00),
@@ -64,24 +74,43 @@ _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
     "gemini-2.5-pro": (1.25, 0.125, 0.0, 10.00),
     "gemini-2.5-flash": (0.30, 0.03, 0.0, 2.50),
     "gemini-2.5-flash-lite": (0.10, 0.01, 0.0, 0.40),
-    # OpenAI (standard tier)
+    # OpenAI (standard tier; -pro models have no cached rate -> cached = input)
     "gpt-5.5": (5.00, 0.50, 0.0, 30.00),
     "gpt-5.5-pro": (30.00, 30.00, 0.0, 180.00),
     "gpt-5.4": (2.50, 0.25, 0.0, 15.00),
     "gpt-5.4-mini": (0.75, 0.075, 0.0, 4.50),
     "gpt-5.4-nano": (0.20, 0.02, 0.0, 1.25),
     "gpt-5.4-pro": (30.00, 30.00, 0.0, 180.00),
+    "gpt-5.2": (1.75, 0.175, 0.0, 14.00),
+    "gpt-5.2-pro": (21.00, 21.00, 0.0, 168.00),
+    "gpt-5.1": (1.25, 0.125, 0.0, 10.00),
+    "gpt-5": (1.25, 0.125, 0.0, 10.00),
+    "gpt-5-mini": (0.25, 0.025, 0.0, 2.00),
+    "gpt-5-nano": (0.05, 0.005, 0.0, 0.40),
+    "gpt-5-pro": (15.00, 15.00, 0.0, 120.00),
 }
 
 
+# A trailing model snapshot / pin suffix: Anthropic ``-YYYYMMDD``, OpenAI
+# ``-YYYY-MM-DD``, Gemini ``-NNN``. Stripping it lets a pinned snapshot fall
+# back to its base model's rate. A TIER suffix (``-mini`` / ``-nano`` /
+# ``-pro``) is a word, not digits, so it is NOT stripped — an unlisted tier (or
+# an unlisted sibling version like a hypothetical ``gpt-5.3``) therefore stays
+# unpriced (``cost_est=?``) rather than being silently mis-priced as a
+# different model. Exact-match-first means a base id that itself ends in digits
+# is never wrongly stripped.
+_SNAPSHOT_SUFFIX_RE = re.compile(r"(?:-\d{4}-\d{2}-\d{2}|-\d{3,8})$")
+
+
 def _rates(model: str) -> Optional[tuple[float, float, float, float]]:
-    """Look up a model's rates by exact id, then by longest-matching prefix so
-    a dated/suffixed id (``claude-haiku-4-5-20251001``) still resolves."""
+    """Look up a model's rates by exact id, then — only for a dated/pinned
+    snapshot id (``claude-haiku-4-5-20251001``, ``gpt-5.4-2026-01-15``,
+    ``gemini-2.5-flash-002``) — by the base model with that suffix stripped."""
     if model in _RATES_USD_PER_MTOK:
         return _RATES_USD_PER_MTOK[model]
-    for key in sorted(_RATES_USD_PER_MTOK, key=len, reverse=True):
-        if model.startswith(key):
-            return _RATES_USD_PER_MTOK[key]
+    base = _SNAPSHOT_SUFFIX_RE.sub("", model)
+    if base != model and base in _RATES_USD_PER_MTOK:
+        return _RATES_USD_PER_MTOK[base]
     return None
 
 
