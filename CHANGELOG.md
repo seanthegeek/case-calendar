@@ -8,6 +8,34 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.7.1] - 2026-05-26
+
+### Added
+
+- **Per-model subtotals in the end-of-run token / cost summary.** The
+  run total used to lump every LLM call into one `TOTAL`, so you
+  couldn't tell the cheap extractor track's spend from the higher-tier
+  summary track's. `log_summary` now logs a per-model subtotal line
+  (calls, tokens, `cost_est`) for every model seen — between the
+  per-docket lines and the `TOTAL` — and the `TOTAL` carries a
+  `models=N` count:
+
+  ```text
+  llm-tokens model=claude-haiku-4-5 calls=32 in=58400 out=1700 cached=52000 cache_write=0 cost_est=$0.0120
+  llm-tokens model=claude-sonnet-4-6 calls=5 in=152480 out=310 cached=138400 cache_write=2100 cost_est=$0.0492
+  llm-tokens sync TOTAL calls=37 dockets=4 models=2 in=210880 out=2010 cached=190400 cache_write=2100 cost_est=$0.0612
+  ```
+
+  Because the extractor and summarizer run on different models, the
+  by-model split is the by-track split; the `extraction LLM:` /
+  `summary LLM:` lines logged at run start name which model is which. A
+  model the price table doesn't cover shows `cost_est=?` on its line.
+  Model is the grouping axis (not a domain `extractor` / `summary`
+  label) so `case_calendar.llmkit` stays domain-free — it buckets the
+  opaque model string the same way it already buckets by docket.
+
+[0.7.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.7.1
+
 ## [0.7.0] - 2026-05-26
 
 ### Added
