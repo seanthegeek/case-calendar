@@ -1,4 +1,4 @@
-"""Tests for the LLM token-telemetry module (`case_calendar.usage`)."""
+"""Tests for the LLM token-telemetry module (`case_calendar.llmkit.usage`)."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import types
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from case_calendar import llm, usage
-from case_calendar.usage import (
+from case_calendar.llmkit import providers, usage
+from case_calendar.llmkit.usage import (
     TokenLedger,
     TokenUsage,
     _as_int,
@@ -138,7 +138,7 @@ class TestTokenLedger:
 
     def test_record_logs_per_call_line(self, caplog):
         led = TokenLedger()
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.record(
                 purpose="extract",
                 provider="anthropic",
@@ -155,7 +155,7 @@ class TestTokenLedger:
 
     def test_log_summary_emits_per_docket_and_total(self, caplog):
         led = self._seed()
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.log_summary(scope="sync")
         msgs = [r.getMessage() for r in caplog.records]
         assert "llm-tokens docket=1 calls=2 in=30 out=6 cached=5 cache_write=1" in msgs
@@ -168,14 +168,14 @@ class TestTokenLedger:
         )
 
     def test_empty_ledger_log_summary_is_noop(self, caplog):
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             TokenLedger().log_summary()
         assert not any("TOTAL" in r.getMessage() for r in caplog.records)
 
     def test_reset_clears(self, caplog):
         led = self._seed()
         led.reset()
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.log_summary()
         assert not any("TOTAL" in r.getMessage() for r in caplog.records)
 
@@ -188,7 +188,7 @@ class TestTokenLedger:
             tokens=TokenUsage(5, 1, 0, 0),
             docket=None,
         )
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.log_summary()
         assert any("docket=? calls=1" in r.getMessage() for r in caplog.records)
 
@@ -202,7 +202,7 @@ class TestModuleFacade:
             tokens=TokenUsage(7, 3, 0, 0),
             docket=9,
         )
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             usage.log_summary(scope="run")
         assert any(
             "run TOTAL calls=1 dockets=1 in=7 out=3" in r.getMessage()
@@ -210,7 +210,7 @@ class TestModuleFacade:
         )
         usage.reset()
         caplog.clear()
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             usage.log_summary()
         assert not any("TOTAL" in r.getMessage() for r in caplog.records)
 
@@ -239,11 +239,11 @@ class TestCallRecordsUsage:
         fake.Anthropic = _Anthropic  # type: ignore[attr-defined]
         monkeypatch.setitem(sys.modules, "anthropic", fake)
 
-        text = llm._call_anthropic(
+        text = providers._call_anthropic(
             "sys", "user", 100, model="claude-x", purpose="extract", docket=42
         )
         assert text == "{}"
-        with caplog.at_level(logging.INFO, logger="case_calendar.usage"):
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             usage.log_summary()
         # input folds the 80 cache-read tokens in: 100 + 80 + 0 = 180.
         assert any(

@@ -12,8 +12,8 @@ from typing import Any, Iterator, TypeVar
 
 import pytest
 
-from case_calendar import usage
 from case_calendar.courtlistener import CourtListener
+from case_calendar.llmkit import usage
 from case_calendar.store import Store
 
 T = TypeVar("T")

@@ -11,51 +11,10 @@ from typing import Any
 import pytest
 
 from case_calendar import llm
+from case_calendar.llmkit import providers
 
 
 # --- _detect_provider ---
-
-
-class TestDetectProvider:
-    def test_explicit_provider_env(self, monkeypatch):
-        monkeypatch.setenv("LLM_PROVIDER", "openai")
-        assert llm._detect_provider() == "openai"
-
-    def test_explicit_provider_is_normalized(self, monkeypatch):
-        monkeypatch.setenv("LLM_PROVIDER", "  Anthropic ")
-        assert llm._detect_provider() == "anthropic"
-
-    def test_invalid_provider_falls_through_to_keys(self, monkeypatch):
-        monkeypatch.setenv("LLM_PROVIDER", "bogus")
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
-        assert llm._detect_provider() == "openai"
-
-    def test_anthropic_key_only(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
-        assert llm._detect_provider() == "anthropic"
-
-    def test_openai_key_only(self, monkeypatch):
-        monkeypatch.setenv("OPENAI_API_KEY", "sk-oai")
-        assert llm._detect_provider() == "openai"
-
-    def test_gemini_key_only(self, monkeypatch):
-        monkeypatch.setenv("GEMINI_API_KEY", "g-key")
-        assert llm._detect_provider() == "gemini"
-
-    def test_google_api_key_also_works_for_gemini(self, monkeypatch):
-        monkeypatch.setenv("GOOGLE_API_KEY", "g-key")
-        assert llm._detect_provider() == "gemini"
-
-    def test_no_keys_returns_none(self):
-        assert llm._detect_provider() is None
-
-    def test_anthropic_wins_when_both_set(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
-        monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        assert llm._detect_provider() == "anthropic"
-
-
-# --- _parse_actions ---
 
 
 class TestParseActions:
@@ -354,7 +313,7 @@ class TestExtractActionsErrors:
         monkeypatch.setenv("LLM_PROVIDER", "anthropic")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("boom")),
         )
@@ -381,9 +340,9 @@ class TestExtractActionsErrors:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
         def boom(*a, **kw):
-            raise llm.OutputTruncatedError("anthropic", '{"actions": [', 2048)
+            raise providers.OutputTruncatedError("anthropic", '{"actions": [', 2048)
 
-        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
         with caplog.at_level("WARNING", logger="case_calendar.llm"):
             result = llm.extract_actions(
                 case_name="x",
@@ -402,22 +361,6 @@ class TestExtractActionsErrors:
 
 
 # --- provider_info ---
-
-
-class TestProviderInfo:
-    def test_no_provider(self):
-        assert llm.provider_info() == "no provider configured"
-
-    def test_with_provider_default_model(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-        info = llm.provider_info()
-        assert "anthropic" in info
-        assert "claude-haiku-4-5" in info  # the chosen default
-
-    def test_with_model_override(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-        monkeypatch.setenv("LLM_MODEL", "claude-opus-4-7")
-        assert "claude-opus-4-7" in llm.provider_info()
 
 
 class TestSummaryProviderInfo:
@@ -468,7 +411,7 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
         captured["user"] = user
         return '{"actions": [{"type": "ADD", "hearing_key": "x", "title": "T"}]}'
 
-    monkeypatch.setattr(llm, "_call_anthropic", fake_call)
+    monkeypatch.setattr(providers, "_call_anthropic", fake_call)
 
     out = llm.extract_actions(
         case_name="US v. Z",
@@ -511,7 +454,7 @@ class TestVerifyHearing:
     def test_returns_confirm_action(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "CONFIRM", "reason": "still scheduled"}'
@@ -529,7 +472,7 @@ class TestVerifyHearing:
     def test_returns_reschedule_with_date(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
@@ -549,7 +492,7 @@ class TestVerifyHearing:
     def test_strips_markdown_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '```json\n{"type": "CANCEL", "reason": "vacated"}\n```'
@@ -568,7 +511,7 @@ class TestVerifyHearing:
         # Defensive: model might emit {"actions": [...]} despite the prompt.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"actions": [{"type": "MARK_HELD", "reason": "held"}]}'
@@ -586,7 +529,7 @@ class TestVerifyHearing:
     def test_non_json_response_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: "I cannot determine.",
         )
@@ -602,7 +545,7 @@ class TestVerifyHearing:
     def test_missing_type_field_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: '{"reason": "no type field"}',
         )
@@ -621,7 +564,7 @@ class TestVerifyHearing:
         def boom(system, user, max_tokens, **kw):
             raise RuntimeError("api down")
 
-        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
         out = llm.verify_hearing(
             case_name="US v. X",
             court_id="mad",
@@ -637,9 +580,9 @@ class TestVerifyHearing:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
 
         def boom(system, user, max_tokens, **kw):
-            raise llm.OutputTruncatedError("anthropic", '{"type":', 512)
+            raise providers.OutputTruncatedError("anthropic", '{"type":', 512)
 
-        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
         with caplog.at_level("WARNING", logger="case_calendar.llm"):
             out = llm.verify_hearing(
                 case_name="US v. X",
@@ -661,7 +604,7 @@ class TestVerifyHearing:
             captured["system"] = system
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.verify_hearing(
             case_name="US v. X",
             court_id="mad",
@@ -683,7 +626,7 @@ class TestVerifyHearing:
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_openai",
             lambda system, user, max_tokens, **kw: '{"type": "CONFIRM"}',
         )
@@ -699,7 +642,7 @@ class TestVerifyHearing:
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_gemini",
             lambda system, user, max_tokens, **kw: '{"type": "CONFIRM"}',
         )
@@ -725,7 +668,7 @@ class TestVerifyHearing:
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '{"actions": []}',
         )
@@ -746,7 +689,7 @@ class TestExtractActionsDispatch:
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_openai",
             lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
         )
@@ -763,7 +706,7 @@ class TestExtractActionsDispatch:
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_gemini",
             lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
         )
@@ -869,436 +812,6 @@ class TestBuildUserMessageOptionalBlocks:
 # --- _dispatch_llm_call ---
 
 
-class TestDispatchLLMCall:
-    """The 3-way provider dispatch used by ``extract_actions``,
-    ``_call_lm_and_parse``, and ``generate_docket_summary``. Three
-    callers, one helper — these tests pin the routing so a future
-    fourth caller can rely on the same behavior."""
-
-    def test_routes_to_anthropic(self, monkeypatch):
-        captured = {}
-
-        def fake(system, user, max_tokens, **kw):
-            captured["provider"] = "anthropic"
-            captured["kw"] = kw
-            return "ok"
-
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
-        assert llm._dispatch_llm_call("anthropic", "s", "u", 100) == "ok"
-        assert captured["provider"] == "anthropic"
-
-    def test_routes_to_openai(self, monkeypatch):
-        captured = {}
-
-        def fake(system, user, max_tokens, **kw):
-            captured["provider"] = "openai"
-            captured["kw"] = kw
-            return "ok"
-
-        monkeypatch.setattr(llm, "_call_openai", fake)
-        assert llm._dispatch_llm_call("openai", "s", "u", 100) == "ok"
-        # Default json_mode=True propagates to the per-provider call so
-        # the SDK's response_format kwarg fires as expected.
-        assert captured["kw"]["json_mode"] is True
-
-    def test_routes_to_gemini(self, monkeypatch):
-        captured = {}
-
-        def fake(system, user, max_tokens, **kw):
-            captured["provider"] = "gemini"
-            captured["kw"] = kw
-            return "ok"
-
-        # Any provider name that isn't "anthropic" or "openai" falls
-        # through to gemini — matches the historical else-branch
-        # behavior across all three callers.
-        monkeypatch.setattr(llm, "_call_gemini", fake)
-        assert llm._dispatch_llm_call("gemini", "s", "u", 100) == "ok"
-        assert captured["kw"]["json_mode"] is True
-
-    def test_model_and_json_mode_passthrough(self, monkeypatch):
-        # Summary-track callers pin a higher-tier model and disable
-        # JSON mode (the model returns prose, not a JSON object). The
-        # helper threads both kwargs through to openai/gemini.
-        captured = {}
-
-        def fake(system, user, max_tokens, **kw):
-            captured["kw"] = kw
-            return "summary text"
-
-        monkeypatch.setattr(llm, "_call_openai", fake)
-        llm._dispatch_llm_call(
-            "openai", "s", "u", 800, model="gpt-5.4", json_mode=False
-        )
-        # model + json_mode pass through (purpose/docket also ride along for
-        # the token telemetry; assert the subset this test is about).
-        assert captured["kw"]["model"] == "gpt-5.4"
-        assert captured["kw"]["json_mode"] is False
-
-    def test_anthropic_does_not_receive_json_mode(self, monkeypatch):
-        # Anthropic's SDK has no json_mode flag — we rely on the prompt
-        # to elicit JSON. The helper must NOT pass json_mode through to
-        # the anthropic call function or the SDK call would raise on
-        # the unexpected kwarg.
-        captured = {}
-
-        def fake(system, user, max_tokens, *, model=None, purpose="llm", docket=None):
-            captured["model"] = model
-            # purpose/docket are expected (token telemetry); json_mode is NOT
-            # — this signature has no json_mode param, so a leak would raise.
-            return "ok"
-
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
-        llm._dispatch_llm_call(
-            "anthropic", "s", "u", 100, model="claude-sonnet-4-6", json_mode=False
-        )
-        assert captured["model"] == "claude-sonnet-4-6"
-
-
-# --- Provider call functions (per-provider SDK wrappers) ---
-
-
-class TestCallAnthropic:
-    def test_returns_text_block(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        # Mock the anthropic module so we don't import the real SDK.
-        fake_mod = MagicMock(name="anthropic")
-        fake_client = MagicMock(name="Anthropic client")
-        fake_mod.Anthropic.return_value = fake_client
-        # Construct a fake response with one text block.
-        block = MagicMock()
-        block.type = "text"
-        block.text = "hello"
-        fake_client.messages.create.return_value.content = [block]
-        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-        out = llm._call_anthropic("sys", "user", 100)
-        assert out == "hello"
-        kwargs = fake_client.messages.create.call_args.kwargs
-        assert kwargs["model"] == llm._DEFAULT_MODELS["anthropic"]
-        # System block carries the cache_control marker.
-        assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
-
-    def test_respects_model_kwarg(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="anthropic")
-        fake_client = MagicMock()
-        fake_mod.Anthropic.return_value = fake_client
-        block = MagicMock()
-        block.type = "text"
-        block.text = "ok"
-        fake_client.messages.create.return_value.content = [block]
-        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-        llm._call_anthropic("s", "u", 50, model="claude-opus-4-7")
-        assert (
-            fake_client.messages.create.call_args.kwargs["model"] == "claude-opus-4-7"
-        )
-
-    def test_no_text_block_raises(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock()
-        fake_client = MagicMock()
-        fake_mod.Anthropic.return_value = fake_client
-        non_text = MagicMock()
-        non_text.type = "tool_use"
-        fake_client.messages.create.return_value.content = [non_text]
-        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-        with pytest.raises(ValueError, match="No text block"):
-            llm._call_anthropic("s", "u", 10)
-
-    def test_constructor_sets_generous_max_retries(self, monkeypatch):
-        # The SDK default is 2 (cumulative backoff ~1.5s) — too short
-        # to ride out an Anthropic 529 Overloaded condition, which can
-        # last tens of seconds. Pin the higher value so a future bump
-        # of the SDK default downward doesn't silently regress us into
-        # losing entries on overload.
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="anthropic")
-        fake_client = MagicMock()
-        fake_mod.Anthropic.return_value = fake_client
-        block = MagicMock()
-        block.type = "text"
-        block.text = "ok"
-        fake_client.messages.create.return_value.content = [block]
-        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-        llm._call_anthropic("s", "u", 10)
-        ctor_kwargs = fake_mod.Anthropic.call_args.kwargs
-        assert ctor_kwargs["max_retries"] >= 5
-
-    def test_max_tokens_stop_reason_raises_truncated(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="anthropic")
-        fake_client = MagicMock()
-        fake_mod.Anthropic.return_value = fake_client
-        block = MagicMock()
-        block.type = "text"
-        block.text = '{"actions": [{"type": "RESCHEDULE_DEADLINE", "notes":'
-        resp = fake_client.messages.create.return_value
-        resp.content = [block]
-        resp.stop_reason = "max_tokens"
-        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
-
-        with pytest.raises(llm.OutputTruncatedError) as exc_info:
-            llm._call_anthropic("s", "u", 2048)
-        assert exc_info.value.provider == "anthropic"
-        assert exc_info.value.max_tokens == 2048
-        # Partial text is preserved on the exception for logging.
-        assert exc_info.value.partial.startswith('{"actions":')
-
-
-class TestCallOpenAI:
-    def test_returns_message_content(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="openai")
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = '{"actions": []}'
-        choice = MagicMock()
-        choice.message = msg
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-
-        out = llm._call_openai("s", "u", 50)
-        assert out == '{"actions": []}'
-        # JSON mode is on by default and shows up as response_format.
-        kw = fake_client.chat.completions.create.call_args.kwargs
-        assert kw["response_format"] == {"type": "json_object"}
-
-    def test_json_mode_off_omits_response_format(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock()
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = "prose"
-        choice = MagicMock()
-        choice.message = msg
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-
-        llm._call_openai("s", "u", 50, json_mode=False)
-        kw = fake_client.chat.completions.create.call_args.kwargs
-        assert "response_format" not in kw
-
-    def test_empty_content_raises(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock()
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = ""
-        choice = MagicMock()
-        choice.message = msg
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-
-        with pytest.raises(ValueError, match="No content"):
-            llm._call_openai("s", "u", 10)
-
-    def test_constructor_sets_generous_max_retries(self, monkeypatch):
-        # SDK default of 2 retries is too short for transient overload;
-        # see the matching pin on `_call_anthropic`.
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="openai")
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = "ok"
-        choice = MagicMock()
-        choice.message = msg
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-
-        llm._call_openai("s", "u", 10)
-        ctor_kwargs = fake_mod.OpenAI.call_args.kwargs
-        assert ctor_kwargs["max_retries"] >= 5
-
-    def test_length_finish_reason_raises_truncated(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_mod = MagicMock(name="openai")
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = '{"actions": [{"type":'
-        choice = MagicMock()
-        choice.message = msg
-        choice.finish_reason = "length"
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-
-        with pytest.raises(llm.OutputTruncatedError) as exc_info:
-            llm._call_openai("s", "u", 2048)
-        assert exc_info.value.provider == "openai"
-        assert exc_info.value.max_tokens == 2048
-
-
-class TestCallGemini:
-    def test_returns_text(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        # google.genai is a nested module; stub both.
-        fake_genai = MagicMock(name="google.genai")
-        fake_types = MagicMock(name="google.genai.types")
-
-        class _Cfg:
-            def __init__(self, **kw):
-                self.kw = kw
-
-        fake_types.GenerateContentConfig = _Cfg
-        fake_genai.types = fake_types
-        fake_client = MagicMock()
-        fake_genai.Client.return_value = fake_client
-        fake_client.models.generate_content.return_value.text = '{"actions": []}'
-
-        # Stub the package structure so `from google import genai` and
-        # `from google.genai import types as gtypes` both resolve.
-        fake_google = MagicMock()
-        fake_google.genai = fake_genai
-        monkeypatch.setitem(sys.modules, "google", fake_google)
-        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
-        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
-
-        out = llm._call_gemini("s", "u", 50)
-        assert out == '{"actions": []}'
-        # json_mode on -> response_mime_type set
-        cfg = fake_client.models.generate_content.call_args.kwargs["config"]
-        assert cfg.kw["response_mime_type"] == "application/json"
-
-    def test_json_mode_off_omits_mime_type(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_genai = MagicMock()
-        fake_types = MagicMock()
-
-        class _Cfg:
-            def __init__(self, **kw):
-                self.kw = kw
-
-        fake_types.GenerateContentConfig = _Cfg
-        fake_genai.types = fake_types
-        fake_client = MagicMock()
-        fake_genai.Client.return_value = fake_client
-        fake_client.models.generate_content.return_value.text = "prose"
-
-        fake_google = MagicMock()
-        fake_google.genai = fake_genai
-        monkeypatch.setitem(sys.modules, "google", fake_google)
-        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
-        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
-
-        llm._call_gemini("s", "u", 50, json_mode=False)
-        cfg = fake_client.models.generate_content.call_args.kwargs["config"]
-        assert "response_mime_type" not in cfg.kw
-
-    def test_empty_text_raises(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_genai = MagicMock()
-        fake_types = MagicMock()
-        fake_types.GenerateContentConfig = lambda **kw: object()
-        fake_genai.types = fake_types
-        fake_client = MagicMock()
-        fake_genai.Client.return_value = fake_client
-        fake_client.models.generate_content.return_value.text = ""
-
-        fake_google = MagicMock()
-        fake_google.genai = fake_genai
-        monkeypatch.setitem(sys.modules, "google", fake_google)
-        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
-        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
-
-        with pytest.raises(ValueError, match="No content"):
-            llm._call_gemini("s", "u", 10)
-
-    def test_max_tokens_finish_reason_raises_truncated(self, monkeypatch):
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_genai = MagicMock()
-        fake_types = MagicMock()
-        fake_types.GenerateContentConfig = lambda **kw: object()
-        fake_genai.types = fake_types
-        fake_client = MagicMock()
-        fake_genai.Client.return_value = fake_client
-        resp = fake_client.models.generate_content.return_value
-        resp.text = '{"actions": [{"type":'
-        # Gemini's finish_reason is an enum with `.name == "MAX_TOKENS"`.
-        finish = MagicMock()
-        finish.name = "MAX_TOKENS"
-        candidate = MagicMock()
-        candidate.finish_reason = finish
-        resp.candidates = [candidate]
-
-        fake_google = MagicMock()
-        fake_google.genai = fake_genai
-        monkeypatch.setitem(sys.modules, "google", fake_google)
-        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
-        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
-
-        with pytest.raises(llm.OutputTruncatedError) as exc_info:
-            llm._call_gemini("s", "u", 2048)
-        assert exc_info.value.provider == "gemini"
-        assert exc_info.value.max_tokens == 2048
-
-    def test_no_candidates_returns_text_without_truncation_check(self, monkeypatch):
-        # Gemini responses without a `candidates` list (or with an empty
-        # one) should fall through to the plain text return — the
-        # truncation check only applies when at least one candidate is
-        # present. Pin both shapes so a refactor can't drop this fast
-        # path silently.
-        from unittest.mock import MagicMock
-        import sys
-
-        fake_genai = MagicMock()
-        fake_types = MagicMock()
-        fake_types.GenerateContentConfig = lambda **kw: object()
-        fake_genai.types = fake_types
-        fake_client = MagicMock()
-        fake_genai.Client.return_value = fake_client
-        resp = fake_client.models.generate_content.return_value
-        resp.text = '{"actions": []}'
-        resp.candidates = []  # explicit empty — bypasses the truncation branch
-
-        fake_google = MagicMock()
-        fake_google.genai = fake_genai
-        monkeypatch.setitem(sys.modules, "google", fake_google)
-        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
-        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
-
-        out = llm._call_gemini("s", "u", 50)
-        assert out == '{"actions": []}'
-
-
-# --- verify_deadline (parallel to verify_hearing) ---
-
-
 def _deadline(**overrides):
     base = {
         "case_id": "anthropic-v-dow",
@@ -1330,7 +843,7 @@ class TestVerifyDeadline:
     def test_returns_confirm(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '{"type": "CONFIRM", "reason": "still pending"}',
         )
@@ -1346,7 +859,7 @@ class TestVerifyDeadline:
     def test_dispatches_to_openai(self, monkeypatch):
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_openai",
             lambda *a, **kw: '{"type": "MARK_FILED"}',
         )
@@ -1362,7 +875,7 @@ class TestVerifyDeadline:
     def test_dispatches_to_gemini(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_gemini",
             lambda *a, **kw: '{"type": "RESCHEDULE", "local_date": "2026-06-15"}',
         )
@@ -1378,7 +891,7 @@ class TestVerifyDeadline:
     def test_strips_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '```json\n{"type": "CANCEL"}\n```',
         )
@@ -1394,7 +907,7 @@ class TestVerifyDeadline:
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '{"actions": [{"type": "CANCEL"}]}',
         )
@@ -1410,7 +923,7 @@ class TestVerifyDeadline:
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '{"actions": []}',
         )
@@ -1426,7 +939,7 @@ class TestVerifyDeadline:
     def test_non_json_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: "can't tell",
         )
@@ -1442,7 +955,7 @@ class TestVerifyDeadline:
     def test_missing_type_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: '{"reason": "x"}',
         )
@@ -1461,7 +974,7 @@ class TestVerifyDeadline:
         def boom(*a, **kw):
             raise RuntimeError("api down")
 
-        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
         out = llm.verify_deadline(
             case_name="x",
             court_id="x",
@@ -1479,7 +992,7 @@ class TestVerifyDeadline:
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.verify_deadline(
             case_name="X",
             court_id="mad",
@@ -1506,7 +1019,7 @@ class TestVerifyDeadline:
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.verify_deadline(
             case_name="X",
             court_id="x",
@@ -1528,7 +1041,7 @@ class TestVerifyHearingNoRecentEntries:
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.verify_hearing(
             case_name="X",
             court_id="x",
@@ -1555,7 +1068,7 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         hearing = _hearing(
             notes="Trial commences June 12, 2024.",
             audit_notes=(
@@ -1584,7 +1097,7 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
             captured["user"] = user
             return '{"type": "CONFIRM"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         deadline = _deadline(
             notes="Reply due 2/1/2026.",
             audit_notes="[verify-pass] DO NOT LEAK THIS deadline audit reason.",
@@ -1625,7 +1138,7 @@ class TestResolveDuplicateHearings:
     def test_returns_merge_into_action(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "MERGE_INTO", '
@@ -1647,7 +1160,7 @@ class TestResolveDuplicateHearings:
         # Stacked back-to-back proceedings — the LLM keeps both.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "KEEP_BOTH", "reason": "Order schedules both back-to-back."}'
@@ -1665,7 +1178,7 @@ class TestResolveDuplicateHearings:
     def test_strips_markdown_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '```json\n{"type": "MERGE_INTO", '
@@ -1685,7 +1198,7 @@ class TestResolveDuplicateHearings:
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
                 '{"actions": [{"type": "KEEP_BOTH", "reason": "..."}]}'
@@ -1703,7 +1216,7 @@ class TestResolveDuplicateHearings:
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: '{"actions": []}',
         )
@@ -1719,7 +1232,7 @@ class TestResolveDuplicateHearings:
     def test_non_json_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: "I cannot tell.",
         )
@@ -1735,7 +1248,7 @@ class TestResolveDuplicateHearings:
     def test_missing_type_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: '{"reason": "no type"}',
         )
@@ -1754,7 +1267,7 @@ class TestResolveDuplicateHearings:
         def boom(system, user, max_tokens, **kw):
             raise RuntimeError("api down")
 
-        monkeypatch.setattr(llm, "_call_anthropic", boom)
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
         out = llm.resolve_duplicate_hearings(
             case_name="X",
             court_id="x",
@@ -1793,7 +1306,7 @@ class TestResolveDuplicateHearings:
             captured["user"] = user
             return '{"type": "UNCLEAR"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.resolve_duplicate_hearings(
             case_name="Anthropic v. DOW",
             court_id="cand",
@@ -1823,7 +1336,7 @@ class TestResolveDuplicateHearings:
             captured["user"] = user
             return '{"type": "UNCLEAR"}'
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.resolve_duplicate_hearings(
             case_name="X",
             court_id="x",
@@ -1838,7 +1351,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
         monkeypatch.setenv("OPENAI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_openai",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "MERGE_INTO", '
@@ -1861,7 +1374,7 @@ class TestResolveDuplicateHearings:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.setenv("GEMINI_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_gemini",
             lambda system, user, max_tokens, **kw: (
                 '{"type": "KEEP_BOTH", "reason": "..."}'
@@ -2252,7 +1765,7 @@ class TestGenerateDocketSummary:
             called["model"] = model
             return "A short summary."
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         text, ident = llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2275,7 +1788,7 @@ class TestGenerateDocketSummary:
             called["json_mode"] = json_mode
             return "Summary."
 
-        monkeypatch.setattr(llm, "_call_openai", fake)
+        monkeypatch.setattr(providers, "_call_openai", fake)
         text, ident = llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2298,7 +1811,7 @@ class TestGenerateDocketSummary:
             called["json_mode"] = json_mode
             return "Some summary."
 
-        monkeypatch.setattr(llm, "_call_gemini", fake)
+        monkeypatch.setattr(providers, "_call_gemini", fake)
         text, ident = llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2319,7 +1832,7 @@ class TestGenerateDocketSummary:
             captured["user"] = user
             return "A corrected summary."
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2341,7 +1854,7 @@ class TestGenerateDocketSummary:
             captured["user"] = user
             return "A summary."
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2388,7 +1901,7 @@ class TestGenerateDocketSummary:
             captured["user"] = user
             return "X was ordered to pay restitution."
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2409,7 +1922,7 @@ class TestGenerateDocketSummary:
             captured["user"] = user
             return "summary"
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2442,7 +1955,7 @@ class TestGenerateDocketSummary:
 
     def test_strips_code_fences_from_response(self, monkeypatch):
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: "```\nThe case is summarized.\n```",
         )
@@ -2467,7 +1980,7 @@ class TestGenerateDocketSummary:
             called["model"] = model
             return "x"
 
-        monkeypatch.setattr(llm, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
         _, ident = llm.generate_docket_summary(
             case_name="x",
             aggregation_note=None,
@@ -2485,7 +1998,7 @@ class TestGenerateDocketSummary:
         # from the regular key.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
-            llm,
+            providers,
             "_call_anthropic",
             lambda *a, **kw: "ok",
         )
