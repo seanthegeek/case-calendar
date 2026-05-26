@@ -4025,34 +4025,41 @@ def _queue_llm(monkeypatch, *texts):
     return calls
 
 
+def _indictment_case(store, patch_pdf, *, primary_text="INDICTMENT body text..."):
+    """A one-docket case whose sole entry is an indictment carrying
+    ``primary_text`` (extracted as recap_document 500). Cold local cache, so
+    ``summarize_docket`` reads the entry from the FakeCourtListener pages."""
+    _seed_docket_meta(store, 1)
+    patch_pdf["texts"] = {500: primary_text}
+    cl = _FakeCourtListener(
+        {
+            (1, "date_filed"): [
+                {
+                    "id": 10,
+                    "description": "INDICTMENT",
+                    "date_filed": "2024-01-01",
+                    "entry_number": 1,
+                    "recap_documents": [{"id": 500}],
+                }
+            ],
+            (1, "-date_filed"): [],
+        }
+    )
+    case = _Case(case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber")
+    return cl, case
+
+
 class TestSummaryGuardRetry:
     """End-to-end retry-then-keep+WARN behavior through summarize_docket."""
 
     def _setup(self, store, patch_pdf, *, primary_text="INDICTMENT body text..."):
-        _seed_docket_meta(store, 1)
-        patch_pdf["texts"] = {500: primary_text}
-        cl = _FakeCourtListener(
-            {
-                (1, "date_filed"): [
-                    {
-                        "id": 10,
-                        "description": "INDICTMENT",
-                        "date_filed": "2024-01-01",
-                        "entry_number": 1,
-                        "recap_documents": [{"id": 500}],
-                    }
-                ],
-                (1, "-date_filed"): [],
-            }
-        )
-        case = _Case(
-            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
-        )
-        return cl, case
+        return _indictment_case(store, patch_pdf, primary_text=primary_text)
 
     def test_clean_draft_no_retry(self, store, patch_pdf, monkeypatch):
         cl, case = self._setup(store, patch_pdf)
-        calls = _queue_llm(monkeypatch, "X was charged and pled guilty on May 1, 2026.")
+        # No absence/custody claim and no ungrounded date/amount -> clean on
+        # every guard axis, so neither retry path fires.
+        calls = _queue_llm(monkeypatch, "X was charged and later pled guilty.")
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
         assert len(calls) == 1  # no retry
@@ -4126,8 +4133,9 @@ class TestSummaryGuardRetry:
 
 
 class TestSummaryGroundingGuard:
-    """WARN-only tier-3 guard — dates / dollar amounts not traceable to the
-    scaffold or the source documents are flagged for operator review.
+    """Tier-3 grounding guard — dates / dollar amounts not traceable to the
+    scaffold or the source documents trigger a retry, then a deterministic
+    sentence strip so the ungrounded figure never publishes, plus a WARN.
     """
 
     def test_date_in_known_dates_not_flagged(self):
@@ -4241,41 +4249,112 @@ class TestSummaryGroundingGuard:
         )
         assert kd == {"2026-07-06", "2026-06-04", "2025-06-24"}
 
-    def test_warn_only_does_not_block_or_retry(
-        self, store, patch_pdf, monkeypatch, caplog
-    ):
-        # A fabricated date is logged for review but the summary is stored
-        # as-is and NO retry fires (WARN-only enforcement).
+    def test_ungrounded_date_retry_clears(self, store, patch_pdf, monkeypatch, caplog):
+        # Draft cites a date in no document; the retry drops it -> the clean
+        # retry is stored, the figure never publishes, and a WARN records the
+        # retry for operator review.
         import logging
 
-        _seed_docket_meta(store, 1)
-        patch_pdf["texts"] = {500: "INDICTMENT body text with no dates."}
-        cl = _FakeCourtListener(
-            {
-                (1, "date_filed"): [
-                    {
-                        "id": 10,
-                        "description": "INDICTMENT",
-                        "date_filed": "2024-01-01",
-                        "entry_number": 1,
-                        "recap_documents": [{"id": 500}],
-                    }
-                ],
-                (1, "-date_filed"): [],
-            }
-        )
-        case = _Case(
-            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT charging wire fraud, no dates."
         )
         calls = _queue_llm(
-            monkeypatch, "X was charged; a hearing is set for June 9, 2026."
+            monkeypatch,
+            "X was charged; a hearing is set for June 9, 2026.",  # ungrounded date
+            "X was charged with wire fraud.",  # clean retry
         )
         with caplog.at_level(logging.WARNING):
             row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
-        assert len(calls) == 1  # WARN-only — no retry
-        assert "June 9, 2026" in row["summary"]  # stored as-is, not blocked
-        assert any("possible fabricated facts" in r.message for r in caplog.records)
+        assert len(calls) == 2  # retried once
+        assert calls[1].get("correction")  # retry carried the grounding correction
+        assert "June 9, 2026" not in row["summary"]
+        assert row["summary"] == "X was charged with wire fraud."
+        assert any(
+            "retrying generation once to remove" in r.message for r in caplog.records
+        )
+
+    def test_ungrounded_persists_strips_offending_sentence(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        # The model repeats the ungrounded date on the retry. The offending
+        # SENTENCE is removed deterministically; the grounded sentence stays.
+        import logging
+
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT charging wire fraud, no dates."
+        )
+        calls = _queue_llm(
+            monkeypatch,
+            "X was charged with wire fraud. A hearing is set for June 9, 2026.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2  # one retry, then deterministic strip
+        assert "June 9, 2026" not in row["summary"]
+        assert row["summary"] == "X was charged with wire fraud."
+        assert any(
+            "STILL carried ungrounded facts after retry" in r.message
+            for r in caplog.records
+        )
+
+    def test_ungrounded_strip_empties_falls_back_to_refusal(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # Every sentence carries an ungrounded figure -> stripping empties the
+        # summary -> the canonical refusal sentence is stored.
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT body, no dates or amounts."
+        )
+        calls = _queue_llm(monkeypatch, "A hearing is set for June 9, 2026.")
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert row["summary"] == summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+    def test_retry_reduces_ungrounded_then_strips_residual(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # Draft has TWO ungrounded figures; the retry drops one but keeps the
+        # other -> the retry is adopted (fewer violations, no tier-1/2
+        # regression) and the residual sentence is then stripped.
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT charging fraud, no figures."
+        )
+        calls = _queue_llm(
+            monkeypatch,
+            "A fine of $9,999 was set. A hearing is on June 9, 2026.",  # 2 ungrounded
+            "X was charged with fraud. A hearing is on June 9, 2026.",  # 1 ungrounded
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "$9,999" not in row["summary"]
+        assert "June 9, 2026" not in row["summary"]
+        assert row["summary"] == "X was charged with fraud."
+
+    def test_retry_with_tier12_regression_rejected_keeps_original(
+        self, store, patch_pdf, monkeypatch
+    ):
+        # The retry clears the ungrounded date but introduces an
+        # absence-of-record claim. We refuse to adopt a retry that trades a
+        # grounding fix for a tier-1/2 regression -> keep the original draft
+        # and strip its ungrounded sentence instead.
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT charging fraud, no figures."
+        )
+        calls = _queue_llm(
+            monkeypatch,
+            "X was charged with fraud. A hearing is on June 9, 2026.",  # ungrounded date
+            "No disposition has been entered.",  # clean grounding, tier-1/2 regression
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "No disposition" not in row["summary"]  # the regressing retry rejected
+        assert "June 9, 2026" not in row["summary"]  # original's bad sentence stripped
+        assert row["summary"] == "X was charged with fraud."
 
     def test_aggregation_note_date_is_grounded_not_flagged(
         self, store, patch_pdf, monkeypatch, caplog
@@ -4305,7 +4384,7 @@ class TestSummaryGroundingGuard:
         case = _Case(
             case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
         )
-        _queue_llm(
+        calls = _queue_llm(
             monkeypatch,
             "X was sentenced on November 3, 2025; this is the direct appeal.",
         )
@@ -4318,8 +4397,71 @@ class TestSummaryGroundingGuard:
                 aggregation_note="Sentenced on November 3, 2025 to 72 months imprisonment.",
             )
         assert row is not None
-        # The date is sourced from the aggregation note -> grounded, no WARN.
-        assert not any("possible fabricated facts" in r.message for r in caplog.records)
+        # The date is sourced from the aggregation note -> grounded, so no
+        # grounding retry fires and the date stays in the stored summary.
+        assert len(calls) == 1
+        assert "November 3, 2025" in row["summary"]
+        assert not any("ungrounded" in r.message for r in caplog.records)
+
+
+class TestStripUngroundedSentences:
+    """`_strip_ungrounded_sentences` / `_split_sentences` — the deterministic
+    backstop that removes whole sentences still carrying an ungrounded figure
+    after the retry, keeping the grounded ones (refusal if none survive)."""
+
+    def test_drops_only_ungrounded_sentence(self):
+        out = summary._strip_ungrounded_sentences(
+            "He was charged with fraud. A hearing is set for June 9, 2026.",
+            known_dates=set(),
+            source_text="",
+        )
+        assert out == "He was charged with fraud."
+
+    def test_keeps_grounded_date_sentence(self):
+        text = "He was charged. Sentencing is set for May 6, 2026."
+        out = summary._strip_ungrounded_sentences(
+            text, known_dates={"2026-05-06"}, source_text=""
+        )
+        assert out == text  # the date is grounded -> nothing stripped
+
+    def test_us_abbreviation_not_treated_as_boundary(self):
+        # "U.S. Attorney" must not be split into its own sentence: the first
+        # sentence (no figure) survives intact; only the ungrounded $9,999
+        # sentence is removed.
+        out = summary._strip_ungrounded_sentences(
+            "The U.S. Attorney charged him with fraud. A penalty of $9,999 was imposed.",
+            known_dates=set(),
+            source_text="",
+        )
+        assert out == "The U.S. Attorney charged him with fraud."
+
+    def test_all_ungrounded_returns_refusal(self):
+        out = summary._strip_ungrounded_sentences(
+            "A fine of $9,999 was set. Another $8,888 was added.",
+            known_dates=set(),
+            source_text="",
+        )
+        assert out == summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+    def test_split_keeps_abbreviations(self):
+        assert summary._split_sentences("The U.S. Attorney acted. He won.") == [
+            "The U.S. Attorney acted.",
+            "He won.",
+        ]
+        assert summary._split_sentences("Mr. Smith appeared. He won.") == [
+            "Mr. Smith appeared.",
+            "He won.",
+        ]
+
+    def test_split_breaks_before_link_bracket(self):
+        assert summary._split_sentences(
+            "He pled guilty. [The court](doc:D1) sentenced him."
+        ) == ["He pled guilty.", "[The court](doc:D1) sentenced him."]
+
+    def test_split_single_sentence_unchanged(self):
+        assert summary._split_sentences("X was charged with wire fraud.") == [
+            "X was charged with wire fraud."
+        ]
 
 
 class TestRestitutionUnreadableDetector:

@@ -930,7 +930,10 @@ class TestDispatchLLMCall:
         llm._dispatch_llm_call(
             "openai", "s", "u", 800, model="gpt-5.4", json_mode=False
         )
-        assert captured["kw"] == {"model": "gpt-5.4", "json_mode": False}
+        # model + json_mode pass through (purpose/docket also ride along for
+        # the token telemetry; assert the subset this test is about).
+        assert captured["kw"]["model"] == "gpt-5.4"
+        assert captured["kw"]["json_mode"] is False
 
     def test_anthropic_does_not_receive_json_mode(self, monkeypatch):
         # Anthropic's SDK has no json_mode flag — we rely on the prompt
@@ -939,10 +942,10 @@ class TestDispatchLLMCall:
         # the unexpected kwarg.
         captured = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, purpose="llm", docket=None):
             captured["model"] = model
-            # If json_mode leaked in, kwargs handling would have
-            # captured it here; this signature explicitly forbids it.
+            # purpose/docket are expected (token telemetry); json_mode is NOT
+            # — this signature has no json_mode param, so a leak would raise.
             return "ok"
 
         monkeypatch.setattr(llm, "_call_anthropic", fake)
@@ -2245,7 +2248,7 @@ class TestGenerateDocketSummary:
     def test_anthropic_default_model(self, monkeypatch):
         called: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             called["model"] = model
             return "A short summary."
 
@@ -2267,7 +2270,7 @@ class TestGenerateDocketSummary:
     def test_openai_dispatch_json_mode_off(self, monkeypatch):
         called: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None, json_mode=True):
+        def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
             called["model"] = model
             called["json_mode"] = json_mode
             return "Summary."
@@ -2291,7 +2294,7 @@ class TestGenerateDocketSummary:
     def test_gemini_dispatch(self, monkeypatch):
         called: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None, json_mode=True):
+        def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
             called["json_mode"] = json_mode
             return "Some summary."
 
@@ -2312,7 +2315,7 @@ class TestGenerateDocketSummary:
     def test_correction_appended_to_user_message(self, monkeypatch):
         captured: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             captured["user"] = user
             return "A corrected summary."
 
@@ -2334,7 +2337,7 @@ class TestGenerateDocketSummary:
     def test_no_correction_block_when_absent(self, monkeypatch):
         captured: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             captured["user"] = user
             return "A summary."
 
@@ -2381,7 +2384,7 @@ class TestGenerateDocketSummary:
     def test_financial_advisory_rendered_when_restitution_unreadable(self, monkeypatch):
         captured: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             captured["user"] = user
             return "X was ordered to pay restitution."
 
@@ -2402,7 +2405,7 @@ class TestGenerateDocketSummary:
     def test_no_financial_advisory_by_default(self, monkeypatch):
         captured: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             captured["user"] = user
             return "summary"
 
@@ -2460,7 +2463,7 @@ class TestGenerateDocketSummary:
         monkeypatch.setenv("LLM_SUMMARY_MODEL", "claude-opus-4-7")
         called: dict[str, Any] = {}
 
-        def fake(system, user, max_tokens, *, model=None):
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
             called["model"] = model
             return "x"
 

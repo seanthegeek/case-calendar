@@ -20,7 +20,7 @@ from typing import Any
 import yaml
 from dotenv import load_dotenv
 
-from . import llm
+from . import llm, usage
 from .calendars.description import no_time_title_prefix
 from .calendars.ics import write_ics
 from .calendars.index import build_calendar_models, write_index
@@ -480,6 +480,10 @@ def cmd_sync(args: argparse.Namespace) -> int:
             only_calendars=affected_calendars,
         )
         _print_emit_results(cfg, results)
+    # Real token counts for this run (per call already streamed at INFO);
+    # per-docket subtotals + a grand total to replace cost guesswork.
+    usage.log_summary(scope="sync")
+    usage.reset()
     store.close()
     return 0
 
@@ -1037,6 +1041,8 @@ def cmd_summarize(args: argparse.Namespace) -> int:
             only_calendars=affected_calendars,
         )
         _print_emit_results(cfg, results)
+    usage.log_summary(scope="summarize")
+    usage.reset()
     store.close()
     return 0
 

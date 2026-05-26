@@ -8,6 +8,66 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.7.0] - 2026-05-26
+
+### Added
+
+- **Per-call LLM token telemetry.** Every LLM call now logs its real token
+  counts at `INFO` so you can compute actual cost from your provider's
+  current prices instead of trusting an estimate. One `llm-tokens call …`
+  line per call carries the `purpose` (`extract` / `verify_hearing` /
+  `verify_deadline` / `dedupe_hearings` / `summary`), provider, model,
+  docket, and `in` / `out` / `cached` / `cache_write` counts; per-docket
+  subtotals and a run `TOTAL` are logged at the end of a `sync` or
+  `summarize` run. Counts are normalized across providers — `in` always
+  means total prompt tokens with the cached portion included (Anthropic
+  reports cache reads / writes separately from its input count; OpenAI and
+  Gemini fold them in). Log-only: nothing is persisted, so to track spend
+  over time you sum the `TOTAL` lines. The long-running `serve` daemon emits
+  the per-call lines only (its worker threads and the debounce timer would
+  race on a run-total reset).
+- **CourtListener request-rate telemetry.** The API client now logs how many
+  requests it made when it closes (end of `sync` / `summarize`, or `serve`
+  shutdown): `courtlistener-requests total=N peak/min=… peak/hour=…
+  peak/day=…`. The peaks are the busiest rolling windows observed, which is
+  the number that matters for picking an API tier — tiers are hard ceilings,
+  so you need the one that covers your busiest minute / hour / day, not your
+  average. Every request that reached the server is counted, including ones
+  that came back 429 or 5xx and were retried, since those still spend quota.
+  Compare the numbers against your Free Law Project / CourtListener tier's
+  limits to see whether you need to upgrade.
+
+### Changed
+
+- **The case-summary grounding guard now removes ungrounded dates / amounts
+  instead of only warning.** When a date or dollar figure in a generated
+  summary can't be traced to any source document, the structured-events
+  scaffold, or the operator-supplied notes, the pipeline retries generation
+  once asking the model to drop it; if the figure survives, the sentence
+  carrying it is deterministically removed (falling back to the refusal
+  sentence if that empties the summary). A warning is still logged for
+  review. Previously this check was warn-only — acceptable for an attended
+  run, but a possible fabrication could reach subscribers unread now that
+  summaries auto-generate as a service.
+- **Documentation now lives at `docs.casecalendar.net`** — the README
+  documentation link was updated from the GitHub Pages address. The README
+  features list also gained the inline-document-links summary feature and a
+  broader description of what triggers a summary auto-refresh (a new charging
+  document or a hearing / deadline status change, not only dispositions), and
+  the case-summaries cost section documents the new token logging.
+
+### Fixed
+
+- **Corrected a self-contradiction in the architecture docs.** The
+  summary-guard section said a prompt rule was too soft to stop a slip, then
+  listed "three layers [that] cover the gap" with the prompt rule as the
+  first of the three — reframed as one preventive layer plus two
+  deterministic backstops, which is what actually covers the gap.
+- **README "How it works" diagram** was missing the connector between the
+  verify-pass step and the render / push step.
+
+[0.7.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.7.0
+
 ## [0.6.0] - 2026-05-25
 
 ### Added
@@ -60,6 +120,8 @@ adheres to [Semantic Versioning][semver].
   Archive is a downstream mirror of CourtListener today (it once was upstream),
   so it can lag or omit documents, and CourtListener is the authoritative,
   current source. Shared in one helper, `pdf.recap_document_url`.
+
+[0.6.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.6.0
 
 ## [0.5.1] - 2026-05-25
 

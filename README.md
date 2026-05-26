@@ -9,7 +9,7 @@ deadlines — sourced from CourtListener / RECAP, optionally annotated
 with AI case summaries, optionally pushed to Google Calendar or
 Microsoft 365.
 
-📚 **Documentation:** [https://seanthegeek.github.io/case-calendar/](https://seanthegeek.github.io/case-calendar/)
+📚 **Documentation:** [https://docs.casecalendar.net/](https://docs.casecalendar.net/)
 (or browse the [`docs/`](docs/index.md) folder in this repo).<br>
 🌐 **Live example:** [https://casecalendar.net/](https://casecalendar.net/)
 — a deployed instance with real cases, real ICS feeds, and the AI case
@@ -57,9 +57,12 @@ It was built for the cases where docket-watching by hand is too much:
   motion-heavy litigation.
 - **AI case summaries** (opt-in) generate a 2-4 sentence prose
   description of each case from its primary document plus any
-  dispositions. Refuses to fabricate when source documents are
-  insufficient. Auto-refreshes whenever a new judgment, plea agreement,
-  or dispositive memo lands.
+  dispositions, with each summary's action phrases linked to the
+  source court documents ("**were charged**" links to the indictment,
+  "**pled guilty**" to the plea agreement). Refuses to fabricate when
+  source documents are insufficient. Auto-refreshes whenever a new
+  charging document, judgment, plea agreement, or dispositive ruling
+  lands — or a tracked hearing or deadline changes status.
 - **Real-time webhook receiver** — register a public HTTPS URL with
   CourtListener and bypass the daily polling quota entirely.
 - **Static landing page** with one-click subscribe buttons, client-side
@@ -86,6 +89,7 @@ CourtListener docket entries
         │
         ▼
   end-of-sync verify pass    (catches missed reschedules)
+        │
         ▼
   ICS / Google / M365 push   + optional static index.html
 ```
