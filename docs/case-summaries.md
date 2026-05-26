@@ -125,15 +125,15 @@ a new primary document or disposition). On a 30-case calendar you'll probably
 spend a few dollars to backfill and pennies a week thereafter — but don't
 take that estimate on faith; measure your own.
 
-### Measuring real token usage
+### Measuring real token usage and estimated cost
 
 Every LLM call — extraction and summaries alike — logs its token counts at
-`INFO`, so you can compute actual cost from your provider's current prices
-instead of trusting an estimate. The lines are prefixed `llm-tokens`:
+`INFO`, with a rough dollar **estimate** alongside. The lines are prefixed
+`llm-tokens`:
 
 ```text
-llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=46000 cache_write=2100
-llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket=12345 in=1820 out=64 cached=1600 cache_write=0
+llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=46000 cache_write=2100 cost_est=$0.0182
+llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket=12345 in=1820 out=64 cached=1600 cache_write=0 cost_est=$0.0006
 ```
 
 - `in` — total prompt tokens (the cached portion **included**).
@@ -142,6 +142,7 @@ llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket
   cache-read rate).
 - `cache_write` — prompt tokens written to the cache (Anthropic only; billed
   at the higher cache-write rate). Other providers report `0`.
+- `cost_est` — estimated USD for the call (see the caveat below).
 
 `purpose` distinguishes the cheap extractor calls (`extract`,
 `verify_hearing`, `verify_deadline`, `dedupe_hearings`) from the higher-tier
@@ -151,14 +152,26 @@ At the end of a `sync` or `summarize` run, a per-docket subtotal and a grand
 total are logged so you don't have to add them up yourself:
 
 ```text
-llm-tokens docket=12345 calls=9 in=63140 out=540 cached=58000 cache_write=2100
-llm-tokens sync TOTAL calls=37 dockets=4 in=210880 out=2010 cached=190400 cache_write=2100
+llm-tokens docket=12345 calls=9 in=63140 out=540 cached=58000 cache_write=2100 cost_est=$0.0241
+llm-tokens sync TOTAL calls=37 dockets=4 in=210880 out=2010 cached=190400 cache_write=2100 cost_est=$0.0612
 ```
 
-The numbers are normalized so `in` always means the same thing across
+The token counts are normalized so `in` always means the same thing across
 providers (Anthropic reports cache reads/writes separately from its input
-count; we fold them in). Nothing is persisted — to track spend over time,
-sum the `TOTAL` lines from your run logs.
+count; we fold them in), and the cost estimate prices each slice — uncached
+input, cache reads, cache writes, output — at its own rate, which matters
+because the system prompt is cached on almost every call.
+
+**`cost_est` is an estimate, not a bill.** It comes from a small static price
+table (`case_calendar/costs.py`) hand-copied from each provider's pricing page
+and dated with `PRICES_VERIFIED`. It does not model batch discounts,
+long-context (>200k) tiers, or data-residency multipliers. When a model isn't
+in the table — currently the OpenAI models, whose pricing page couldn't be
+verified, or any model you set via `LLM_MODEL` — the call logs `cost_est=?`
+and the run `TOTAL` notes how many calls had no price entry, so a partial
+estimate is obvious rather than silently low. Add a model's rates to that file
+to price it. Nothing is persisted — to track spend over time, sum the `TOTAL`
+lines from your run logs.
 
 To force a regeneration after a model upgrade or prompt change:
 

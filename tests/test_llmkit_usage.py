@@ -250,3 +250,119 @@ class TestCallRecordsUsage:
             "docket=42 calls=1 in=180 out=20 cached=80 cache_write=0" in r.getMessage()
             for r in caplog.records
         )
+
+
+class TestLedgerCostEstimation:
+    """The opt-in price estimator: when set, per-call + summary lines carry a
+    `cost_est=` field; unpriced models are flagged, not silently dropped."""
+
+    def test_no_estimator_means_no_cost_field(self, caplog):
+        led = TokenLedger()  # default: no estimator
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.record(
+                purpose="extract",
+                provider="anthropic",
+                model="m",
+                tokens=TokenUsage(10, 2, 0, 0),
+                docket=1,
+            )
+        assert all("cost_est" not in r.getMessage() for r in caplog.records)
+
+    def test_per_call_line_carries_cost(self, caplog):
+        led = TokenLedger()
+        led.set_price_estimator(lambda model, tokens: 0.0025)
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.record(
+                purpose="summary",
+                provider="anthropic",
+                model="m",
+                tokens=TokenUsage(100, 20, 0, 0),
+                docket=7,
+            )
+        assert any("cost_est=$0.0025" in r.getMessage() for r in caplog.records)
+
+    def test_summary_totals_include_cost(self, caplog):
+        led = TokenLedger()
+        led.set_price_estimator(lambda model, tokens: 1.0)
+        for d in (1, 1, 2):
+            led.record(
+                purpose="extract",
+                provider="anthropic",
+                model="m",
+                tokens=TokenUsage(10, 2, 0, 0),
+                docket=d,
+            )
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.log_summary(scope="sync")
+        msgs = [r.getMessage() for r in caplog.records]
+        assert any("docket=1 calls=2" in m and "cost_est=$2.0000" in m for m in msgs)
+        assert any("docket=2 calls=1" in m and "cost_est=$1.0000" in m for m in msgs)
+        assert any("TOTAL calls=3" in m and "cost_est=$3.0000" in m for m in msgs)
+
+    def test_unpriced_calls_flagged_partial(self, caplog):
+        # Estimator prices "known" but returns None for "unknown".
+        led = TokenLedger()
+        led.set_price_estimator(lambda model, tokens: 0.5 if model == "known" else None)
+        led.record(
+            purpose="extract",
+            provider="x",
+            model="known",
+            tokens=TokenUsage(10, 2, 0, 0),
+            docket=1,
+        )
+        led.record(
+            purpose="extract",
+            provider="x",
+            model="unknown",
+            tokens=TokenUsage(10, 2, 0, 0),
+            docket=1,
+        )
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.log_summary()
+        msgs = [r.getMessage() for r in caplog.records]
+        # Only the priced call counts toward the dollar figure...
+        assert any(
+            "TOTAL" in m
+            and "cost_est=$0.5000" in m
+            and "1 call(s) had no price entry" in m
+            for m in msgs
+        )
+
+    def test_unpriced_per_call_shows_question_mark(self, caplog):
+        led = TokenLedger()
+        led.set_price_estimator(lambda model, tokens: None)
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.record(
+                purpose="extract",
+                provider="x",
+                model="m",
+                tokens=TokenUsage(10, 2, 0, 0),
+                docket=1,
+            )
+        assert any("cost_est=?" in r.getMessage() for r in caplog.records)
+
+    def test_reset_clears_estimator(self, caplog):
+        led = TokenLedger()
+        led.set_price_estimator(lambda model, tokens: 1.0)
+        led.reset()
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            led.record(
+                purpose="extract",
+                provider="x",
+                model="m",
+                tokens=TokenUsage(10, 2, 0, 0),
+                docket=1,
+            )
+        assert all("cost_est" not in r.getMessage() for r in caplog.records)
+
+    def test_module_facade_set_price_estimator(self, caplog):
+        usage.set_price_estimator(lambda model, tokens: 0.01)
+        with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
+            usage.record(
+                purpose="summary",
+                provider="x",
+                model="m",
+                tokens=TokenUsage(10, 2, 0, 0),
+                docket=3,
+            )
+        assert any("cost_est=$0.0100" in r.getMessage() for r in caplog.records)
