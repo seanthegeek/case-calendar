@@ -41,6 +41,31 @@ class TestEstimateCost:
         usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
         assert costs.estimate_cost("gemini-2.5-pro", usage) == pytest.approx(11.25)
 
+    def test_gemini_other_non_deprecated_models_priced(self):
+        # The fuller Gemini lineup an operator might switch to (input + output
+        # @ 1M each). $/1M: flash 0.30+2.50, 3.5-flash 1.50+9, 3.1-pro 2+12,
+        # 3.1-flash-lite 0.25+1.50.
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("gemini-2.5-flash", usage) == pytest.approx(2.80)
+        assert costs.estimate_cost("gemini-3.5-flash", usage) == pytest.approx(10.50)
+        assert costs.estimate_cost("gemini-3.1-pro-preview", usage) == pytest.approx(
+            14.00
+        )
+        assert costs.estimate_cost("gemini-3.1-flash-lite", usage) == pytest.approx(
+            1.75
+        )
+
+    def test_gemini_flash_not_mispriced_as_flash_lite(self):
+        # `gemini-2.5-flash-lite` is a prefix-superstring of `gemini-2.5-flash`;
+        # each must keep its own rate, and a dated flash id must resolve to
+        # flash (0.30), not flash-lite (0.10).
+        usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
+        assert costs.estimate_cost("gemini-2.5-flash", usage) == pytest.approx(0.30)
+        assert costs.estimate_cost("gemini-2.5-flash-lite", usage) == pytest.approx(
+            0.10
+        )
+        assert costs.estimate_cost("gemini-2.5-flash-002", usage) == pytest.approx(0.30)
+
     def test_openai_nano_extractor_default(self):
         # gpt-5.4-nano (the OpenAI extractor default): $0.20 input + $1.25 out.
         usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)

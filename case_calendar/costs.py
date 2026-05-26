@@ -38,9 +38,12 @@ PRICES_VERIFIED = "2026-05-26"
 #   write = 1.25x, cache read (hit) = 0.1x — which is the ephemeral cache this
 #   project uses.
 # Gemini (https://ai.google.dev/gemini-api/docs/pricing): the <=200k-prompt
-#   standard tier; cache_read is the context-cache token rate, and there is no
-#   per-token cache write (Gemini bills cache by storage-time, not written
-#   tokens), so cache_write is 0.
+#   standard tier, text input; cache_read is the context-cache token rate, and
+#   there is no per-token cache write (Gemini bills cache by storage-time, not
+#   written tokens), so cache_write is 0. All non-deprecated pro / flash /
+#   flash-lite models across the 2.5 and 3.x lines are listed for operators who
+#   want to try a model other than the configured default; Gemini 2.0 Flash /
+#   Flash-Lite are deprecated (shut down 2026-06-01) and omitted.
 #
 # OpenAI (https://developers.openai.com/api/docs/pricing): standard-tier rates.
 #   OpenAI bills cached prompt tokens at the "cached input" rate and has no
@@ -54,9 +57,13 @@ _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
     # Anthropic
     "claude-haiku-4-5": (1.00, 0.10, 1.25, 5.00),
     "claude-sonnet-4-6": (3.00, 0.30, 3.75, 15.00),
-    # Gemini (<=200k standard tier)
-    "gemini-2.5-flash-lite": (0.10, 0.01, 0.0, 0.40),
+    # Gemini (standard <=200k tier, text input)
+    "gemini-3.5-flash": (1.50, 0.15, 0.0, 9.00),
+    "gemini-3.1-pro-preview": (2.00, 0.20, 0.0, 12.00),
+    "gemini-3.1-flash-lite": (0.25, 0.025, 0.0, 1.50),
     "gemini-2.5-pro": (1.25, 0.125, 0.0, 10.00),
+    "gemini-2.5-flash": (0.30, 0.03, 0.0, 2.50),
+    "gemini-2.5-flash-lite": (0.10, 0.01, 0.0, 0.40),
     # OpenAI (standard tier)
     "gpt-5.5": (5.00, 0.50, 0.0, 30.00),
     "gpt-5.5-pro": (30.00, 30.00, 0.0, 180.00),
