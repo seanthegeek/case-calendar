@@ -12,6 +12,7 @@ from typing import Any, Iterator, TypeVar
 
 import pytest
 
+from case_calendar import usage
 from case_calendar.courtlistener import CourtListener
 from case_calendar.store import Store
 
@@ -199,3 +200,12 @@ def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
         "LLM_MODEL",
     ):
         monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _reset_token_ledger() -> Iterator[None]:
+    """Clear the process-wide token ledger around each test so usage recorded
+    by one test's LLM stubs can't leak into another's assertions."""
+    usage.reset()
+    yield
+    usage.reset()

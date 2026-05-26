@@ -43,8 +43,8 @@ CourtListener docket
           │            ┌───────────────────┐
           │            │ truthfulness      │  prompt rules are soft, so this
           │            │ guard (retry/warn)│  deterministic guard retries
-          │            └─────────┬─────────┘  absence/custody slips and warns
-          │                      │            on ungrounded dates/amounts.
+          │            └─────────┬─────────┘  absence/custody slips and removes
+          │                      │            ungrounded dates/amounts.
           ▼                      │
 ┌───────────────────┐            │
 │ end-of-sync       │            │  verify-pass LLM re-checks each live
@@ -294,9 +294,10 @@ conditional outcomes, printing dollar figures that aren't legibly in the
 text. The [LLM prompts](llm-prompts.md) page reproduces the prompt that
 encodes these rules, verbatim.
 
-But a prompt rule is *soft protection*. The model can ignore it, and for a
+But a prompt rule is *soft protection*: the model can ignore it, and for a
 brand-new case there's no earlier good summary to diff the output against,
-so a slip would reach subscribers unaided. Three layers cover the gap:
+so a slip would reach subscribers unaided. The summary pipeline therefore
+defends in depth — one preventive layer and two deterministic backstops:
 
 1. **Prompt rules — prevention.** The forbidden-claim rules above, written
    into the prompt as instructions. Catches most cases and costs nothing
@@ -310,19 +311,26 @@ so a slip would reach subscribers unaided. Three layers cover the gap:
    regeneration with the violation fed back to the model; whichever attempt
    is cleaner is kept, and a still-failing summary is logged rather than
    blocked. The summary is never withheld — *retry, then keep and warn*.
-3. **A grounding check — warn-only.** Any date or dollar amount in the prose
-   that can't be traced to the hearings / deadlines scaffold, the source
+3. **A grounding check — retry, then strip.** Any date or dollar amount in the
+   prose that can't be traced to the hearings / deadlines scaffold, the source
    documents, or the operator-supplied notes (the aggregation note and any
-   `extra_documents` notes) is logged for operator review. This layer never
-   retries: dates appear in nearly every summary and harmless formatting
-   variance gives it a real false-positive rate, so a retry would risk
-   systematic double-cost.
+   `extra_documents` notes) is treated as a possible fabrication. Because
+   summaries auto-generate as a service, a warning alone could sail unread into
+   a subscriber's calendar, so a hit *acts*: it retries generation once asking
+   the model to drop the unsupported figure, and if the figure still survives
+   it deterministically removes whichever whole sentence carries it (falling
+   back to the refusal sentence if that empties the summary). A warning is
+   always logged so an operator can review the removal.
 
-The split between the last two layers is deliberate — high-confidence claim
-classes (absence, custody) earn a retry; the false-positive-prone
-fact-grounding class only warns. Either way the wrong fact self-corrects or
-surfaces in the logs, which is what lets the project run summaries
-unattended.
+The retry comes before the strip on purpose. Dates appear in nearly every
+summary and harmless formatting variance ("5/6/26" vs "May 6, 2026") gives this
+class a real false-positive rate; re-shown the documents, the model can keep
+and reformat a figure it can actually support — recovering the false positive —
+so only a figure it genuinely can't support reaches the deterministic strip.
+The cost of a surviving false positive is now a removed sentence rather than an
+unread log line, which is why the matching deliberately biases toward silence.
+Either way the ungrounded figure never reaches subscribers, which is what lets
+the project run summaries unattended.
 
 ## AGENTS.md and the runtime prompts
 

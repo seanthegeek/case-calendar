@@ -1410,16 +1410,19 @@ def _audit_summary_text(text: str, *, source_text: str = "") -> list[str]:
 # Tier 3 — fabricated dates / dollar amounts. A hard fact in the prose (a
 # "Month D, YYYY" date or a "$N" figure) that appears in NEITHER the
 # structured-events scaffold NOR the source documents the LLM was given is a
-# possible hallucination. Unlike tiers 1-2 this is WARN-ONLY (it does not
-# trigger a retry): every summary mentions dates, and formatting variance
-# ("5/6/26" vs "May 6, 2026", "$16M" vs "16,000,000") gives this check a real
-# false-positive rate — making it retry-triggering would risk a systematic
-# double-cost on nearly every docket. So it logs for operator review instead,
-# automating the cross-check against the calendar tables / documents. The
-# matching is deliberately liberal (many date formats; comma-insensitive
+# possible hallucination. Because summaries auto-generate as a service, a WARN
+# alone can sail unread into a subscriber's calendar — so a hit ACTS: retry
+# once asking the model to drop the unsupported figure, then deterministically
+# strip any sentence STILL carrying one (see _generate_guarded_summary). The
+# figure never publishes; the WARN is for the operator to review the removal.
+# The matching stays deliberately liberal (many date formats; comma-insensitive
 # amounts; "X million" approximations skipped) so it BIASES toward silence —
 # under-flagging a real fabrication is preferred to crying wolf on a
-# correctly-stated fact written in a different format.
+# correctly-stated fact written in a different format, which here would cost a
+# real sentence rather than only a log line. Formatting variance ("5/6/26" vs
+# "May 6, 2026", "$16M" vs "16,000,000") is why the retry comes first: the
+# model, re-shown the documents, can keep and reformat a figure it can actually
+# support, and only a figure it can't gets stripped.
 _GUARD_MONTHS = {
     m: i
     for i, m in enumerate(
@@ -1489,8 +1492,10 @@ def _date_in_corpus(iso: str, raw: str, corpus: str) -> bool:
 def _audit_summary_grounding(
     text: str, *, known_dates: set[str], source_text: str = ""
 ) -> list[str]:
-    """Return WARN-only grounding findings — dates / dollar amounts in the
-    summary not traceable to the scaffold or the source documents.
+    """Return grounding findings — dates / dollar amounts in the summary not
+    traceable to the scaffold or the source documents. Detection only; the
+    caller (:func:`_generate_guarded_summary`) decides what to do with a hit
+    (retry, then strip the offending sentence).
 
     Biased toward silence: month-only ranges (no day) aren't matched at all,
     "X million" approximations are skipped, and amounts are matched
@@ -1519,6 +1524,62 @@ def _audit_summary_grounding(
             continue
         out.append(f"ungrounded amount: {raw!r}")
     return out
+
+
+# Sentence splitter for the grounding backstop. A naive ". "-split mangles
+# legal prose: "U.S. Attorney", a middle initial ("John A. Smith"), "Mr.",
+# "No.", "Inc.", and case captions ("United States v. Doe") all carry a period
+# followed by a capital that is NOT a sentence boundary. So we split on
+# sentence punctuation + whitespace + an opening capital / quote / link-bracket,
+# then merge back any fragment whose tail is one of those known abbreviations.
+# The backstop only runs when the model defied an explicit correction (rare),
+# so "good enough" segmentation plus a WARN is the right cost — the retry
+# already gave the model its shot at clean prose.
+_SENT_SPLIT_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z"“‘\[])')
+_NO_SPLIT_TAIL_RE = re.compile(
+    r"(?:\b[A-Z]|U\.S|U\.S\.C|U\.S\.A|Mr|Mrs|Ms|Dr|Jr|Sr|St|No|Inc|Corp|Co|Ltd"
+    r"|vs?|et al|e\.g|i\.e|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sept?|Oct|Nov|Dec"
+    r"|Cir|Fed|art|sec)\.\s*$",
+    re.I,
+)
+
+
+def _split_sentences(text: str) -> list[str]:
+    """Split prose into sentences, keeping abbreviations intact.
+
+    See :data:`_SENT_SPLIT_RE` / :data:`_NO_SPLIT_TAIL_RE` for the heuristic.
+    """
+    merged: list[str] = []
+    for piece in _SENT_SPLIT_RE.split(text):
+        if merged and _NO_SPLIT_TAIL_RE.search(merged[-1]):
+            merged[-1] = f"{merged[-1]} {piece}"
+        else:
+            merged.append(piece)
+    return merged
+
+
+def _strip_ungrounded_sentences(
+    text: str, *, known_dates: set[str], source_text: str = ""
+) -> str:
+    """Remove whole sentences that still carry an ungrounded date / amount.
+
+    The deterministic backstop behind the grounding retry: after the model has
+    already had one correction retry to drop an unsupported figure, any
+    sentence STILL carrying one is removed so the figure cannot reach
+    subscribers. Per-sentence detection reuses :func:`_audit_summary_grounding`,
+    so a sentence is dropped iff it would itself flag — the surviving sentences
+    are exactly the grounded ones. If every sentence is stripped, the refusal
+    sentence is returned (the honest "nothing we can stand behind" output).
+    """
+    kept = [
+        s
+        for s in _split_sentences(text)
+        if not _audit_summary_grounding(
+            s, known_dates=known_dates, source_text=source_text
+        )
+    ]
+    result = " ".join(s.strip() for s in kept).strip()
+    return result or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
 
 
 # A clean, substantial dollar figure ($NNN and up). Used to tell whether a
@@ -1583,9 +1644,13 @@ def _generate_guarded_summary(
     blocked, matching the "keep + WARN" enforcement choice.
 
     Finally, the chosen summary is run through :func:`_audit_summary_grounding`
-    (dates / amounts not traceable to the scaffold or documents). That is
-    WARN-only — it never retries or blocks — so a fabricated figure is surfaced
-    for an operator to verify without risking false-positive retries.
+    (dates / amounts not traceable to the scaffold or documents). A hit retries
+    generation ONCE asking the model to drop the unsupported figures; if the
+    retry comes back clean it is adopted, otherwise any sentence STILL carrying
+    an ungrounded figure is deterministically removed via
+    :func:`_strip_ungrounded_sentences`. The ungrounded figure never publishes;
+    a WARNING is always logged so an operator can review the removal (a
+    correctly-stated figure in an unusual format can trip this).
     """
     known_dates = _grounding_dates(gen_kwargs)
     summary_text, model_id = llm.generate_docket_summary(**gen_kwargs)
@@ -1622,13 +1687,54 @@ def _generate_guarded_summary(
         summary_text, known_dates=known_dates, source_text=source_text
     )
     if ungrounded:
+        # A date / amount traces to none of the documents, the scaffold, or the
+        # operator notes — a possible fabrication. Retry once asking the model
+        # to drop it; the model, re-shown the documents, can keep and reformat
+        # a figure it can actually support, so a clean retry both fixes a real
+        # fabrication and recovers a false positive's correct figure.
+        correction = (
+            "These specific dates / dollar amounts in your draft do not appear "
+            "in any provided document, the structured-events scaffold, or the "
+            "operator notes: "
+            + "; ".join(ungrounded)
+            + ". Remove each unsupported date / amount (and any clause that "
+            "depends on it), or restate only the figures the documents "
+            "actually contain. Do not invent a substitute figure."
+        )
         log.warning(
-            "summary: docket %s — possible fabricated facts not found in the "
-            "structured-events scaffold or the source documents: %s; verify "
-            "against the docket before trusting these figures",
+            "summary: docket %s draft carried ungrounded facts %s; retrying "
+            "generation once to remove them",
             docket_id,
             ungrounded,
         )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction=correction, **gen_kwargs
+        )
+        retry_ungrounded = _audit_summary_grounding(
+            retry_text, known_dates=known_dates, source_text=source_text
+        )
+        retry_tier12 = _audit_summary_text(retry_text, source_text=source_text)
+        if not retry_ungrounded and not retry_tier12:
+            log.info("summary: docket %s retry cleared the grounding guard", docket_id)
+            summary_text, model_id = retry_text, retry_model
+        else:
+            # Retry didn't fully clear. Adopt it only if it removed ungrounded
+            # facts WITHOUT introducing an absence/custody regression; otherwise
+            # keep the original draft. Then deterministically strip any sentence
+            # that still carries an ungrounded figure so it cannot publish.
+            if not retry_tier12 and len(retry_ungrounded) < len(ungrounded):
+                summary_text, model_id = retry_text, retry_model
+            summary_text = _strip_ungrounded_sentences(
+                summary_text, known_dates=known_dates, source_text=source_text
+            )
+            log.warning(
+                "summary: docket %s STILL carried ungrounded facts after retry "
+                "(%s); removed the offending sentence(s) and kept the rest — "
+                "verify the removal against the docket (a correctly-stated "
+                "figure in an unusual format can trip this)",
+                docket_id,
+                retry_ungrounded or ungrounded,
+            )
     return summary_text, model_id
 
 

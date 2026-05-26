@@ -119,10 +119,46 @@ synthesis task warrants the upgrade. Defaults:
 | OpenAI | GPT-5.4 |
 | Gemini | Gemini 2.5 Pro |
 
-Budget roughly **$0.10–0.60 per docket for the first run**, near-zero on
-subsequent runs (existing rows are reused unless the docket got a new
-primary document or disposition). On a 30-case calendar you'll probably
-spend a few dollars to backfill and pennies a week thereafter.
+As a rough guide, budget **$0.10–0.60 per docket for the first run**,
+near-zero on subsequent runs (existing rows are reused unless the docket got
+a new primary document or disposition). On a 30-case calendar you'll probably
+spend a few dollars to backfill and pennies a week thereafter — but don't
+take that estimate on faith; measure your own.
+
+### Measuring real token usage
+
+Every LLM call — extraction and summaries alike — logs its token counts at
+`INFO`, so you can compute actual cost from your provider's current prices
+instead of trusting an estimate. The lines are prefixed `llm-tokens`:
+
+```text
+llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=46000 cache_write=2100
+llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket=12345 in=1820 out=64 cached=1600 cache_write=0
+```
+
+- `in` — total prompt tokens (the cached portion **included**).
+- `out` — completion tokens.
+- `cached` — prompt tokens served from the cache (billed at the cheaper
+  cache-read rate).
+- `cache_write` — prompt tokens written to the cache (Anthropic only; billed
+  at the higher cache-write rate). Other providers report `0`.
+
+`purpose` distinguishes the cheap extractor calls (`extract`,
+`verify_hearing`, `verify_deadline`, `dedupe_hearings`) from the higher-tier
+`summary` calls, and `docket` is the CourtListener docket id.
+
+At the end of a `sync` or `summarize` run, a per-docket subtotal and a grand
+total are logged so you don't have to add them up yourself:
+
+```text
+llm-tokens docket=12345 calls=9 in=63140 out=540 cached=58000 cache_write=2100
+llm-tokens sync TOTAL calls=37 dockets=4 in=210880 out=2010 cached=190400 cache_write=2100
+```
+
+The numbers are normalized so `in` always means the same thing across
+providers (Anthropic reports cache reads/writes separately from its input
+count; we fold them in). Nothing is persisted — to track spend over time,
+sum the `TOTAL` lines from your run logs.
 
 To force a regeneration after a model upgrade or prompt change:
 

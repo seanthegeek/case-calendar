@@ -24,10 +24,13 @@ def make_client():
             transport=transport,
             headers={"Authorization": "Token test"},
         )
-        # Mirror the attribute __init__ sets — _wait_for_window reads it on
-        # every request, so without an explicit reset the bypass fails on
+        # Mirror the attributes __init__ sets — _wait_for_window reads
+        # _no_request_before on every request and _record_request reads the
+        # rate-telemetry fields, so without these the __new__ bypass fails on
         # the first call.
         cl._no_request_before = 0.0
+        cl._request_total = 0
+        cl._request_times = []
         return cl
 
     return _make
@@ -244,6 +247,112 @@ class TestInit:
         # regress it.
         with CourtListener(token="x") as cl:
             assert cl.client.follow_redirects is True
+
+
+class TestPeakInWindow:
+    """`_peak_in_window`: busiest count of timestamps in any window-second span."""
+
+    def test_empty(self):
+        assert clmod._peak_in_window([], 60.0) == 0
+
+    def test_all_within_window(self):
+        assert clmod._peak_in_window([0.0, 1.0, 2.0, 59.0], 60.0) == 4
+
+    def test_sliding_peak_is_two(self):
+        # Busiest 60s span holds 2 of these (e.g. 0 & 30, or 61 & 90).
+        assert clmod._peak_in_window([0.0, 30.0, 61.0, 90.0], 60.0) == 2
+
+    def test_window_edge_is_exclusive(self):
+        # A request exactly `window` apart falls in the NEXT window, not this.
+        assert clmod._peak_in_window([0.0, 60.0], 60.0) == 1
+
+
+class TestRequestRateTelemetry:
+    def _ok(self, req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"id": 1})
+
+    def test_counts_each_request(self, make_client):
+        cl = make_client(self._ok)
+        cl.get_docket(1)
+        cl.get_docket(2)
+        assert cl._request_total == 2
+        assert len(cl._request_times) == 2
+
+    def test_429_then_success_counts_both(self, make_client, monkeypatch):
+        # A 429 still hit the rate-limit bucket, so it's counted alongside
+        # the retried success — two requests, not one.
+        monkeypatch.setattr(clmod.time, "sleep", lambda _s: None)
+        calls = {"n": 0}
+
+        def handler(req: httpx.Request) -> httpx.Response:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return httpx.Response(429, headers={"Retry-After": "1"})
+            return httpx.Response(200, json={"id": 1})
+
+        cl = make_client(handler)
+        cl.get_docket(1)
+        assert cl._request_total == 2
+
+    def test_record_prunes_buffer_beyond_max_window(self, make_client, monkeypatch):
+        # The rolling buffer keeps only the last 24h; the lifetime total does
+        # not prune. Drive time.time() through a >24h span.
+        seq = iter([0.0, 100.0, 86401.0])
+        monkeypatch.setattr(clmod.time, "time", lambda: next(seq))
+        cl = make_client(self._ok)
+        cl._record_request()  # t=0
+        cl._record_request()  # t=100
+        cl._record_request()  # t=86401 -> cutoff 1.0 drops the t=0 sample
+        assert cl._request_total == 3
+        assert cl._request_times == [100.0, 86401.0]
+
+    def test_log_request_stats_reports_total_and_peaks(self, make_client, caplog):
+        import logging
+
+        cl = make_client(self._ok)
+        for n in range(3):
+            cl.get_docket(n)
+        with caplog.at_level(logging.INFO, logger="case_calendar.courtlistener"):
+            cl.log_request_stats()
+        line = next(
+            (
+                r.getMessage()
+                for r in caplog.records
+                if "courtlistener-requests" in r.getMessage()
+            ),
+            None,
+        )
+        assert line is not None
+        # All three requests land within one second in the test, so every
+        # rolling window holds all three.
+        assert "total=3" in line
+        assert "peak/min=3" in line
+        assert "peak/hour=3" in line
+        assert "peak/day=3" in line
+
+    def test_log_request_stats_noop_when_no_requests(self, make_client, caplog):
+        import logging
+
+        cl = make_client(self._ok)
+        with caplog.at_level(logging.INFO, logger="case_calendar.courtlistener"):
+            cl.log_request_stats()
+        assert not any(
+            "courtlistener-requests" in r.getMessage() for r in caplog.records
+        )
+
+    def test_exit_logs_stats(self, caplog):
+        import logging
+
+        # Real __init__ so __exit__ runs the full close path; swap in a mock
+        # transport so the request never leaves the process.
+        cl = CourtListener(token="x")
+        cl.client._transport = httpx.MockTransport(self._ok)
+        cl.get_docket(7)
+        with caplog.at_level(logging.INFO, logger="case_calendar.courtlistener"):
+            cl.__exit__()
+        assert any(
+            "courtlistener-requests total=1" in r.getMessage() for r in caplog.records
+        )
 
 
 class TestTransportErrorRetry:

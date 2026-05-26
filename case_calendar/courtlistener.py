@@ -48,6 +48,35 @@ _RETRYABLE_TRANSPORT_EXCEPTIONS: tuple[type[Exception], ...] = (
 # whole 429-handling budget available.
 _TRANSPORT_RETRY_BUDGET = 5
 
+# Largest rolling window we report request rates over (24h). A long-running
+# `serve` process would otherwise keep one timestamp per request forever, so
+# the rolling buffer is pruned to this span; the lifetime request count is
+# kept separately as a plain integer.
+_REQUEST_WINDOW_MAX_SECONDS = 86400.0
+# (window seconds, label) pairs for the rate report, smallest first.
+_REQUEST_RATE_WINDOWS: tuple[tuple[float, str], ...] = (
+    (60.0, "min"),
+    (3600.0, "hour"),
+    (86400.0, "day"),
+)
+
+
+def _peak_in_window(times: list[float], window: float) -> int:
+    """Max number of timestamps falling within any span of ``window`` seconds.
+
+    ``times`` must be ascending (they're appended in request order). This is
+    the metric that matters for picking an API tier: tiers are hard ceilings,
+    so you need the one that covers your BUSIEST minute / hour / day, not your
+    average. Two-pointer sweep, O(n).
+    """
+    peak = 0
+    start = 0
+    for end in range(len(times)):
+        while times[end] - times[start] >= window:
+            start += 1
+        peak = max(peak, end - start + 1)
+    return peak
+
 
 class CourtListener:
     def __init__(self, token: Optional[str] = None, timeout: float = 30.0):
@@ -71,6 +100,13 @@ class CourtListener:
         # client share the cooldown rather than each one independently
         # tripping the same window.
         self._no_request_before: float = 0.0
+        # Request-rate telemetry: a lifetime count plus a rolling buffer of
+        # recent request wall-clock times (pruned to the largest reporting
+        # window) used to report busiest-window rates on close. Every HTTP
+        # request actually sent counts — including ones that came back 429 or
+        # 5xx and were retried, since those still hit the rate-limit bucket.
+        self._request_total: int = 0
+        self._request_times: list[float] = []
 
     def _wait_for_window(self) -> None:
         """Block until the shared no-go-before timestamp has passed."""
@@ -122,6 +158,8 @@ class CourtListener:
             try:
                 r = self.client.request(method, url, params=params, json=json_body)
             except _RETRYABLE_TRANSPORT_EXCEPTIONS as e:
+                # A transport failure never reached the rate-limit bucket, so
+                # it isn't counted; only requests that got a response are.
                 transport_attempts += 1
                 if transport_attempts > _TRANSPORT_RETRY_BUDGET:
                     # Transport errors are network-layer (DNS,
@@ -154,6 +192,7 @@ class CourtListener:
                 transport_delay = min(transport_delay * 2, 30)
                 continue
             last_response = r
+            self._record_request()
             if r.status_code == 429:
                 base_wait = float(r.headers.get("Retry-After", delay))
                 wait = base_wait + _RETRY_AFTER_BUFFER_SECONDS
@@ -210,6 +249,43 @@ class CourtListener:
             last_response.raise_for_status()
         raise RuntimeError(f"courtlistener: no response from {url}")
 
+    def _record_request(self) -> None:
+        """Count one HTTP request against the rate telemetry and prune the
+        rolling buffer to the largest reporting window."""
+        now = time.time()
+        self._request_total += 1
+        self._request_times.append(now)
+        cutoff = now - _REQUEST_WINDOW_MAX_SECONDS
+        times = self._request_times
+        drop = 0
+        while drop < len(times) and times[drop] < cutoff:
+            drop += 1
+        if drop:
+            del times[:drop]
+
+    def log_request_stats(self) -> None:
+        """Log the lifetime request count plus busiest-window rates, so an
+        operator can size their Free Law Project / CourtListener API tier
+        against real traffic. No-op when no requests were made.
+
+        ``total`` is the lifetime count; the peaks are the busiest rolling
+        windows within the retained buffer (the last 24h for a long-running
+        ``serve``, the whole run for a one-shot ``sync`` / ``summarize``).
+        """
+        if self._request_total == 0:
+            return
+        peaks = " ".join(
+            f"peak/{label}={_peak_in_window(self._request_times, window)}"
+            for window, label in _REQUEST_RATE_WINDOWS
+        )
+        log.info(
+            "courtlistener-requests total=%d %s (peaks are the busiest rolling "
+            "window; compare against your Free Law Project / CourtListener API "
+            "tier's per-minute / hour / day limits)",
+            self._request_total,
+            peaks,
+        )
+
     def _get(self, url: str, params: Optional[dict[str, Any]] = None) -> httpx.Response:
         """Thin GET wrapper around :meth:`_request`."""
         return self._request("GET", url, params=params)
@@ -225,6 +301,7 @@ class CourtListener:
         return self
 
     def __exit__(self, *_) -> None:
+        self.log_request_stats()
         self.close()
 
     # --- Dockets ---

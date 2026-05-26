@@ -13,6 +13,8 @@ import os
 import re
 from typing import Any, Optional
 
+from . import usage
+
 logger = logging.getLogger(__name__)
 
 
@@ -715,6 +717,8 @@ def _call_anthropic(
     max_tokens: int,
     *,
     model: Optional[str] = None,
+    purpose: str = "llm",
+    docket: Any = None,
 ) -> str:
     import anthropic
 
@@ -744,6 +748,13 @@ def _call_anthropic(
         ],
         messages=[{"role": "user", "content": user}],
     )
+    usage.record(
+        purpose=purpose,
+        provider="anthropic",
+        model=chosen,
+        tokens=usage.from_anthropic(resp),
+        docket=docket,
+    )
     text: str | None = None
     for block in resp.content:
         if block.type == "text":
@@ -763,6 +774,8 @@ def _call_openai(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    purpose: str = "llm",
+    docket: Any = None,
 ) -> str:
     import openai
 
@@ -783,6 +796,13 @@ def _call_openai(
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     resp = client.chat.completions.create(**kwargs)
+    usage.record(
+        purpose=purpose,
+        provider="openai",
+        model=chosen,
+        tokens=usage.from_openai(resp),
+        docket=docket,
+    )
     choice = resp.choices[0]
     text = choice.message.content
     if not text:
@@ -799,6 +819,8 @@ def _call_gemini(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    purpose: str = "llm",
+    docket: Any = None,
 ) -> str:
     from google import genai
     from google.genai import types as gtypes
@@ -815,6 +837,13 @@ def _call_gemini(
         model=chosen,
         contents=user,
         config=gtypes.GenerateContentConfig(**config_kwargs),
+    )
+    usage.record(
+        purpose=purpose,
+        provider="gemini",
+        model=chosen,
+        tokens=usage.from_gemini(resp),
+        docket=docket,
     )
     if not resp.text:
         raise ValueError("No content in Gemini response")
@@ -842,6 +871,8 @@ def _dispatch_llm_call(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    purpose: str = "llm",
+    docket: Any = None,
 ) -> str:
     """Route to the per-provider call function by ``provider`` name.
 
@@ -860,10 +891,28 @@ def _dispatch_llm_call(
     if provider == "anthropic":
         # Anthropic has no `json_mode` knob (no JSON mode flag in the
         # SDK; we just rely on the prompt and validate the response).
-        return _call_anthropic(system, user, max_tokens, model=model)
+        return _call_anthropic(
+            system, user, max_tokens, model=model, purpose=purpose, docket=docket
+        )
     if provider == "openai":
-        return _call_openai(system, user, max_tokens, model=model, json_mode=json_mode)
-    return _call_gemini(system, user, max_tokens, model=model, json_mode=json_mode)
+        return _call_openai(
+            system,
+            user,
+            max_tokens,
+            model=model,
+            json_mode=json_mode,
+            purpose=purpose,
+            docket=docket,
+        )
+    return _call_gemini(
+        system,
+        user,
+        max_tokens,
+        model=model,
+        json_mode=json_mode,
+        purpose=purpose,
+        docket=docket,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -993,7 +1042,9 @@ def extract_actions(
     )
 
     try:
-        raw = _dispatch_llm_call(provider, system, user, max_tokens)
+        raw = _dispatch_llm_call(
+            provider, system, user, max_tokens, purpose="extract", docket=docket_id
+        )
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM output truncated at max_tokens=%d for entry %s (provider=%s, "
@@ -1155,6 +1206,8 @@ def _call_lm_and_parse(
     user_message: str,
     max_tokens: int,
     label: str,
+    purpose: str = "verify",
+    docket: Any = None,
 ) -> dict[str, Any]:
     """Single-action LLM call + JSON parse + actions-unwrap + validation.
 
@@ -1175,7 +1228,14 @@ def _call_lm_and_parse(
     treat UNCLEAR as a benign no-op.
     """
     try:
-        raw = _dispatch_llm_call(provider, system_prompt, user_message, max_tokens)
+        raw = _dispatch_llm_call(
+            provider,
+            system_prompt,
+            user_message,
+            max_tokens,
+            purpose=purpose,
+            docket=docket,
+        )
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM %s output truncated at max_tokens=%d (provider=%s, partial=%d chars)",
@@ -1300,6 +1360,8 @@ def verify_hearing(
         user_message=user,
         max_tokens=max_tokens,
         label=f"verify hearing_key={hearing.get('hearing_key')!r}",
+        purpose="verify_hearing",
+        docket=hearing.get("docket_id"),
     )
     logger.info(
         "llm verify key=%r -> %s (%s)",
@@ -1403,6 +1465,8 @@ def verify_deadline(
         user_message=user,
         max_tokens=max_tokens,
         label=f"verify_deadline key={deadline.get('deadline_key')!r}",
+        purpose="verify_deadline",
+        docket=deadline.get("docket_id"),
     )
 
     logger.info(
@@ -1528,6 +1592,8 @@ def resolve_duplicate_hearings(
         user_message=user,
         max_tokens=max_tokens,
         label=f"resolve_duplicate_hearings keys={keys}",
+        purpose="dedupe_hearings",
+        docket=cluster[0].get("docket_id") if cluster else None,
     )
 
     logger.info(
@@ -2444,6 +2510,8 @@ def generate_docket_summary(
         max_tokens,
         model=chosen_model,
         json_mode=False,
+        purpose="summary",
+        docket=docket.get("docket_id"),
     )
 
     summary = text.strip()
