@@ -42,11 +42,14 @@ PRICES_VERIFIED = "2026-05-26"
 #   per-token cache write (Gemini bills cache by storage-time, not written
 #   tokens), so cache_write is 0.
 #
-# OpenAI (gpt-5.4 / gpt-5.4-nano) is intentionally absent: its pricing page
-# couldn't be fetched to verify the rates, and a guessed number is worse than
-# none. Add it here (input / cached-input / -- / output) once confirmed against
-# https://platform.openai.com/docs/pricing — until then those models log
-# `cost_est=?`.
+# OpenAI (https://developers.openai.com/api/docs/pricing): standard-tier rates.
+#   OpenAI bills cached prompt tokens at the "cached input" rate and has no
+#   separate per-token cache-write charge, so cache_write is 0 (and our usage
+#   reports 0 cache_write tokens for OpenAI). The `-pro` models publish no
+#   cached rate, so cached input is priced at the full input rate. The whole
+#   current 5.4 + 5.5 family is listed (every -mini/-nano/-pro variant) so the
+#   prefix fallback in `_rates` can't mis-price one variant as another; older
+#   / legacy OpenAI models aren't listed and log `cost_est=?` if used.
 _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
     # Anthropic
     "claude-haiku-4-5": (1.00, 0.10, 1.25, 5.00),
@@ -54,6 +57,13 @@ _RATES_USD_PER_MTOK: dict[str, tuple[float, float, float, float]] = {
     # Gemini (<=200k standard tier)
     "gemini-2.5-flash-lite": (0.10, 0.01, 0.0, 0.40),
     "gemini-2.5-pro": (1.25, 0.125, 0.0, 10.00),
+    # OpenAI (standard tier)
+    "gpt-5.5": (5.00, 0.50, 0.0, 30.00),
+    "gpt-5.5-pro": (30.00, 30.00, 0.0, 180.00),
+    "gpt-5.4": (2.50, 0.25, 0.0, 15.00),
+    "gpt-5.4-mini": (0.75, 0.075, 0.0, 4.50),
+    "gpt-5.4-nano": (0.20, 0.02, 0.0, 1.25),
+    "gpt-5.4-pro": (30.00, 30.00, 0.0, 180.00),
 }
 
 

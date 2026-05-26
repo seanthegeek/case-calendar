@@ -164,14 +164,15 @@ because the system prompt is cached on almost every call.
 
 **`cost_est` is an estimate, not a bill.** It comes from a small static price
 table (`case_calendar/costs.py`) hand-copied from each provider's pricing page
-and dated with `PRICES_VERIFIED`. It does not model batch discounts,
-long-context (>200k) tiers, or data-residency multipliers. When a model isn't
-in the table — currently the OpenAI models, whose pricing page couldn't be
-verified, or any model you set via `LLM_MODEL` — the call logs `cost_est=?`
-and the run `TOTAL` notes how many calls had no price entry, so a partial
-estimate is obvious rather than silently low. Add a model's rates to that file
-to price it. Nothing is persisted — to track spend over time, sum the `TOTAL`
-lines from your run logs.
+and dated with `PRICES_VERIFIED` — the default Anthropic, Gemini, and OpenAI
+(5.4 / 5.5 family) models are priced at their standard tier. It does not model
+batch discounts, long-context (>200k) tiers, or data-residency multipliers.
+When a model isn't in the table — a legacy model, or anything you set via
+`LLM_MODEL` that hasn't been added — the call logs `cost_est=?` and the run
+`TOTAL` notes how many calls had no price entry, so a partial estimate is
+obvious rather than silently low. Add a model's rates to that file to price it.
+Nothing is persisted — to track spend over time, sum the `TOTAL` lines from
+your run logs.
 
 To force a regeneration after a model upgrade or prompt change:
 

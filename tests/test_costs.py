@@ -41,10 +41,32 @@ class TestEstimateCost:
         usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
         assert costs.estimate_cost("gemini-2.5-pro", usage) == pytest.approx(11.25)
 
+    def test_openai_nano_extractor_default(self):
+        # gpt-5.4-nano (the OpenAI extractor default): $0.20 input + $1.25 out.
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4-nano", usage) == pytest.approx(1.45)
+
+    def test_openai_summary_default(self):
+        # gpt-5.4 (the OpenAI summary default): $2.50 input + $15.00 output.
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(17.50)
+
+    def test_openai_cached_input_rate(self):
+        # OpenAI cached prompt tokens billed at the cheaper cached-input rate
+        # ($0.02 for nano), not the $0.20 input rate.
+        usage = TokenUsage(input=1_000_000, output=0, cached=1_000_000, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4-nano", usage) == pytest.approx(0.02)
+
+    def test_openai_variant_not_mispriced_as_base(self):
+        # gpt-5.4-mini must use its own rate, not prefix-fall-back to gpt-5.4.
+        usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4-mini", usage) == pytest.approx(0.75)
+        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(2.50)
+
     def test_unknown_model_returns_none(self):
-        # OpenAI defaults aren't in the table (unverified) -> no estimate.
+        # A legacy/unlisted model (or any LLM_MODEL override we didn't price).
         usage = TokenUsage(input=1000, output=100)
-        assert costs.estimate_cost("gpt-5.4-nano", usage) is None
+        assert costs.estimate_cost("gpt-4o-mini", usage) is None
         assert costs.estimate_cost("some-future-model", usage) is None
 
     def test_prefix_match_handles_dated_id(self):
