@@ -6,6 +6,8 @@ Case Calendar drives every extraction, verification, and summary decision throug
 
 > These prompts are mirrored from [`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py) as of **v0.5.1** (the page is hand-synced on release). `llm.py` is canonical — if a prompt here ever disagrees with the source, trust the source and [open an issue](https://github.com/seanthegeek/case-calendar/issues/new/choose).
 
+These prompts are part of Case Calendar and are licensed under the [Apache License 2.0](https://github.com/seanthegeek/case-calendar/blob/main/LICENSE), the same as the rest of the project.
+
 [← Back to docs](index.md)
 
 ## The two tiers

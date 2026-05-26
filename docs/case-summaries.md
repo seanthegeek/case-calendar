@@ -190,7 +190,7 @@ also told:
   the summary says "ordered to pay restitution" without inventing an amount,
   and **omits it silently**: it does not explain *why* the number is missing
   ("not clearly legible", "could not be read"), because the order is legible
-  to a human — the gap is our OCR's, not the document's, and it isn't
+  to a human — the gap is our OCR, not the document's, and it isn't
   subscriber-facing.
 - When a restitution order is on the docket but its amount can't be read —
   whether the figures are hand-filled/garbled or the order's document
@@ -209,34 +209,20 @@ also told:
 
 ## The post-generation guard
 
-Prompt rules are *soft* — a model can ignore them, and for a brand-new
-case there's no earlier good summary to fall back on, so a slip would reach
-subscribers. So a deterministic guard runs on every generated summary
-before it's stored, as a hard backstop to the prompt rules above:
+Prompt rules are *soft protection* — a model can ignore them, and for a
+brand-new case there's no earlier good summary to fall back on. So a
+deterministic guard runs on every generated summary before it's stored: it
+catches absence-of-record and unsupported-custody claims (and regenerates
+once, with the problem fed back, to give the model a chance to fix them),
+and it logs any date or dollar amount it can't trace to the documents, the
+hearings / deadlines scaffold, or your `aggregation_note` / `extra_documents`
+notes. A summary is never blocked — the worst case either self-corrects on
+the retry or surfaces in the logs for review.
 
-- **Absence-of-record and unsupported-custody claims** (a "no disposition
-  has been entered" in any phrasing, a "remains at large" the documents
-  don't support, a "custody status cannot be determined" that should have
-  been omitted, or a speculative "if convicted…" / "if a term of
-  imprisonment is imposed…" outcome) trigger **one regeneration** with the
-  specific problem fed back to the model. The patterns match by
-  *construction* — a negation plus a procedural-record noun, a custody
-  keyword plus a "we-don't-know" qualifier, a conditional-outcome phrase —
-  so rewording around a literal string doesn't slip past. Whichever attempt
-  is cleaner is kept; if the problem persists, the summary is still stored
-  but a warning is logged for review. The summary is never blocked.
-- **Dates and dollar amounts** that can't be traced to the hearings /
-  deadlines scaffold, the source documents, or the operator-supplied notes
-  (the `aggregation_note` and any `extra_documents` notes) are **logged for
-  operator review** (not retried — dates appear in nearly every summary and
-  harmless formatting differences would otherwise cause churn). This is
-  the check that catches a hallucinated restitution figure or an invented
-  hearing date — while still allowing a figure you deliberately supply in a
-  note (e.g. a sentencing date conveyed to an appeal docket's summary).
-
-The guard is why the project can run summaries unattended: a wrong fact on
-a public calendar is worse than a missing one, and the guard makes the
-wrong-fact case either self-correct or surface in the logs.
+How the layers fit together, and why the guard retries some violations but
+only warns on others, is covered in
+[Data quality guardrails → Summaries state only what the documents support](architecture.md#summaries-state-only-what-the-documents-support)
+in the architecture overview.
 
 ## Multi-docket aggregation
 

@@ -20,30 +20,41 @@ CourtListener docket
           │
           ▼
 ┌───────────────────┐
-│ regex pre-filter  │  cheap. drops most non-hearing entries before any LLM call.
+│ regex pre-filter  │  drops non-hearing/non-deadline entries before the LLM.
 └─────────┬─────────┘
           │
           ▼
 ┌───────────────────┐
-│ LLM extractor     │  small/fast tier (Claude Haiku, gpt-5.4-nano, Gemini Flash Lite).
+│ LLM extractor     │  small/fast tier (Claude Haiku, gpt-5.4-nano, Gemini Flash Lite);
 │ per docket entry  │  returns ADD / RESCHEDULE / CANCEL / MARK_HELD / ...
 └─────────┬─────────┘
           │
           ▼
 ┌───────────────────┐
-│ SQLite store      │  stable (case_id, hearing_key) rows.
-└─────────┬─────────┘
-          │
-          ▼
-┌───────────────────┐
-│ end-of-sync       │  verify-pass LLM checks each live hearing /
-│ confidence checks │  deadline against the docket. Catches missed
-└─────────┬─────────┘  reschedules, etc.
-          │
-          ▼
-┌───────────────────┐
-│ renderers         │  ICS, Google Calendar, M365 Outlook, index.html.
-└───────────────────┘
+│ SQLite store      ├────────────┐  hearings, deadlines, case_summaries.
+└─────────┬─────────┘            │
+          │                      ▼
+          │            ┌───────────────────┐
+          │            │ summary LLM       │  higher tier (Sonnet / GPT-5.4 /
+          │            │ (per docket)      │  Gemini Pro); runs when a primary
+          │            └─────────┬─────────┘  doc or disposition lands.
+          │                      │
+          │                      ▼
+          │            ┌───────────────────┐
+          │            │ truthfulness      │  prompt rules are soft, so this
+          │            │ guard (retry/warn)│  deterministic guard retries
+          │            └─────────┬─────────┘  absence/custody slips and warns
+          │                      │            on ungrounded dates/amounts.
+          ▼                      │
+┌───────────────────┐            │
+│ end-of-sync       │            │  verify-pass LLM re-checks each live
+│ confidence checks │            │  hearing / deadline against the docket.
+└─────────┬─────────┘            │
+          │                      │
+          ▼                      ▼
+┌──────────────────────────────────────────┐
+│ renderers                                │  ICS, Google Calendar, M365
+└──────────────────────────────────────────┘  Outlook, index.html.
 ```
 
 Two delivery modes feed the pipeline:
@@ -243,52 +254,76 @@ contamination. They look conservative on first read, and that's the
 point: a wrong event on a public calendar erodes subscriber trust far
 more than a missing one.
 
-- **Past-date alone is not evidence a hearing happened.** Trials get
-  continued or vacated by plea agreement without an explicit cancellation
-  entry; the calendar date passes; the verify pass refuses to mark the
-  row "held" without affirmative evidence (a minute entry, verdict,
-  transcript, or judgment-after-trial). A past-dated `scheduled` row
-  accurately communicates "outcome not confirmed".
-- **The summary LLM is told to refuse, not fabricate.** When the inputs
-  don't support a confident summary, the model emits a fixed sentence
-  ("Documents available for this docket are insufficient to generate a
-  reliable summary.") which the renderer surfaces verbatim. The
-  alternative — letting the model invent plausible-sounding facts to
-  fill the gap — produced exactly that kind of hallucination during
-  early development.
-- **Court-local timezones are preserved on each event** rather than
-  normalizing to UTC. A 3 PM Pacific hearing displayed in a New York
-  viewer's calendar still says "3 PM Pacific / 6 PM Eastern", and the
-  semantic "this is when the courthouse is open" survives DST
-  transitions and travel.
-- **Cross-court siblings are isolated.** A case can span multiple
-  dockets across different courts (district + circuit appeal, parallel
-  filings under different statutes). The per-entry LLM context only
-  shows its siblings *in the same court* — a "stay appellate proceedings"
-  order on the circuit docket must not trigger cancellations on the
-  district docket's hearings.
-- **Summaries state only what the documents support — a guard enforces
-  it.** The summary prompt forbids inferring a defendant's custody status
-  from missing arrest entries (when no document establishes it, the status
-  is *omitted entirely* — not even announced as "unknown" / "cannot be
-  determined", which just restates what the record doesn't show);
-  asserting the absence of hearings / deadlines / a disposition (stay
-  silent on what isn't in the record); stating a speculative or
-  conditional future outcome ("X will be remanded to the Bureau of Prisons
-  if a term of imprisonment is imposed", "if convicted, X faces…") — a
-  scheduled event keeps its date but the hypothetical-consequence clause is
-  dropped; and printing a dollar figure that isn't legibly in the documents
-  (court forms with hand-filled restitution amounts OCR into noise, and the
-  model would otherwise guess — it states the obligation without the
-  number, and *silently*, since "not legible" would misdescribe a document
-  that's perfectly readable to a human). Because prompt rules are soft, a deterministic
-  post-generation guard backs them: it scans the generated prose,
-  regenerates once (feeding the violation back) on an absence / unsupported-
-  custody claim, and logs a warning for any ungrounded date or amount it
-  can't trace to the scaffold, the documents, or the operator-supplied
-  notes (the aggregation note and any `extra_documents` notes the model is
-  also given). The wrong fact on a public calendar is worse than a missing
-  one.
+### Past-date alone is not evidence a hearing happened
+
+Trials get continued or vacated by plea agreement without an explicit
+cancellation entry; the calendar date passes; the verify pass refuses to
+mark the row "held" without affirmative evidence (a minute entry, verdict,
+transcript, or judgment-after-trial). A past-dated `scheduled` row
+accurately communicates "outcome not confirmed".
+
+### The summary LLM is told to refuse, not fabricate
+
+When the inputs don't support a confident summary, the model emits a fixed
+sentence ("Documents available for this docket are insufficient to generate
+a reliable summary.") which the renderer surfaces verbatim. The
+alternative — letting the model invent plausible-sounding facts to fill the
+gap — produced exactly that kind of hallucination during early development.
+
+### Court-local timezones are preserved on each event
+
+Rather than normalizing to UTC, each event keeps the courthouse's local
+time. A 3 PM Pacific hearing displayed in a New York viewer's calendar
+still says "3 PM Pacific / 6 PM Eastern", and the semantic "this is when
+the courthouse is open" survives DST transitions and travel.
+
+### Cross-court siblings are isolated
+
+A case can span multiple dockets across different courts (district +
+circuit appeal, parallel filings under different statutes). The per-entry
+LLM context only shows its siblings *in the same court* — a "stay
+appellate proceedings" order on the circuit docket must not trigger
+cancellations on the district docket's hearings.
+
+### Summaries state only what the documents support
+
+The summary prompt forbids whole classes of claim the documents don't
+establish — inferring a custody status no document supports, asserting the
+absence of hearings / deadlines / a disposition, stating speculative or
+conditional outcomes, printing dollar figures that aren't legibly in the
+text. The
+[case summaries](case-summaries.md#the-insufficient-documents-refusal) page
+enumerates each rule in full.
+
+But a prompt rule is *soft protection*. The model can ignore it, and for a
+brand-new case there's no earlier good summary to diff the output against,
+so a slip would reach subscribers unaided. Three layers cover the gap:
+
+1. **Prompt rules — prevention.** The forbidden-claim rules above, written
+   into the prompt as instructions. Catches most cases and costs nothing
+   extra, but is soft.
+2. **A deterministic post-generation guard — the hard backstop.** It scans
+   the generated prose for absence-of-record, unsupported-custody, and
+   speculative / conditional-outcome claims, matched by *construction* (a
+   negation plus a procedural-record noun; a custody keyword plus a
+   "we-don't-know" qualifier) rather than by literal string, so rewording
+   around a phrase doesn't slip past. A hit triggers exactly one
+   regeneration with the violation fed back to the model; whichever attempt
+   is cleaner is kept, and a still-failing summary is logged rather than
+   blocked. The summary is never withheld — *retry, then keep and warn*.
+3. **A grounding check — warn-only.** Any date or dollar amount in the prose
+   that can't be traced to the hearings / deadlines scaffold, the source
+   documents, or the operator-supplied notes (the aggregation note and any
+   `extra_documents` notes) is logged for operator review. This layer never
+   retries: dates appear in nearly every summary and harmless formatting
+   variance gives it a real false-positive rate, so a retry would risk
+   systematic double-cost.
+
+The split between the last two layers is deliberate — high-confidence claim
+classes (absence, custody) earn a retry; the false-positive-prone
+fact-grounding class only warns. Either way the wrong fact self-corrects or
+surfaces in the logs, which is what lets the project run summaries
+unattended.
 
 ## AGENTS.md and the runtime prompts
 
