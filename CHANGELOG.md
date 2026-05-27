@@ -8,6 +8,25 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **The verify pass left concluded hearings stuck at `scheduled` when the
+  proof of occurrence was an older docket entry.** The end-of-sync hearing
+  verify pass only saw the 15 most-recent hearing-relevant entries on a
+  docket. The record that proves a past hearing happened — a minute entry,
+  verdict, transcript, or judgment — is filed on or shortly after the hearing
+  date, so on a docket that kept moving afterward it fell outside that window
+  and the LLM never saw the evidence it needs to mark the row held. A
+  CourtListener cross-check of the provider-comparison stores found
+  us-v-mcgonigal's December 2023 sentencing (judgment entered four days later)
+  stuck at `scheduled` across all three providers for exactly this reason. The
+  verify pass now also feeds the LLM the hearing-relevant entries filed around
+  the hearing's own date (anchored on `date_filed`), widening what it can see
+  without loosening the bar for marking a hearing held — the prompt still
+  requires a cited record.
+
 ## [0.7.2] - 2026-05-26
 
 ### Fixed

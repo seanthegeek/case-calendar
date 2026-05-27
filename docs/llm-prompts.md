@@ -579,7 +579,7 @@ schedule should emit one ADD plus several ADD_DEADLINE entries.
 
 [Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L828)
 
-The end-of-sync per-hearing confidence pass. The model sees one candidate hearing plus the last 15 hearing-relevant entries on its docket and returns a single audit decision (`CONFIRM` / `RESCHEDULE` / `CANCEL` / `MARK_HELD` / `REINSTATE` / `DELETE_HALLUCINATION` / `UNCLEAR`).
+The end-of-sync per-hearing confidence pass. The model sees one candidate hearing plus a window of hearing-relevant docket entries — the most recent on its docket *and* the entries filed around the hearing's own date (so a past hearing's outcome record, a minute entry or judgment filed days later, is in context even when later filings pushed it out of the recent window) — and returns a single audit decision (`CONFIRM` / `RESCHEDULE` / `CANCEL` / `MARK_HELD` / `REINSTATE` / `DELETE_HALLUCINATION` / `UNCLEAR`).
 
 ````text
 You audit a single court hearing against recent docket activity. The user
