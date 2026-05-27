@@ -49,7 +49,7 @@ class OutputTruncatedError(RuntimeError):
 _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5",
     "openai": "gpt-5.4-nano",
-    "gemini": "gemini-2.5-flash-lite",
+    "gemini": "gemini-3.1-flash-lite",
 }
 
 

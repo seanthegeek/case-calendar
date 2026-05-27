@@ -123,15 +123,15 @@ Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
 mislead. Instead, here are **real measured numbers** from a full from-scratch
 backfill of the maintainer's own calendar (28 cases / 34 logical dockets,
-measured 2026-05-26), broken out by provider and track. "Backfill" means
+measured 2026-05-27), broken out by provider and track. "Backfill" means
 processing every historical docket entry plus generating every summary — the
 one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $4.29 | $0.40 | $2.17 | **$6.87** |
-| OpenAI (GPT-5.4-nano / GPT-5.4) | $0.79 | $0.11 | $1.60 | **$2.51** |
-| Gemini (2.5 Flash Lite / 2.5 Pro) | $0.57 | $0.08 | $1.09 | **$1.73** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $4.33 | $0.49 | $2.20 | **$7.01** |
+| OpenAI (GPT-5.4-nano / GPT-5.4) | $0.79 | $0.17 | $1.52 | **$2.49** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.29 | $0.11 | $1.10 | **$2.50** |
 
 That's roughly **$0.03–0.06 per docket for summaries** and **$0.02–0.15 per
 case for extraction** (extraction scales with entry count, so a busy docket

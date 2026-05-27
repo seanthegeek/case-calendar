@@ -19,6 +19,35 @@ than you can comfortably refresh by hand, the goal is the same:
 not having to ask "Wait, when is that hearing again?" because your
 calendar already knows.
 
+## Features
+
+- **Per-case calendar feeds** in standard ICS — subscribe from Proton,
+  Apple, Google, Outlook, Thunderbird, or anything else that speaks
+  iCalendar.
+- **Push to Google Calendar and Microsoft 365 / Outlook**, opt-in, with
+  one-time OAuth. Events are deduplicated server-side so reschedules
+  update existing events rather than creating new ones.
+- **Filing-deadline tracking** auto-detected per docket — on for civil
+  and appellate, off for routine criminal, force-on per-case for
+  motion-heavy litigation.
+- **AI case summaries** (opt-in) generate a 2-4 sentence prose
+  description of each case from its primary document plus any
+  dispositions, with each summary's action phrases linked to the
+  source court documents ("**were charged**" links to the indictment,
+  "**pled guilty**" to the plea agreement). Refuses to fabricate when
+  source documents are insufficient. Auto-refreshes whenever a new
+  charging document, judgment, plea agreement, or dispositive ruling
+  lands — or a tracked hearing or deadline changes status.
+- **Real-time webhook receiver** — register a public HTTPS URL with
+  CourtListener and bypass the daily polling quota entirely.
+- **Static landing page** with one-click subscribe buttons, client-side
+  sort, and dark mode, generated alongside the ICS files.
+- **Court-local timezones** preserved on every event so a 3 PM Pacific
+  hearing stays "3 PM Pacific" through DST and travel.
+- **Multi-docket cases** collapse into one logical case — district +
+  appellate, parallel filings, cooperating co-defendants in the same
+  conspiracy.
+
 ## Limitations
 
 Case Calendar is a supplement to docket-watching, not a replacement

@@ -73,40 +73,10 @@ It was built for the cases where docket-watching by hand is too much:
   appellate, parallel filings, cooperating co-defendants in the same
   conspiracy.
 
-## How it works
-
-```text
-CourtListener docket entries
-        │
-        ▼
-  regex pre-filter          (drops most non-hearing entries cheaply)
-        │
-        ▼
-  LLM extractor              (small/fast tier — Haiku, Flash Lite, etc.)
-        │
-        ▼
-  SQLite store               (stable hearing / deadline keys)
-        │
-        ▼
-  end-of-sync verify pass    (catches missed reschedules)
-        │
-        ▼
-  ICS / Google / M365 push   + optional static index.html
-```
-
-Two delivery modes feed the pipeline: `case-calendar sync` for polling
-(designed to run on a cron) and `case-calendar serve` for real-time
-webhooks. Both share the same per-entry processor, so an event
-extracted via webhook is byte-identical to one from polling.
-
-A separate, opt-in second LLM track handles AI case summaries on a
-higher-tier model (Sonnet / GPT-5.4 / Gemini Pro). The two tracks have
-independent provider / model knobs.
-
-For the design decisions behind each piece — confidence passes,
-cross-court sibling isolation, the no-fabrication rule, etc. — see
-[`docs/architecture.md`](docs/architecture.md) for the concise overview
-or [`AGENTS.md`](AGENTS.md) for the exhaustive reference.
+How the pipeline works and the design decisions behind each piece live in
+the **[documentation](docs/index.md)** — see
+[Architecture](docs/architecture.md) for the pipeline overview, or
+[`AGENTS.md`](AGENTS.md) for the exhaustive reference.
 
 ## Limitations
 

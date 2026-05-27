@@ -1,5 +1,5 @@
-"""Tests for the per-provider log + DECISION-trace capture added to the
-``scripts/build_provider_stores.py`` comparison tool.
+"""Tests for the per-provider log + DECISION-trace capture in the
+``model-comparison/build_provider_stores.py`` comparison tool.
 
 The script lives outside the ``case_calendar`` package, so it's loaded by path.
 We exercise the new, independently-testable units: the thread-local-routed log
@@ -15,7 +15,9 @@ from pathlib import Path
 import pytest
 
 _SCRIPT = (
-    Path(__file__).resolve().parent.parent / "scripts" / "build_provider_stores.py"
+    Path(__file__).resolve().parent.parent
+    / "model-comparison"
+    / "build_provider_stores.py"
 )
 _spec = importlib.util.spec_from_file_location("build_provider_stores", _SCRIPT)
 assert _spec and _spec.loader
@@ -28,10 +30,14 @@ _spec.loader.exec_module(mod)
 
 @pytest.fixture(autouse=True)
 def _reset_threadlocal():
-    """Each test sets ``_TL.provider`` itself; clear it afterwards so a leaked
-    value can't route a later test's records into a stray file."""
+    """Each test sets the ``_TL`` slots it needs; clear them afterwards so a
+    leaked value can't route a later test's records into a stray file/column."""
     yield
     mod._TL.provider = None
+    mod._TL.label = None
+    mod._TL.extract_model = None
+    mod.TIMING.wall.clear()
+    mod.TIMING.call_secs.clear()
 
 
 # --------------------------------------------------------------------------- #
@@ -232,3 +238,240 @@ def test_wrap_llm_logging_failure_never_propagates(monkeypatch):
     monkeypatch.setattr(mod, "_format_decision", lambda *a, **k: 1 / 0)
     mod._TL.provider = "gemini"
     assert wrapped(deadline={"deadline_key": "d"}) == {"type": "CONFIRM"}
+
+
+# --------------------------------------------------------------------------- #
+# Variant set + parsing
+# --------------------------------------------------------------------------- #
+
+
+def test_default_variants_cover_providers_plus_eval_candidates():
+    by_label = {v.label: v for v in mod.VARIANTS}
+    # One column per provider at its out-of-the-box models; label is
+    # provider/extraction-model.
+    assert by_label["anthropic/claude-haiku-4-5"].provider == "anthropic"
+    assert by_label["openai/gpt-5.4-nano"].extract_model == "gpt-5.4-nano"
+    assert "gemini/gemini-3.1-flash-lite" in by_label  # the gemini default
+    # Evaluation candidates: same provider, different EXTRACTION model only.
+    g = by_label["gemini/gemini-3.5-flash"]
+    assert g.provider == "gemini" and g.extract_model == "gemini-3.5-flash"
+    # summary unchanged from the provider's default column
+    assert g.summary_model == by_label["gemini/gemini-3.1-flash-lite"].summary_model
+    o = by_label["openai/gpt-5.4-mini"]
+    assert o.provider == "openai" and o.extract_model == "gpt-5.4-mini"
+    assert o.summary_model == by_label["openai/gpt-5.4-nano"].summary_model
+
+
+def test_parse_extra_variant_two_fields_defaults_summary():
+    v = mod._parse_extra_variant("gemini:gemini-3.1-pro-preview")
+    assert v.provider == "gemini" and v.extract_model == "gemini-3.1-pro-preview"
+    assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["gemini"]
+    assert v.label == "gemini/gemini-3.1-pro-preview"
+
+
+def test_parse_extra_variant_three_fields_explicit_summary():
+    v = mod._parse_extra_variant("openai:gpt-5.4-mini:gpt-5.4")
+    assert v.summary_model == "gpt-5.4" and v.extract_model == "gpt-5.4-mini"
+
+
+def test_parse_extra_variant_rejects_bad_shape_and_provider():
+    with pytest.raises(SystemExit):
+        mod._parse_extra_variant("onlyonefield")
+    with pytest.raises(SystemExit):
+        mod._parse_extra_variant("notaprovider:m")
+    with pytest.raises(SystemExit):
+        mod._parse_extra_variant("gemini:")  # empty extract field
+
+
+# --------------------------------------------------------------------------- #
+# _variant_dispatch — per-column extraction-model injection
+# --------------------------------------------------------------------------- #
+
+
+def _recording_base():
+    """A base dispatch that records the resolved ``model`` it was called with."""
+    seen = {}
+
+    def base(provider, system, user, max_tokens, *, model=None, **kw):
+        seen["model"] = model
+        seen["purpose"] = kw.get("purpose")
+        return "ok"
+
+    return base, seen
+
+
+def test_variant_dispatch_injects_extract_model_for_extraction():
+    base, seen = _recording_base()
+    dispatch = mod._make_variant_dispatch(base)
+    mod._TL.extract_model = "gemini-3.5-flash"
+    dispatch("gemini", "s", "u", 100, purpose="extract")
+    assert seen["model"] == "gemini-3.5-flash"
+    # verify/dedupe are extraction-tier too — they get the injected model.
+    dispatch("gemini", "s", "u", 100, purpose="verify_hearing")
+    assert seen["model"] == "gemini-3.5-flash"
+
+
+def test_variant_dispatch_leaves_summary_track_alone():
+    base, seen = _recording_base()
+    dispatch = mod._make_variant_dispatch(base)
+    mod._TL.extract_model = "gemini-3.5-flash"
+    # Summary calls pass their own model; the extraction override must not apply.
+    dispatch("gemini", "s", "u", 100, model="gemini-2.5-pro", purpose="summary")
+    assert seen["model"] == "gemini-2.5-pro"
+    # Even with no explicit model, a summary call is not given the extract model.
+    dispatch("gemini", "s", "u", 100, purpose="summary")
+    assert seen["model"] is None
+
+
+def test_variant_dispatch_respects_explicit_model():
+    base, seen = _recording_base()
+    dispatch = mod._make_variant_dispatch(base)
+    mod._TL.extract_model = "gemini-3.5-flash"
+    dispatch("gemini", "s", "u", 100, model="pinned", purpose="extract")
+    assert seen["model"] == "pinned"
+
+
+# --------------------------------------------------------------------------- #
+# _capturing_record + build_report bucket by column label, not provider
+# --------------------------------------------------------------------------- #
+
+
+def test_capturing_record_buckets_by_label(monkeypatch):
+    monkeypatch.setattr(mod.CAP, "calls", [])
+    tok = mod.usage.TokenUsage(input=10, output=5)
+    mod._TL.label = "gemini/gemini-3.5-flash"
+    mod._capturing_record(
+        purpose="extract", provider="gemini", model="gemini-3.5-flash", tokens=tok
+    )
+    assert mod.CAP.calls[-1].label == "gemini/gemini-3.5-flash"
+    assert mod.CAP.calls[-1].provider == "gemini"
+
+
+def test_build_report_separates_same_provider_columns(monkeypatch, tmp_path):
+    monkeypatch.setattr(mod, "OUT_DIR", tmp_path)
+    monkeypatch.setattr(mod.CAP, "calls", [])
+    tok = mod.usage.TokenUsage(input=1000, output=100)
+
+    def _call(label, provider, model):
+        return mod._Call(
+            label=label,
+            provider=provider,
+            model=model,
+            purpose="extract",
+            docket="d",
+            tokens=tok,
+            cost=0.01,
+        )
+
+    mod.CAP.calls = [
+        _call("gemini/gemini-3.1-flash-lite", "gemini", "gemini-3.1-flash-lite"),
+        _call("gemini/gemini-3.5-flash", "gemini", "gemini-3.5-flash"),
+    ]
+    variants = [
+        mod.Variant("gemini", "gemini-3.1-flash-lite", "gemini-2.5-pro"),
+        mod.Variant("gemini", "gemini-3.5-flash", "gemini-2.5-pro"),
+    ]
+
+    class _CL:
+        _request_total = 0
+        _request_times: list = []
+
+    report = mod.build_report(
+        variants, {}, "/nonexistent.sqlite", _CL(), validate=False
+    )
+    # Both same-provider columns appear, each with its own extraction model line.
+    assert "extraction=gemini-3.1-flash-lite" in report
+    assert "extraction=gemini-3.5-flash" in report
+    # The cost table has a separate row per column label (not merged on provider).
+    assert "| gemini/gemini-3.1-flash-lite | extraction |" in report
+    assert "| gemini/gemini-3.5-flash | extraction |" in report
+
+
+# --------------------------------------------------------------------------- #
+# _PerProviderLogHandler routes by label when set
+# --------------------------------------------------------------------------- #
+
+
+def test_handler_routes_by_label_over_provider(tmp_path, monkeypatch):
+    monkeypatch.setattr(mod, "OUT_DIR", tmp_path)
+    h = mod._PerProviderLogHandler()
+    h.setFormatter(logging.Formatter("%(message)s"))
+    # The composite label (provider/extract-model) routes to a nested folder —
+    # logs land under <provider>/<model>/, not the bare provider folder.
+    mod._TL.provider = "gemini"
+    mod._TL.label = "gemini/gemini-3.5-flash"
+    h.emit(_record("candidate line"))
+    h.close()
+    assert (
+        tmp_path / "gemini" / "gemini-3.5-flash" / "build.log"
+    ).read_text().strip() == "candidate line"
+    # The provider dir exists only as the parent; no build.log sits directly in it.
+    assert not (tmp_path / "gemini" / "build.log").exists()
+
+
+# --------------------------------------------------------------------------- #
+# timing: _make_variant_dispatch latency capture + _timing_rows rendering
+# --------------------------------------------------------------------------- #
+
+
+def test_variant_dispatch_records_latency_and_injects_model():
+    seen = {}
+
+    def base(
+        provider,
+        system,
+        user,
+        max_tokens,
+        *,
+        model=None,
+        json_mode=True,
+        purpose="llm",
+        docket=None,
+    ):
+        seen["model"] = model
+        return "RESULT"
+
+    wrapped = mod._make_variant_dispatch(base)
+    mod._TL.label = "gemini/gemini-3.5-flash"
+    mod._TL.extract_model = "gemini-3.5-flash"
+    out = wrapped("gemini", "sys", "usr", 100, purpose="extract")
+    assert out == "RESULT"  # passes the real result through
+    assert seen["model"] == "gemini-3.5-flash"  # extraction model injected from _TL
+    acc = mod.TIMING.call_secs["gemini/gemini-3.5-flash"]
+    assert acc[0] == 1.0 and acc[1] >= 0.0  # one timed call recorded
+
+
+def test_variant_dispatch_leaves_summary_model_untouched():
+    seen = {}
+
+    def base(
+        provider,
+        system,
+        user,
+        max_tokens,
+        *,
+        model=None,
+        json_mode=True,
+        purpose="llm",
+        docket=None,
+    ):
+        seen["model"] = model
+        return "S"
+
+    wrapped = mod._make_variant_dispatch(base)
+    mod._TL.label = "openai/gpt-5.4-mini"
+    mod._TL.extract_model = "gpt-5.4-mini"
+    wrapped("openai", "s", "u", 10, model="gpt-5.4", purpose="summary")
+    assert seen["model"] == "gpt-5.4"  # summary model passed through, not overwritten
+    assert mod.TIMING.call_secs["openai/gpt-5.4-mini"][0] == 1.0  # still timed
+
+
+def test_timing_rows_formats_and_marks_missing():
+    rows = mod._timing_rows(
+        ["a/m1", "b/m2"],
+        wall={"a/m1": 120.0},  # 2.0 m
+        call_secs={"a/m1": [10.0, 30.0]},  # 3.0 s/call
+    )
+    body = "\n".join(rows)
+    assert "| a/m1 | 2.0 m | 10 | 3.0 |" in body
+    assert "| b/m2 | — | — | — |" in body  # no timing recorded for this column
