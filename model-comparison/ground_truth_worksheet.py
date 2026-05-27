@@ -56,7 +56,7 @@ _COLUMNS = [
     "case_name",
     "docket_number",
     "court",
-    "courtlistener_records",
+    "courtlistener_id",
     "courtlistener_urls",
     *_COUNT_COLUMNS,
     "notes",
@@ -94,12 +94,13 @@ def build_rows(config_path: str) -> list[dict[str, Any]]:
                     for r in records
                     if r.get("absolute_url")
                 )
+                ids = " | ".join(str(r["docket_id"]) for r in records)
                 row = {
                     "case_id": case.case_id,
                     "case_name": case.name,
                     "docket_number": docket_number,
                     "court": court,
-                    "courtlistener_records": len(records),
+                    "courtlistener_id": ids,
                     "courtlistener_urls": urls,
                     "notes": "",
                 }
