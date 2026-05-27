@@ -79,30 +79,24 @@ numbers, with a per-docket breakdown so every number is auditable.
 **Fill the worksheet from the dockets, not from `model_events.csv`** — scoring
 blind to the models' answers is the whole point.
 
-**How to fill each row** (per CourtListener record, reading the linked page):
+**How to fill each row.** Open the linked CourtListener page and put a number in
+each of the six count columns — how many events on that page are in each state:
 
-- Count **every** hearing and **every** deadline on that record's page — all of
-  them, not just the calendar-worthy ones — by current status:
-  - hearings → `scheduled` (date still ahead), `held` (occurred), `cancelled`
-    (vacated or struck)
-  - deadlines → `pending` (current due date still ahead), `met_or_passed` (due date
-    has passed **or** the filing was made — one bucket, don't try to tell the two
-    apart), `cancelled` (no longer in force — e.g. the briefing schedule was
-    superseded, or the motion it set a response for was withdrawn)
-- **One event, counted once, in its latest state.** The store updates an event in
-  place when it moves, so a hearing that was reset 1/10 → 2/14, or a deadline that
-  was extended, is still **one** row at its current date and status — not one per
-  reset. Count it the same way: once, by where it stands now.
-- **Distinct events stay distinct, though.** A briefing schedule that sets an
-  opening brief, a response, and a reply is **three** separate deadlines, not one —
-  count each. The test is whether they're genuinely different events, not whether
-  they were set by the same order.
-- When CourtListener has split one PACER docket across several records, those
-  records share a docket number + court but each has its own `courtlistener_id`
-  and its own row — **score each row from its own page**, counting the events
-  visible on that record. The records of one split docket sit on adjacent rows.
-- Leave a row blank to skip it; `score.py` only scores filled rows, so you can
-  work in passes and re-run.
+| column | the number of … |
+| --- | --- |
+| `hearings_scheduled` | hearings whose date is still ahead |
+| `hearings_held` | hearings that have occurred |
+| `hearings_cancelled` | hearings that were vacated or struck |
+| `deadlines_pending` | deadlines whose due date is still ahead |
+| `deadlines_met_or_passed` | deadlines whose date has passed **or** that were filed (one bucket — don't split these two) |
+| `deadlines_cancelled` | deadlines no longer in force (e.g. a superseded briefing schedule) |
+
+Count **every** hearing and deadline, not just the calendar-worthy ones. Count
+each one **once, in its current state** — a hearing reset from 1/10 to 2/14 is a
+single `scheduled` hearing, not two. But genuinely distinct events stay distinct:
+a briefing schedule that sets an opening brief, a response, and a reply is
+**three** deadlines. Leave a row blank to skip it; `score.py` scores only filled
+rows.
 
 ## Cost (one-time backfill of every case)
 
