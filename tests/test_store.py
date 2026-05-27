@@ -178,6 +178,84 @@ class TestEntries:
         )
         assert [r["entry_id"] for r in recent] == [100]
 
+    def test_get_relevant_entries_in_date_range(self, store: Store):
+        # Filters on date_filed (the stable "hit the docket" anchor), NOT
+        # date_modified — note entry 100/101 have date_modified bumped well
+        # after filing (an OCR / metadata re-sync), yet still match by their
+        # 2023 date_filed. Newest-first by date_filed; filter-failed stubs
+        # (NULL description) and out-of-range rows excluded.
+        store.mark_entry(
+            1,
+            100,
+            "2026-05-01T00:00:00Z",
+            "fp",
+            date_filed="2023-12-14",
+            description="Minute Entry: Sentencing held 12/14/2023",
+            entry_number=90,
+        )
+        store.mark_entry(
+            1,
+            101,
+            "2026-05-02T00:00:00Z",
+            "fp",
+            date_filed="2023-12-18",
+            description="JUDGMENT IN A CRIMINAL CASE",
+            entry_number=91,
+        )
+        store.mark_entry(
+            1,
+            102,
+            "2024-06-01T00:00:00Z",
+            "fp",
+            date_filed="2024-06-01",
+            description="later, out of range",
+            entry_number=95,
+        )
+        store.mark_entry(
+            1,
+            103,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed="2023-12-16",
+            description=None,
+            entry_number=92,
+        )  # filter-failed stub, in range but no description
+        got = store.get_relevant_entries_in_date_range(1, "2023-12-12", "2024-01-31")
+        assert [r["entry_id"] for r in got] == [
+            101,
+            100,
+        ]  # in-range, newest date_filed first
+        assert all(r["description"] for r in got)
+
+    def test_get_relevant_entries_in_date_range_limit_and_null_filed(
+        self, store: Store
+    ):
+        store.mark_entry(
+            1,
+            200,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed=None,
+            description="paperless, no date_filed",
+            entry_number=1,
+        )
+        for i in range(5):
+            store.mark_entry(
+                1,
+                300 + i,
+                "2026-01-01T00:00:00Z",
+                "fp",
+                date_filed=f"2024-03-{i + 1:02d}",
+                description=f"e{i}",
+                entry_number=10 + i,
+            )
+        got = store.get_relevant_entries_in_date_range(
+            1, "2024-03-01", "2024-03-31", limit=3
+        )
+        assert len(got) == 3  # limit respected
+        assert all(r["date_filed"] for r in got)  # NULL date_filed row excluded
+        assert 200 not in [r["entry_id"] for r in got]
+
     def test_get_entry_numbers(self, store: Store):
         store.mark_entry(1, 100, "2026-01-01T00:00:00Z", "fp", entry_number=65)
         store.mark_entry(1, 101, "2026-01-02T00:00:00Z", "fp", entry_number=66)

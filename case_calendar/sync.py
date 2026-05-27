@@ -15,7 +15,7 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -26,6 +26,14 @@ from .extractor import is_extractable
 from .store import Store, compact_recap_documents
 
 log = logging.getLogger(__name__)
+
+# Verify pass: how far on either side of a hearing's own date to look for the
+# entry that records its outcome (minute entry / verdict / transcript /
+# judgment). The lookback absorbs the timezone skew between a hearing's UTC
+# timestamp and a minute entry's court-local filing date; the forward window
+# covers a judgment that lands days-to-weeks after a sentencing or trial.
+_VERIFY_OUTCOME_LOOKBACK_DAYS = 2
+_VERIFY_OUTCOME_WINDOW_DAYS = 45
 
 
 @dataclass
@@ -723,6 +731,61 @@ class CaseSyncer:
             stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
+    def _verify_context_entries(
+        self, docket_id: int, starts_at_utc: Optional[str]
+    ) -> list[dict[str, Any]]:
+        """Docket entries to hand the verify-pass LLM for one hearing.
+
+        Combines two sets, de-duplicated by entry id:
+
+        1. The 15 most-recent hearing-relevant entries — "what's happening
+           now" (continuances, reschedules, the current posture).
+        2. Hearing-relevant entries filed AROUND the hearing's own date —
+           where the entry that records its OUTCOME lives (a minute entry,
+           verdict, transcript, or judgment is filed on or shortly after the
+           hearing). On a docket that kept moving afterward those entries
+           fall outside set 1, so without this the verify LLM cannot cite
+           the evidence it needs to MARK_HELD and the row wrongly stays
+           'scheduled'. For a FUTURE hearing the window is in the future and
+           returns nothing, so this only adds signal for past-dated rows.
+
+        This widens what the LLM can SEE; it does not loosen the bar for
+        marking a hearing held — the prompt still requires a cited record.
+        """
+        recent = self.store.get_recent_relevant_entries(
+            docket_id, "9999-12-31T00:00:00", limit=15
+        )
+        near: list[dict[str, Any]] = []
+        if starts_at_utc:
+            try:
+                hearing_date = datetime.fromisoformat(
+                    starts_at_utc.replace("Z", "+00:00")
+                ).date()
+            except ValueError:
+                hearing_date = None
+            if hearing_date is not None:
+                start = (
+                    hearing_date - timedelta(days=_VERIFY_OUTCOME_LOOKBACK_DAYS)
+                ).isoformat()
+                end = (
+                    hearing_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
+                ).isoformat()
+                near = self.store.get_relevant_entries_in_date_range(
+                    docket_id, start, end, limit=20
+                )
+
+        seen: set[int] = set()
+        merged: list[dict[str, Any]] = []
+        for entry in (*recent, *near):
+            eid = entry.get("entry_id")
+            if eid in seen:
+                continue
+            seen.add(eid)
+            merged.append(entry)
+        # Newest-first by filing date so the LLM reads them in a coherent order.
+        merged.sort(key=lambda e: e.get("date_filed") or "", reverse=True)
+        return merged
+
     def _verify_scheduled_hearings(self, case: CaseConfig) -> int:
         """Audit non-terminal hearings against recent docket entries.
 
@@ -782,10 +845,8 @@ class CaseSyncer:
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
 
-            recent = self.store.get_recent_relevant_entries(
-                docket_id,
-                "9999-12-31T00:00:00",
-                limit=15,
+            recent = self._verify_context_entries(
+                docket_id, hearing.get("starts_at_utc")
             )
             action = llm_mod.verify_hearing(
                 case_name=case.name,

@@ -4005,3 +4005,126 @@ class TestSummaryStaleOnPostureChange:
         # The fix: the held-flip flags the summary stale even though no
         # primary-document / disposition entry landed this sync.
         assert store.is_summary_stale("us-v-x", *group) is True
+
+
+class TestVerifyContextEntries:
+    """The verify pass must SEE a past hearing's outcome evidence — a minute
+    entry / verdict / judgment filed around the hearing's own date — even on a
+    docket that kept moving afterward, where that entry falls outside the 15
+    most-recent. Without it the verify LLM can't cite the record it needs to
+    MARK_HELD and the row wrongly stays 'scheduled' (the mcgonigal-sentencing
+    miss surfaced in the provider-accuracy adjudication)."""
+
+    def _seed_recent(self, store, docket_id=100, n=16):
+        # n recent hearing-relevant entries that crowd older rows out of the
+        # most-recent-15 window (date_modified in 2026).
+        for i in range(n):
+            store.mark_entry(
+                docket_id,
+                500 + i,
+                f"2026-02-{i + 1:02d}T00:00:00Z",
+                "fp",
+                date_filed=f"2026-02-{i + 1:02d}",
+                description=f"recent status report {i}",
+                entry_number=500 + i,
+            )
+
+    def _seed_judgment(self, store, docket_id=100):
+        # The judgment proving the hearing happened, filed near the 2024
+        # hearing date but with an OLD date_modified -> not in recent-15.
+        store.mark_entry(
+            docket_id,
+            90,
+            "2024-06-18T00:00:00Z",
+            "fp",
+            date_filed="2024-06-18",
+            description="JUDGMENT IN A CRIMINAL CASE: 50 months imprisonment",
+            entry_number=90,
+        )
+
+    def test_near_date_evidence_surfaces_outside_recent_window(self, store: Store):
+        self._seed_recent(store)
+        self._seed_judgment(store)
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(100, "2024-06-15T21:30:00+00:00")
+        ids = [e["entry_id"] for e in ctx]
+        assert 90 in ids  # outcome evidence surfaced via the near-date window
+        assert any(i >= 500 for i in ids)  # recent context still present
+        assert len(ids) == len(set(ids))  # de-duplicated by entry id
+
+    def test_future_hearing_pulls_only_recent(self, store: Store):
+        self._seed_recent(store, n=3)
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(100, "2027-01-01T00:00:00+00:00")
+        # Future window is empty -> recent set only, no error.
+        assert sorted(e["entry_id"] for e in ctx) == [500, 501, 502]
+
+    def test_recent_and_near_sets_overlap_deduplicated(self, store: Store):
+        # Hearing date inside the recent window: each entry is in BOTH the
+        # recent set and the near-date set, and must appear exactly once.
+        self._seed_recent(store, n=3)  # entries 500-502, filed Feb 2026
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(100, "2026-02-02T12:00:00+00:00")
+        ids = [e["entry_id"] for e in ctx]
+        assert sorted(ids) == [500, 501, 502]
+        assert len(ids) == len(set(ids))  # the overlap was de-duplicated
+
+    def test_unparseable_or_missing_timestamp_falls_back_to_recent(self, store: Store):
+        self._seed_recent(store, n=2)
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        for ts in ("not-a-timestamp", None):
+            ctx = syncer._verify_context_entries(100, ts)
+            assert sorted(e["entry_id"] for e in ctx) == [500, 501]
+
+    @staticmethod
+    def _seed_past_sentencing(store):
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2024-06-15T21:30:00+00:00",
+                "duration_minutes": 30,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [],
+            }
+        )
+
+    @staticmethod
+    def _verify_on_judgment_visibility(monkeypatch):
+        # MARK_HELD only when a JUDGMENT entry is actually in the context the
+        # verify pass hands the LLM — so the test asserts the wiring, not a
+        # canned verdict.
+        def fake(*, hearing, recent_entries, **_):
+            if any("JUDGMENT" in (e.get("description") or "") for e in recent_entries):
+                return {"type": "MARK_HELD", "reason": "judgment entered"}
+            return {"type": "UNCLEAR", "reason": "no outcome evidence visible"}
+
+        monkeypatch.setattr(llm_mod, "verify_hearing", fake)
+
+    def test_verify_marks_held_using_near_date_evidence(
+        self, store: Store, case, monkeypatch
+    ):
+        self._seed_recent(store)
+        self._seed_judgment(store)
+        self._seed_past_sentencing(store)
+        self._verify_on_judgment_visibility(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        assert store.get_hearings("us-v-x")[0]["status"] == "held"
+
+    def test_without_near_evidence_stays_scheduled(
+        self, store: Store, case, monkeypatch
+    ):
+        # Same stub, no judgment anywhere: the recent set has no JUDGMENT and
+        # the near-date window is empty -> UNCLEAR -> row stays scheduled.
+        # Proves the near-date evidence (not the recent set) flips the prior test.
+        self._seed_recent(store)
+        self._seed_past_sentencing(store)
+        self._verify_on_judgment_visibility(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"

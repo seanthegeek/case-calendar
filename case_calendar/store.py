@@ -836,6 +836,39 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_relevant_entries_in_date_range(
+        self,
+        docket_id: int,
+        start_date: str,
+        end_date: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Hearing-relevant entries on the docket FILED in ``[start_date,
+        end_date]`` (inclusive, ``YYYY-MM-DD`` strings), newest first.
+
+        Filters on ``date_filed`` (the stable "when it hit the docket"
+        anchor) rather than ``date_modified`` (which an OCR / metadata
+        re-sync can bump long after filing). The verify pass uses this to
+        surface the entry that records a hearing's OUTCOME — a minute
+        entry, verdict, transcript, or judgment — which is filed on or
+        shortly after the hearing date and, on a docket that kept moving
+        afterward, falls outside the most-recent-N window. Same
+        "hearing-relevant = description IS NOT NULL" definition as
+        :meth:`get_recent_relevant_entries`.
+        """
+        rows = self.conn.execute(
+            """
+            SELECT entry_id, entry_number, date_filed, description, short_description
+            FROM entries
+            WHERE docket_id=? AND description IS NOT NULL
+              AND date_filed IS NOT NULL
+              AND date_filed >= ? AND date_filed <= ?
+            ORDER BY date_filed DESC LIMIT ?
+            """,
+            (docket_id, start_date, end_date, limit),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_entry_numbers(self, entry_ids: Iterable[int]) -> dict[int, int]:
         """Return ``entry_id -> entry_number`` for known entries.
 
