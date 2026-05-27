@@ -167,6 +167,7 @@ on GitHub Pages:
 - [Configuration](docs/configuration.md) — every `config.yaml` option.
 - [CLI reference](docs/cli.md) — every subcommand and flag.
 - [Calendar backends](docs/calendars.md) — ICS, Google, Microsoft 365.
+- [Cost](docs/cost.md) — LLM + CourtListener API costs, measured.
 - [Real-time webhooks](docs/webhooks.md) — push instead of polling.
 - [AI case summaries](docs/case-summaries.md) — opt-in summaries on the
   index page.

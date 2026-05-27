@@ -108,10 +108,9 @@ blind to the models' answers is the whole point.
 
 The measured one-time backfill cost for the three **default** model sets lives in
 the main documentation, so there's a single place to keep it current — see the
-[Cost section of the case-summaries docs](../docs/case-summaries.md#cost). In
-short: ≈$7 for Anthropic, ≈$2.50 each for OpenAI and Gemini, for the whole
-caseload, once. Day-to-day cost is a tiny fraction — normal operation only
-processes new entries, not the whole history.
+[Cost](../docs/cost.md#llm-cost) page. In short: ≈$7 for Anthropic, ≈$2.50 each
+for OpenAI and Gemini, for the whole caseload, once. Day-to-day cost is a tiny
+fraction — normal operation only processes new entries, not the whole history.
 
 This comparison adds two **candidate** columns on top of the defaults. Each varies
 only the *extraction* model (keeping its provider's default summary model) to test

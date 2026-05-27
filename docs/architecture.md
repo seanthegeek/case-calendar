@@ -106,7 +106,7 @@ The two tracks have independent provider / model knobs
 (`LLM_PROVIDER` / `LLM_MODEL` for the extractor; `LLM_SUMMARY_PROVIDER` /
 `LLM_SUMMARY_MODEL` for summaries) so changing one doesn't affect the
 other. For measured per-provider backfill costs across a real caseload, see
-[Case summaries → Cost](case-summaries.md#cost).
+the [Cost](cost.md#llm-cost) page.
 
 ## Why LLM-driven extraction, not regex?
 
