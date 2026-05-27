@@ -106,23 +106,27 @@ blind to the models' answers is the whole point.
 
 ## Cost (one-time backfill of every case)
 
-Day-to-day cost is a tiny fraction of this — normal operation only processes new
-entries, not the whole history. Full per-track breakdown in `cost.md`.
+The measured one-time backfill cost for the three **default** model sets lives in
+the main documentation, so there's a single place to keep it current — see the
+[Cost section of the case-summaries docs](../docs/case-summaries.md#cost). In
+short: ≈$7 for Anthropic, ≈$2.50 each for OpenAI and Gemini, for the whole
+caseload, once. Day-to-day cost is a tiny fraction — normal operation only
+processes new entries, not the whole history.
 
-| column | extraction model | summary model | one-time backfill |
+This comparison adds two **candidate** columns on top of the defaults. Each varies
+only the *extraction* model (keeping its provider's default summary model) to test
+whether a pricier extraction tier earns its keep:
+
+| candidate column | extraction model | vs. its default | one-time backfill |
 | --- | --- | --- | ---: |
-| Anthropic (default) | claude-haiku-4-5 | claude-sonnet-4-6 | $7.01 |
-| OpenAI (default) | gpt-5.4-nano | gpt-5.4 | $2.49 |
-| OpenAI (candidate) | gpt-5.4-mini | gpt-5.4 | $4.87 |
-| Google Gemini (default) | gemini-3.1-flash-lite | gemini-2.5-pro | $2.50 |
-| Google Gemini (candidate) | gemini-3.5-flash | gemini-2.5-pro | $11.92 |
+| OpenAI | gpt-5.4-mini | gpt-5.4-nano | $4.87 |
+| Google Gemini | gemini-3.5-flash | gemini-3.1-flash-lite | $11.92 |
 
-The two **candidate** columns vary only the extraction model (same summary model
-as their provider's default) to test whether a pricier extraction tier is worth
-it. The bump is steep on the extraction track alone: `gemini-3.5-flash` extraction
+The bump is steep on the extraction track alone: `gemini-3.5-flash` extraction
 runs ≈8× the `gemini-3.1-flash-lite` extraction cost, and `gpt-5.4-mini` ≈3.5× the
-`gpt-5.4-nano` cost — so the accuracy gain (the blind scoring below) has to justify
-it before either becomes a default.
+`gpt-5.4-nano` cost — so the accuracy gain (the blind scoring above) has to justify
+it before either becomes a default. Full per-track breakdown for all five columns
+is in `cost.md`.
 
 The build also made 43 CourtListener API calls total, once, shared across all
 five columns (the court data is identical per column, so it's fetched once and
