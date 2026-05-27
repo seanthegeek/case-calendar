@@ -173,9 +173,8 @@ the **per-minute burst** — the backfill peaked at **12 requests in one minute*
 (cold-docket lookups firing back-to-back), which exceeds the free (5/min) and
 Tier 1 (10/min) per-minute caps. That isn't data loss: the client honors
 `Retry-After` and backs off automatically (just slower). But a from-scratch
-backfill — especially building multiple providers in parallel — wants **Tier 2
-(15/min)** to avoid per-minute throttling. Steady-state polling is a handful of
-requests per sync, far below every tier. The per-run `courtlistener-requests`
+backfill wants **Tier 2 (15/min)** to avoid per-minute throttling.
+Steady-state polling is a handful of requests per sync, far below every tier. The per-run `courtlistener-requests`
 log line reports your actual peak min / hour / day so you can size your
 membership.
 
