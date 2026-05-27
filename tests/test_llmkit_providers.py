@@ -281,6 +281,11 @@ class TestCallOpenAI:
         # JSON mode is on by default and shows up as response_format.
         kw = fake_client.chat.completions.create.call_args.kwargs
         assert kw["response_format"] == {"type": "json_object"}
+        # The gpt-5 family rejects `max_tokens` (400 unsupported_parameter) and
+        # requires `max_completion_tokens`; pin that we send the newer name and
+        # never the old one. (Regression: every openai call 400'd otherwise.)
+        assert kw["max_completion_tokens"] == 50
+        assert "max_tokens" not in kw
 
     def test_json_mode_off_omits_response_format(self, monkeypatch):
         from unittest.mock import MagicMock

@@ -1809,6 +1809,7 @@ class TestGenerateDocketSummary:
 
         def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
             called["json_mode"] = json_mode
+            called["max_tokens"] = max_tokens
             return "Some summary."
 
         monkeypatch.setattr(providers, "_call_gemini", fake)
@@ -1821,9 +1822,39 @@ class TestGenerateDocketSummary:
             hearings=[],
             deadlines=[],
             provider="gemini",
+            max_tokens=800,
         )
         assert ident.startswith("gemini/")
         assert called["json_mode"] is False
+        # Gemini 2.5 thinking models draw reasoning from the output budget, so
+        # a small summary `max_tokens` (800) gets the answer starved on large
+        # prompts. generate_docket_summary must give Gemini headroom (>=8192)
+        # so thinking + the 2-4 sentence answer both fit. (Regression: every
+        # Gemini summary returned "No content" with the 800-token budget.)
+        assert called["max_tokens"] >= 8192
+
+    def test_anthropic_keeps_requested_max_tokens(self, monkeypatch):
+        # The Gemini headroom bump is provider-specific: anthropic / openai are
+        # not thinking-budget-constrained, so they keep the requested ceiling.
+        called: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None, **kwargs):
+            called["max_tokens"] = max_tokens
+            return "Some summary."
+
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="anthropic",
+            max_tokens=800,
+        )
+        assert called["max_tokens"] == 800
 
     def test_correction_appended_to_user_message(self, monkeypatch):
         captured: dict[str, Any] = {}

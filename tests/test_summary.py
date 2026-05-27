@@ -3308,6 +3308,33 @@ class TestRefreshStale:
         written = refresh_stale(cl=cl, store=store, cases=[case])
         assert written == {"us-v-doe": {_DEFAULT_GROUP}}
 
+    def test_per_docket_failure_does_not_abort_remaining(self, store, monkeypatch):
+        # A transient summarize_docket failure on one group (e.g. a 503 that
+        # exhausts retries, or a provider empty-response) must NOT skip the
+        # other groups in the same refresh — it's logged, left stale, and the
+        # remaining dockets still get summarized. (Regression: a single Gemini
+        # "No content" aborted the whole batch, producing zero summaries.)
+        _seed_docket_meta(store, 1, docket_number="1:24-cr-100", court_id="dcd")
+        _seed_docket_meta(store, 2, docket_number="2:24-cr-200", court_id="cand")
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1, 2], calendar="cyber"
+        )
+        seen: list[int] = []
+
+        def fake_summarize(*, cl, store, case, docket_id, **kw):
+            seen.append(docket_id)
+            if docket_id == 1:
+                raise RuntimeError("transient 503 exhausted retries")
+            return {"summary": "ok for docket 2"}
+
+        monkeypatch.setattr(summary, "summarize_docket", fake_summarize)
+        cl = _FakeCourtListener({})
+        written = refresh_stale(cl=cl, store=store, cases=[case])
+        # Both groups were attempted despite docket 1 raising...
+        assert set(seen) == {1, 2}
+        # ...and only the successful group is recorded as written.
+        assert written == {"us-v-doe": {("2:24-cr-200", "cand")}}
+
     def test_only_case_ids_scopes_the_walk(self, store, patch_llm, patch_pdf):
         _seed_docket_meta(store, 1)
         _seed_docket_meta(store, 2)

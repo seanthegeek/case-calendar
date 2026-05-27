@@ -2248,11 +2248,25 @@ def generate_docket_summary(
         len(user),
     )
 
+    # Gemini 2.5 "thinking" models draw reasoning tokens from the same output
+    # budget as the answer, and the reasoning scales with prompt complexity. On
+    # a large summary prompt (tens of thousands of tokens of legal documents)
+    # the thinking can consume a small `max_tokens` entirely, leaving zero
+    # answer text — which surfaces as `ValueError: No content in Gemini
+    # response` and would crash the whole summary refresh. The 2-4 sentence
+    # answer is tiny; give Gemini enough headroom that thinking + answer both
+    # fit. Anthropic / OpenAI are unaffected — they stop at the natural end of
+    # the short summary regardless of the ceiling, so the extra budget costs
+    # nothing there.
+    effective_max_tokens = max_tokens
+    if chosen_provider == "gemini":
+        effective_max_tokens = max(max_tokens, 8192)
+
     text = providers._dispatch_llm_call(
         chosen_provider,
         SUMMARY_SYSTEM_PROMPT,
         user,
-        max_tokens,
+        effective_max_tokens,
         model=chosen_model,
         json_mode=False,
         purpose="summary",

@@ -8,6 +8,44 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.7.2] - 2026-05-26
+
+### Fixed
+
+- **OpenAI calls failed with HTTP 400 on the gpt-5 model family.**
+  `case_calendar.llmkit.providers._call_openai` sent `max_tokens`, but the
+  gpt-5 family — the default OpenAI tier (`gpt-5.4-nano` for extraction,
+  `gpt-5.4` for summaries) — rejects it with
+  `unsupported_parameter: 'max_tokens' is not supported with this model. Use
+  'max_completion_tokens' instead`. Every OpenAI call returned 400 and fell
+  through to the per-caller fallback (extraction → IGNORE, verify → UNCLEAR,
+  summary → error), so an OpenAI-configured deployment produced no hearings,
+  no deadlines, and no summaries. Because a 400 is never billed, the failure
+  was invisible on the OpenAI usage dashboard. Now sends
+  `max_completion_tokens`, which the current chat-completions models accept.
+
+- **Gemini case summaries returned "No content" and aborted the summary
+  refresh.** Gemini 2.5 "thinking" models draw reasoning tokens from the same
+  output budget as the visible answer, and the reasoning scales with prompt
+  complexity. On a large summary prompt (tens of thousands of tokens of legal
+  documents) the reasoning consumed the entire 800-token summary budget,
+  leaving zero answer text — surfaced as `ValueError: No content in Gemini
+  response`. `generate_docket_summary` now gives Gemini at least 8192 output
+  tokens of headroom so the reasoning and the 2-4 sentence answer both fit.
+  Anthropic and OpenAI are unaffected: they stop at the natural end of the
+  short summary regardless of the ceiling, so the extra budget costs nothing
+  there.
+
+- **A single docket's summary failure aborted the entire `refresh_stale`
+  batch.** A transient provider error on one docket (a 503 that exhausts
+  retries, or an empty response) propagated out of the per-docket loop and
+  skipped every remaining docket's summary for that run.
+  `summary.refresh_stale` now isolates each docket: the failure is logged,
+  that row is left stale so the next refresh retries just it, and the
+  remaining dockets are still summarized.
+
+[0.7.2]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.7.2
+
 ## [0.7.1] - 2026-05-26
 
 ### Added

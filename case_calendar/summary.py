@@ -2395,16 +2395,31 @@ def refresh_stale(
                 case.case_id,
                 "force-refresh" if force else "is stale or missing",
             )
-            row = summarize_docket(
-                cl=cl,
-                store=store,
-                case=case,
-                docket_id=canonical_docket_id,
-                aggregation_note=aggregation_note,
-                provider=provider,
-                model=model,
-                allow_ocr=allow_ocr,
-            )
+            # Isolate per-docket failures: a transient provider error (e.g. a
+            # 503 that exhausts retries, or an empty-response on one docket)
+            # must not abort the whole batch and lose every other case's
+            # summary for this run. Log it and leave the row stale so the next
+            # refresh retries just that docket.
+            try:
+                row = summarize_docket(
+                    cl=cl,
+                    store=store,
+                    case=case,
+                    docket_id=canonical_docket_id,
+                    aggregation_note=aggregation_note,
+                    provider=provider,
+                    model=model,
+                    allow_ocr=allow_ocr,
+                )
+            except Exception:
+                log.exception(
+                    "summary: %s (%s) on case %s failed; leaving stale for the "
+                    "next refresh and continuing with the remaining dockets",
+                    docket_number,
+                    court_id,
+                    case.case_id,
+                )
+                continue
             if row:
                 written.setdefault(case.case_id, set()).add((docket_number, court_id))
     return written

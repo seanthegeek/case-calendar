@@ -126,9 +126,10 @@ class CourtListener:
         backoff), and transient transport exceptions (ReadTimeout /
         ConnectError / RemoteProtocolError).
 
-        Honors any Retry-After value, even multi-hour ones — CourtListener's free tier
-        caps at 300/day and the daily bucket can legitimately ask for a wait
-        of nearly 24h once exhausted. Sleeping through that lets the script
+        Honors any Retry-After value, even multi-hour ones — CourtListener's daily
+        request bucket is small (125/day on the free tier, up to 1,400/day on a
+        paid Free Law Project membership) and can legitimately ask for a wait of
+        nearly 24h once exhausted. Sleeping through that lets the script
         resume on its own rather than requiring a manual restart per cycle.
         We still log the URL / body / rate-limit headers on every 429 so
         you can see in the log which bucket tripped.
