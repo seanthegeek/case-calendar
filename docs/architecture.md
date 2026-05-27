@@ -182,9 +182,10 @@ fingerprint stable, so the re-sync is a no-op.
 ## End-of-sync confidence pass
 
 After per-entry extraction, every scheduled or recently-changed hearing
-gets a separate focused LLM call (`verify_hearing`). The model sees just
-the candidate hearing plus the last 15 hearing-relevant entries on its
-docket, and returns one of:
+gets a separate focused LLM call (`verify_hearing`). The model sees the
+candidate hearing plus a window of hearing-relevant docket entries — the
+most recent on the docket *and* the entries filed around the hearing's
+own date — and returns one of:
 
 - `CONFIRM` — no-op.
 - `RESCHEDULE` — the docket says the hearing moved; update the row.
@@ -199,6 +200,14 @@ docket, and returns one of:
 This catches the classes of bug that per-entry extraction can't see:
 reschedules across multiple entries, trials that got mooted by a plea
 but never explicitly vacated, and (rare) hallucinated rows.
+
+The around-the-hearing-date entries matter for past hearings on busy
+dockets: the record that proves a hearing happened (a minute entry or
+judgment) is filed near the hearing date and can fall outside the
+most-recent window once the docket moves on. Without it the pass would
+leave a concluded hearing stuck at `scheduled` — it never saw the
+evidence. It widens what the model can see without lowering the bar for
+`MARK_HELD`, which still requires a cited record.
 
 There's a parallel verify pass for filing deadlines when those are
 enabled on the case.
