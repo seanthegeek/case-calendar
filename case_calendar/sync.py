@@ -777,7 +777,7 @@ class CaseSyncer:
         seen: set[int] = set()
         merged: list[dict[str, Any]] = []
         for entry in (*recent, *near):
-            eid = entry.get("entry_id")
+            eid = entry["entry_id"]  # always present from the store query
             if eid in seen:
                 continue
             seen.add(eid)
