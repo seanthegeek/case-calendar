@@ -8,7 +8,7 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.7.3] - 2026-05-27
 
 ### Fixed
 
@@ -26,6 +26,8 @@ adheres to [Semantic Versioning][semver].
   the hearing's own date (anchored on `date_filed`), widening what it can see
   without loosening the bar for marking a hearing held — the prompt still
   requires a cited record.
+
+[0.7.3]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.7.3
 
 ## [0.7.2] - 2026-05-26
 
