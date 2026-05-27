@@ -30,10 +30,20 @@ Constraints honored:
     the entries table (fingerprints, bodies) is untouched, so the store behaves
     exactly like a prod store on the next real sync (no spurious re-extraction).
 
+  * **Each provider's run is independently readable.** The builds share one
+    stderr stream, so the console interleaves every provider's lines — but each
+    log record is ALSO routed to ``<provider>/build.log`` by the emitting
+    thread's provider, and the extractor-track LLM calls emit a per-entry
+    DECISION line (what the model decided for each entry / hearing / deadline)
+    into that same file. So after a build you can read one provider's reasoning
+    end-to-end without untangling it from the others. ``--no-decisions`` keeps
+    the per-provider build.log but drops the per-entry DECISION trace.
+
 Layout — one subfolder per provider:
 
     data/provider-stores/<provider>/
         case-calendar.sqlite        # the candidate store
+        build.log                    # this provider's full sync log + DECISION trace
         out/                         # rendered ICS + index.html (NO push to gcal/M365)
             <calendar>.ics ...
             index.html
@@ -217,6 +227,168 @@ def _fake_dispatch(
     return (
         '{"actions": []}' if json_mode else "Fake summary text for plumbing validation."
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-provider log + decision capture
+# ---------------------------------------------------------------------------
+#
+# The builds run concurrently and all share one stderr stream, so the console
+# is an interleaved mix of every provider's lines. To make each provider's run
+# readable after the fact, ``_PerProviderLogHandler`` routes every log record
+# to ``<provider>/build.log`` based on the emitting thread's thread-local
+# provider (set at the top of ``build_for_provider``). On top of that, the
+# extractor-track LLM entry points are wrapped to emit one DECISION line per
+# call describing what that provider's model decided for the entry / hearing /
+# deadline — the per-entry "reasoning" the token telemetry alone doesn't show.
+# DECISION lines log through ``_DLOG`` and are kept OFF the interleaved console
+# (a filter drops them from the stderr handler); they land only in each
+# provider's build.log, already de-interleaved by provider.
+
+_DLOG = logging.getLogger("provider_stores.decisions")
+_LOG_FMT = "%(asctime)s %(levelname)s %(name)s %(message)s"
+
+
+class _DropDecisions(logging.Filter):
+    """Drop the verbose per-entry DECISION lines from a handler (the stderr
+    console) so they don't flood the interleaved stream — they still reach each
+    provider's build.log via ``_PerProviderLogHandler``."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.name != _DLOG.name
+
+
+class _PerProviderLogHandler(logging.Handler):
+    """Write each log record to ``<provider>/build.log`` based on the emitting
+    thread's thread-local provider. Records emitted outside a provider build
+    (``_TL.provider`` is None — e.g. the main thread during report assembly)
+    are ignored here; they still reach the stderr handler. Thread-safe: each
+    provider gets its own stream, opened once under a lock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._streams: dict[str, Any] = {}
+        self._slock = threading.Lock()
+
+    def _stream_for(self, provider: str) -> Any:
+        with self._slock:
+            s = self._streams.get(provider)
+            if s is None:
+                path = _provider_dir(provider) / "build.log"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                s = path.open("w", encoding="utf-8")
+                self._streams[provider] = s
+            return s
+
+    def emit(self, record: logging.LogRecord) -> None:
+        provider = getattr(_TL, "provider", None)
+        if not provider:
+            return
+        try:
+            stream = self._stream_for(provider)
+            stream.write(self.format(record) + "\n")
+            stream.flush()
+        except Exception:  # noqa: BLE001 — logging must never crash a build
+            self.handleError(record)
+
+    def close(self) -> None:
+        with self._slock:
+            for s in self._streams.values():
+                try:
+                    s.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._streams.clear()
+        super().close()
+
+
+def _short(s: Optional[str], n: int = 80) -> str:
+    s = " ".join((s or "").split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def _action_brief(a: Any) -> str:
+    """Compact one-line summary of a single LLM action / decision dict: the
+    TYPE plus whichever of key / significance / date the action carries."""
+    if not isinstance(a, dict):
+        return repr(a)
+    atype = str(a.get("type") or "?").upper()
+    extras: list[str] = []
+    key = a.get("hearing_key") or a.get("deadline_key") or a.get("target_key")
+    if key:
+        extras.append(str(key))
+    if a.get("significance"):
+        extras.append(str(a["significance"]))
+    for dk in ("local_date", "due_date", "new_local_date", "local_time"):
+        if a.get(dk):
+            extras.append(str(a[dk]))
+    return f"{atype}({', '.join(extras)})" if extras else atype
+
+
+def _format_decision(kind: str, kwargs: dict[str, Any], result: Any) -> str:
+    """Render one DECISION line for a wrapped extractor-track LLM call.
+
+    ``kind`` selects which kwarg carries the context (the entry, the candidate
+    hearing / deadline, or the same-slot cluster); ``result`` is what the model
+    returned — a list of actions for extract, a single decision dict for the
+    verify / dedupe passes."""
+    if kind == "extract":
+        entry = kwargs.get("entry") or {}
+        acts = result if isinstance(result, list) else [result]
+        summary = ", ".join(_action_brief(a) for a in acts) if acts else "(none)"
+        desc = _short(entry.get("short_description") or entry.get("description"))
+        return (
+            f"extract docket={kwargs.get('docket_id')} "
+            f'entry={entry.get("id")} "{desc}" -> {summary}'
+        )
+    if kind == "verify_hearing":
+        h = kwargs.get("hearing") or {}
+        return (
+            f"verify_hearing key={h.get('hearing_key')!r} "
+            f"starts={h.get('starts_at_utc')} status={h.get('status')} "
+            f"-> {_action_brief(result)}"
+        )
+    if kind == "verify_deadline":
+        d = kwargs.get("deadline") or {}
+        return (
+            f"verify_deadline key={d.get('deadline_key')!r} "
+            f"due={d.get('due_at_utc')} status={d.get('status')} "
+            f"-> {_action_brief(result)}"
+        )
+    if kind == "dedupe":
+        cluster = kwargs.get("cluster") or []
+        keys = ", ".join(str(h.get("hearing_key")) for h in cluster)
+        starts = cluster[0].get("starts_at_utc") if cluster else None
+        return f"dedupe cluster=[{keys}] starts={starts} -> {_action_brief(result)}"
+    return f"{kind} -> {result!r}"
+
+
+# extractor-track LLM entry points -> the context kind each call carries.
+_DECISION_WRAPS = {
+    "extract_actions": "extract",
+    "verify_hearing": "verify_hearing",
+    "verify_deadline": "verify_deadline",
+    "resolve_duplicate_hearings": "dedupe",
+}
+
+
+def _wrap_llm(name: str, kind: str) -> Any:
+    """Return a wrapper around ``llm.<name>`` that, after delegating to the
+    real function, logs one DECISION line tagged to the calling thread's
+    provider (via ``_PerProviderLogHandler``). The real result is returned
+    unchanged; a logging failure never sinks a build."""
+    orig = getattr(llm, name)
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        result = orig(*args, **kwargs)
+        if getattr(_TL, "provider", None):
+            try:
+                _DLOG.info("%s", _format_decision(kind, kwargs, result))
+            except Exception:  # noqa: BLE001
+                logger.debug("decision log failed for %s", name, exc_info=True)
+        return result
+
+    return wrapped
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +767,13 @@ def build_report(
     for p in providers_built:
         L.append(f"- {p}: `{_provider_dir(p)}/out/index.html`")
     L.append("")
+    L.append(
+        "Each provider's full sync log — including the per-entry extractor "
+        "DECISION trace — is at `<provider>/build.log`:"
+    )
+    for p in providers_built:
+        L.append(f"- {p}: `{_provider_dir(p)}/build.log`")
+    L.append("")
     return "\n".join(L)
 
 
@@ -635,14 +814,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="diff each store's row counts against current prod",
     )
+    ap.add_argument(
+        "--no-decisions",
+        action="store_true",
+        help="don't capture the per-entry extractor DECISION trace into each "
+        "provider's build.log (the per-provider build.log itself is always written)",
+    )
     ap.add_argument("--out", help="also write the markdown report to this path")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-        stream=sys.stderr,
-    )
+    logging.basicConfig(level=logging.INFO, format=_LOG_FMT, stream=sys.stderr)
+    # Keep the verbose per-entry DECISION lines off the interleaved console;
+    # they go only to each provider's build.log (de-interleaved by provider).
+    for _h in logging.getLogger().handlers:
+        _h.addFilter(_DropDecisions())
+    pp_log = _PerProviderLogHandler()
+    pp_log.setFormatter(logging.Formatter(_LOG_FMT))
+    logging.getLogger().addHandler(pp_log)
 
     providers_to_build = [p.strip() for p in args.providers.split(",") if p.strip()]
     for p in providers_to_build:
@@ -670,6 +858,15 @@ def main(argv: Optional[list[str]] = None) -> int:
     orig_dispatch = providers._dispatch_llm_call
     if args.fake:
         providers._dispatch_llm_call = _fake_dispatch  # type: ignore[assignment]
+    # Wrap the extractor-track LLM entry points to log a per-entry DECISION
+    # trace into each provider's build.log. Patching the module attribute is
+    # caught by every call site (sync's ``llm_mod.verify_hearing`` etc. bind the
+    # same module object and resolve the attribute at call time).
+    saved_llm: dict[str, Any] = {}
+    if not args.no_decisions:
+        for _name, _kind in _DECISION_WRAPS.items():
+            saved_llm[_name] = getattr(llm, _name)
+            setattr(llm, _name, _wrap_llm(_name, _kind))
     _install_pdf_cache()
     # Pin to provider defaults: clear any model overrides for the run.
     saved_models = {
@@ -683,6 +880,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     failed: list[str] = []
 
     def _build(p: str) -> str:
+        _TL.provider = p  # so this thread's logs route to <p>/build.log from here on
         logger.info("==================== building %s ====================", p)
         return build_for_provider(p, src_path, cfg, cases, raw_cases, cl)
 
@@ -711,6 +909,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         providers._detect_provider = _REAL_DETECT  # type: ignore[assignment]
         usage.record = _ORIG_RECORD  # type: ignore[assignment]
         pdf.extract_text = _ORIG_PDF_EXTRACT  # type: ignore[assignment]
+        for _name, _fn in saved_llm.items():
+            setattr(llm, _name, _fn)
         for k, v in saved_models.items():
             if v is not None:
                 os.environ[k] = v
@@ -733,6 +933,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)
         Path(args.out).write_text(report + "\n", encoding="utf-8")
         logger.info("wrote %s", args.out)
+    pp_log.close()  # flush + close each provider's build.log
     return 0
 
 
