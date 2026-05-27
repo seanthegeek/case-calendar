@@ -119,11 +119,65 @@ synthesis task warrants the upgrade. Defaults:
 | OpenAI | GPT-5.4 |
 | Gemini | Gemini 2.5 Pro |
 
-As a rough guide, budget **$0.10–0.60 per docket for the first run**,
-near-zero on subsequent runs (existing rows are reused unless the docket got
-a new primary document or disposition). On a 30-case calendar you'll probably
-spend a few dollars to backfill and pennies a week thereafter — but don't
-take that estimate on faith; measure your own.
+Cost scales with your caseload — the number of dockets, how many entries each
+has, and how long the documents are — so a single universal figure would
+mislead. Instead, here are **real measured numbers** from a full from-scratch
+backfill of the maintainer's own calendar (28 cases / 34 logical dockets,
+measured 2026-05-26), broken out by provider and track. "Backfill" means
+processing every historical docket entry plus generating every summary — the
+one-time cost of onboarding a caseload:
+
+| Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
+| --- | --: | --: | --: | --: |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $4.29 | $0.40 | $2.17 | **$6.87** |
+| OpenAI (GPT-5.4-nano / GPT-5.4) | $0.79 | $0.11 | $1.60 | **$2.51** |
+| Gemini (2.5 Flash Lite / 2.5 Pro) | $0.57 | $0.08 | $1.09 | **$1.73** |
+
+That's roughly **$0.03–0.06 per docket for summaries** and **$0.02–0.15 per
+case for extraction** (extraction scales with entry count, so a busy docket
+costs more). Summaries are the larger, document-length-driven line item; the
+cheap extractor tier is genuinely cents. To estimate your own bill, scale by
+your docket and entry counts. After the backfill, existing summaries are reused
+unless a docket gets a new primary document or disposition, so ongoing spend is
+**pennies a week**; the `verify` track (a small recurring cost — one focused
+call per non-terminal hearing/deadline) is what runs on every sync, and even
+that stayed under $0.40 across the whole caseload on the priciest provider.
+
+These are **estimates from the price table** (below), not a bill, and they
+reflect one specific caseload on one date — don't take them on faith; measure
+your own with the `llm-tokens` lines.
+
+### CourtListener API limits
+
+The LLM dollars above are only half the picture — CourtListener's REST API is
+rate-limited, and higher limits come from a Free Law Project membership (which
+also funds the project). The tiers, with the per-minute / hour / day request
+ceilings ([free.law/membership](https://free.law/membership/), verified
+2026-05-26):
+
+| Tier | Price | Requests (min / hour / day) |
+| --- | --- | --- |
+| Free (non-member) | — | 5 / 50 / 125 |
+| Tier 1 | $10/mo · $100/yr | 10 / 75 / 300 |
+| Tier 2 | $25/mo · $250/yr | 15 / 150 / 600 |
+| Tier 3 | $50/mo · $500/yr | 20 / 250 / 1,000 |
+| Tier 4 | $100/mo · $1,000/yr | 25 / 300 / 1,400 |
+
+Membership API access is intended for small firms, small government / media
+outlets, academics, and pre-revenue / pre-funding organizations — not large or
+funded ones.
+
+Against the backfill above: it made **43 API calls total**, so its **hourly and
+daily** totals (43 / 43) sit inside even the free tier (50 / 125). The catch is
+the **per-minute burst** — the backfill peaked at **12 requests in one minute**
+(cold-docket lookups firing back-to-back), which exceeds the free (5/min) and
+Tier 1 (10/min) per-minute caps. That isn't data loss: the client honors
+`Retry-After` and backs off automatically (just slower). But a from-scratch
+backfill — especially building multiple providers in parallel — wants **Tier 2
+(15/min)** to avoid per-minute throttling. Steady-state polling is a handful of
+requests per sync, far below every tier. The per-run `courtlistener-requests`
+log line reports your actual peak min / hour / day so you can size your
+membership.
 
 ### Measuring real token usage and estimated cost
 

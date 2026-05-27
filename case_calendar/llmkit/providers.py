@@ -142,7 +142,12 @@ def _call_openai(
     client = openai.OpenAI(timeout=120.0, max_retries=8)
     kwargs: dict[str, Any] = {
         "model": chosen,
-        "max_tokens": max_tokens,
+        # The gpt-5 family (our default openai tier — gpt-5.4-nano / gpt-5.4)
+        # rejects the older `max_tokens` parameter with a 400
+        # ``unsupported_parameter`` error and requires `max_completion_tokens`
+        # instead. The newer name is the one current chat-completions models
+        # accept, so we always send it.
+        "max_completion_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system},
             {"role": "user", "content": user},
