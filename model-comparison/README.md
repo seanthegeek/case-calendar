@@ -53,8 +53,8 @@ stay as gitignored local intermediates under `data/provider-stores/`.
 
 | Path | What it is |
 | --- | --- |
-| `model_events.csv` | **Source data**: one row per hearing/deadline each column (plus the live `prod` baseline) produced — logical docket, status, significance, date. The `provider` column is the comparison label `provider/extraction-model` (e.g. `gemini/gemini-3.5-flash`). Raw and unaggregated on purpose (see above). |
-| `ground_truth.template.csv` | The blind worksheet — one row per logical docket with the CourtListener link(s) to read and empty count columns. Copy it and fill it in. |
+| `model_events.csv` | **Source data**: one row per hearing/deadline each column (plus the live `prod` baseline) produced — CourtListener record (`docket_id`), logical docket, status, significance, date. The `provider` column is the comparison label `provider/extraction-model` (e.g. `gemini/gemini-3.5-flash`). Raw and unaggregated on purpose (see above). |
+| `ground_truth.template.csv` | The blind worksheet — one row per CourtListener record with the docket link to read and empty count columns. Copy it and fill it in. |
 | `score.py` | Scores a filled worksheet against `model_events.csv`. Pure stdlib. |
 | `cost.md` | The build's cost report: cost per column and track, CourtListener usage, output row counts. |
 | `ground_truth_worksheet.py` | (Re)generates the blank worksheet from `config.yaml` + the store. |
@@ -67,7 +67,7 @@ This is the part that makes the ranking credible: you supply the truth.
 
 ```bash
 cp model-comparison/ground_truth.template.csv model-comparison/ground_truth.csv
-# open each docket (the courtlistener_urls column), read it, and fill the six
+# open each record (the courtlistener_url column), read it, and fill the six
 # count columns; then:
 python3 model-comparison/score.py --out model-comparison/SCORECARD.md
 ```
@@ -79,10 +79,10 @@ numbers, with a per-docket breakdown so every number is auditable.
 **Fill the worksheet from the dockets, not from `model_events.csv`** — scoring
 blind to the models' answers is the whole point.
 
-**How to fill each row** (per logical docket, reading the linked docket(s)):
+**How to fill each row** (per CourtListener record, reading the linked page):
 
-- Count **every** hearing and **every** deadline on the docket — all of them, not
-  just the calendar-worthy ones — by current status:
+- Count **every** hearing and **every** deadline on that record's page — all of
+  them, not just the calendar-worthy ones — by current status:
   - hearings → `scheduled` (date still ahead), `held` (occurred), `cancelled`
     (vacated or struck)
   - deadlines → `pending` (current due date still ahead), `met_or_passed` (due date
@@ -97,10 +97,10 @@ blind to the models' answers is the whole point.
   opening brief, a response, and a reply is **three** separate deadlines, not one —
   count each. The test is whether they're genuinely different events, not whether
   they were set by the same order.
-- The 9 rows with more than one CourtListener link are a single PACER docket split
-  across CourtListener records — **read them together and count each real event
-  once** (a model that double-counts across records will deviate upward, which is
-  the point).
+- When CourtListener has split one PACER docket across several records, those
+  records share a docket number + court but each has its own `courtlistener_id`
+  and its own row — **score each row from its own page**, counting the events
+  visible on that record. The records of one split docket sit on adjacent rows.
 - Leave a row blank to skip it; `score.py` only scores filled rows, so you can
   work in passes and re-run.
 

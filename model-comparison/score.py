@@ -4,21 +4,23 @@
 The human establishes the truth by reading the dockets (see
 ``ground_truth_worksheet.py``); this is the dumb, deterministic part. It reads
 the model outputs from ``model_events.csv`` (produced by
-``export_model_events.py``) and, for every logical docket the human scored,
+``export_model_events.py``) and, for every CourtListener record the human scored,
 counts the same six numbers per model and reports how far each deviates from the
 human's numbers. No LLM, no judgment — just |model − truth| summed up.
 
-Counts are per LOGICAL docket (docket number + court; CourtListener records of one
-PACER docket collapse together), over EVERY event regardless of significance,
-bucketed by status:
+Counts are per CourtListener record (one row per CourtListener ``docket_id``; a
+PACER docket that CourtListener split across several records is scored as several
+rows), over EVERY event regardless of significance, bucketed by status:
 
   hearings:  scheduled / held / cancelled
   deadlines: pending / met_or_passed (met + passed) / cancelled
 
-Counting raw events per logical docket is deliberate: if a model splits one
-logical event across keys or CourtListener records, its count rises above the
-human's truth and the deviation captures it — duplication and over-extraction
-score themselves, as do missed events (the count falls below the truth).
+Each record is scored on its own page: the human reads that one CourtListener
+record and counts its events, and the model's count for that ``docket_id`` is
+compared against it. A model that splits one logical event into duplicate keys
+WITHIN a record still deviates upward, as do missed events (the count falls below
+the truth). Duplication ACROSS records is no longer caught here — that was the
+trade-off for one-page-per-row scoring.
 
 Anyone can run this: read the same public dockets, fill your own copy of the
 worksheet, and point ``--truth`` at it. Fill the worksheet from the DOCKETS, not
@@ -61,7 +63,7 @@ _SHORT = {
 # their provider prefix so sibling models on one provider sit together.
 
 Counts = dict[str, int]
-LogicalKey = tuple[str, str]  # (docket_number, court)
+RecordKey = str  # CourtListener docket_id (one row per record)
 
 
 def _zero() -> Counts:
@@ -70,18 +72,24 @@ def _zero() -> Counts:
 
 def load_truth(
     path: Path,
-) -> tuple[dict[LogicalKey, Counts], dict[LogicalKey, str], list[str]]:
-    """Return (scored truth by logical key, case-name by key, unfilled labels).
+) -> tuple[dict[RecordKey, Counts], dict[RecordKey, str], list[str]]:
+    """Return (scored truth by docket_id, display label by docket_id, unfilled labels).
 
     A row is "scored" only when all six count columns parse as integers; a row
     with any blank count is treated as not-yet-filled and skipped."""
-    truth: dict[LogicalKey, Counts] = {}
-    names: dict[LogicalKey, str] = {}
+    truth: dict[RecordKey, Counts] = {}
+    labels: dict[RecordKey, str] = {}
     unfilled: list[str] = []
     with path.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            key = (row["docket_number"].strip(), row["court"].strip())
-            names[key] = (row.get("case_name") or "").strip()
+            key = row["courtlistener_id"].strip()
+            if not key:
+                continue
+            label = (
+                f"{(row.get('case_name') or '').strip()} — "
+                f"{row['docket_number'].strip()} ({row['court'].strip()}) #{key}"
+            )
+            labels[key] = label
             counts: Counts = {}
             ok = True
             for c in CATEGORIES:
@@ -93,23 +101,23 @@ def load_truth(
                     counts[c] = int(raw)
                 except ValueError as exc:
                     raise SystemExit(
-                        f"{path}: docket {key[0]} ({key[1]}) column {c!r} is "
+                        f"{path}: record {label} column {c!r} is "
                         f"{raw!r}, not an integer"
                     ) from exc
             if ok:
                 truth[key] = counts
             else:
-                unfilled.append(f"{names[key]} — {key[0]} ({key[1]})")
-    return truth, names, unfilled
+                unfilled.append(label)
+    return truth, labels, unfilled
 
 
-def load_model_events(path: Path) -> dict[str, dict[LogicalKey, Counts]]:
-    """Aggregate the events CSV into per-provider, per-logical-docket counts."""
-    by_provider: dict[str, dict[LogicalKey, Counts]] = {}
+def load_model_events(path: Path) -> dict[str, dict[RecordKey, Counts]]:
+    """Aggregate the events CSV into per-provider, per-CourtListener-record counts."""
+    by_provider: dict[str, dict[RecordKey, Counts]] = {}
     with path.open(newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             prov = row["provider"].strip()
-            key = (row["docket_number"].strip(), row["court"].strip())
+            key = (row.get("docket_id") or "").strip()
             counts = by_provider.setdefault(prov, {}).setdefault(key, _zero())
             status = (row["status"] or "").strip()
             if row["type"] == "hearing":
@@ -137,9 +145,9 @@ def deviation(model: Counts, truth: Counts) -> dict[str, int]:
 
 
 def build_report(
-    truth: dict[LogicalKey, Counts],
-    names: dict[LogicalKey, str],
-    events: dict[str, dict[LogicalKey, Counts]],
+    truth: dict[RecordKey, Counts],
+    labels: dict[RecordKey, str],
+    events: dict[str, dict[RecordKey, Counts]],
     unfilled: list[str],
 ) -> str:
     # prod first (a baseline), then the model columns sorted — alphabetical
@@ -149,7 +157,7 @@ def build_report(
 
     totals = {p: 0 for p in order}
     cat_totals = {p: _zero() for p in order}
-    per_docket: dict[LogicalKey, dict[str, int]] = {}
+    per_docket: dict[RecordKey, dict[str, int]] = {}
     for key, t in truth.items():
         per_docket[key] = {}
         for p in order:
@@ -163,7 +171,7 @@ def build_report(
     label = {"prod": "prod (live)"}
     L: list[str] = ["# Provider accuracy vs human ground truth", ""]
     L.append(
-        f"Scored **{len(truth)}** of {len(truth) + len(unfilled)} logical dockets "
+        f"Scored **{len(truth)}** of {len(truth) + len(unfilled)} CourtListener records "
         "(those with all six counts filled in). Lower deviation = closer to the "
         "human-read truth. Deviation is the sum of |model count − your count| over "
         "the six status categories."
@@ -190,7 +198,7 @@ def build_report(
     )
     L.append("")
     for key in sorted(truth, key=lambda k: -max(per_docket[k].values(), default=0)):
-        L.append(f"### {names.get(key, '')} — {key[0]} ({key[1]})")
+        L.append(f"### {labels.get(key, key)}")
         L.append("")
         L.append(f"- truth: `{_tuple(truth[key])}`")
         for p in order:
@@ -230,17 +238,17 @@ def main(argv: Optional[list[str]] = None) -> int:
             "fill in your counts first."
         )
 
-    truth, names, unfilled = load_truth(truth_path)
+    truth, labels, unfilled = load_truth(truth_path)
     if not truth:
         raise SystemExit(
             f"{truth_path} has no filled-in rows yet. Fill the six count columns "
-            "for at least one logical docket, then re-run."
+            "for at least one CourtListener record, then re-run."
         )
     events = load_model_events(events_path)
     if not any(p != "prod" for p in events):
         raise SystemExit(f"{events_path} has no model-column events.")
 
-    report = build_report(truth, names, events, unfilled)
+    report = build_report(truth, labels, events, unfilled)
     print(report)
     if args.out:
         Path(args.out).parent.mkdir(parents=True, exist_ok=True)

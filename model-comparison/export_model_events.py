@@ -11,9 +11,10 @@ with its logical docket, status, significance, and date — into a single
 Raw per-event rows on purpose: a human filling the ground-truth worksheet can't
 eyeball "model X says N hearings on docket Y" from this without aggregating it
 (i.e. running the scorer, which they do AFTER scoring) — so committing it doesn't
-hand them an answer key. The logical docket (docket number + court) is on every
-row, so one PACER docket split across several CourtListener records collapses
-naturally when the scorer groups by it.
+hand them an answer key. Both the CourtListener ``docket_id`` and the logical
+docket (docket number + court) are on every row; the scorer groups by
+``docket_id`` — one row per CourtListener record — and uses the docket number +
+court only for labeling.
 
 Every store under ``--stores`` is exported as one column, labelled by its path
 relative to ``--stores``. ``build_provider_stores.py`` nests each column at

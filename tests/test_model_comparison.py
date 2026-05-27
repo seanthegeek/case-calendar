@@ -28,14 +28,15 @@ def _load(name: str, filename: str):
 
 score = _load("mc_score", "score.py")
 exporter = _load("mc_export", "export_model_events.py")
+worksheet = _load("mc_worksheet", "ground_truth_worksheet.py")
 
 _TRUTH_COLS = [
     "case_id",
     "case_name",
     "docket_number",
     "court",
-    "courtlistener_records",
-    "courtlistener_urls",
+    "courtlistener_id",
+    "courtlistener_url",
     "hearings_scheduled",
     "hearings_held",
     "hearings_cancelled",
@@ -53,9 +54,16 @@ def _write_csv(path: Path, cols: list[str], rows: list[dict]) -> None:
         w.writerows(rows)
 
 
-def _truth_row(docket, court, **counts):
+def _truth_row(cl_id, docket, court, **counts):
+    """One worksheet row, keyed (by the scorer) on its courtlistener_id."""
     row = {c: "" for c in _TRUTH_COLS}
-    row.update(docket_number=docket, court=court, case_name=f"case {docket}", **counts)
+    row.update(
+        courtlistener_id=cl_id,
+        docket_number=docket,
+        court=court,
+        case_name=f"case {docket}",
+        **counts,
+    )
     return row
 
 
@@ -64,13 +72,14 @@ def _truth_row(docket, court, **counts):
 # --------------------------------------------------------------------------- #
 
 
-def test_load_truth_filled_and_unfilled(tmp_path):
+def test_load_truth_keys_by_courtlistener_id(tmp_path):
     p = tmp_path / "t.csv"
     _write_csv(
         p,
         _TRUTH_COLS,
         [
             _truth_row(
+                "11",
                 "D1",
                 "c",
                 hearings_scheduled=1,
@@ -80,14 +89,37 @@ def test_load_truth_filled_and_unfilled(tmp_path):
                 deadlines_met_or_passed=0,
                 deadlines_cancelled=0,
             ),
-            _truth_row("D2", "c"),  # all counts blank -> unfilled
+            _truth_row("22", "D2", "c"),  # all counts blank -> unfilled
         ],
     )
-    truth, names, unfilled = score.load_truth(p)
-    assert set(truth) == {("D1", "c")}
-    assert truth[("D1", "c")]["hearings_held"] == 2
-    assert names[("D1", "c")] == "case D1"
-    assert len(unfilled) == 1 and "D2" in unfilled[0]
+    truth, labels, unfilled = score.load_truth(p)
+    assert set(truth) == {"11"}  # keyed by docket_id, not (docket_number, court)
+    assert truth["11"]["hearings_held"] == 2
+    assert labels["11"] == "case D1 — D1 (c) #11"
+    assert len(unfilled) == 1 and "#22" in unfilled[0]
+
+
+def test_load_truth_skips_rows_without_a_courtlistener_id(tmp_path):
+    p = tmp_path / "t.csv"
+    _write_csv(
+        p,
+        _TRUTH_COLS,
+        [
+            _truth_row(
+                "",  # no id -> cannot be attributed to a record, skipped
+                "D1",
+                "c",
+                hearings_scheduled=1,
+                hearings_held=0,
+                hearings_cancelled=0,
+                deadlines_pending=0,
+                deadlines_met_or_passed=0,
+                deadlines_cancelled=0,
+            ),
+        ],
+    )
+    truth, labels, unfilled = score.load_truth(p)
+    assert truth == {} and labels == {} and unfilled == []
 
 
 def test_load_truth_rejects_non_integer(tmp_path):
@@ -97,6 +129,7 @@ def test_load_truth_rejects_non_integer(tmp_path):
         _TRUTH_COLS,
         [
             _truth_row(
+                "11",
                 "D1",
                 "c",
                 hearings_scheduled="two",
@@ -135,30 +168,33 @@ def _event(provider, typ, docket, court, status, docket_id=1):
     }
 
 
-def test_load_model_events_groups_records_and_buckets_statuses(tmp_path):
+def test_load_model_events_buckets_per_record_and_status(tmp_path):
     p = tmp_path / "events.csv"
     _write_csv(
         p,
         _EVENT_COLS,
         [
-            # Same logical docket (D1, c) across two CourtListener records -> summed.
+            # docket_id 1 and 2 are SEPARATE CourtListener records of the same
+            # PACER docket -> separate keys, NOT summed together.
             _event("anthropic", "hearing", "D1", "c", "held", docket_id=1),
-            _event("anthropic", "hearing", "D1", "c", "held", docket_id=2),
             _event("anthropic", "hearing", "D1", "c", "scheduled", docket_id=1),
-            # met + passed both fold into met_or_passed.
+            _event("anthropic", "hearing", "D1", "c", "held", docket_id=2),
+            # met + passed both fold into met_or_passed within one record.
             _event("anthropic", "deadline", "D1", "c", "met", docket_id=1),
-            _event("anthropic", "deadline", "D1", "c", "passed", docket_id=2),
-            _event("anthropic", "deadline", "D1", "c", "cancelled", docket_id=1),
+            _event("anthropic", "deadline", "D1", "c", "passed", docket_id=1),
+            _event("anthropic", "deadline", "D1", "c", "cancelled", docket_id=2),
             _event("gemini", "hearing", "D1", "c", "held", docket_id=1),
         ],
     )
     ev = score.load_model_events(p)
-    a = ev["anthropic"][("D1", "c")]
-    assert a["hearings_held"] == 2  # collapsed across records
-    assert a["hearings_scheduled"] == 1
-    assert a["deadlines_met_or_passed"] == 2  # met + passed
-    assert a["deadlines_cancelled"] == 1
-    assert ev["gemini"][("D1", "c")]["hearings_held"] == 1  # separate provider
+    a1 = ev["anthropic"]["1"]  # docket_id read back from CSV as a string
+    a2 = ev["anthropic"]["2"]
+    assert a1["hearings_held"] == 1  # record 1 only
+    assert a1["hearings_scheduled"] == 1
+    assert a1["deadlines_met_or_passed"] == 2  # met + passed in record 1
+    assert a2["hearings_held"] == 1  # record 2 scored separately
+    assert a2["deadlines_cancelled"] == 1
+    assert ev["gemini"]["1"]["hearings_held"] == 1  # separate provider
 
 
 # --------------------------------------------------------------------------- #
@@ -178,25 +214,110 @@ def test_deviation_is_absolute_per_category():
 
 
 def test_build_report_totals_and_ordering():
-    key = ("D1", "c")
+    key = "1"  # a CourtListener docket_id
     z = {c: 0 for c in score.CATEGORIES}
     truth = {key: {**z, "hearings_held": 1}}
-    names = {key: "Case One"}
+    labels = {key: "Case One — D1 (c) #1"}
     events = {
         "anthropic": {key: {**z, "hearings_held": 1}},  # exact -> 0
         "gemini": {key: {**z, "hearings_held": 4}},  # off by 3
     }
-    report = score.build_report(truth, names, events, unfilled=[])
-    assert "Scored **1** of 1 logical dockets" in report
+    report = score.build_report(truth, labels, events, unfilled=[])
+    assert "Scored **1** of 1 CourtListener records" in report
     assert "| anthropic | **0** |" in report
     assert "| gemini | **3** |" in report
-    assert "Case One — D1 (c)" in report
+    assert "Case One — D1 (c) #1" in report
     assert "deviation 0" in report and "deviation 3" in report
 
 
 def test_build_report_lists_unfilled():
-    report = score.build_report({}, {}, {"anthropic": {}}, unfilled=["Case Z — D9 (c)"])
-    assert "Not yet scored" in report and "Case Z — D9 (c)" in report
+    report = score.build_report(
+        {}, {}, {"anthropic": {}}, unfilled=["Case Z — D9 (c) #9"]
+    )
+    assert "Not yet scored" in report and "Case Z — D9 (c) #9" in report
+
+
+# --------------------------------------------------------------------------- #
+# ground_truth_worksheet.build_rows
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCase:
+    def __init__(self, case_id, name, dockets):
+        self.case_id = case_id
+        self.name = name
+        self.dockets = dockets
+
+
+def _patch_worksheet(monkeypatch, cases, meta):
+    """Stub the worksheet's config + store so build_rows runs hermetically."""
+
+    class _FakeStore:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_docket_meta(self, did):
+            return meta.get(did)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(worksheet, "_load_config", lambda _p: {})
+    monkeypatch.setattr(worksheet, "_cases_from_config", lambda _cfg: cases)
+    monkeypatch.setattr(worksheet, "Store", _FakeStore)
+
+
+def test_worksheet_one_row_per_courtlistener_record(monkeypatch):
+    # A PACER docket CourtListener split across two records (101, 102) must
+    # produce TWO adjacent rows; a third, unrelated docket (200) its own row.
+    cases = [_FakeCase("us-v-x", "United States v. X", [101, 102, 200])]
+    meta = {
+        101: {
+            "docket_number": "1:25-cr-1",
+            "court_id": "nysd",
+            "absolute_url": "/docket/101/x/",
+        },
+        102: {
+            "docket_number": "1:25-cr-1",
+            "court_id": "nysd",
+            "absolute_url": "/docket/102/x/",
+        },
+        200: {
+            "docket_number": "2:25-cr-9",
+            "court_id": "cand",
+            "absolute_url": "/docket/200/y/",
+        },
+    }
+    _patch_worksheet(monkeypatch, cases, meta)
+
+    rows = worksheet.build_rows("ignored.yaml")
+
+    assert len(rows) == 3  # one row per CourtListener record, not one per docket
+    # Records of the split docket sit on adjacent rows, sorted by (number, court).
+    assert [r["courtlistener_id"] for r in rows] == [101, 102, 200]
+    split = [r for r in rows if r["docket_number"] == "1:25-cr-1"]
+    assert len(split) == 2 and all(r["court"] == "nysd" for r in split)
+    # Each row carries exactly one id + its own full URL (no " | " combining).
+    assert split[0]["courtlistener_url"] == (
+        "https://www.courtlistener.com/docket/101/x/"
+    )
+    assert "|" not in split[0]["courtlistener_url"]
+    # Count columns are left blank for the human to fill.
+    assert all(rows[0][c] == "" for c in worksheet._COUNT_COLUMNS)
+
+
+def test_worksheet_unsynced_docket_falls_back_to_placeholder(monkeypatch):
+    # A docket_id with no stored metadata still gets its own row.
+    cases = [_FakeCase("us-v-y", "United States v. Y", [999])]
+    _patch_worksheet(monkeypatch, cases, {})  # get_docket_meta -> None
+
+    rows = worksheet.build_rows("ignored.yaml")
+
+    assert len(rows) == 1
+    assert rows[0]["courtlistener_id"] == 999
+    assert rows[0]["docket_number"] == "(unsynced docket_id 999)"
+    assert rows[0]["court"] == "?"
+    assert rows[0]["courtlistener_url"] == ""
 
 
 # --------------------------------------------------------------------------- #

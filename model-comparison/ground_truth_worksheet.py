@@ -5,11 +5,11 @@ The credible way to rank the providers is to have a human establish the truth
 by reading the dockets — not an AI, not a heuristic — and then let a dumb script
 measure each provider store's deviation from that truth (``score.py``).
 
-This script emits the worksheet you fill in. It lists every *logical docket*
-(collapsing the multiple CourtListener records a single PACER docket can have
-into one row, keyed by docket number + court), with the CourtListener link(s) to
-read, and empty columns for the counts. **It contains no model output** — so
-filling it cannot be biased by what any provider produced.
+This script emits the worksheet you fill in. It lists every *CourtListener record*
+— one row per CourtListener docket_id — carrying its PACER docket number + court
+(so the records of one split docket sit on adjacent rows) and the link to read,
+with empty columns for the counts. **It contains no model output** — so filling it
+cannot be biased by what any provider produced.
 
 How to fill the worksheet (which events count, how reschedules and split records
 are handled, the six count columns) is documented once, canonically, in
@@ -57,7 +57,7 @@ _COLUMNS = [
     "docket_number",
     "court",
     "courtlistener_id",
-    "courtlistener_urls",
+    "courtlistener_url",
     *_COUNT_COLUMNS,
     "notes",
 ]
@@ -78,8 +78,9 @@ def build_rows(config_path: str) -> list[dict[str, Any]]:
     try:
         rows: list[dict[str, Any]] = []
         for case in cases:
-            # Collapse the case's CourtListener docket_ids into logical dockets
-            # keyed by (docket_number, court) — the unit the human scores.
+            # One row per CourtListener record (docket_id) — the unit the human
+            # scores. Group by (docket_number, court) only to keep the records of
+            # one split PACER docket on adjacent, sorted rows.
             groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
             for did in case.dockets:
                 meta = store.get_docket_meta(did) or {}
@@ -89,24 +90,19 @@ def build_rows(config_path: str) -> list[dict[str, Any]]:
                 )
                 groups[key].append({"docket_id": did, **meta})
             for (docket_number, court), records in sorted(groups.items()):
-                urls = " | ".join(
-                    _full_url(r.get("absolute_url"))
-                    for r in records
-                    if r.get("absolute_url")
-                )
-                ids = " | ".join(str(r["docket_id"]) for r in records)
-                row = {
-                    "case_id": case.case_id,
-                    "case_name": case.name,
-                    "docket_number": docket_number,
-                    "court": court,
-                    "courtlistener_id": ids,
-                    "courtlistener_urls": urls,
-                    "notes": "",
-                }
-                for c in _COUNT_COLUMNS:
-                    row[c] = ""
-                rows.append(row)
+                for r in records:
+                    row = {
+                        "case_id": case.case_id,
+                        "case_name": case.name,
+                        "docket_number": docket_number,
+                        "court": court,
+                        "courtlistener_id": r["docket_id"],
+                        "courtlistener_url": _full_url(r.get("absolute_url")),
+                        "notes": "",
+                    }
+                    for c in _COUNT_COLUMNS:
+                        row[c] = ""
+                    rows.append(row)
         return rows
     finally:
         closer = getattr(store, "close", None)
@@ -141,8 +137,8 @@ def main(argv: Optional[list[str]] = None) -> int:
         writer.writeheader()
         writer.writerows(rows)
     print(
-        f"wrote {out} — {len(rows)} logical dockets, blind (no model output). "
-        f"Fill the {len(_COUNT_COLUMNS)} count columns by reading each docket, "
+        f"wrote {out} — {len(rows)} CourtListener records, blind (no model output). "
+        f"Fill the {len(_COUNT_COLUMNS)} count columns by reading each record's page, "
         "then run model-comparison/score.py."
     )
     return 0
