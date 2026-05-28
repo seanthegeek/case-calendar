@@ -14,7 +14,7 @@ These prompts are part of Case Calendar and are licensed under the [Apache Licen
 
 The prompts split into two independently-configured tracks (see [AI case summaries](case-summaries.md) and the `LLM_*` / `LLM_SUMMARY_*` settings in [configuration](configuration.md)):
 
-- **Extraction / verification** — high-volume, short-context, classification-heavy work that runs on every relevant docket entry and at the end of every sync. Defaults to the small/fast model tier. Covers `SYSTEM_PROMPT` (+ `DEADLINE_PROMPT_ADDENDUM`), `VERIFY_SYSTEM_PROMPT`, `VERIFY_DEADLINE_SYSTEM_PROMPT`, and `DEDUPE_HEARING_SYSTEM_PROMPT`.
+- **Extraction / verification** — high-volume, short-context, classification-heavy work that runs on every relevant docket entry and at the end of every sync. Defaults to the small/fast model tier. Covers `SYSTEM_PROMPT` (hearings AND filing-deadline extraction in one merged prompt), `VERIFY_SYSTEM_PROMPT`, `VERIFY_DEADLINE_SYSTEM_PROMPT`, and `DEDUPE_HEARING_SYSTEM_PROMPT`.
 - **Summary** — low-volume (one call per docket), long-context, synthesis-heavy work. Defaults to a higher model tier. Covers `SUMMARY_SYSTEM_PROMPT` only.
 
 Every prompt also receives a per-call **user message** assembled at runtime (the entry text, the case's known events, related entries, the document text, the structured-events scaffold, and any operator notes). Those builders live alongside the prompts in `llm.py`; the system prompts below are the fixed instructions that frame them. All input data — docket text, PDF text — is treated as untrusted; each prompt that consumes it says so explicitly.
@@ -23,7 +23,7 @@ Every prompt also receives a per-call **user message** assembled at runtime (the
 
 [Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86)
 
-Runs against one docket entry plus the case's known-hearings list (and known-deadlines list when deadlines are on) and returns zero or more structured actions. The major-vs-minor `SIGNIFICANCE_RULES` rubric is interpolated into this prompt and is reproduced inline below. This is the small/fast tier (Haiku / `gpt-5.4-nano` / Flash Lite by default).
+Runs against one docket entry plus the case's known-hearings list and known-deadlines list, and returns zero or more structured actions covering both. The major-vs-minor `SIGNIFICANCE_RULES` rubric is interpolated into this prompt and is reproduced inline below. This is the small/fast tier (Haiku / `gpt-5.4-nano` / Flash Lite by default).
 
 ````text
 You extract structured court-hearing information from PACER docket entries
@@ -378,16 +378,6 @@ Return ONLY a JSON object, no markdown fences, no explanation:
 }
 
 Always emit at least one action. If nothing applies, emit a single IGNORE.
-````
-
-## Filing-deadline addendum — `DEADLINE_PROMPT_ADDENDUM`
-
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L391)
-
-Appended to `SYSTEM_PROMPT` only for cases that opt into filing-deadline tracking, so the simpler hearings-only prompt stays cheap on cases that don't need it. Adds the deadline action vocabulary (`ADD_DEADLINE` / `RESCHEDULE_DEADLINE` / `CANCEL_DEADLINE` / `MARK_FILED`) and the separate `deadline_key` namespace.
-
-````text
-
 
 # Filing deadlines (additional task)
 
@@ -494,6 +484,20 @@ The amicus distinction is critical and is NOT a judgment call:
   to Motion for Leave (X)". Title cues for the major flavor: "Amicus
   Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
   deadline", "Deadline for amici curiae to file briefs".
+
+The transcript distinction is similar and is NOT a judgment call:
+- "ORDER for Transcript" / "Transcript Order" / "Order Form" entries are
+  PRIVATE REQUESTS to purchase a copy of a transcript — they are NOT court
+  orders, and the date on them is when the request was placed, not a
+  deadline. Emit IGNORE for these.
+- A transcript-redaction-request deadline (e.g., "Notice of Intent to
+  Request Redaction due ...", "redaction request period ends ...") IS a
+  deadline, but procedural. ADD_DEADLINE with significance="minor" so it
+  stays in the audit trail without appearing on subscriber calendars.
+- A transcript public-release deadline (the date a filed transcript
+  becomes publicly viewable on the docket) IS a deadline AND substantive:
+  ADD_DEADLINE with significance="major". Subscribers want to know when
+  a trial transcript enters the public record.
 
 Default to "major" when uncertain. Same render-time gate as hearings —
 minor deadlines stay in the DB for the audit trail but don't appear on the

@@ -725,8 +725,10 @@ class TestExtractActionsDispatch:
 
 
 class TestBuildUserMessageOptionalBlocks:
-    def test_known_deadlines_block_only_when_passed(self):
-        msg_off = llm.build_user_message(
+    def test_known_deadlines_block_always_present(self):
+        # Deadline tracking is uniform now, so the block always renders —
+        # None and [] both produce the "(no deadlines known yet)" placeholder.
+        msg_none = llm.build_user_message(
             case_name="x",
             court_id="x",
             court_tz="x",
@@ -735,7 +737,8 @@ class TestBuildUserMessageOptionalBlocks:
             known_hearings=[],
             known_deadlines=None,
         )
-        assert "KNOWN DEADLINES" not in msg_off
+        assert "KNOWN DEADLINES" in msg_none
+        assert "(no deadlines known yet)" in msg_none
 
         msg_empty = llm.build_user_message(
             case_name="x",
@@ -2082,6 +2085,34 @@ class TestSystemPromptAntiInferenceGuards:
         # inferences.
         assert "NO inferred commentary" in llm.SYSTEM_PROMPT
         assert "circular-reasoning trap" in llm.SYSTEM_PROMPT
+
+
+class TestSystemPromptTranscriptRules:
+    """Regression guards for the three transcript-handling rules added
+    when deadline tracking went uniform across all dockets. They live in
+    the deadline portion of ``SYSTEM_PROMPT`` and tell the LLM how to
+    distinguish transcript orders (private requests, NOT deadlines) from
+    transcript-redaction deadlines (procedural → minor) from transcript
+    public-release deadlines (substantive → major). Delete one of these
+    rules and the next provider rebuild silently regresses.
+    """
+
+    def test_transcript_orders_marked_as_not_deadlines(self):
+        # "ORDER for Transcript" entries are private purchase requests,
+        # not court orders — must IGNORE, not extract as a deadline.
+        assert "ORDER for Transcript" in llm.SYSTEM_PROMPT
+        assert "PRIVATE REQUESTS" in llm.SYSTEM_PROMPT
+
+    def test_redaction_deadline_marked_minor(self):
+        # The redaction-request window: procedural, off-calendar.
+        assert "transcript-redaction-request deadline" in llm.SYSTEM_PROMPT
+        assert 'significance="minor"' in llm.SYSTEM_PROMPT
+
+    def test_public_release_deadline_marked_major(self):
+        # When a filed transcript becomes publicly viewable — substantive,
+        # on-calendar.
+        assert "transcript public-release deadline" in llm.SYSTEM_PROMPT
+        assert 'significance="major"' in llm.SYSTEM_PROMPT
 
 
 class TestSummaryPromptDatedReferenceGuards:

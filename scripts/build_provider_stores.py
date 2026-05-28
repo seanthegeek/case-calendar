@@ -548,9 +548,8 @@ def _replay_case(syncer: CaseSyncer, store: Store, case: CaseConfig) -> None:
     syncer._verify_scheduled_hearings(case)
     syncer._dedupe_concurrent_hearings(case)
     syncer._dedupe_concurrent_held_hearings(case)
-    if syncer.resolve_extract_deadlines(case):
-        syncer._verify_pending_deadlines(case)
-        syncer._auto_mark_passed_stale(case.case_id)
+    syncer._verify_pending_deadlines(case)
+    syncer._auto_mark_passed_stale(case.case_id)
     store.conn.commit()
 
 

@@ -84,17 +84,14 @@ def is_deadline_relevant(entry: dict[str, Any]) -> bool:
     return bool(_DEADLINE_HINTS.search(text))
 
 
-def is_extractable(entry: dict[str, Any], *, want_deadlines: bool = False) -> bool:
+def is_extractable(entry: dict[str, Any]) -> bool:
     """True iff the entry should reach the LLM at all.
 
-    Hearing-relevant entries always reach the LLM; deadline-relevant entries
-    do too when the case opts into deadline extraction.
+    Hearing-relevant and deadline-relevant entries both reach the LLM; the
+    LLM then decides whether anything actually changes. Deadline extraction
+    is now uniform across all dockets — there's no per-case opt-in.
     """
     text = _entry_text(entry)
     if not text.strip():
         return False
-    if _HEARING_HINTS.search(text):
-        return True
-    if want_deadlines and _DEADLINE_HINTS.search(text):
-        return True
-    return False
+    return bool(_HEARING_HINTS.search(text) or _DEADLINE_HINTS.search(text))

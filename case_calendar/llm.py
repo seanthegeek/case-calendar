@@ -380,15 +380,6 @@ Return ONLY a JSON object, no markdown fences, no explanation:
 }
 
 Always emit at least one action. If nothing applies, emit a single IGNORE.
-"""
-
-SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__SIGNIFICANCE_RULES__", SIGNIFICANCE_RULES)
-
-
-# Appended to SYSTEM_PROMPT for cases that opt into filing-deadline extraction.
-# Kept off by default so the simpler hearings-only prompt stays cheap on
-# cases that don't need it (most criminal dockets).
-DEADLINE_PROMPT_ADDENDUM = """
 
 # Filing deadlines (additional task)
 
@@ -496,6 +487,20 @@ The amicus distinction is critical and is NOT a judgment call:
   Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
   deadline", "Deadline for amici curiae to file briefs".
 
+The transcript distinction is similar and is NOT a judgment call:
+- "ORDER for Transcript" / "Transcript Order" / "Order Form" entries are
+  PRIVATE REQUESTS to purchase a copy of a transcript — they are NOT court
+  orders, and the date on them is when the request was placed, not a
+  deadline. Emit IGNORE for these.
+- A transcript-redaction-request deadline (e.g., "Notice of Intent to
+  Request Redaction due ...", "redaction request period ends ...") IS a
+  deadline, but procedural. ADD_DEADLINE with significance="minor" so it
+  stays in the audit trail without appearing on subscriber calendars.
+- A transcript public-release deadline (the date a filed transcript
+  becomes publicly viewable on the docket) IS a deadline AND substantive:
+  ADD_DEADLINE with significance="major". Subscribers want to know when
+  a trial transcript enters the public record.
+
 Default to "major" when uncertain. Same render-time gate as hearings —
 minor deadlines stay in the DB for the audit trail but don't appear on the
 calendar.
@@ -576,6 +581,8 @@ deadline actions. A scheduling order that sets a hearing date and a briefing
 schedule should emit one ADD plus several ADD_DEADLINE entries.
 """
 
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__SIGNIFICANCE_RULES__", SIGNIFICANCE_RULES)
+
 
 def build_user_message(
     *,
@@ -605,17 +612,15 @@ def build_user_message(
         )
     known_block = "\n".join(known_lines) or "  (no hearings known yet)"
 
-    deadlines_block = ""
-    if known_deadlines is not None:
-        d_lines = []
-        for d in known_deadlines:
-            d_lines.append(
-                f"  - key={d['deadline_key']!r} status={d['status']} "
-                f"title={d['title']!r} due_utc={d.get('due_at_utc')} "
-                f"type={d.get('deadline_type')!r} docket_id={d.get('docket_id')}"
-            )
-        d_block = "\n".join(d_lines) or "  (no deadlines known yet)"
-        deadlines_block = f"\n\nKNOWN DEADLINES:\n{d_block}"
+    d_lines = []
+    for d in known_deadlines or []:
+        d_lines.append(
+            f"  - key={d['deadline_key']!r} status={d['status']} "
+            f"title={d['title']!r} due_utc={d.get('due_at_utc')} "
+            f"type={d.get('deadline_type')!r} docket_id={d.get('docket_id')}"
+        )
+    d_block = "\n".join(d_lines) or "  (no deadlines known yet)"
+    deadlines_block = f"\n\nKNOWN DEADLINES:\n{d_block}"
 
     pdf_block = ""
     if pdf_texts:
@@ -757,15 +762,15 @@ def extract_actions(
     docket_id: int | None = None,
     referenced_entries: list[dict[str, Any]] | None = None,
     known_deadlines: list[dict[str, Any]] | None = None,
-    extract_deadlines: bool = False,
     max_tokens: int = 8192,
 ) -> list[dict[str, Any]]:
     """Run the configured LLM against one docket entry and return actions.
 
-    When ``extract_deadlines=True`` the prompt also asks for filing-deadline
-    actions (ADD_DEADLINE / RESCHEDULE_DEADLINE / CANCEL_DEADLINE / MARK_FILED)
-    and the user message includes the case's known deadlines for matching.
-    Returned actions are a flat list — callers dispatch on the ``type`` field.
+    The prompt asks for BOTH hearing actions (ADD / RESCHEDULE / etc.) AND
+    filing-deadline actions (ADD_DEADLINE / RESCHEDULE_DEADLINE /
+    CANCEL_DEADLINE / MARK_FILED) on every call — deadline tracking is now
+    uniform across all dockets. Returned actions are a flat list; callers
+    dispatch on the ``type`` field.
     """
     provider = providers._detect_provider()
     if provider is None:
@@ -774,7 +779,6 @@ def extract_actions(
             "*_API_KEY env var (or put them in .env)."
         )
 
-    system = SYSTEM_PROMPT + (DEADLINE_PROMPT_ADDENDUM if extract_deadlines else "")
     user = build_user_message(
         case_name=case_name,
         court_id=court_id,
@@ -784,19 +788,24 @@ def extract_actions(
         known_hearings=known_hearings,
         docket_id=docket_id,
         referenced_entries=referenced_entries,
-        known_deadlines=known_deadlines if extract_deadlines else None,
+        known_deadlines=known_deadlines,
     )
     logger.debug(
-        "llm input entry=%s known_hearings=%d known_deadlines=%s user=%s",
+        "llm input entry=%s known_hearings=%d known_deadlines=%d user=%s",
         entry.get("id"),
         len(known_hearings),
-        len(known_deadlines or []) if extract_deadlines else "off",
+        len(known_deadlines or []),
         user,
     )
 
     try:
         raw = providers._dispatch_llm_call(
-            provider, system, user, max_tokens, purpose="extract", docket=docket_id
+            provider,
+            SYSTEM_PROMPT,
+            user,
+            max_tokens,
+            purpose="extract",
+            docket=docket_id,
         )
     except OutputTruncatedError as exc:
         logger.warning(
@@ -815,10 +824,10 @@ def extract_actions(
 
     actions = _parse_actions(raw)
     logger.info(
-        "llm extract entry=%s known_hearings=%d known_deadlines=%s -> %s",
+        "llm extract entry=%s known_hearings=%d known_deadlines=%d -> %s",
         entry.get("id"),
         len(known_hearings),
-        len(known_deadlines or []) if extract_deadlines else "off",
+        len(known_deadlines or []),
         [a.get("type") for a in actions],
     )
     logger.debug("llm raw entry=%s response=%s", entry.get("id"), raw)

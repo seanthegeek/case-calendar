@@ -851,7 +851,6 @@ class TestCrossCourtContextFilter:
             name="X",
             dockets=[200, 300],
             calendar="t",
-            extract_deadlines=True,
         )
 
         # Seed a hearing + deadline on the D.C. Cir. docket.
@@ -1016,7 +1015,6 @@ class TestCrossCourtActionGuard:
             name="X",
             dockets=[200, 300],
             calendar="t",
-            extract_deadlines=True,
         )
         cl = FakeCourtListener(dockets={200: cadc, 300: ca9})
         return cl, case_multi
@@ -2178,7 +2176,6 @@ class TestDeadlineExtraction:
             name="United States v. X",
             dockets=[100],
             calendar="cyber",
-            extract_deadlines=True,
         )
 
     def test_add_deadline_creates_row_at_5pm_court_time(
@@ -2595,103 +2592,63 @@ class TestDeadlineExtraction:
         assert stats["auto_passed"] == 1
         assert store.get_deadlines("us-v-x")[0]["status"] == "passed"
 
-    def test_criminal_docket_auto_detects_deadlines_off(
+    def test_deadlines_track_uniformly_on_every_docket_type(
         self,
         store,
         monkeypatch,
     ):
-        # Default behavior on a routine criminal docket: deadlines stay off
-        # without any explicit config. The LLM call goes through (the entry
-        # is hearing-relevant) but with extract_deadlines=False on the prompt
-        # and known_deadlines unset.
-        case_default = CaseConfig(
+        # Deadline tracking is now uniform — no per-case opt-in, no
+        # docket-number auto-detect. Both criminal and civil dockets pass
+        # the same shape to llm.extract_actions: ``known_deadlines`` is
+        # always a list (empty when nothing's stored yet), and there is
+        # no ``extract_deadlines`` parameter at all. Pins the removal of
+        # the docket-aware gate that used to split the two paths.
+        captured = []
+
+        def fake(*, known_deadlines=None, **kwargs):
+            captured.append({"known_deadlines": known_deadlines, "kwargs": kwargs})
+            # Loud failure if a caller starts passing the removed flag again.
+            assert "extract_deadlines" not in kwargs, (
+                "extract_deadlines parameter was removed; callers must not pass it"
+            )
+            return [{"type": "IGNORE", "reason": "stub"}]
+
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+
+        # Criminal docket: the auto-detect used to turn deadlines OFF here.
+        case_cr = CaseConfig(
             case_id="us-v-y",
             name="United States v. Y",
             dockets=[100],
             calendar="cyber",
         )
-        captured = {}
-
-        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
-            captured["known_deadlines"] = known_deadlines
-            captured["extract_deadlines"] = extract_deadlines
-            return [{"type": "IGNORE", "reason": "stub"}]
-
-        monkeypatch.setattr(llm_mod, "extract_actions", fake)
-
-        cl = FakeCourtListener(dockets={100: _docket()})  # docket_number "1:25-cr-..."
-        syncer = CaseSyncer(cl, store)
-        syncer.process_entry(
-            case_default,
+        cl = FakeCourtListener(dockets={100: _docket()})  # "1:25-cr-..."
+        CaseSyncer(cl, store).process_entry(
+            case_cr,
             100,
-            _entry(1, "Trial set for 6/1/2026"),  # hearing-relevant; reaches LLM
+            _entry(1, "Trial set for 6/1/2026"),
         )
-        assert captured["extract_deadlines"] is False
-        assert captured["known_deadlines"] is None
 
-    def test_civil_docket_auto_detects_deadlines_on(self, store, monkeypatch):
-        # Default config on a civil docket: deadlines auto-on, no override
-        # needed. The LLM gets the deadline-aware prompt and known_deadlines
-        # block (empty list, since none are stored yet).
-        case_default = CaseConfig(
+        # Civil docket: the auto-detect used to turn deadlines ON here.
+        case_cv = CaseConfig(
             case_id="acme-v-widget",
             name="Acme v. Widget",
-            dockets=[100],
+            dockets=[101],
             calendar="tech",
         )
-        captured = {}
-
-        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
-            captured["known_deadlines"] = known_deadlines
-            captured["extract_deadlines"] = extract_deadlines
-            return [{"type": "IGNORE", "reason": "stub"}]
-
-        monkeypatch.setattr(llm_mod, "extract_actions", fake)
-
         civil_docket = dict(_docket(), docket_number="1:25-cv-04567-AB")
-        cl = FakeCourtListener(dockets={100: civil_docket})
-        syncer = CaseSyncer(cl, store)
-        syncer.process_entry(
-            case_default,
-            100,
+        cl_cv = FakeCourtListener(dockets={101: civil_docket})
+        CaseSyncer(cl_cv, store).process_entry(
+            case_cv,
+            101,
             _entry(1, "ORDER setting briefing schedule: response due by 5/24/2026"),
         )
-        assert captured["extract_deadlines"] is True
-        assert captured["known_deadlines"] == []
 
-    def test_explicit_override_forces_deadlines_on_for_criminal_docket(
-        self,
-        store,
-        monkeypatch,
-    ):
-        # The big-trial escape hatch: criminal docket number, but the case
-        # opts in explicitly because pretrial motion practice is what's
-        # being watched. The override beats the auto-detect.
-        case_override = CaseConfig(
-            case_id="us-v-z",
-            name="United States v. Z",
-            dockets=[100],
-            calendar="cyber",
-            extract_deadlines=True,
-        )
-        captured = {}
-
-        def fake(*, known_deadlines=None, extract_deadlines=False, **_):
-            captured["known_deadlines"] = known_deadlines
-            captured["extract_deadlines"] = extract_deadlines
-            return [{"type": "IGNORE", "reason": "stub"}]
-
-        monkeypatch.setattr(llm_mod, "extract_actions", fake)
-
-        cl = FakeCourtListener(dockets={100: _docket()})  # criminal docket_number
-        syncer = CaseSyncer(cl, store)
-        syncer.process_entry(
-            case_override,
-            100,
-            _entry(1, "ORDER: response due by 5/24/2026"),
-        )
-        assert captured["extract_deadlines"] is True
-        assert captured["known_deadlines"] == []
+        # Both paths reached the LLM with the same shape: known_deadlines
+        # is a list (not None), and no extract_deadlines flag is in play.
+        assert len(captured) == 2
+        for call in captured:
+            assert call["known_deadlines"] == []
 
 
 class TestConditionalDeadline:
@@ -2713,7 +2670,6 @@ class TestConditionalDeadline:
             name="United States v. X",
             dockets=[100],
             calendar="cyber",
-            extract_deadlines=True,
         )
 
     def test_conditional_add_persists_row_with_null_due_at_utc(
@@ -3384,7 +3340,6 @@ class TestVerifyPendingDeadlines:
             name="United States v. X",
             dockets=[100],
             calendar="cyber",
-            extract_deadlines=True,
         )
 
     def _seed_future_deadline(self, store, key="reply-mtd"):
@@ -3716,7 +3671,6 @@ class TestApplyDeadlineActionEdgeCases:
             name="United States v. X",
             dockets=[100],
             calendar="cyber",
-            extract_deadlines=True,
         )
 
     def test_action_without_deadline_key_is_dropped(

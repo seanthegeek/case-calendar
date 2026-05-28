@@ -86,7 +86,6 @@ cases:
 | `calendar` | yes | One of the keys under `calendars:`. |
 | `dockets` | yes | One or more CourtListener docket ids (integers — the URL path component, e.g. the `70678228` in `courtlistener.com/docket/70678228/`). |
 | `aggregation_note` | no | One-sentence framing for multi-docket cases, shown only to the AI summarizer. See below. |
-| `extract_deadlines` | no | Force-on filing-deadline tracking for a case the auto-detector would skip (typically a serious criminal case). See below. |
 | `notify_emails` | no | Per-case override of the calendar's `notify_emails`. |
 | `reminders` | no | Per-case override of the calendar's `reminders`. |
 | `extra_documents` | no | Operator-provided document URLs for the AI summary pipeline. See [case summaries](case-summaries.md#extra_documents). |
@@ -155,29 +154,18 @@ different `(docket_number, court_id)` pairs as parallel proceedings
 and renders one labeled paragraph per logical docket (the Anthropic
 v. DOW shape above).
 
-### Deadline tracking auto-detect
+### Deadline tracking
 
-Case Calendar decides whether to track filing deadlines based on the docket
-number prefix:
-
-- **Civil** (e.g. `-cv-`), **appellate**, and **specialty** courts → on
-  (response / reply / brief deadlines matter).
-- **Routine criminal dockets** matching the substrings `-cr-`, `-cm-`,
-  `-cmc-`, `-po-`, or `-mj-cr-` in the federal docket number → off
-  (criminal practice is hearing-driven, not briefing-driven).
-
-For a serious criminal case where the filing cadence *is* what you're
-watching — pretrial motion practice (suppression / motions in limine /
-Daubert) or the run-up to sentencing (sentencing memos, PSR objections) —
-force it on:
-
-```yaml
-- id: us-v-someone
-  name: "United States v. Someone"
-  calendar: natsec
-  dockets: [123456]
-  extract_deadlines: true
-```
+Filing deadlines are tracked on every docket uniformly — civil, criminal,
+appellate, magistrate, specialty. There's no per-case opt-in or
+docket-number auto-detect. Significance (`major` vs `minor`, set by the
+LLM per the rules in `SYSTEM_PROMPT`) decides what reaches subscriber
+calendars: dispositive briefing, sentencing memos, PSR objections, and the
+amicus master filing window land as major and appear on the calendar;
+procedural shuffle (motion-for-leave responses/replies, redaction-request
+windows, routine status reports) lands as minor and stays in the audit
+trail only. Pretrial motion practice on a serious criminal case (suppression
+/ motions in limine / Daubert) flows automatically as a result.
 
 ### Tags
 
