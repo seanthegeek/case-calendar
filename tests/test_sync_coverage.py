@@ -613,7 +613,6 @@ class TestApplyDeadlineActionEntryAlreadyInSources:
             name="United States v. X",
             dockets=[100],
             calendar="cyber",
-            extract_deadlines=True,
         )
         store.upsert_docket_meta(100, _docket())
         # Seed a pending deadline with source_entry_ids=[7].

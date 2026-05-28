@@ -252,7 +252,6 @@ def _cases_from_config(cfg: dict[str, Any]) -> list[CaseConfig]:
                 name=c["name"],
                 dockets=dockets,
                 calendar=c["calendar"],
-                extract_deadlines=bool(c.get("extract_deadlines", False)),
                 extra_documents=_extra_documents_from_config(
                     c["id"],
                     dockets,

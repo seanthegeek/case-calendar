@@ -202,18 +202,15 @@ cases:
     #   - {method: popup, minutes: 60}
 
   # ---- DPRK IT-worker prosecutions ----
-  # Filing deadlines are auto-detected from each docket's number: civil
-  # dockets (':cv-') get deadline tracking automatically, routine criminal
-  # dockets (':cr-' / ':cm-') skip it. Set `extract_deadlines: true` on a
-  # serious criminal case where the filing cadence is itself worth
-  # watching — pretrial motion practice (suppression / in-limine /
-  # Daubert) and the run-up to sentencing (sentencing-memo deadlines,
-  # PSR objections).
+  # Filing deadlines are tracked on every docket uniformly — civil,
+  # criminal, appellate, magistrate — and significance ('major' / 'minor')
+  # decides what reaches subscriber calendars. So pretrial motion practice
+  # (suppression / in-limine / Daubert), sentencing-memo deadlines, and PSR
+  # objections all flow through automatically.
   - id: us-v-ashtor
     name: "United States v. Ashtor"
     calendar: cybercrime
     dockets: [69570297]
-    # extract_deadlines: true     # uncomment for big-trial deadline tracking
     tags: [DPRK, IT worker fraud]
 
   - id: us-v-knoot

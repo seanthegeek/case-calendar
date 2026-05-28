@@ -215,41 +215,27 @@ class TestIsDeadlineRelevant:
 
 
 class TestIsExtractable:
-    def test_hearing_only_when_deadlines_off(self):
-        # A hearing entry passes regardless of the flag.
-        assert is_extractable(
-            make(desc="Sentencing set for 4/14/2026"), want_deadlines=False
-        )
-        assert is_extractable(
-            make(desc="Sentencing set for 4/14/2026"), want_deadlines=True
-        )
+    def test_hearing_entries_pass(self):
+        assert is_extractable(make(desc="Sentencing set for 4/14/2026"))
 
-    def test_deadline_blocked_when_deadlines_off(self):
-        e = make(desc="Response due by 5/24/2026")
-        # Pure deadline language doesn't pass the hearing-only filter.
-        assert not is_extractable(e, want_deadlines=False)
-        # But does when the case opts in.
-        assert is_extractable(e, want_deadlines=True)
+    def test_deadline_entries_pass(self):
+        # Pure deadline language passes too — deadline tracking is uniform
+        # across all dockets now, so no per-case gate at the filter layer.
+        assert is_extractable(make(desc="Response due by 5/24/2026"))
 
-    def test_irrelevant_entry_blocked_either_way(self):
-        e = make(desc="NOTICE OF ATTORNEY APPEARANCE")
-        assert not is_extractable(e, want_deadlines=False)
-        assert not is_extractable(e, want_deadlines=True)
+    def test_irrelevant_entries_blocked(self):
+        assert not is_extractable(make(desc="NOTICE OF ATTORNEY APPEARANCE"))
 
     def test_empty_entry_short_circuits(self):
         # Empty entry hits the no-text early return; never touches the regex.
-        assert not is_extractable(make(), want_deadlines=False)
-        assert not is_extractable(make(), want_deadlines=True)
+        assert not is_extractable(make())
 
     def test_recap_doc_with_empty_description_ignored(self):
         # The blob filter in _entry_text drops empty recap-document
         # descriptions rather than dragging them through as " | | ".
         # If they were the ONLY signal carrier and they're empty, the
         # entry is treated as having no text at all.
-        assert not is_extractable(
-            make(recap_descs=("",)),
-            want_deadlines=True,
-        )
+        assert not is_extractable(make(recap_descs=("",)))
 
 
 class TestIsHearingRelevant:

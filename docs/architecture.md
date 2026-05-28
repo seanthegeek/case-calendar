@@ -375,8 +375,7 @@ and each one is reproduced **verbatim** on the
 is told without opening the source:
 
 - [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L26) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
-- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing extraction (and, with the addendum below, deadlines).
-- [`DEADLINE_PROMPT_ADDENDUM`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L391) — appended to `SYSTEM_PROMPT` for cases that opt into filing-deadline tracking.
+- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
 - [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L828) — the end-of-sync hearing verify pass.
 - [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1128) — the parallel verify pass for filing deadlines.
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.

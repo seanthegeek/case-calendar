@@ -69,13 +69,6 @@ class CaseConfig:
     name: str  # human title
     dockets: list[int]
     calendar: str  # which output calendar this case belongs to
-    extract_deadlines: bool = False
-    """Force-on override for filing-deadline extraction. False (the default)
-    means auto-detect from each docket's ``docket_number`` prefix: civil
-    dockets get deadline tracking, routine criminal dockets don't. Set
-    ``true`` to force deadline tracking on regardless — useful for serious
-    criminal trials with real pretrial motion practice where the briefing
-    cadence IS worth watching."""
 
     extra_documents: list[ExtraDocument] = field(default_factory=list)
     """Out-of-band documents to feed into the case-summary LLM as a
@@ -88,30 +81,6 @@ class CaseConfig:
     group cases by theme. Rendered on each calendar event's description
     AND on the HTML index, where they double as click-to-filter chips
     against the global search."""
-
-
-# Federal docket-number type codes that indicate a routine criminal matter
-# (criminal felony, criminal misdemeanor, criminal magistrate complaint,
-# petty offense). Federal docket numbers look like "D:YY-XX-NNNNN-..." where
-# XX is the type code; we match the type sandwiched between dashes and
-# followed by a digit (the case number).
-# Anything else — civil, appellate, MDL, specialty — defaults to deadlines-on.
-_CRIMINAL_DOCKET_TYPES = re.compile(
-    r"-(?:cr|cm|cmc|po|mj-cr)-\d",
-    re.IGNORECASE,
-)
-
-
-def _docket_implies_deadlines(docket_number: str | None) -> Optional[bool]:
-    """Map a federal docket number to a deadline-tracking default.
-
-    Returns False for routine criminal dockets, True for everything else
-    (civil, appellate, specialty courts), or None if the number is absent
-    so the caller can fall back to a global default.
-    """
-    if not docket_number:
-        return None
-    return not bool(_CRIMINAL_DOCKET_TYPES.search(docket_number))
 
 
 def fingerprint_entry(entry: dict[str, Any]) -> str:
@@ -292,9 +261,9 @@ def _normalize_action_category(action: dict[str, Any]) -> dict[str, Any]:
     them; returns the input unchanged otherwise. Logs at INFO so the
     prompt-violation rate stays visible without spamming WARN.
 
-    Pairs with the prompt-side rule in ``DEADLINE_PROMPT_ADDENDUM``
-    telling the model that ``UPDATE_DETAILS`` is hearings-only — this
-    is the belt-and-suspenders downstream.
+    Pairs with the deadline portion of ``llm.SYSTEM_PROMPT`` telling the
+    model that ``UPDATE_DETAILS`` is hearings-only — this is the belt-and-
+    suspenders downstream.
     """
     atype = (action.get("type") or "").upper()
     if not atype:
@@ -431,36 +400,6 @@ class CaseSyncer:
         self.store = store
 
     # --- shared helpers (used by polling sync_case AND the webhook server) ---
-
-    def resolve_extract_deadlines(
-        self,
-        case: CaseConfig,
-        docket_id: int | None = None,
-    ) -> bool:
-        """Decide whether to extract filing deadlines for this case/docket.
-
-        ``case.extract_deadlines=True`` is a force-on override that always
-        wins. Otherwise we look at the docket number(s): routine criminal
-        dockets default OFF, everything else defaults ON. With ``docket_id``
-        set, the decision is per-docket (used per-entry); without, we
-        aggregate across the case's dockets (used for the end-of-case
-        verify pass — any one civil docket flips the case to ON).
-
-        Falls back to True when no docket metadata is cached yet, since
-        civil-leaning is the safer default for the unknown case.
-        """
-        if case.extract_deadlines:
-            return True
-        docket_ids = [docket_id] if docket_id is not None else case.dockets
-        saw_classifiable_off = False
-        for did in docket_ids:
-            meta = self.store.get_docket_meta(did) or {}
-            decision = _docket_implies_deadlines(meta.get("docket_number"))
-            if decision is True:
-                return True
-            if decision is False:
-                saw_classifiable_off = True
-        return not saw_classifiable_off
 
     def _is_cross_court_mutation(
         self,
@@ -726,9 +665,8 @@ class CaseSyncer:
         # were created by the per-entry extractor allocating a fresh
         # key on the new sibling instead of reusing the existing key.
         stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
-        if self.resolve_extract_deadlines(case):
-            stats["deadlines_verified"] = self._verify_pending_deadlines(case)
-            stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
+        stats["deadlines_verified"] = self._verify_pending_deadlines(case)
+        stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
     def _verify_context_entries(
@@ -1395,8 +1333,7 @@ class CaseSyncer:
         stats: dict[str, int],
     ) -> bool:
         """True iff the entry made it through the regex filter and reached the LLM."""
-        want_deadlines = self.resolve_extract_deadlines(case, docket_id)
-        if not is_extractable(entry, want_deadlines=want_deadlines):
+        if not is_extractable(entry):
             log.debug("entry %s skipped by regex pre-filter", entry.get("id"))
             return False
         stats["entries_processed"] += 1
@@ -1410,11 +1347,7 @@ class CaseSyncer:
         # cases) still aggregate correctly.
         known = self.store.get_hearings_in_court(case.case_id, court_id)
         referenced = self._resolve_docket_refs(docket_id, entry)
-        known_deadlines = (
-            self.store.get_deadlines_in_court(case.case_id, court_id)
-            if want_deadlines
-            else None
-        )
+        known_deadlines = self.store.get_deadlines_in_court(case.case_id, court_id)
 
         actions = llm.extract_actions(
             case_name=case.name,
@@ -1426,7 +1359,6 @@ class CaseSyncer:
             docket_id=docket_id,
             referenced_entries=referenced,
             known_deadlines=known_deadlines,
-            extract_deadlines=want_deadlines,
         )
 
         for action in actions:

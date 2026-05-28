@@ -534,23 +534,6 @@ class TestLoadConfig:
 
 
 class TestCasesFromConfig:
-    def test_parses_extract_deadlines_default(self):
-        cfg = {
-            "cases": [
-                {"id": "x", "name": "X", "calendar": "a", "dockets": [1]},
-                {
-                    "id": "y",
-                    "name": "Y",
-                    "calendar": "a",
-                    "dockets": [2],
-                    "extract_deadlines": True,
-                },
-            ]
-        }
-        cases = _cases_from_config(cfg)
-        assert cases[0].extract_deadlines is False
-        assert cases[1].extract_deadlines is True
-
     def test_defaults_empty_extra_documents(self):
         cfg = {
             "cases": [

@@ -8,6 +8,57 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.8.0] - 2026-05-28
+
+### Changed
+
+- **Filing deadlines are now tracked uniformly on every docket.** The
+  docket-aware auto-detect (criminal `-cr-` / `-cm-` / `-po-` / `-mj-cr-`
+  → off, civil / appellate / specialty → on) and the per-case
+  `extract_deadlines` override are gone. Every case — criminal, civil,
+  appellate, magistrate, specialty — runs the same per-entry pipeline,
+  and the existing significance gate (`major` vs `minor`) decides what
+  reaches subscriber calendars. The previous split was a cost
+  optimization that produced inconsistent treatment of serious criminal
+  cases (sentencing-memo deadlines, PSR objections, in-limine briefing)
+  and an unprincipled difference between siblings of a multi-docket case
+  (district criminal + appellate). Surfaced by the
+  Anthropic-vs-Gemini-vs-OpenAI provider comparison, where the
+  uniformly-zero criminal-deadline column contributed the same constant
+  penalty to every model and shaped the ranking around an artifact of
+  the auto-detect rather than model quality. Token usage rises modestly
+  on criminal cases, which the `llm-tokens` telemetry from 0.7.0 makes
+  visible; the per-call prompt-cache hit on the system block keeps the
+  delta small after the first call in a sync.
+- **`DEADLINE_PROMPT_ADDENDUM` is folded into `SYSTEM_PROMPT`.** The
+  deadline-extraction instructions used to be a separate constant
+  conditionally appended to the system prompt; they're now part of the
+  single merged extractor prompt. The content the LLM sees is preserved
+  verbatim, so behavior on dockets that previously had deadlines on is
+  unchanged.
+- **Three new transcript-handling rules in the deadline portion of the
+  extractor prompt.** "ORDER for Transcript" / "Transcript Order" /
+  "Order Form" entries are PRIVATE REQUESTS to purchase a transcript
+  copy — they are not court orders or deadlines, and the model now
+  emits IGNORE for them. Transcript-redaction-request deadlines (e.g.
+  "Notice of Intent to Request Redaction due ...") are deadlines but
+  procedural — extracted with `significance="minor"` so the audit trail
+  keeps them while subscriber calendars don't. Transcript public-release
+  deadlines (the date a filed transcript becomes publicly viewable on
+  the docket) are substantive — extracted with `significance="major"`.
+  Pinned by `tests/test_llm.py::TestSystemPromptTranscriptRules`.
+
+### Removed
+
+- **`extract_deadlines` config field on cases.** The auto-detect it
+  overrode is gone, so the field is a no-op. The YAML loader doesn't
+  validate unknown keys, so existing configs that still have it
+  continue to load — but the comment block describing the auto-detect
+  was removed from `config.example.yaml` and the
+  `# extract_deadlines: true` template line on the ashtor case is gone.
+
+[0.8.0]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.8.0
+
 ## [0.7.3] - 2026-05-27
 
 ### Fixed
