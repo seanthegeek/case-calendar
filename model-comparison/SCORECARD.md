@@ -12,6 +12,10 @@ Scored **46** of 46 CourtListener records (those with all six counts filled in).
 | prod (live) | **470** | 29 | 81 | 38 | 15 | 301 | 6 |
 | openai/gpt-5.4-mini | **471** | 49 | 91 | 60 | 31 | 231 | 9 |
 
+### Note on the omitted gemini-3.5-flash column
+
+The Gemini extraction-candidate column (`gemini/gemini-3.5-flash`) was dropped from the comparison due to **long processing times** — its single-column rebuild rate (~14 LLM calls/min in this environment) projected to roughly another 100 minutes of wall-clock to finish, on top of an already-aborted first attempt; the throughput cost of carrying it across future re-runs wasn't justified given the existing default `gemini-3.1-flash-lite` column's strong showing on the same Gemini provider. The previous-pipeline measurement ($11.92, against the old criminal-off design) remains in `README.md` as historical context, explicitly flagged as not re-measured.
+
 ## Qualitative event-set diffs (Gemini vs. Anthropic)
 
 The 21-point score gap between Gemini-Flash-Lite (392) and Anthropic-Haiku (413) is a net-deviation number, not a clean strength differential — both models catch real events the other drops, and both over-extract in different places. To see what the gap is made of, we bucketed each provider's events per docket by `(type, status, date)` and surfaced the buckets unique to one side. Gemini had **169 such unique buckets**, Anthropic **129**; below are the most telling examples by category.

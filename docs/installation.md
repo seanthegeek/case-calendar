@@ -43,13 +43,14 @@ Open `.env` and fill in:
 
 ```bash
 COURTLISTENER_TOKEN=your_token_here
-ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY=sk-... / GEMINI_API_KEY=...
+GEMINI_API_KEY=...                # or OPENAI_API_KEY=sk-... / ANTHROPIC_API_KEY=sk-ant-...
 CASE_CALENDAR_WEBHOOK_SECRET=...  # only needed for `case-calendar serve`
 ```
 
 You only need one LLM key. The tool auto-detects which provider to use from
-whichever `*_API_KEY` is set. To force a specific provider, set
-`LLM_PROVIDER=anthropic` (or `openai` / `gemini`).
+whichever `*_API_KEY` is set; when multiple are set, Gemini wins by default
+(the recommended choice per the [provider comparison](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)).
+To force a specific provider, set `LLM_PROVIDER=gemini` (or `openai` / `anthropic`).
 
 > ⚠️ The `.env` file should never be committed to source control — the
 > repository's `.gitignore` already lists it.

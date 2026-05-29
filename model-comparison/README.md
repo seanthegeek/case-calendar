@@ -1,11 +1,12 @@
 # Model comparison
 
-Why Anthropic is the default LLM provider — and the data and tools to check that
-yourself, including scoring it against your own reading of the dockets, or
-re-running the whole thing on other cases and models.
+Why Google Gemini (`gemini-3.1-flash-lite` extraction + `gemini-2.5-pro` summary)
+is the default LLM provider — and the data and tools to check that yourself,
+including scoring it against your own reading of the dockets, or re-running the
+whole thing on other cases and models.
 
-Case Calendar can run on any of three providers (Anthropic / OpenAI / Google
-Gemini; one line in `config.yaml`). To pick a default we rebuilt every tracked
+Case Calendar can run on any of three providers (Gemini / OpenAI / Anthropic;
+one line in `config.yaml`). To pick a default we rebuilt every tracked
 case's calendar from the **same** court data with several model configurations
 and compared cost and accuracy. Each configuration is one **column**: by default
 one per provider at its out-of-the-box models, plus extra columns that vary the
