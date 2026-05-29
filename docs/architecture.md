@@ -25,7 +25,7 @@ CourtListener docket
           │
           ▼
 ┌───────────────────┐
-│ LLM extractor     │  small/fast tier (Gemini Flash Lite, gpt-5.4-nano, Claude Haiku);
+│ LLM extractor     │  small/fast tier (Claude Haiku, Gemini Flash Lite, gpt-5.4-nano);
 │ per docket entry  │  returns ADD / RESCHEDULE / CANCEL / MARK_HELD / ...
 └─────────┬─────────┘
           │
@@ -35,8 +35,8 @@ CourtListener docket
 └─────────┬─────────┘            │
           │                      ▼
           │            ┌───────────────────┐
-          │            │ summary LLM       │  higher tier (Gemini Pro / GPT-5.4 /
-          │            │ (per docket)      │  Sonnet); runs when a primary
+          │            │ summary LLM       │  higher tier (Sonnet / Gemini Pro /
+          │            │ (per docket)      │  GPT-5.4); runs when a primary
           │            └─────────┬─────────┘  doc or disposition lands.
           │                      │
           │                      ▼
@@ -99,8 +99,8 @@ to independent provider and model knobs:
 
 | Track | Volume | Default model | Why |
 | --- | --- | --- | --- |
-| **Extraction** | High (one call per relevant entry) | Gemini Flash Lite / gpt-5.4-nano / Claude Haiku | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
-| **Summarization** | Low (one call per docket, rarely re-run) | Gemini Pro / GPT-5.4 / Sonnet | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
+| **Extraction** | High (one call per relevant entry) | Claude Haiku / Gemini Flash Lite / gpt-5.4-nano | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
+| **Summarization** | Low (one call per docket, rarely re-run) | Claude Sonnet / Gemini Pro / GPT-5.4 | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
 
 Each track has its own provider / model env var, with `LLM_PROVIDER` /
 `LLM_MODEL` as the global default that applies to both when no per-track
@@ -111,34 +111,39 @@ override is set:
 - **Summarization**: `LLM_SUMMARY_PROVIDER` (override) > `LLM_PROVIDER`
   (global) > API-key auto-detect, and `LLM_SUMMARY_MODEL` for the model.
 
-### Why the two-track split matters — and the recommended provider split
+### Why the two-track split exists — and why Anthropic is the 0.10.0 default for both
 
-The split isn't just a configuration nicety. Measuring across the
-[model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md) — full
-from-scratch backfill of a real 28-case caseload against blind human ground
-truth — produces a sharper recommendation than "pick one provider for
-everything":
+The two-track split is a configuration capability, not a recommendation: the
+project ships with `LLM_PROVIDER=anthropic` as the default for BOTH tracks,
+because the structural failure mode that drove 0.10.0 — Gemini systematically
+misclassifying substantive federal-procedure deadline classes as
+`procedural-minor` and silently dropping them from subscriber calendars at the
+render-time significance gate — applies to extraction regardless of what
+provider runs summaries. See the
+[SCORECARD intro](../model-comparison/SCORECARD.md) for the full list of
+substantive classes Gemini missed in production after the brief 0.9.0
+Gemini-default flip (PSR, Speedy Trial Act exclusions, surrender for service
+of sentence, civil-forfeiture claim/answer, sealing motion practice,
+exhibit-filing deadlines, certified administrative record).
 
 | | Extraction track | Summary track |
 | --- | --- | --- |
 | Call volume per backfill | ~1,230 | ~34 |
-| Dominant constraint | Per-call latency × volume; classification accuracy | Synthesis quality; capturing case-distinguishing detail |
-| Gemini cost (full backfill) | $1.60 | $1.09 |
+| Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
 | Anthropic cost (full backfill) | $6.62 | $2.24 |
-| Gemini deviation (lower = better) | **328** ← best | — |
-| Anthropic deviation | 381 | — |
-| Anthropic summary detail | — | **best** (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes, full briefing schedules) |
-| Gemini summary detail | — | terser; blurs cases that fit the same bucket |
+| Gemini cost (full backfill) | $1.60 | $1.09 |
+| Anthropic accuracy on substantive classes | Loads legal priors implicitly — substantive classes (PSR, STA exclusions, certified administrative record, etc.) classify as `major` without prompt enumeration | **best** (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes, full briefing schedules) |
+| Gemini accuracy | Best aggregate deviation on the in-fixture set (328 vs 381), but misses out-of-fixture substantive classes that aren't explicitly enumerated in the prompt | terser; blurs cases that fit the same bucket |
 
-The conclusion: **`LLM_PROVIDER=gemini` (or `LLM_EXTRACTION_PROVIDER=gemini`)
-with `LLM_SUMMARY_PROVIDER=anthropic`** uses the cheap+fast+accurate Gemini
-extractor on the high-volume track AND the case-distinguishing Anthropic
-summaries on the rare, synthesis-heavy track. Total backfill under that
-split is ~$3.85 — the ~$1.15 summary-track delta over running Gemini for
-both is worth the per-case detail (statute citations, count numbers,
-sentence breakdowns, cancelled-schedule notes, custody status, full
-briefing schedules) that subscribers reading a docket-watching calendar
-actually need.
+The reason the split capability still exists, even though the default no
+longer uses it: a federal procedural deadline vocabulary list is decades deep
+and unbounded. The maintainer isn't a lawyer, and there's no practical way to
+audit a Gemini extraction stream for silent drops after the fact. Anthropic's
+training corpus covers these classes for free, which is what makes it the safe
+default. An operator who has confirmed Gemini's class profile against their
+own caseload — and accepts the audit burden — can still pin
+`LLM_EXTRACTION_PROVIDER=gemini` for the cost win without losing the
+case-distinguishing Anthropic summaries.
 
 The [SCORECARD's Summary track section](../model-comparison/SCORECARD.md)
 documents the bucket-confusion problem with side-by-side examples — three

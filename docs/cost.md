@@ -25,10 +25,12 @@ significance — so they default to the cheap small/fast tier and run whether or
 not summaries are enabled. **Summaries** are the opt-in synthesis track on a
 higher tier.
 
-| Track | Runs when | Default models (Gemini / OpenAI / Anthropic) |
+| Track | Runs when | Default models (Anthropic / Gemini / OpenAI) |
 | --- | --- | --- |
-| Extraction + verify | Always | Gemini 3.1 Flash Lite / GPT-5.4-nano / Claude Haiku 4.5 |
-| Summaries | Opt-in (`case_summaries.enabled`) | Gemini 2.5 Pro / GPT-5.4 / Claude Sonnet 4.6 |
+| Extraction + verify | Always | Claude Haiku 4.5 / Gemini 3.1 Flash Lite / GPT-5.4-nano |
+| Summaries | Opt-in (`case_summaries.enabled`) | Claude Sonnet 4.6 / Gemini 2.5 Pro / GPT-5.4 |
+
+The project's default provider is **Anthropic on both tracks** (see [the SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md) for why) — the numbers below let you decide whether a cheaper provider fits your caseload.
 
 Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
@@ -40,10 +42,10 @@ one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Gemini (3.1 Flash Lite / 2.5 Pro) — **default** | $1.49 | $0.11 | $1.09 | **$2.69** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) — **default** | $6.07 | $0.55 | $2.24 | **$8.86** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.49 | $0.11 | $1.09 | **$2.69** |
 | OpenAI (GPT-5.4-nano / GPT-5.4) | $1.00 | $0.12 | $1.62 | **$2.75** |
 | OpenAI (GPT-5.4-mini / GPT-5.4) | $3.59 | $0.47 | $1.64 | **$5.70** |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.07 | $0.55 | $2.24 | **$8.86** |
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.22 per
@@ -59,38 +61,76 @@ These are **estimates from the price table** (below), not a bill, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.
 
-### Why the recommended split is Gemini extraction + Anthropic summaries
+### Why Anthropic is the 0.10.0 default — and why splitting the tracks is still supported
 
-The two tracks are independent (separate env vars — see
-[Installation](installation.md)) and they reward different model strengths:
+The numbers above show Gemini wins on cost: Anthropic costs **~4× more** for the
+same workload, and over a 5-year steady-state run on a 28-case caseload, that
+gap adds up to roughly **$60-80 in extraction + verify alone**. So why did
+0.10.0 revert to Anthropic-as-default?
 
-- **Extraction** is high-volume (~1,230 calls per backfill on the
-  maintainer's caseload), structured-output classification. The cheap
-  small/fast tier handles it fine, and the dominant cost line is the
-  extractor's per-call rate × call volume. **Gemini wins this track**
-  outright — best accuracy on the
-  [SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md),
-  ~2× faster per call than Anthropic, ~4× cheaper for the same workload.
-- **Summaries** are low-volume (~34 calls per backfill, near-zero ongoing),
-  long-context, synthesis-heavy. In the example above, the dollar delta is small — Gemini's
-  summary track cost $1.09, Anthropic's cost was $2.24 — but the **quality
-  difference is large**. Anthropic captures case-distinguishing detail
-  (statute citations, count numbers, sentence breakdowns, forfeiture
-  amounts split out by money judgment vs identified-property, custody
-  status, cancelled-schedule notes, full briefing schedules, cross-docket
-  framing) that Gemini's terser version glosses over. The bucket-confusion
-  problem — multiple cases of the same kind blurring into nearly
-  interchangeable Gemini summaries — is documented with side-by-side
-  examples in the SCORECARD's **Summary track** section.
+Because the cost number isn't the only number. **Gemini's training corpus
+doesn't include enough federal-procedure text** to load priors on the long tail
+of substantive deadline classes the prompt doesn't explicitly enumerate, so it
+classifies them as `procedural-minor` and they silently drop out at the
+render-time significance gate. Real-world examples discovered after the brief
+0.9.0 Gemini-default flip:
 
-Pinning the recommended split in `.env`:
+- **PSR** (Presentence Investigation Report) interview, first disclosure,
+  objection windows
+- **Speedy Trial Act** § 3161(h) exclusion orders
+- **Surrender for service of sentence** (the date a defendant must
+  self-report to BOP custody)
+- **Civil forfeiture** Supp. R. G claim + answer deadlines
+- **Substantive sealing motion practice** (briefing on a motion to
+  seal/unseal, not the routine "filed under seal" stamps)
+- **Exhibit-filing deadlines** under a final pretrial order
+- **Certified administrative record** / certified index of the
+  administrative record (the deadline that starts the APA cross-motion
+  briefing clock)
+
+Each one is fixable with a targeted prompt-vocabulary addition naming the
+class — and that list of named federal procedural classes is *decades deep and
+unbounded*. The maintainer is not a lawyer; a calendar people rely on can't
+have its silent-drops audited case-by-case afterwards. Anthropic's training
+covers these for free: the model classifies "Order Excluding Time Under the
+Speedy Trial Act" as substantive without ever being told what the Speedy Trial
+Act is.
+
+Anthropic's case **summary** prose also pulls more case-distinguishing detail
+than Gemini's: statute citations, count numbers, sentence breakdowns,
+forfeiture amounts split out by money judgment vs identified-property, custody
+status, cancelled-schedule notes, full briefing schedules, cross-docket
+framing. The bucket-confusion problem — multiple cases of the same kind
+blurring into nearly interchangeable Gemini summaries — is documented with
+side-by-side examples in the SCORECARD's **Summary track** section, and was
+the original reason the 0.9.0 release recommended splitting the tracks rather
+than running Gemini end-to-end.
+
+**The default is therefore Anthropic on both tracks.** That's the simple
+configuration — one provider, one API key:
 
 ```bash
-LLM_PROVIDER=gemini                  # global default — applies to extraction + summaries
-LLM_SUMMARY_PROVIDER=anthropic       # but pin Anthropic for the rare, synthesis-heavy summary calls
-GEMINI_API_KEY=...
-ANTHROPIC_API_KEY=...
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
 ```
+
+The per-track override env vars (`LLM_EXTRACTION_PROVIDER` /
+`LLM_SUMMARY_PROVIDER`) **remain wired up**. Splitting is still supported — it
+just isn't the documented default. Operators who have measured Gemini against
+their own caseload and confirmed it doesn't silently drop substantive classes
+they care about can pin Gemini for the extraction-track cost win while keeping
+Anthropic for summaries:
+
+```bash
+LLM_PROVIDER=anthropic               # default for both tracks
+LLM_EXTRACTION_PROVIDER=gemini       # override extraction only — keep Anthropic for summaries
+ANTHROPIC_API_KEY=sk-ant-...
+GEMINI_API_KEY=...
+```
+
+This is the inverse of the 0.9.0 recommendation; behaviorally it produces the
+same provider assignment for extraction vs summaries. Use whichever shape reads
+more naturally given your caseload.
 
 Want a head-to-head cost **and accuracy** comparison across providers and model tiers — including the per-docket deviation breakdown, the
 wall-clock and mean-call-latency numbers, and the bucket-confusion
@@ -136,8 +176,8 @@ Every LLM call — extraction and summaries alike — logs its token counts at
 `llm-tokens`:
 
 ```text
-llm-tokens call purpose=summary provider=gemini model=gemini-2.5-pro docket=12345 in=48210 out=312 cached=0 cache_write=0 cost_est=$0.0301
-llm-tokens call purpose=extract provider=gemini model=gemini-3.1-flash-lite docket=12345 in=1820 out=64 cached=0 cache_write=0 cost_est=$0.0002
+llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=0 cache_write=0 cost_est=$0.1483
+llm-tokens call purpose=extract provider=anthropic model=claude-haiku-4-5 docket=12345 in=1820 out=64 cached=0 cache_write=0 cost_est=$0.0020
 ```
 
 - `in` — total prompt tokens (the cached portion **included**).
@@ -164,10 +204,10 @@ llm-tokens sync TOTAL calls=37 dockets=4 models=2 in=210880 out=2010 cached=1904
 ```
 
 The per-model lines are what let you read the cheap extractor track's spend
-(here `gemini-3.1-flash-lite`) apart from the higher-tier summary track's
-(`gemini-2.5-pro`) — the two run on different models, so the by-model split is
-the by-track split. The `extraction LLM:` / `summary LLM:` lines logged at the
-start of the run name which model is which.
+(here `claude-haiku-4-5`) apart from the higher-tier summary track's
+(`claude-sonnet-4-6`) — the two run on different models, so the by-model split
+is the by-track split. The `extraction LLM:` / `summary LLM:` lines logged at
+the start of the run name which model is which.
 
 The token counts are normalized so `in` always means the same thing across
 providers (Anthropic reports cache reads/writes separately from its input

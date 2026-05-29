@@ -1,28 +1,42 @@
 # Model comparison
 
-Why Gemini (`gemini-3.1-flash-lite` extraction + `gemini-2.5-pro` summary)
+Why Anthropic (`claude-haiku-4-5` extraction + `claude-sonnet-4-6` summary)
 is the default LLM provider — and the data and tools to check that yourself,
 including scoring it against your own reading of the dockets, or re-running the
 whole thing on other cases and models.
 
 > **A note on what the score does and does not measure.** The deviation-from-
 > human-truth score this comparison reports is necessary but not sufficient.
+> Three releases have flipped the default along this fault line and the lesson
+> has stayed the same: aggregate deviation alone doesn't decide which provider
+> a public docket-watching calendar should ship with.
+>
 > The 0.8.1 release switched the default to Gemini on score; the 0.8.2 release
 > reverted to Anthropic because Gemini was dropping substantive event classes
 > (preliminary-injunction hearings on civil-litigation dockets, Speedy Trial
 > Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines,
 > surrender-for-service-of-sentence) that the score didn't penalize hard
-> enough. This release (0.9.0) restores Gemini as the default because the
-> matching prompt edits — explicit MARK_HELD trigger phrases, the sealed-
-> transcript carve-out, the per-proceeding transcript-deadline suffix rule,
-> and the pretrial-transcript-isn't-trial-cancel guard — closed those gaps
-> AND the dedupe sweeps were changed to delete same-slot key-drift siblings
-> rather than flip them to `cancelled` (the prior behavior counted every
-> absorbed sibling as a spurious H_canc deviation point even though it was
-> just a key-drift artifact). Together those changes preserved Anthropic's
-> qualitative-coverage strengths on both providers while the deterministic
-> deviation gap reopened in Gemini's favor. See `SCORECARD.md` for the
-> per-event analysis and the head-to-head numbers.
+> enough. The 0.9.0 release tried again with matching prompt edits and the
+> dedupe-sweep delete-rather-than-flip change closing the in-fixture gap —
+> Gemini retook the deviation lead AND looked clean on every substantive
+> class in the SCORECARD.
+>
+> 0.10.0 reverts to Anthropic again because the same failure pattern resurfaced
+> on out-of-fixture classes: PSR interview / first disclosure / objection
+> windows, Speedy Trial Act § 3161(h) exclusions, surrender-for-service-of-
+> sentence, civil-forfeiture Supp. R. G claim/answer, substantive sealing
+> motion practice, exhibit-filing deadlines under a final pretrial order, and
+> certified-administrative-record APA-cycle deadlines all classified as
+> `procedural-minor` by Gemini and silently dropped at the render-time
+> significance gate. Each is fixable with a prompt-vocabulary addition naming
+> the class — and the list of named federal procedural classes is decades deep
+> and unbounded. The maintainer isn't a lawyer; a public calendar can't have
+> its silent drops audited case-by-case. Anthropic's training corpus loads
+> these priors for free, which is what makes it the safe default. See
+> `SCORECARD.md` for the per-event analysis, the head-to-head numbers, and the
+> per-track override env vars (`LLM_EXTRACTION_PROVIDER` /
+> `LLM_SUMMARY_PROVIDER`) for operators who have measured their own caseload
+> and want to pin Gemini for cost.
 
 Case Calendar can run on any of three providers (Gemini / OpenAI / Anthropic;
 one line in `config.yaml`). To pick a default we rebuilt every tracked

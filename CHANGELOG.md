@@ -8,6 +8,107 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.10.0] - 2026-05-29
+
+### Changed
+
+- **Default LLM provider reverted to Anthropic for BOTH the extraction
+  track AND the summary track.** The 0.9.0 release switched the default
+  to Gemini for extraction on the strength of its lower aggregate
+  deviation score (328 vs Anthropic's 381 on the SCORECARD fixture) and
+  recommended a split: `LLM_PROVIDER=gemini` for the cheap+fast
+  extraction track + `LLM_SUMMARY_PROVIDER=anthropic` for the
+  case-distinguishing summary prose. Real-world use after that flip
+  surfaced a maintenance treadmill the score didn't capture: Gemini
+  systematically classifies substantive federal-procedure deadline
+  classes as `procedural-minor` and silently drops them from subscriber
+  calendars at the render-time significance gate.
+
+  Out-of-fixture classes Gemini missed in production (each addressable
+  by a targeted prompt-vocabulary addition, but the list is decades
+  deep and unbounded):
+
+  - PSR (Presentence Investigation Report) interview, first disclosure,
+    objection windows
+  - Speedy Trial Act § 3161(h) exclusion orders
+  - Surrender for service of sentence (the date a defendant must
+    self-report to BOP custody)
+  - Civil-forfeiture Supp. R. G claim + answer deadlines
+  - Substantive sealing motion practice (briefing on a motion to
+    seal/unseal — not the routine "filed under seal" stamps)
+  - Exhibit-filing deadlines under a final pretrial order
+  - Certified administrative record / certified index of the
+    administrative record (the deadline that starts the APA
+    cross-motion briefing clock)
+
+  Each miss is fixable with a prompt-vocabulary addition naming the
+  class. The problem is the list of named federal procedural classes
+  is decades deep, the maintainer is not a lawyer, and a calendar
+  people rely on cannot have its silent drops audited case-by-case
+  after the fact. Anthropic's training corpus loads these priors for
+  free — the model classifies "Order Excluding Time Under the Speedy
+  Trial Act" as substantive without ever being told what the Speedy
+  Trial Act is. The aggregate deviation lead Gemini still has on the
+  in-fixture set is real and so are the cost wins (~4× cheaper, ~2×
+  faster per call), but for a docket-watching calendar shipped as a
+  default, structural class coverage matters more than the in-fixture
+  score.
+
+  `case_calendar.llmkit.providers._detect_provider` API-key priority
+  changed back to **`anthropic > gemini > openai`** — a fresh operator
+  who provisions multiple keys without setting `LLM_PROVIDER` now
+  lands on the project's recommended default. `.env.example`,
+  `config.example.yaml`, `docs/installation.md`, `docs/architecture.md`,
+  `docs/cost.md`, `model-comparison/README.md`,
+  `model-comparison/SCORECARD.md`, and `AGENTS.md` all reordered
+  Anthropic-first.
+
+- **Per-track override env vars from 0.9.0 are unchanged and remain
+  fully supported.** `LLM_EXTRACTION_PROVIDER` still overrides
+  `LLM_PROVIDER` for the extraction + verify + dedupe calls;
+  `LLM_SUMMARY_PROVIDER` still overrides for case summaries. Splitting
+  the tracks just isn't the documented default anymore — operators who
+  have measured Gemini against their own caseload and confirmed it
+  doesn't silently drop substantive classes they care about can pin
+  `LLM_EXTRACTION_PROVIDER=gemini` for the cost win while keeping
+  Anthropic for the case-distinguishing summary prose (statute
+  citations, count numbers, sentence breakdowns, cancelled-schedule
+  notes, custody status, full briefing schedules):
+
+  ```bash
+  LLM_PROVIDER=anthropic               # default for both tracks
+  LLM_EXTRACTION_PROVIDER=gemini       # override extraction only
+  ANTHROPIC_API_KEY=sk-ant-...
+  GEMINI_API_KEY=...
+  ```
+
+  This is the inverse of the 0.9.0 recommendation; behaviorally it
+  produces the same provider assignment per track.
+
+### Documentation
+
+- SCORECARD.md intro rewritten to explain the maintenance-treadmill
+  reasoning behind the 0.10.0 reversion, with the substantive-class
+  list and the score-vs-coverage gap that drives it.
+- "Recommended provider split" section rewritten as
+  "Anthropic on both tracks" with the per-track split positioned as
+  the optional capability for measured operators.
+- `docs/cost.md` "Why the recommended split is …" section renamed to
+  "Why Anthropic is the 0.10.0 default — and why splitting the tracks
+  is still supported", with the cost trade-off framed alongside the
+  class-coverage trade-off.
+- `docs/architecture.md` "Why the two-track split matters" section
+  renamed to "Why the two-track split exists — and why Anthropic is
+  the 0.10.0 default for both", with the substantive-class failure
+  mode documented as the structural reason for the default.
+- `.env.example` and `config.example.yaml` defaults flipped back to
+  Anthropic; the `LLM_SUMMARY_PROVIDER=anthropic` example line is
+  removed (Anthropic is now the default for both tracks, so the
+  split-by-default example was misleading), and the
+  `LLM_EXTRACTION_PROVIDER=anthropic` example line documents how to
+  pin a different provider for one track without changing the global
+  default.
+
 ## [0.9.0] - 2026-05-29
 
 ### Changed
