@@ -8,6 +8,78 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.8.1] - 2026-05-28
+
+### Changed
+
+- **Default LLM provider switched from Anthropic to Google Gemini.** Per
+  the published provider comparison
+  ([`model-comparison/SCORECARD.md`](model-comparison/SCORECARD.md)),
+  `gemini-3.1-flash-lite` (extraction) + `gemini-2.5-pro` (summary) is
+  both the most accurate column (392 total deviation against a
+  human-blind ground truth, vs `anthropic/claude-haiku-4-5` at 413) and
+  the cheapest from-scratch backfill ($2.56 vs Anthropic's $8.56 — Gemini
+  is roughly **3.3× cheaper** to backfill an entire caseload). The
+  fallback priority in
+  `case_calendar.llmkit.providers._detect_provider` is now
+  **gemini > openai > anthropic**, so an operator who provisions multiple
+  `*_API_KEY` env vars without an explicit `LLM_PROVIDER` lands on the
+  recommended default; operators with `LLM_PROVIDER` set are unchanged.
+  `.env.example`, `config.example.yaml`, and every provider-listing in
+  the docs reorder Gemini-first (with the cost table flagging
+  `gemini-3.1-flash-lite` as the **default** row).
+- **Operator's prod SQLite store was promoted to the Gemini-built one.**
+  The full from-scratch rebuild this release was measured against became
+  `data/case-calendar.sqlite`; the previous Anthropic-built store was
+  preserved as `data/case-calendar.sqlite.bak-2026-05-28-pre-gemini-promote`
+  for rollback. This is an operator-facing note rather than a code
+  change — fresh installs initialize their own store on first sync
+  regardless.
+
+### Added
+
+- **`model-comparison/` — a blind human-ground-truth scoring framework.**
+  An honest answer to "which LLM provider should this project default
+  to?", structured so a reader doesn't have to take any claim on faith.
+  `build_provider_stores.py` rebuilds every tracked case's calendar
+  from the same cached court data across every provider/model column in
+  parallel, with a shared CourtListener / PDF response cache so each
+  upstream fetch happens at most once total (zero CourtListener cost
+  beyond the first column). `ground_truth_worksheet.py` emits a blind
+  worksheet (one row per CourtListener record, model output never seen)
+  for a human to fill in by reading the dockets; `score.py` then
+  computes each column's total deviation against the filled truth —
+  deterministic, no LLM in the scoring loop, no judgment beyond
+  `|model − truth|` summed across six per-record count categories.
+  Everything is committed: the worksheet template, the scoring script,
+  the full event-data export (`model_events.csv`), the cost report
+  (`cost.md`), and this release's filled `ground_truth.csv` for
+  reproducibility. The README explains the methodology AND its
+  limitations — the prompt-fit bias (prompts were authored by Claude
+  and run identically across columns) is acknowledged rather than
+  papered over.
+- **`SCORECARD.md` — the canonical scoring result.** New artifact
+  carrying the totals, the qualitative event-set diffs between the top
+  two columns (showing what classes of events each catches that the
+  other drops — Gemini wins on the new 0.8.0 transcript rules and
+  motion-in-limine briefing chains; Anthropic wins on Speedy Trial Act
+  stipulations, PSIR deadlines, the DOW preliminary-injunction
+  hearing, jury-process and CIPA filings), and per-docket detail.
+  Hand-curated qualitative sections are noted in the score.py call
+  pattern — re-running the scorer overwrites them.
+
+### Fixed
+
+- **The `--validate` baseline column in `build_provider_stores.py`
+  matches reality.** The fidelity-check assertion ("the X column should
+  reproduce prod") now points at `gemini/gemini-3.1-flash-lite` instead
+  of `anthropic/claude-haiku-4-5`, since prod was rebuilt by the former
+  as part of this release. Previously the check would have spuriously
+  flagged the Anthropic column as "diverged" against a Gemini-built
+  prod store.
+
+[0.8.1]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.8.1
+
 ## [0.8.0] - 2026-05-28
 
 ### Changed
