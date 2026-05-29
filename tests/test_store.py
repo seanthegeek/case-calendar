@@ -930,6 +930,41 @@ class TestHearings:
         assert store.find_concurrent_held_hearing_clusters("us-v-x") == []
 
 
+class TestDeleteHearing:
+    """``Store.delete_hearing`` — single-row delete used by the dedupe
+    sweeps to remove same-slot key-drift siblings once their
+    ``source_entry_ids`` are merged onto the canonical row.
+    """
+
+    def test_delete_removes_matching_row(self, store: Store):
+        store.upsert_hearing(_hearing(key="keep-me"))
+        store.upsert_hearing(_hearing(key="delete-me"))
+        deleted = store.delete_hearing("us-v-x", "delete-me")
+        assert deleted == 1
+        remaining = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert remaining == {"keep-me"}
+
+    def test_delete_returns_zero_on_unknown_key(self, store: Store):
+        store.upsert_hearing(_hearing(key="exists"))
+        deleted = store.delete_hearing("us-v-x", "never-existed")
+        assert deleted == 0
+        # Existing row untouched.
+        assert len(store.get_hearings("us-v-x")) == 1
+
+    def test_delete_scopes_to_case_id(self, store: Store):
+        # Same hearing_key, two different cases — delete touches only the
+        # matching case_id.
+        store.upsert_hearing(_hearing(case_id="us-v-akhter", key="shared-key"))
+        store.upsert_hearing(_hearing(case_id="us-v-x", key="shared-key"))
+        deleted = store.delete_hearing("us-v-x", "shared-key")
+        assert deleted == 1
+        # Akhter row survives.
+        assert {h["hearing_key"] for h in store.get_hearings("us-v-akhter")} == {
+            "shared-key"
+        }
+        assert store.get_hearings("us-v-x") == []
+
+
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {
         "case_id": case_id,

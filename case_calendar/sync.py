@@ -904,11 +904,12 @@ class CaseSyncer:
         The verify pass operates on one row in isolation and has no view
         of sibling future hearings; this sweep closes that gap.
 
-        For each cluster the LLM returns MERGE_INTO (cancel duplicates,
-        merge their source_entry_ids into the target row) or KEEP_BOTH /
-        UNCLEAR (no-op — used for the rare case where two distinct
-        proceedings really are scheduled back-to-back at the same time).
-        Returns the count of rows cancelled by merge.
+        For each cluster the LLM returns MERGE_INTO (DELETE duplicates,
+        merge their source_entry_ids into the target row, append their
+        keys to the target's audit_notes) or KEEP_BOTH / UNCLEAR (no-op
+        — used for the rare case where two distinct proceedings really
+        are scheduled back-to-back at the same time). Returns the count
+        of rows deleted by merge.
         """
         from . import llm as llm_mod
 
@@ -950,8 +951,8 @@ class CaseSyncer:
     ) -> int:
         """Apply one MERGE_INTO / KEEP_BOTH / UNCLEAR action to a cluster.
 
-        Returns the number of rows that were cancelled (i.e. merged into
-        the target).
+        Returns the number of rows that were absorbed (merged into and
+        then deleted in favor of the target).
         """
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype != "MERGE_INTO":
@@ -979,42 +980,49 @@ class CaseSyncer:
         # Merge source_entry_ids from all duplicates into the target.
         merged_sources: list[Any] = list(target.get("source_entry_ids") or [])
         seen: set[Any] = set(merged_sources)
+        sibling_keys: list[str] = []
         for dup in cluster:
             if dup.get("hearing_key") == target_key:
                 continue
+            sk = dup.get("hearing_key")
+            if sk:
+                sibling_keys.append(sk)
             for sid in dup.get("source_entry_ids") or []:
                 if sid not in seen:
                     seen.add(sid)
                     merged_sources.append(sid)
         target["source_entry_ids"] = merged_sources
+
+        # Record absorbed sibling keys + the LLM's reason on the
+        # canonical's audit_notes so the audit trail of WHICH keys were
+        # absorbed (and why) survives the sibling deletions.
+        reason = action.get("reason") or f"Duplicate of {target_key}"
+        target["audit_notes"] = _append_audit_line(
+            target.get("audit_notes"),
+            "dedupe",
+            f"Absorbed sibling key(s) {', '.join(sibling_keys)}: {reason}",
+        )
         self.store.upsert_hearing(target)
 
-        # Cancel each duplicate with an explanatory note pointing back to
-        # the target. Renderers skip cancelled rows so the calendar shows
-        # the right thing; the row is preserved for the audit trail.
-        n_cancelled = 0
-        reason = action.get("reason") or f"Duplicate of {target_key}"
+        # Delete each duplicate outright. Earlier behavior flipped them
+        # to status='cancelled', which inflated H_canc deviation in the
+        # provider scorer (each absorbed sibling counted as a spurious
+        # cancellation even though it was just a key-drift artifact).
+        n_deleted = 0
         for dup in cluster:
             if dup.get("hearing_key") == target_key:
                 continue
-            dup_row = dict(dup)
-            dup_row["status"] = "cancelled"
-            dup_row["audit_notes"] = _append_audit_line(
-                dup_row.get("audit_notes"),
-                "dedupe",
-                f"Merged into {target_key}: {reason}",
-            )
-            self.store.upsert_hearing(dup_row)
-            n_cancelled += 1
+            self.store.delete_hearing(case.case_id, dup.get("hearing_key"))
+            n_deleted += 1
 
         log.info(
-            "dedupe: merged %d hearing(s) into %r on docket %s (case=%s)",
-            n_cancelled,
+            "dedupe: absorbed %d hearing(s) into %r on docket %s (case=%s)",
+            n_deleted,
             target_key,
             target.get("docket_id"),
             case.case_id,
         )
-        return n_cancelled
+        return n_deleted
 
     def _dedupe_concurrent_held_hearings(self, case: CaseConfig) -> int:
         """Merge held hearings sharing the same logical PACER slot.
@@ -1034,12 +1042,19 @@ class CaseSyncer:
           built up its audit trail), tie-broken by oldest
           ``last_updated`` (the original row), tie-broken by
           ``hearing_key`` alphabetically (stable ordering).
-        - Merge sibling rows' ``source_entry_ids`` into the canonical.
-        - Cancel each sibling with ``status='cancelled'`` and an audit
-          note pointing at the canonical key. Renderers skip cancelled
-          rows; the row stays for the audit trail.
+        - Merge sibling rows' ``source_entry_ids`` into the canonical,
+          AND append the absorbed sibling key(s) to the canonical's
+          ``audit_notes`` so the audit trail of WHICH keys were absorbed
+          stays attached to the surviving row.
+        - DELETE the sibling rows outright. Earlier behavior flipped
+          siblings to ``status='cancelled'`` and kept the row, which
+          inflated H_canc deviation in the provider scorer (each
+          collapsed sibling counted as a spurious cancellation even
+          though it was just a key-drift artifact, never a real
+          court-ordered cancellation). The audit trail now lives on
+          the canonical row instead of being split across the sibling.
 
-        Returns the count of rows cancelled.
+        Returns the count of rows deleted.
         """
         clusters = self.store.find_concurrent_held_hearing_clusters(case.case_id)
         if not clusters:
@@ -1052,11 +1067,12 @@ class CaseSyncer:
             n = len(h.get("source_entry_ids") or [])
             return (-n, h.get("last_updated") or "", h.get("hearing_key") or "")
 
-        n_cancelled = 0
+        n_deleted = 0
         for cluster in clusters:
             ranked = sorted(cluster, key=_rank)
             target = ranked[0]
             target_key = target.get("hearing_key")
+            slot = target.get("starts_at_utc")
             # Merge source_entry_ids from siblings into the canonical.
             merged_sources: list[Any] = list(target.get("source_entry_ids") or [])
             seen: set[Any] = set(merged_sources)
@@ -1066,21 +1082,27 @@ class CaseSyncer:
                         seen.add(sid)
                         merged_sources.append(sid)
             target["source_entry_ids"] = merged_sources
+            # Record the absorbed sibling keys on the canonical's
+            # audit_notes so the audit trail of WHICH keys were absorbed
+            # stays attached to the surviving row after the siblings are
+            # deleted.
+            sibling_keys = [
+                dup.get("hearing_key")
+                for dup in ranked[1:]
+                if dup.get("hearing_key")
+            ]
+            target["audit_notes"] = _append_audit_line(
+                target.get("audit_notes"),
+                "dedupe-held",
+                f"Absorbed sibling key(s) {', '.join(sibling_keys)} at same UTC slot {slot}",
+            )
             self.store.upsert_hearing(target)
 
-            slot = target.get("starts_at_utc")
             for dup in ranked[1:]:
-                dup_row = dict(dup)
-                dup_row["status"] = "cancelled"
-                dup_row["audit_notes"] = _append_audit_line(
-                    dup_row.get("audit_notes"),
-                    "dedupe-held",
-                    f"Merged into {target_key}: same UTC slot {slot} as canonical held row",
-                )
-                self.store.upsert_hearing(dup_row)
-                n_cancelled += 1
+                self.store.delete_hearing(case.case_id, dup.get("hearing_key"))
+                n_deleted += 1
             log.info(
-                "dedupe-held: merged %d hearing(s) into %r at %s (case=%s)",
+                "dedupe-held: absorbed %d hearing(s) into %r at %s (case=%s)",
                 len(ranked) - 1,
                 target_key,
                 slot,
@@ -1089,12 +1111,12 @@ class CaseSyncer:
 
         # Unconditional commit: the early-return at the top of this
         # function guarantees we only reach here when `clusters` was
-        # non-empty, which means at least one row was cancelled.
-        # Guarding on `n_cancelled` would be dead code (the AGENTS.md
+        # non-empty, which means at least one row was deleted.
+        # Guarding on `n_deleted` would be dead code (the AGENTS.md
         # testing philosophy treats unreachable defensive code as a
         # test smell).
         self.store.conn.commit()
-        return n_cancelled
+        return n_deleted
 
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:
         """Audit every future pending deadline against recent docket entries.

@@ -2920,7 +2920,7 @@ class TestDedupeConcurrentHearings:
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deduped"] == 0
 
-    def test_merge_into_cancels_duplicates_and_combines_sources(
+    def test_merge_into_deletes_duplicates_and_combines_sources(
         self,
         store,
         case,
@@ -2938,21 +2938,28 @@ class TestDedupeConcurrentHearings:
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         stats = CaseSyncer(cl, store).sync_case(case)
-        # One row got cancelled.
+        # One row got absorbed (deleted).
         assert stats["deduped"] == 1
         # Both hearings were sent to the LLM as one cluster.
         keys_seen = {h["hearing_key"] for h in captured["cluster"]}
         assert keys_seen == {"msj-hearing", "motion-hearing-2"}
-        # Target preserved, duplicate cancelled.
+        # Target preserved; duplicate DELETED outright (was previously
+        # left in the store with status='cancelled' which inflated
+        # H_canc deviation in the provider scorer).
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
         assert rows["msj-hearing"]["status"] == "scheduled"
-        assert rows["motion-hearing-2"]["status"] == "cancelled"
+        assert "motion-hearing-2" not in rows
         # source_entry_ids from the duplicate were merged into the target,
         # deduping against the target's existing list.
         assert rows["msj-hearing"]["source_entry_ids"] == [42, 43, 99]
-        # The cancelled row carries a [dedupe] audit line pointing at the target.
-        assert "[dedupe]" in (rows["motion-hearing-2"]["audit_notes"] or "")
-        assert "msj-hearing" in (rows["motion-hearing-2"]["audit_notes"] or "")
+        # The CANONICAL row carries a [dedupe] audit line recording
+        # which sibling key(s) were absorbed and the LLM's reason —
+        # the audit trail moves to the survivor when the sibling is
+        # deleted.
+        target_notes = rows["msj-hearing"]["audit_notes"] or ""
+        assert "[dedupe]" in target_notes
+        assert "motion-hearing-2" in target_notes
+        assert "Same slot" in target_notes
 
     def test_keep_both_leaves_cluster_alone(self, store, case, monkeypatch):
         # Stacked back-to-back proceedings — LLM says they're distinct.
@@ -3092,7 +3099,10 @@ class TestDedupeConcurrentHearings:
         assert keys_seen == {"trial-x", "trial-x-2"}
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
         assert rows["trial-x"]["status"] == "scheduled"
-        assert rows["trial-x-2"]["status"] == "cancelled"
+        # Sibling row is deleted, not cancelled — the row is gone.
+        assert "trial-x-2" not in rows
+        # Survivor records which sibling key was absorbed.
+        assert "trial-x-2" in (rows["trial-x"]["audit_notes"] or "")
 
 
 class TestDedupeConcurrentHeldHearings:
@@ -3177,12 +3187,15 @@ class TestDedupeConcurrentHeldHearings:
         # Canonical (more source_entry_ids) stays held.
         assert rows["sentencing-didenko"]["status"] == "held"
         assert rows["sentencing-didenko"]["source_entry_ids"] == [10, 11, 12, 99]
-        # Duplicate cancelled with [dedupe-held] audit note pointing
-        # at the canonical key.
-        assert rows["sentencing-didenko-2"]["status"] == "cancelled"
-        notes = rows["sentencing-didenko-2"]["audit_notes"] or ""
-        assert "[dedupe-held]" in notes
-        assert "sentencing-didenko" in notes
+        # Duplicate is DELETED outright — earlier behavior flipped it
+        # to status='cancelled' and kept the row, which inflated H_canc
+        # deviation in the provider scorer. The row is now gone.
+        assert "sentencing-didenko-2" not in rows
+        # The audit trail of WHICH sibling key was absorbed lives on
+        # the CANONICAL row's audit_notes instead.
+        target_notes = rows["sentencing-didenko"]["audit_notes"] or ""
+        assert "[dedupe-held]" in target_notes
+        assert "sentencing-didenko-2" in target_notes
 
     def test_no_held_clusters_skips_dedup(self, store, case, monkeypatch):
         # Quiet case with no same-slot held duplicates — sweep is a no-op.
