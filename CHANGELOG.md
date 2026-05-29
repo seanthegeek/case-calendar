@@ -8,6 +8,73 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.9.1] - 2026-05-29
+
+### Changed
+
+- **Three prompt edits aimed at the Gemini-specific extraction
+  weaknesses surfaced after the 0.9.0 deploy.** The DOW preliminary
+  injunction hearing (`anthropic-v-dow`, `3:26-cv-01996`, cand) was
+  the canonical case — extracted with Gemini, the calendar showed two
+  rows for one logical hearing (`preliminary-injunction-hearing` at
+  the actual 1:30 PT slot AND a phantom `proceedings-03-24` at
+  midnight UTC pulled from the transcript filing) plus an abbreviated
+  location ("U.S. Courthouse, ..., 19th Floor, Courtroom 12" rather
+  than the full "U.S. District Court, Northern District of California,
+  450 Golden Gate Avenue, San Francisco, CA 94102, 19th Floor,
+  Courtroom 12") and an abbreviated dial-in (the bare URL, dropping
+  the "audio observation only" framing that Civ. L.R. 77-3(d) attaches
+  to the access). Three coordinated rules:
+
+  - **CRITICAL — same-day rule for transcript filings.** When the
+    entry being processed is a TRANSCRIPT (text starts with
+    "Transcript of Proceedings", "TRANSCRIPT OF PROCEEDINGS",
+    "Transcript filed", "NOTICE OF FILING OF OFFICIAL TRANSCRIPT",
+    "Corrected Transcript", etc.) and references a proceeding HELD on
+    a specific date, the model must look for a known hearing on the
+    SAME docket whose `starts_at_utc` falls on that DATE — regardless
+    of time-of-day or hearing type — and emit MARK_HELD on the
+    EXISTING key rather than allocating a generic `proceedings-<date>`
+    key. The dedupe-held sweep only collapses rows that share the
+    EXACT same `starts_at_utc`, so a same-date / different-time-of-day
+    collision sneaks through and produces a phantom calendar event.
+    The implicit-held fallback (ADD a fresh key with status
+    implicit-held) is reserved for transcripts of proceedings where no
+    known hearing exists anywhere on the docket for the date.
+
+  - **Location rules — PRESERVE EVERY NAMED TOKEN.** The source's
+    formal court name (e.g. "Northern District of California"), state
+    abbreviations, zip codes, and suite/room labels must be preserved
+    in the extracted location. Subscribers may need the full
+    identification to verify the venue, especially in multi-courthouse
+    districts. The canonical worked example pins the desired output
+    against the DOW PI hearing's source text.
+
+  - **Dial-in rules — carry access labels.** When the source text
+    describes who can dial in or what they can hear (e.g. "audio
+    observation only" per Civ. L.R. 77-3(d), "video for parties
+    only", "open to the public", "sealed proceedings", "media may not
+    record"), include them after the URL or in parentheses on the
+    `dial_in` field. Subscribers need to know whether the dial-in is
+    for them.
+
+- **conftest env-leak fix.** The autouse `_no_real_token` fixture
+  strips API keys and `LLM_PROVIDER` from the test process's
+  environment before each test runs, but didn't strip the per-track
+  override env vars introduced in 0.9.0 (`LLM_EXTRACTION_PROVIDER`,
+  `LLM_SUMMARY_PROVIDER`, `LLM_SUMMARY_MODEL`). `uv run` loads the
+  project's `.env` by default, so an operator who pinned
+  `LLM_SUMMARY_PROVIDER=anthropic` in `.env` saw two ostensibly-clean
+  tests fail (`TestSummaryProviderInfo::test_no_provider` and
+  `TestGenerateDocketSummary::test_no_provider_raises`) on full-suite
+  runs while passing in isolation. The fixture now also strips both
+  per-track provider overrides plus `LLM_SUMMARY_MODEL`.
+
+- **Four new regression-guard tests on
+  `TestSystemPromptHeldEventRecognition`** pin the same-day,
+  preserve-every-token, dial-in-access-rules, and surrounding
+  vocabulary against future prompt edits.
+
 ## [0.9.0] - 2026-05-29
 
 ### Changed

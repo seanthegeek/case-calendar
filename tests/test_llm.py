@@ -2256,6 +2256,55 @@ class TestSystemPromptHeldEventRecognition:
             in " ".join(llm.SYSTEM_PROMPT.split()).lower()
         )
 
+    def test_same_day_transcript_must_match_known_hearing(self):
+        # Gemini regression on the Anthropic v. DOW PI hearing: a
+        # transcript of proceedings on 03/24/2026 produced a phantom
+        # ``proceedings-03-24`` row at midnight UTC alongside the
+        # actual ``preliminary-injunction-hearing`` row at the real
+        # 13:30 PT slot — same day, different time-of-day, so the
+        # dedupe-held sweep (exact-slot match) couldn't collapse them.
+        # The same-day rule for transcript filings tells the model to
+        # MARK_HELD the EXISTING key when a known hearing lives on the
+        # same date, regardless of time-of-day or hearing type.
+        assert "same-day rule for transcript filings" in llm.SYSTEM_PROMPT
+        # Trigger phrases the rule keys off — pin a representative one
+        # plus the canonical transcript-of-proceedings opener.
+        assert "Transcript of Proceedings" in llm.SYSTEM_PROMPT
+        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in llm.SYSTEM_PROMPT
+        # The substantive rule body.
+        assert "regardless of\nthe time-of-day or hearing type" in llm.SYSTEM_PROMPT
+        # Why it matters — the dedupe-held sweep's exact-slot
+        # constraint is what makes this a same-extractor problem.
+        assert "EXACT same `starts_at_utc`" in llm.SYSTEM_PROMPT
+
+    def test_location_preserves_every_named_token(self):
+        # Gemini regression on the same DOW PI hearing: source said
+        # "U.S. District Court, Northern District of California, 450
+        # Golden Gate Avenue, San Francisco, CA 94102, 19th Floor,
+        # Courtroom 12" and the extracted location dropped the formal
+        # court name + ZIP, ending as "U.S. Courthouse, 450 Golden Gate
+        # Avenue, San Francisco, 19th Floor, Courtroom 12". The new
+        # rule says PRESERVE EVERY NAMED TOKEN.
+        assert "PRESERVE EVERY NAMED TOKEN" in llm.SYSTEM_PROMPT
+        # The Northern District of California / ZIP example must stay
+        # — it's the canonical regression and pins the desired output.
+        assert "Northern District of California" in llm.SYSTEM_PROMPT
+        assert "94102" in llm.SYSTEM_PROMPT
+        # Negative: warning against shortening to a generic "U.S.
+        # Courthouse" descriptor.
+        assert 'shorten "U.S. District Court' in llm.SYSTEM_PROMPT
+
+    def test_dial_in_carries_access_rules(self):
+        # Gemini regression: source described the dial-in as audio
+        # observation per Civ. L.R. 77-3(d), Gemini extracted only
+        # the bare URL and dropped "(audio observation only)".
+        # Subscribers need to know WHO can hear what.
+        assert "Dial-in rules:" in llm.SYSTEM_PROMPT
+        assert "audio observation only" in llm.SYSTEM_PROMPT
+        # The local-rule citation source is named so the model
+        # recognizes the pattern in the wild.
+        assert "Civ. L.R. 77-3(d)" in llm.SYSTEM_PROMPT
+
 
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added

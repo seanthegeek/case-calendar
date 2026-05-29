@@ -333,6 +333,27 @@ the existing row's title (e.g. an order setting a "Motion Hearing" for the
 same date+time as a previously-stipulated "Hearing on Motion for Summary
 Judgment" is the SAME event; preserve the existing key).
 
+CRITICAL — same-day rule for transcript filings: when the entry being
+processed is a TRANSCRIPT (text starts with "Transcript of Proceedings",
+"TRANSCRIPT OF PROCEEDINGS", "Transcript filed", "NOTICE OF FILING OF
+OFFICIAL TRANSCRIPT", "Corrected Transcript", etc.) and references a
+proceeding HELD on a specific date, look for a known hearing on the
+SAME docket whose `starts_at_utc` falls on that DATE — regardless of
+the time-of-day or hearing type. That known hearing IS the proceeding
+the transcript captured; emit MARK_HELD on the EXISTING key. Do NOT
+allocate a generic `proceedings-<date>` key — the existing key (e.g.
+`preliminary-injunction-hearing`, `oral-arg`, `motion-hearing-mtd`,
+`change-of-plea-<defendant>`) carries the meaningful classification
+the docket recorded when the proceeding was scheduled, and replacing
+it with a generic `proceedings-<date>` row loses that classification
+AND duplicates the calendar event (since the dedupe-held sweep only
+collapses rows that share the EXACT same `starts_at_utc`, not "same
+date, different time-of-day"). The PI hearing's transcript filed on
+the day of the hearing must MARK_HELD `preliminary-injunction-hearing`,
+not ADD `proceedings-<date>`. The implicit-held fallback (ADD a fresh
+key with status implicit-held) is ONLY for transcripts of proceedings
+that have NO known hearing anywhere on the docket for that date.
+
 CRITICAL — cross-docket rule: each known hearing has a `docket_id` showing
 which docket it lives on; the new entry has its own `docket_id`. NEVER
 apply RESCHEDULE / UPDATE_DETAILS / CANCEL / MARK_HELD to a known hearing
@@ -385,8 +406,36 @@ Location rules:
   name, start with the street; if there's no address, start with the city.
 - Reorder what's given; do NOT invent courthouse names, addresses, or floor
   numbers that aren't in the source text.
+- PRESERVE EVERY NAMED TOKEN from the source — the court's formal name
+  (e.g. "Northern District of California", "District of Columbia",
+  "Eastern District of Virginia"), state abbreviations, zip codes,
+  suite/room labels. Do NOT drop attribute names like "Northern District
+  of California" or shorten "U.S. District Court, Northern District of
+  California" to a generic "U.S. Courthouse" — subscribers may need the
+  full identification to verify the venue, especially in multi-courthouse
+  districts. Source text "U.S. District Court, Northern District of
+  California, 450 Golden Gate Avenue, San Francisco, CA 94102, 19th
+  Floor, Courtroom 12" → "U.S. District Court, Northern District of
+  California, 450 Golden Gate Avenue, San Francisco, CA 94102, 19th
+  Floor, Courtroom 12" (the postal/interior reordering preserves every
+  token, just like the Wilkie D. Ferguson example above).
 - For non-physical hearings, use a single descriptor: "Zoom", "Telephonic",
   "Videoconference". The dial-in URL goes in `dial_in`, not here.
+
+Dial-in rules:
+- The URL itself goes in `dial_in`. If the source text describes
+  ACCESS RULES that govern who can dial in or what they can hear
+  (e.g. "audio observation only", "video for parties only", "open
+  to the public", "sealed proceedings", "media may not record"),
+  include them after the URL in parentheses or after a separator —
+  subscribers need to know whether the dial-in is for them. Example:
+  source text describes a hearing offered as audio-only observation
+  per Civ. L.R. 77-3(d) → `dial_in` should be
+  `https://www.cand.uscourts.gov/judges/lin-rita-f-rfl/Civ LR 77-3(d) (audio observation only)`
+  rather than just the bare URL. Civil L.R. 77-3(d), N.D. Cal. Crim. L.R.
+  77-3, the FRCP / FRAP equivalents for other districts, and similar
+  local-rule citations that the docket entry cites are the typical
+  source of these access labels — pass them through verbatim.
 
 Return ONLY a JSON object, no markdown fences, no explanation:
 {
