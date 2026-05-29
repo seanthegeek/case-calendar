@@ -58,17 +58,29 @@ def _detect_provider() -> Optional[str]:
 
     Reads ``LLM_PROVIDER`` (the global default that applies to both
     extraction and summaries) and falls back to API-key auto-detection
-    in priority order ``gemini > anthropic > openai``. Gemini sits
-    first because the published provider comparison (see
-    ``model-comparison/SCORECARD.md``) ranks ``gemini-3.1-flash-lite``
-    as the most accurate extraction model AND the cheapest backfill on
-    the current prompt revision; Anthropic sits second because its
-    extractor deviation (381) is meaningfully better than either
-    OpenAI column's (425 / 435) on the same fixture, and its summary
-    track captures case-distinguishing detail neither OpenAI tier
-    matches — so a fresh operator who provisions multiple keys without
-    setting ``LLM_PROVIDER`` lands on the recommended fallback rather
-    than the third-best column.
+    in priority order ``anthropic > gemini > openai``. Anthropic sits
+    first because real-world use after the 0.9.0 Gemini-default flip
+    surfaced a maintenance treadmill (see
+    ``model-comparison/SCORECARD.md``): Gemini systematically
+    classifies substantive deadline classes — PSR interview + first
+    disclosure, Speedy Trial Act exclusions, surrender for service of
+    sentence, civil-forfeiture claim / answer, substantive sealing
+    motion practice, exhibit-filing deadlines — as procedural-minor
+    and silently drops them from subscriber calendars, because its
+    training corpus didn't include enough legal text to load those
+    priors. Each missed class is addressable with a targeted prompt-
+    vocabulary addition, but the maintainer is not a lawyer and the
+    list of federally-named procedural classes is decades deep, so the
+    vocabulary list is an unbounded treadmill. Anthropic's models
+    handle this for free because the training data covered it.
+
+    Gemini sits second because it remains an excellent choice for the
+    classes it does cover: the published comparison ranks it best on
+    deviation and substantially faster / cheaper, and operators who
+    know their caseload's substantive-class profile and want to pin
+    Gemini can do so via ``LLM_EXTRACTION_PROVIDER=gemini`` without
+    touching the global default. OpenAI sits third (slowest of the
+    three, worst deviation on the comparison fixture).
 
     The per-track override env vars layer on top of this:
       * ``LLM_EXTRACTION_PROVIDER`` overrides for extraction +
@@ -81,10 +93,10 @@ def _detect_provider() -> Optional[str]:
     provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
     if provider in ("anthropic", "openai", "gemini"):
         return provider
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
+    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
+        return "gemini"
     if os.environ.get("OPENAI_API_KEY"):
         return "openai"
     return None

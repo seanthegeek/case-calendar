@@ -46,26 +46,30 @@ class TestDetectProvider:
     def test_no_keys_returns_none(self):
         assert providers._detect_provider() is None
 
-    def test_gemini_wins_when_all_three_set(self, monkeypatch):
-        # Priority order is gemini > anthropic > openai per the published
-        # provider comparison: a fresh operator who provisions every key
-        # without setting LLM_PROVIDER should land on the recommended
-        # default.
+    def test_anthropic_wins_when_all_three_set(self, monkeypatch):
+        # Priority order is anthropic > gemini > openai per the 0.10.0
+        # default reversion: Gemini systematically misclassifies
+        # substantive deadline classes (PSR, STA, surrender for
+        # service of sentence, civil-forfeiture claim/answer, sealing
+        # motion practice, exhibit-filing) as procedural-minor, and
+        # the project maintainer can't enumerate every federally-named
+        # class to teach Gemini the priors. Anthropic's training corpus
+        # covered them. A fresh operator who provisions every key
+        # without setting LLM_PROVIDER lands on the recommended default.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
         monkeypatch.setenv("GEMINI_API_KEY", "g")
-        assert providers._detect_provider() == "gemini"
-
-    def test_anthropic_wins_over_openai_when_both_set(self, monkeypatch):
-        # Without GEMINI/GOOGLE keys, anthropic is next in the priority
-        # — its extraction deviation (381) is meaningfully better than
-        # either OpenAI column's (425 / 435) on the published 46-record
-        # fixture, and the recommended-split's summary track defaults
-        # to Anthropic anyway, so an operator with only OpenAI +
-        # Anthropic keys lands on the better column.
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
-        monkeypatch.setenv("OPENAI_API_KEY", "oai")
         assert providers._detect_provider() == "anthropic"
+
+    def test_gemini_wins_over_openai_when_both_set(self, monkeypatch):
+        # Without an ANTHROPIC key, gemini is next in the priority —
+        # the published comparison ranks it best on deviation and it
+        # remains substantially faster / cheaper than either OpenAI
+        # tier, so an operator with only OpenAI + Gemini keys lands
+        # on the better-performing column.
+        monkeypatch.setenv("OPENAI_API_KEY", "oai")
+        monkeypatch.setenv("GEMINI_API_KEY", "g")
+        assert providers._detect_provider() == "gemini"
 
 
 class TestDetectExtractionProvider:

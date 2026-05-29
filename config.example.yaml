@@ -2,10 +2,10 @@
 #
 # Required env vars when running:
 #   COURTLISTENER_TOKEN  — your CourtListener API key
-#   GEMINI_API_KEY       — for the LLM extractor (default provider). Set
-#                          OPENAI_API_KEY or ANTHROPIC_API_KEY instead if you
+#   ANTHROPIC_API_KEY    — for the LLM extractor (default provider). Set
+#                          GEMINI_API_KEY or OPENAI_API_KEY instead if you
 #                          prefer those — auto-detect priority is
-#                          gemini > anthropic > openai per
+#                          anthropic > gemini > openai per
 #                          model-comparison/SCORECARD.md
 #
 # Run order:
@@ -87,28 +87,23 @@ store_path: data/case-calendar.sqlite
 # included automatically when the page renders.
 #
 # Cost note: this runs on the higher-tier summary model for your
-# provider (Gemini Pro / GPT-5.4 / Sonnet) — the synthesis task warrants
-# the upgrade over the small/fast extractor tier. Budget is roughly
-# $0.10-0.60 per docket for the first run, near-zero on subsequent runs
-# (existing summary rows are reused; pass `--force` to overwrite after
-# a prompt or model change).
+# provider (Sonnet / Gemini Pro / GPT-5.4) — the synthesis task
+# warrants the upgrade over the small/fast extractor tier. Budget is
+# roughly $0.10-0.60 per docket for the first run, near-zero on
+# subsequent runs (existing summary rows are reused; pass `--force`
+# to overwrite after a prompt or model change).
 #
-# Provider defaults: gemini/gemini-2.5-pro, openai/gpt-5.4,
-# anthropic/claude-sonnet-4-6. Override via `provider` / `model` here,
-# or set LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL in .env (config wins
-# if both).
-#
-# Recommendation — split the tracks: keep Gemini as your global
-# LLM_PROVIDER for the cheap+fast extraction track, and set
-# LLM_SUMMARY_PROVIDER=anthropic (or `provider: anthropic` here) for
-# the summary track. Anthropic's case summaries pin the case-
-# distinguishing details (statute citations, count numbers, sentence
-# breakdowns, cancelled-schedule notes, custody status, full briefing
-# schedules) that the cheaper summary tier glosses over — meaningful
-# for the docket-watching audience this calendar is built for. The
-# summary track is opt-in and rare (one call per docket, only when a
-# primary doc or disposition lands), so the cost delta is roughly a
-# dollar across a 28-case caseload.
+# Provider defaults: anthropic/claude-sonnet-4-6,
+# gemini/gemini-2.5-pro, openai/gpt-5.4. Override via `provider` /
+# `model` here, or set LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL in
+# .env (config wins if both). The summary track uses the LLM_PROVIDER
+# global default unless explicitly overridden, so by default it
+# follows whatever you set for the extraction track. Splitting the
+# tracks (Gemini extraction + Anthropic summaries, etc.) remains
+# supported via the per-track override env vars but is no longer the
+# documented default — see model-comparison/SCORECARD.md for the
+# legal-priors / maintenance-treadmill reasoning behind the 0.10.0
+# reversion to Anthropic-for-both.
 # case_summaries:
 #   enabled: true
 #   # provider: anthropic

@@ -190,7 +190,13 @@ def fake_cl():
 def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make sure tests don't accidentally hit the real CourtListener API."""
     monkeypatch.setenv("COURTLISTENER_TOKEN", "test-token")
-    # Strip any real LLM creds the dev shell might have.
+    # Strip any real LLM creds the dev shell might have. Cover the global
+    # provider/model knobs AND the per-track override env vars
+    # (LLM_EXTRACTION_PROVIDER / LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL):
+    # tests that exercise cli.main() call load_dotenv() which pulls those
+    # values from the maintainer's real .env into the process env outside
+    # monkeypatch's tracking, where they then leak into later tests'
+    # "no provider configured" assertions.
     for k in (
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
@@ -198,6 +204,9 @@ def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
         "GOOGLE_API_KEY",
         "LLM_PROVIDER",
         "LLM_MODEL",
+        "LLM_EXTRACTION_PROVIDER",
+        "LLM_SUMMARY_PROVIDER",
+        "LLM_SUMMARY_MODEL",
     ):
         monkeypatch.delenv(k, raising=False)
 

@@ -11,10 +11,14 @@ Case Calendar is a Python CLI. You'll need:
 - A **CourtListener API token** — sign up for a free account at
   [courtlistener.com](https://www.courtlistener.com/) and copy the token from
   the user-profile page.
-- An **LLM API key** for one of: Google (Gemini), OpenAI, or Anthropic.
+- An **LLM API key** for one of: Anthropic, Google (Gemini), or OpenAI.
   Pick whichever you already use. The extractor pipeline uses the cheap /
   small-model tier of each provider; expect cents per case per day on a
-  busy docket. Gemini is the recommended default — see
+  busy docket. Anthropic is the recommended default — its training corpus
+  loads enough legal-procedure vocabulary that substantive deadline
+  classes (PSR, Speedy Trial Act exclusions, civil-forfeiture
+  claim/answer, etc.) get classified correctly without an explicit
+  prompt-vocabulary list, which is unmaintainable in practice. See
   [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md).
 
 [← Back to docs](index.md)
@@ -44,22 +48,23 @@ Open `.env` and fill in:
 
 ```bash
 COURTLISTENER_TOKEN=your_token_here
-GEMINI_API_KEY=...                # or OPENAI_API_KEY=sk-... / ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=sk-ant-...      # or GEMINI_API_KEY=... / OPENAI_API_KEY=sk-...
 CASE_CALENDAR_WEBHOOK_SECRET=...  # only needed for `case-calendar serve`
 ```
 
 You only need one LLM key. The tool auto-detects which provider to use from
-whichever `*_API_KEY` is set, with priority **gemini > anthropic > openai** — a
+whichever `*_API_KEY` is set, with priority **anthropic > gemini > openai** — a
 fresh operator who provisions multiple keys without setting `LLM_PROVIDER`
 lands on the project's recommended default (see
 [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). To
-force a specific provider, set `LLM_PROVIDER=gemini` (or `openai` /
-`anthropic`) — this is the global default for BOTH the extraction track
+force a specific provider, set `LLM_PROVIDER=anthropic` (or `gemini` /
+`openai`) — this is the global default for BOTH the extraction track
 and the case-summary track.
 
 If you want to pin a different provider on each track independently
-(common: Gemini for cheap+fast extraction, Anthropic for richer case
-summaries), use the per-track override env vars:
+(e.g. Gemini for cheap+fast extraction once you've verified it handles
+your caseload's substantive-class profile, Anthropic kept for richer
+case summaries), use the per-track override env vars:
 
 - `LLM_EXTRACTION_PROVIDER` beats `LLM_PROVIDER` for extraction +
   verify + dedupe calls.
