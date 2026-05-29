@@ -25,10 +25,10 @@ significance — so they default to the cheap small/fast tier and run whether or
 not summaries are enabled. **Summaries** are the opt-in synthesis track on a
 higher tier.
 
-| Track | Runs when | Default models (Gemini / OpenAI / Anthropic) |
+| Track | Runs when | Default models (Anthropic / OpenAI / Gemini) |
 | --- | --- | --- |
-| Extraction + verify | Always | Gemini 3.1 Flash Lite / GPT-5.4-nano / Claude Haiku 4.5 |
-| Summaries | Opt-in (`case_summaries.enabled`) | Gemini 2.5 Pro / GPT-5.4 / Claude Sonnet 4.6 |
+| Extraction + verify | Always | Claude Haiku 4.5 / GPT-5.4-nano / Gemini 3.1 Flash Lite |
+| Summaries | Opt-in (`case_summaries.enabled`) | Claude Sonnet 4.6 / GPT-5.4 / Gemini 2.5 Pro |
 
 Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
@@ -40,9 +40,9 @@ one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Gemini (3.1 Flash Lite / 2.5 Pro) — **default** | $1.35 | $0.11 | $1.09 | **$2.56** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) — **default** | $5.74 | $0.65 | $2.17 | **$8.56** |
 | OpenAI (GPT-5.4-nano / GPT-5.4) | $1.02 | $0.17 | $1.47 | **$2.66** |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $5.74 | $0.65 | $2.17 | **$8.56** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.35 | $0.11 | $1.09 | **$2.56** |
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.20 per

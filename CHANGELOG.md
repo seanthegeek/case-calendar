@@ -8,6 +8,118 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.8.2] - 2026-05-28
+
+### Changed
+
+- **Default LLM provider reverted to Anthropic.** The 0.8.1 release switched
+  the default to Google Gemini on the basis that it scored highest on the
+  comparison's deviation-from-human-truth metric. The 0.8.2 release reverses
+  that decision after closer analysis of *what* each model was missing. The
+  scorer measures the absolute difference between the model's count and the
+  human's count in six status categories per CourtListener record; it cannot
+  tell "the model missed a substantive event the human counted" from "the
+  model extracted a noisy procedural event the human didn't count" — both
+  move the score by the same magnitude. The qualitative event-set diffs in
+  `model-comparison/SCORECARD.md` showed that Gemini's misses are
+  systematically *substantive* (preliminary-injunction hearings on civil-
+  litigation dockets, Speedy Trial Act exclusions, PSIR deadlines, CIPA
+  Section 4/5/6/8 submissions, jury-process deadlines, surrender for service
+  of sentence, certified administrative records on civil dockets) and
+  Anthropic's misses are systematically *procedural* (transcript redaction
+  windows, motion-in-limine briefing chains, the leave-to-file-amicus
+  shuffle). Subscribers act on the substantive class; the procedural class
+  is calendar noise that's typically tagged `minor` anyway. The score
+  treated those as equivalent and ranked Gemini ahead; the calendar's actual
+  fit-for-purpose ranks Anthropic ahead. Over a five-year horizon the cost
+  premium is roughly $60 for a 28-case caseload (~$6 once for backfill,
+  ~$0.20/week steady-state) — orders of magnitude below the value of not
+  silently missing a docket's preliminary-injunction hearing.
+
+  `case_calendar.llmkit.providers._detect_provider` priority restored to
+  `anthropic > openai > gemini`. `.env.example`, `config.example.yaml`, and
+  every provider listing in the docs reordered Anthropic-first.
+  `tests/test_llmkit_providers.py` priority test restored to
+  `test_anthropic_wins_when_both_set`. `model-comparison/README.md`,
+  `docs/cost.md`, `docs/installation.md`, `docs/architecture.md`,
+  `docs/llm-prompts.md`, and `AGENTS.md` all reverted to Anthropic-first
+  ordering with the explanation of why the comparison's highest-scoring
+  column is not the chosen default carried in `model-comparison/SCORECARD.md`
+  as a top-note (so a reader doesn't have to reconcile the two on their own).
+
+- **Operator's prod SQLite store reverted to the Anthropic-built one.** The
+  Anthropic-built store from the 0.8.1 backfill (preserved as
+  `data/v0.8.1-snapshot/provider-stores/anthropic-claude-haiku-4-5-v0.8.1/`)
+  was copied back over `data/case-calendar.sqlite`. The Gemini-built store
+  that was briefly promoted is preserved as
+  `data/case-calendar.sqlite.bak-2026-05-28-pre-revert-to-anthropic`. Fresh
+  installs initialize their own store on first sync.
+
+### Added
+
+- **`--skip-summaries` flag on `model-comparison/build_provider_stores.py`.**
+  Skips the `summary.refresh_stale` phase per column, so the (typically
+  expensive) higher-tier summary track doesn't run when iterating on
+  extractor-prompt changes. The comparison's `score.py` only reads hearings
+  and deadlines, so summaries aren't needed to rank columns. Cuts ~$1.10 per
+  column per iteration. Logged as a no-op skip per column so the build.log
+  records the intentional gap.
+
+### Internal — what we tried and reverted on the prompt side
+
+After 0.8.1 surfaced the score-vs-coverage tension, we attempted to close
+Gemini's coverage gaps via three coordinated extractor-prompt edits, all
+designed to be docket-agnostic and generic. The full diff is in the commit
+history on `feat/event-vocab-prompt`. All three are gone from the prompt
+again in 0.8.2 — the lessons stand even though the changes did not:
+
+- **META-RULE — "when in doubt about extraction, ADD".** Told the model to
+  lean toward extracting an event when uncertain after ruling out the
+  standard IGNORE patterns. Worked exactly as designed: Gemini extracted
+  more events under it, including the previously-missed 5/23 Certified
+  Administrative Record deadline on the Anthropic v. DOW (`3:26-cv-01996`,
+  N.D. Cal.) docket. But the measurement was Gemini at **+63 deviation
+  points** against the v0.8.1 scorecard, because the extra rows landed
+  *past* the human's specific count of "what counts as an event." The
+  scorer methodology rewards matching, not coverage. Reverted.
+
+- **NAMED FEDERAL-PROCEDURE EVENT CLASSES section** in the deadline portion
+  of `SYSTEM_PROMPT`. An illustrative-not-exhaustive list of high-frequency
+  federal-court event categories Gemini was silently dropping: Speedy Trial
+  Act exclusions, PSIR deadlines, CIPA Section 4/5/6/8 submissions, jury-
+  process deadlines, forfeiture orders and money judgments, discovery
+  cutoffs / Rule 26(a)(2) expert disclosures, surrender for service of
+  sentence, motion-in-limine briefing chains. Without the META-RULE this
+  section was reference-only — the model could ignore it and did. On DOW
+  cand (`72379655`), the row counts were *identical* between with-vocabulary
+  and without-vocabulary Gemini builds. Reverted to keep `SYSTEM_PROMPT`
+  lean.
+
+- **CRITICAL — multi-defendant naming and rowing.** Strengthened the
+  existing "Title-naming rule (defendants)" with a per-defendant-row
+  mandate (held Initial Appearance for Defendant A does NOT mark held an
+  Initial Appearance for Defendant B; per-defendant hearing_key suffixes).
+  Targeted Gemini's tendency to collapse same-type proceedings across
+  co-defendants on the Akhter docket. Did not get a clean measurement
+  before the iteration was reverted (Anthropic's column on the same
+  rebuild crashed at docket 30/46 with an API credit-balance error, so
+  Anthropic-side deviation was confounded by 16 missing dockets). Reverted
+  to the original phrasing pending a cleaner measurement opportunity.
+
+The structural insight outlives the specific edits: a calendar-extraction
+prompt has a "more extraction" lever (META-RULE-style) and a "more
+specific framing" lever (named-vocabulary). Pulling the former regresses
+the score in measurable units; pulling the latter alone doesn't measurably
+change behavior. The DOW PI hearing on 3/13 — a case-specific gap where
+Gemini collapses adjacent procedural events into one row — appears
+unreachable from either lever in a way that generalizes; a docket-pattern-
+specific edit would close it but defeats the project's "generic prompt
+rules only" design principle. The current direction is to live with
+documented coverage limits per provider rather than push the prompt
+toward a model whose coverage matches Anthropic's.
+
+[0.8.2]: https://github.com/seanthegeek/case-calendar/releases/tag/v0.8.2
+
 ## [0.8.1] - 2026-05-28
 
 ### Changed

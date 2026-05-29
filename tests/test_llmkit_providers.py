@@ -46,20 +46,10 @@ class TestDetectProvider:
     def test_no_keys_returns_none(self):
         assert providers._detect_provider() is None
 
-    def test_gemini_wins_when_all_three_set(self, monkeypatch):
-        # Fallback priority when LLM_PROVIDER is unset is
-        # gemini > openai > anthropic — gemini-3.1-flash-lite is the
-        # comparison-winning default, so an operator who provisions multiple
-        # keys without an explicit LLM_PROVIDER lands on the recommended one.
+    def test_anthropic_wins_when_both_set(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        monkeypatch.setenv("GEMINI_API_KEY", "gem")
-        assert providers._detect_provider() == "gemini"
-
-    def test_openai_wins_over_anthropic_without_gemini(self, monkeypatch):
-        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
-        monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        assert providers._detect_provider() == "openai"
+        assert providers._detect_provider() == "anthropic"
 
 
 # --- _parse_actions ---
