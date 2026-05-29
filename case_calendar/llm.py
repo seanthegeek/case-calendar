@@ -259,6 +259,30 @@ breaks the parser):
 - DO NOT include literal newlines, tabs, or other control characters.
   Stay on one line.
 
+`notes` PROVENANCE rule on deadlines specifically: when emitting
+ADD_DEADLINE or RESCHEDULE_DEADLINE because a court order set or moved
+a deadline, the `notes` field SHOULD pin the provenance — which docket
+entry (PACER entry number) bears the order and what date the order
+was signed. This is provenance, NOT interpretation or summary —
+subscribers reading the calendar event description need to know WHICH
+order to look at if they want the full text, and a future verify pass
+benefits from the same trace. Examples of acceptable provenance notes:
+- ADD_DEADLINE: `Set by entry 87 court order (3/15/2026) granting the
+  parties' stipulation.`
+- RESCHEDULE_DEADLINE: `Extended to 5/29 by entry 154 court order
+  (5/22/2026) granting joint motion.`
+- ADD_DEADLINE conditional: `Trigger: 'Appellants must file motion for
+  appropriate relief within 21 days after resolution of [related case]'
+  per entry 22.`
+NOT acceptable as provenance: a summary of the underlying motion's
+arguments, speculation about why the parties stipulated, or interpretive
+language about how the new date affects other parts of the case
+("ensures briefing wraps before the holiday", "gives plaintiff more
+time to confer"). Keep it to: which entry, what action (set / extended
+/ vacated / etc.), the order's date. A deadline row whose `notes` is
+None loses this trace and forces the subscriber to guess at the docket
+to figure out where the deadline came from.
+
 If the user message includes a "RELATED DOCKET ENTRIES" block, those are
 recent entries on the same docket — either explicitly cited by the new
 entry ("granting 65 Motion ...") or just the last few hearing-relevant
@@ -558,8 +582,14 @@ Significance for deadlines:
   Daubert), sentencing memoranda, plea cutoffs, suppression briefing,
   appellate briefing by the parties, AMICUS-FILING WINDOWS (the master
   deadline by which amici must file their substantive briefs, e.g.
-  "Amicus Briefs in Support of Petitioner due 4/22"), and any deadline
-  whose miss would meaningfully change the case posture.
+  "Amicus Briefs in Support of Petitioner due 4/22"), CERTIFIED
+  ADMINISTRATIVE RECORD / ADMINISTRATIVE RECORD CERTIFICATION on
+  agency-action / APA / mass-tort / civil-litigation dockets (the
+  cross-motion briefing schedule typically runs from this date, so a
+  missed or extended AR-certification date moves every downstream
+  deadline — case-posture-changing), the appellate analogue DEFERRED
+  RECORD ON APPEAL / JOINT APPENDIX deadline, and any deadline whose
+  miss would meaningfully change the case posture.
 - "minor" — purely housekeeping: routine joint status reports / case
   management statements that are just procedural updates, proposed orders
   that follow a settled disposition, attorney-appearance papers, scheduling

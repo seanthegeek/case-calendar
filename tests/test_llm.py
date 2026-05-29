@@ -2305,6 +2305,49 @@ class TestSystemPromptHeldEventRecognition:
         # recognizes the pattern in the wild.
         assert "Civ. L.R. 77-3(d)" in llm.SYSTEM_PROMPT
 
+    def test_certified_admin_record_is_major(self):
+        # DOW certified-admin-record regression: Gemini classified the
+        # 5/22 (later 5/29) AR certification deadline as `minor` so
+        # the row didn't render on the subscriber calendar. AR
+        # certification on agency-action / APA / civil-litigation
+        # dockets is the prerequisite for cross-motion briefing —
+        # case-posture-changing if missed or extended.
+        assert "CERTIFIED" in llm.SYSTEM_PROMPT
+        assert "ADMINISTRATIVE RECORD" in llm.SYSTEM_PROMPT
+        # Cross-motion-clock rationale must stay so a future edit
+        # doesn't downgrade it back.
+        assert (
+            "cross-motion briefing schedule typically runs from this date"
+            in llm.SYSTEM_PROMPT
+        )
+        # Appellate analogue named too. Use whitespace-normalized
+        # check so a future wrap-shift doesn't break the test.
+        normalized = " ".join(llm.SYSTEM_PROMPT.split())
+        assert "DEFERRED RECORD ON APPEAL" in normalized
+        assert "JOINT APPENDIX" in normalized
+
+    def test_deadline_notes_provenance_rule(self):
+        # DOW certified-admin-record regression: Gemini emitted
+        # notes=None on both ADD_DEADLINE and a subsequent
+        # RESCHEDULE_DEADLINE, losing the provenance trace
+        # (which order set / moved the deadline). Anthropic
+        # captured the order's entry number + date in the notes
+        # field. The new rule says deadline notes SHOULD pin the
+        # provenance — entry number, action verb, order date.
+        assert "`notes` PROVENANCE rule on deadlines specifically" in (
+            llm.SYSTEM_PROMPT
+        )
+        # The worked examples must stay — they're what the model
+        # actually keys off when generating new notes. Whitespace-
+        # normalize so a future wrap doesn't break the test.
+        normalized = " ".join(llm.SYSTEM_PROMPT.split())
+        assert "Set by entry 87 court order (3/15/2026)" in normalized
+        assert "Extended to 5/29 by entry 154 court order (5/22/2026)" in normalized
+        # The negative — what NOT to put in notes (interpretation /
+        # summary of the motion) — must stay so a future edit can't
+        # silently widen the rule into a free-form summary box.
+        assert "NOT acceptable as provenance" in llm.SYSTEM_PROMPT
+
 
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
