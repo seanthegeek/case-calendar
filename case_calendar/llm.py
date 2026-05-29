@@ -254,26 +254,14 @@ any substantive framing: suppression, Daubert, sentencing-memo briefing,
 Franks hearing, etc. Don't invent framings that aren't in the source
 text — only carry forward what a related entry actually says.
 
-CRITICAL — multi-defendant naming and rowing: the case name is prepended
-at render time, so titles should NOT repeat it. By default, just the
-proceeding type and (where useful) its subject — e.g. "Sentencing",
-"Jury Trial", "Telephonic Pretrial Conference (CIPA)".
-
-In a MULTI-DEFENDANT case (the entry text or known hearings show more
-than one defendant last name) and the proceeding is specific to one of
-them, you MUST append " - <Defendant Lastname>" to the title AND keep
-each defendant's same-type event as its own row. A held Initial Appearance
-for Defendant A does NOT mark held an Initial Appearance for Defendant B
-— each is a distinct proceeding with its own row, its own status, and
-its own (possibly identical) hearing_key suffix (e.g.
-"initial-appearance-akhter-muneeb", "initial-appearance-akhter-sohaib").
-Example: in a 2-defendant indictment with separate Initial Appearances on
-12/03 and 12/05, both rows exist; the 12/03 one being held tells you
-NOTHING about the 12/05 one's status. Same for Detention, Arraignment,
-Change of Plea, and Sentencing — these are per-defendant proceedings.
-
-For a single-defendant docket the suffix is redundant noise — just
-emit "Sentencing", not "Sentencing - Knoot". For Ashtor's 5-co-defendant
+Title-naming rule (defendants): the case name is prepended at render
+time, so titles should NOT repeat it. By default, just the proceeding
+type and (where useful) its subject — e.g. "Sentencing", "Jury Trial",
+"Telephonic Pretrial Conference (CIPA)". Append " - <Defendant Lastname>"
+ONLY when the case is multi-defendant (the entry text or known hearings
+show multiple defendant last names) AND the proceeding is specific to
+one of them. For a single-defendant docket "Sentencing - Knoot" is
+redundant noise; just emit "Sentencing". For Ashtor's 5-co-defendant
 case, "Initial Appearance - Prince" disambiguates from Ashtor's own
 initial appearance and is correct.
 
@@ -470,86 +458,6 @@ deadline_key rules — same shape as hearing_key:
 deadline_type — informational, optional, free-form short string. Use one of:
 "response", "reply", "opposition", "brief", "memo", "status_report", "answer",
 "proposed_order", "amicus", "supplemental", "other".
-
-NAMED FEDERAL-PROCEDURE EVENT CLASSES — high-frequency categories
-commonly missed. These are NOT exotic — they appear in routine federal
-practice. The general deadline rules above already cover them; this
-section is just to inoculate against silently dropping a class because
-its name doesn't match a generic deadline phrasing. Pattern-match
-against the entry text and PDF when you see them and emit ADD_DEADLINE
-when the entry actually creates / re-sets / cancels the deadline. Do
-NOT use this list as an open license to extract every mention of these
-categories — the rest of the deadline rules (so-ordered stipulations,
-conditional-deadline handling, etc.) still apply.
-
-- Speedy Trial Act exclusions / stipulations (18 U.S.C. § 3161). Court
-  orders or so-ordered stipulations excluding a period from the Speedy
-  Trial Act clock. Cues: "Stipulation Excluding Speedy Trial Time",
-  "exclude time from the speedy trial computation", "ends of justice
-  continuance under § 3161(h)(7)". One ADD_DEADLINE per exclusion at
-  the END date of the excluded period (or at the order's filed date if
-  open-ended). Significance "major" for longer exclusions (a posture-
-  changing event), "minor" for a routine short stipulation riding along
-  with a continuance.
-
-- Pre-Sentence Investigation Report (PSIR) deadlines. The probation
-  officer's draft PSIR, the parties' objections to the PSIR, and the
-  final PSIR. Cues: "Presentence Report due", "PSIR due", "Presentence
-  Investigation Report deadline", "Objections to the Presentence Report
-  due", "Final PSR due". Always "major" — these feed the sentencing
-  hearing directly.
-
-- CIPA submissions (Classified Information Procedures Act, 18 U.S.C.
-  App. III). Section 4 (discovery), Section 5 (defense notice of intent
-  to disclose), Section 6 (admissibility hearings — these are hearings,
-  emit ADD), Section 8 (jury-trial procedures). Cues: "CIPA Section 4
-  submission", "CIPA Section 5 notice", "Section 6 hearing", "classified
-  summary of sentencing submission", "government's letter regarding
-  classified information". "Major" when they set a substantive deadline
-  or hearing.
-
-- Jury-process deadlines. Jury questionnaires due, jury-questionnaire
-  objections, voir-dire-related filings, jury-instruction submissions
-  and objections, hearings on disputed jury instructions. Cues: "Jury
-  Questionnaire Objections", "Proposed Jury Instructions due",
-  "Voir Dire questions due", "Hearing on Disputed Jury Instructions".
-  "Major" for the jury-instructions class (they shape the trial); "minor"
-  for routine questionnaire-distribution timing.
-
-- Forfeiture orders and money judgments. Preliminary orders of
-  forfeiture, final orders of forfeiture, motions for forfeiture money
-  judgment, responses/replies to forfeiture motions, and any deadlines
-  those orders set. Cues: "Preliminary Order of Forfeiture", "Motion
-  for Preliminary Order of Forfeiture", "forfeiture money judgment",
-  "Response to Motion for Preliminary Order of Forfeiture due". "Major".
-
-- Discovery cutoffs and expert disclosures. Rule 16 expert disclosures,
-  Rule 26(a)(2) disclosures, deadlines for the close of fact discovery,
-  deadlines for supplemental disclosures, deadlines for expert rebuttal.
-  Cues: "Expert disclosures due", "Defendant's expert witness
-  disclosure due", "discovery cutoff", "close of fact discovery",
-  "Rule 26(a)(2) disclosure". "Major".
-
-- Surrender for service of sentence. The post-judgment self-surrender
-  date, typically set inside the judgment or a separate order. Cues:
-  "Surrender for service of sentence", "Self-Surrender date",
-  "Defendant shall surrender to the institution designated by the
-  Bureau of Prisons". "Major" — operative date for a sentenced
-  defendant.
-
-- Motion-in-limine briefing chains. When the court issues a scheduling
-  order setting a motion-in-limine deadline AND the same order spells
-  out responses and replies ("Responses due by X; replies by Y"), each
-  is its own ADD_DEADLINE event. Motions in limine are dispositive of
-  evidence at trial — all three rungs are "major". The Motion Hearing
-  that disposes of them is its own ADD hearing.
-
-This list is illustrative, not exhaustive — federal practice has more.
-If you see a named federal procedural deadline that isn't here but
-obviously qualifies (e.g. Daubert deadlines under Rule 702, Rule 35(a)
-sentence-correction deadlines, Bond / detention review hearings), apply
-the same logic: ADD_DEADLINE / ADD, choose significance based on whether
-a miss would meaningfully change case posture.
 
 Significance for deadlines:
 - "major" — deadlines on dispositive briefing (MTD/MSJ response/reply),

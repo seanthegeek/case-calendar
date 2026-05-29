@@ -80,10 +80,9 @@ For each column C (folder ``<provider>/<extraction-model>``):
   4. Render ICS + index.html into <C>/out/ (push-ids stripped, so nothing goes
      to a real Google / M365 calendar). Keep everything.
 
-Prove the replay is faithful with ``--validate``: the gemini default column's
-row counts should match your current prod store (which that column produced
-when prod was promoted to the recommended default) — once that holds, the
-other columns are trustworthy.
+Prove the replay is faithful with ``--validate``: the anthropic default column's
+row counts should match your current prod store (which that column produced) —
+once that holds, the other columns are trustworthy.
 
 Push the winner yourself (stop ``serve`` first, back up the live store):
 
@@ -1013,13 +1012,12 @@ def build_report(
             continue
         L.append(f"| {name} | " + " | ".join(str(counts[c]) for c in cols) + " |")
     L.append("")
-    # prod was rebuilt as gemini/gemini-3.1-flash-lite when it was promoted
-    # to the recommended default (see model-comparison/SCORECARD.md), so THAT
-    # column is the one whose counts should reproduce prod on a fresh replay.
-    gemini_default = f"gemini/{providers._DEFAULT_MODELS['gemini']}"
-    if baseline is not None and gemini_default in names:
+    # prod was built by anthropic at its default extraction model, so that column
+    # is the one whose counts should reproduce prod.
+    anthropic_default = f"anthropic/{providers._DEFAULT_MODELS['anthropic']}"
+    if baseline is not None and anthropic_default in names:
         L.append(
-            f"> Fidelity check: the **{gemini_default}** row should closely "
+            f"> Fidelity check: the **{anthropic_default}** row should closely "
             "match **prod (current)** — prod was built by that column, so a "
             "faithful replay reproduces it. Large divergence means the replay "
             "isn't trustworthy yet."

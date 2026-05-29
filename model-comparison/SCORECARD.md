@@ -2,6 +2,8 @@
 
 Scored **46** of 46 CourtListener records (those with all six counts filled in). Lower deviation = closer to the human-read truth. Deviation is the sum of |model count − your count| over the six status categories.
 
+> **Why the highest-scoring column is NOT the project default (read this before reading the standings).** The 0.8.1 release promoted Gemini-Flash-Lite to default on the basis of its score here. The 0.8.2 release reverted that and switched back to Anthropic. The reason is in the *Qualitative event-set diffs* section below: Gemini systematically drops classes of substantive events that subscribers depend on the calendar to surface (preliminary-injunction hearings on civil-litigation dockets, Speedy Trial Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines, surrender-for-service-of-sentence). Anthropic catches these classes; Gemini catches procedural housekeeping that Anthropic drops. The deviation-score asymmetry under-weights this — a missed substantive event and a matched-count noisy extraction both move the score, but only one of them harms a subscriber. Read the standings as "Gemini matches the human count more tightly in aggregate," not as "Gemini produces the better calendar."
+
 ## Totals (lower is better)
 
 | model | total deviation | H sched | H held | H canc | D pend | D met/pass | D canc |

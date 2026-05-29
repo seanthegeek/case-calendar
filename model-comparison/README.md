@@ -1,11 +1,25 @@
 # Model comparison
 
-Why Google Gemini (`gemini-3.1-flash-lite` extraction + `gemini-2.5-pro` summary)
+Why Anthropic (`claude-haiku-4-5` extraction + `claude-sonnet-4-6` summary)
 is the default LLM provider — and the data and tools to check that yourself,
 including scoring it against your own reading of the dockets, or re-running the
 whole thing on other cases and models.
 
-Case Calendar can run on any of three providers (Gemini / OpenAI / Anthropic;
+> **A note on what the score does and does not measure.** The deviation-from-
+> human-truth score this comparison reports is necessary but not sufficient.
+> The 0.8.1 release briefly switched the default to Gemini on the basis that
+> it scored highest. The 0.8.2 release reverted that decision — Gemini's
+> lower score was paired with systematic gaps on substantive event classes
+> (preliminary injunction hearings on civil-litigation dockets, Speedy Trial
+> Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines,
+> surrender-for-service-of-sentence), and the scorer can't distinguish "miss
+> a substantive event" from "match the human count exactly" — both move the
+> deviation in opposite directions for the wrong reasons. Anthropic's
+> slightly higher deviation is offset by better coverage on the classes
+> subscribers actually depend on the calendar to surface. See
+> `SCORECARD.md` for the per-event analysis.
+
+Case Calendar can run on any of three providers (Anthropic / OpenAI / Gemini;
 one line in `config.yaml`). To pick a default we rebuilt every tracked
 case's calendar from the **same** court data with several model configurations
 and compared cost and accuracy. Each configuration is one **column**: by default
