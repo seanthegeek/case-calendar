@@ -34,24 +34,24 @@ Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
 mislead. Instead, here are **real measured numbers** from a full from-scratch
 backfill of the maintainer's own calendar (28 cases / 34 logical dockets,
-measured 2026-05-27), broken out by provider and track. "Backfill" means
+measured 2026-05-28), broken out by provider and track. "Backfill" means
 processing every historical docket entry plus generating every summary — the
 one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $4.33 | $0.49 | $2.20 | **$7.01** |
-| OpenAI (GPT-5.4-nano / GPT-5.4) | $0.79 | $0.17 | $1.52 | **$2.49** |
-| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.29 | $0.11 | $1.10 | **$2.50** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $5.74 | $0.65 | $2.17 | **$8.56** |
+| OpenAI (GPT-5.4-nano / GPT-5.4) | $1.02 | $0.17 | $1.47 | **$2.66** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.35 | $0.11 | $1.09 | **$2.56** |
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
-the **Summary** column is the opt-in add-on. That's roughly **$0.02–0.15 per
+the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.20 per
 case for extraction** (it scales with entry count, so a busy docket costs more)
-and **$0.03–0.06 per docket for summaries**. After the backfill, existing
+and **$0.03–0.07 per docket for summaries**. After the backfill, existing
 summaries are reused unless a docket gets a new primary document or disposition,
 so ongoing spend is **pennies a week**; the `verify` track (one focused call per
 non-terminal hearing/deadline) is what runs on every sync, and even that stayed
-under $0.50 across the whole caseload on the priciest provider.
+under $0.65 across the whole caseload on the priciest provider.
 
 These are **estimates from the price table** (below), not a bill, and they
 reflect one specific caseload on one date — don't take them on faith; measure
@@ -83,9 +83,9 @@ Membership API access is intended for small firms, small government / media
 outlets, academics, and pre-revenue / pre-funding organizations — not large or
 funded ones.
 
-Against the backfill above: it made **43 API calls total**, so its **hourly and
-daily** totals (43 / 43) sit inside even the free tier (50 / 125). The catch is
-the **per-minute burst** — the backfill peaked at **12 requests in one minute**
+Against the backfill above: it made **46 API calls total**, so its **hourly and
+daily** totals (46 / 46) sit inside even the free tier (50 / 125). The catch is
+the **per-minute burst** — the backfill peaked at **11 requests in one minute**
 (cold-docket lookups firing back-to-back), which exceeds the free (5/min) and
 Tier 1 (10/min) per-minute caps. That isn't data loss: the client honors
 `Retry-After` and backs off automatically (just slower). But a from-scratch

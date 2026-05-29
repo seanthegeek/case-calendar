@@ -102,8 +102,8 @@ rows.
 
 The measured one-time backfill cost for the three **default** model sets lives in
 the main documentation, so there's a single place to keep it current — see the
-[Cost](../docs/cost.md#llm-cost) page. In short: ≈$7 for Anthropic, ≈$2.50 each
-for OpenAI and Gemini, for the whole caseload, once. Day-to-day cost is a tiny
+[Cost](../docs/cost.md#llm-cost) page. In short: ≈$8.50 for Anthropic, ≈$2.50–$2.70
+each for OpenAI and Gemini, for the whole caseload, once. Day-to-day cost is a tiny
 fraction — normal operation only processes new entries, not the whole history.
 
 This comparison adds two **candidate** columns on top of the defaults. Each varies
@@ -112,17 +112,19 @@ whether a pricier extraction tier earns its keep:
 
 | candidate column | extraction model | vs. its default | one-time backfill |
 | --- | --- | --- | ---: |
-| OpenAI | gpt-5.4-mini | gpt-5.4-nano | $4.87 |
-| Google Gemini | gemini-3.5-flash | gemini-3.1-flash-lite | $11.92 |
+| OpenAI | gpt-5.4-mini | gpt-5.4-nano | $5.65 |
+| Google Gemini | gemini-3.5-flash | gemini-3.1-flash-lite | $11.92 (pre-uniform-deadlines; not re-measured) |
 
 The bump is steep on the extraction track alone: `gemini-3.5-flash` extraction
-runs ≈8× the `gemini-3.1-flash-lite` extraction cost, and `gpt-5.4-mini` ≈3.5× the
-`gpt-5.4-nano` cost — so the accuracy gain (the blind scoring above) has to justify
-it before either becomes a default. Full per-track breakdown for all five columns
-is in `cost.md`.
+runs roughly several times the `gemini-3.1-flash-lite` cost, and `gpt-5.4-mini`
+≈3.5× the `gpt-5.4-nano` cost — so the accuracy gain (the blind scoring below) has
+to justify it before either becomes a default. Full per-track breakdown is in
+`cost.md`. The Gemini candidate row carries the previous comparison's number; its
+store build hit the Google AI Studio prepayment wall partway through and was
+removed from the current cost roll-up rather than presented as a partial figure.
 
-The build also made 43 CourtListener API calls total, once, shared across all
-five columns (the court data is identical per column, so it's fetched once and
+The build also made 46 CourtListener API calls total, once, shared across all
+columns (the court data is identical per column, so it's fetched once and
 cached). Figures are estimates from published per-token prices applied to the
 recorded token counts, not a bill.
 
