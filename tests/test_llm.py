@@ -2315,14 +2315,17 @@ class TestSystemPromptHeldEventRecognition:
         assert "CERTIFIED" in llm.SYSTEM_PROMPT
         assert "ADMINISTRATIVE RECORD" in llm.SYSTEM_PROMPT
         # Cross-motion-clock rationale must stay so a future edit
-        # doesn't downgrade it back.
-        assert (
-            "cross-motion briefing schedule typically runs from this date"
-            in llm.SYSTEM_PROMPT
-        )
-        # Appellate analogue named too. Use whitespace-normalized
-        # check so a future wrap-shift doesn't break the test.
+        # doesn't downgrade it back. Whitespace-normalize since the
+        # exact phrasing might wrap differently after future edits.
         normalized = " ".join(llm.SYSTEM_PROMPT.split())
+        assert "cross-motion briefing schedule typically runs from" in normalized
+        # Both artifact names must be pinned — local-rule practice
+        # varies between filing the full record vs just the certified
+        # index, and Gemini missing one variant would drop a docket's
+        # case-posture deadline.
+        assert "CERTIFIED INDEX OF THE ADMINISTRATIVE RECORD" in normalized
+        assert '"Index of the Administrative Record"' in normalized
+        # Appellate analogue named too.
         assert "DEFERRED RECORD ON APPEAL" in normalized
         assert "JOINT APPENDIX" in normalized
 

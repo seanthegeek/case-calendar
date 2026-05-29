@@ -583,13 +583,20 @@ Significance for deadlines:
   appellate briefing by the parties, AMICUS-FILING WINDOWS (the master
   deadline by which amici must file their substantive briefs, e.g.
   "Amicus Briefs in Support of Petitioner due 4/22"), CERTIFIED
-  ADMINISTRATIVE RECORD / ADMINISTRATIVE RECORD CERTIFICATION on
-  agency-action / APA / mass-tort / civil-litigation dockets (the
-  cross-motion briefing schedule typically runs from this date, so a
-  missed or extended AR-certification date moves every downstream
-  deadline — case-posture-changing), the appellate analogue DEFERRED
-  RECORD ON APPEAL / JOINT APPENDIX deadline, and any deadline whose
-  miss would meaningfully change the case posture.
+  ADMINISTRATIVE RECORD / ADMINISTRATIVE RECORD CERTIFICATION / the
+  closely related CERTIFIED INDEX OF THE ADMINISTRATIVE RECORD (or
+  just "Certified Index" / "Index of the Administrative Record") on
+  agency-action / APA / civil-litigation dockets — the index lists the
+  documents comprising the record (sometimes alongside a privilege
+  log) and serves the same calendar-watching function as the record
+  itself, since the cross-motion briefing schedule typically runs from
+  EITHER date (whether the agency filed the full record or just the
+  certified index). Whatever the local-rule artifact is, a missed or
+  extended AR-certification / index-filing date moves every downstream
+  deadline — case-posture-changing. The appellate analogue is the
+  DEFERRED RECORD ON APPEAL / JOINT APPENDIX deadline. Any other
+  deadline whose miss would meaningfully change the case posture is
+  also major.
 - "minor" — purely housekeeping: routine joint status reports / case
   management statements that are just procedural updates, proposed orders
   that follow a settled disposition, attorney-appearance papers, scheduling
