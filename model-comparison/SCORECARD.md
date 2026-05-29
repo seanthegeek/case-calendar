@@ -2,7 +2,7 @@
 
 Scored **46** of 46 CourtListener records (those with all six counts filled in). Lower deviation = closer to the human-read truth. Deviation is the sum of |model count − your count| over the six status categories.
 
-This release (0.8.3) is the third iteration of the comparison. Between 0.8.2 and 0.8.3 the project's extraction prompt closed every substantive event class the 0.8.2 SCORECARD called out on either side (sealed-transcript carve-out, transcript-deadline per-proceeding suffixing, TRANSCRIPT-ORDER strict-IGNORE, the McGonigal transcript class, the Akhter multi-defendant divergence, the Knoot motion-in-limine briefing chain) AND the dedupe sweeps were changed to DELETE absorbed same-slot siblings rather than flip them to `cancelled` (the prior behavior inflated H_canc deviation by counting key-drift artifacts as spurious cancellations). The result: every provider's deviation dropped, and the deviation-gap argument that justified the 0.8.2 revert to Anthropic no longer holds. **Gemini is the new default**, with one important caveat the score doesn't capture — see the **Summary track** section below.
+This release (0.9.0) is the third iteration of the comparison. Between 0.8.2 and 0.9.0 the project's extraction prompt closed every substantive event class the 0.8.2 SCORECARD called out on either side (sealed-transcript carve-out, transcript-deadline per-proceeding suffixing, TRANSCRIPT-ORDER strict-IGNORE, the McGonigal transcript class, the Akhter multi-defendant divergence, the Knoot motion-in-limine briefing chain) AND the dedupe sweeps were changed to DELETE absorbed same-slot siblings rather than flip them to `cancelled` (the prior behavior inflated H_canc deviation by counting key-drift artifacts as spurious cancellations). The result: every provider's deviation dropped, and the deviation-gap argument that justified the 0.8.2 revert to Anthropic no longer holds. **Gemini is the new default**, with one important caveat the score doesn't capture — see the **Summary track** section below.
 
 ## Totals (lower is better)
 
@@ -55,7 +55,7 @@ The deviation score doesn't distinguish "missed a substantive event the human co
 | McGonigal classified-info filings + surrender-for-service-of-sentence | Anthropic only | **both** |
 | Akhter jury-process (questionnaire, instructions, final pretrial) | Anthropic only | **both** |
 
-So the 0.8.2 SCORECARD's coverage gaps don't drive the 0.8.3 default decision — both providers' extraction is now substantively complete on every flagged class. What separates Gemini from Anthropic on extraction now is **cost (4×) and latency (2×)**, on a workload where the cheaper/faster path produces the lower-deviation result. That's the decision.
+So the 0.8.2 SCORECARD's coverage gaps don't drive the 0.9.0 default decision — both providers' extraction is now substantively complete on every flagged class. What separates Gemini from Anthropic on extraction now is **cost (4×) and latency (2×)**, on a workload where the cheaper/faster path produces the lower-deviation result. That's the decision.
 
 ## Summary track — Gemini vs Anthropic
 

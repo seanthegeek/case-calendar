@@ -8,7 +8,7 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [0.8.3] - 2026-05-29
+## [0.9.0] - 2026-05-29
 
 ### Changed
 
@@ -67,7 +67,7 @@ adheres to [Semantic Versioning][semver].
   merged onto the canonical and continue to be.
 
 - **Operator's prod SQLite store rebuilt with the Gemini default.**
-  The Gemini-built store from the new 0.8.3 backfill was copied over
+  The Gemini-built store from the new 0.9.0 backfill was copied over
   `data/case-calendar.sqlite`. The previous (Anthropic-built) 0.8.2
   store is preserved as
   `data/case-calendar.sqlite.bak-2026-05-29-pre-switch-to-gemini`.

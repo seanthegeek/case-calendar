@@ -12,7 +12,7 @@ whole thing on other cases and models.
 > (preliminary-injunction hearings on civil-litigation dockets, Speedy Trial
 > Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines,
 > surrender-for-service-of-sentence) that the score didn't penalize hard
-> enough. This release (0.8.3) restores Gemini as the default because the
+> enough. This release (0.9.0) restores Gemini as the default because the
 > matching prompt edits — explicit MARK_HELD trigger phrases, the sealed-
 > transcript carve-out, the per-proceeding transcript-deadline suffix rule,
 > and the pretrial-transcript-isn't-trial-cancel guard — closed those gaps
