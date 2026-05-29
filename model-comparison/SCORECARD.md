@@ -12,6 +12,66 @@ Scored **46** of 46 CourtListener records (those with all six counts filled in).
 | prod (live) | **470** | 29 | 81 | 38 | 15 | 301 | 6 |
 | openai/gpt-5.4-mini | **471** | 49 | 91 | 60 | 31 | 231 | 9 |
 
+## Qualitative event-set diffs (Gemini vs. Anthropic)
+
+The 21-point score gap between Gemini-Flash-Lite (392) and Anthropic-Haiku (413) is a net-deviation number, not a clean strength differential — both models catch real events the other drops, and both over-extract in different places. To see what the gap is made of, we bucketed each provider's events per docket by `(type, status, date)` and surfaced the buckets unique to one side. Gemini had **169 such unique buckets**, Anthropic **129**; below are the most telling examples by category.
+
+### Events Gemini-Flash-Lite caught that Anthropic-Haiku missed
+
+**The new transcript rules.** *US v. McGonigal* (`1:23-cr-00016`, S.D.N.Y.) — Gemini caught all four transcript events, Anthropic caught zero:
+
+| date | type | sig | event |
+| --- | --- | --- | --- |
+| 2023-06-25 | deadline (passed) | **major** | Public release of 3/8/2023 Conference transcript |
+| 2023-08-25 | deadline (passed) | minor | Notice of Intent to Request Redaction — 8/10 Plea Transcript |
+| 2024-01-19 | deadline (passed) | minor | Redaction Request — Sentencing Transcript |
+| 2024-03-28 | deadline (passed) | **major** | Public release of sentencing transcript |
+
+This is exactly the pattern baked into `SYSTEM_PROMPT` in 0.8.0: redaction windows → minor, public-release → major. Gemini is executing the rule; Anthropic silently drops the entire class.
+
+**Motion-in-limine briefing chains.** *US v. Knoot* (`3:24-cr-00151`, M.D. Tenn.) — Gemini tracked the full response/reply chain plus the actual hearing; Anthropic missed every step:
+
+| date | event |
+| --- | --- |
+| 2025-07-17 | Knoot's response to Government's Motion in Limine (major deadline) |
+| 2025-07-21 | Government's reply to Motion in Limine (major deadline) |
+| **2025-07-29** | **Motion Hearing (Motion to Suppress) — held (major hearing)** |
+| 2025-07-31 | Defendant's expert witness disclosure (major deadline) |
+| 2025-08-08 | Government's response to expert disclosure (major deadline) |
+
+**Substantive cybercrime arcs.** *US v. Ding* (`3:24-cr-00141`, N.D. Cal.): Government's response to Motion to Suppress, Evidentiary Hearing, Motion to Suppress Hearing, and the 2025-10-10 **Jury Selection/Trial — held**, all caught by Gemini. *US v. Akhter* (`1:25-cr-00307`, E.D. Va.): Initial Appearance for Muneeb, the cancelled-arraignment chain, pretrial-motions deadlines, **Change of Plea — Muneeb Akhter (2026-04-15, held)**, the 2026-05-04 **Jury Trial — held**, and the 2026-08-12 **Sentencing — Muneeb Akhter (scheduled future)** — all Gemini-only.
+
+### Events Anthropic-Haiku caught that Gemini-Flash-Lite missed
+
+**Speedy Trial Act stipulations.** *US v. Ding* — three speedy-trial-time exclusions Anthropic flagged that Gemini dropped:
+
+| date | event |
+| --- | --- |
+| 2024-12-13 | Stipulation Excluding Speedy Trial Time |
+| 2025-02-12 | Stipulation Excluding Speedy Trial Time — through 2/10/2025 |
+| 2025-06-05 | Stipulation Excluding Speedy Trial Time |
+
+These are real court orders excluding time from the Speedy Trial Act clock — substantive in federal criminal practice.
+
+**Pre-Sentence Investigation Report deadlines.** Anthropic caught the **PSIR deadline for Muneeb Akhter** (major, met). Gemini doesn't carry a PSIR entry. PSIR is a substantive pre-sentencing event.
+
+**The DOW preliminary-injunction hearing.** *Anthropic v. DOW* (`3:26-cv-01996`, N.D. Cal.) — Anthropic put the substantive moment of the case on the calendar; Gemini didn't:
+
+| date | event |
+| --- | --- |
+| **2026-03-13** | **Hearing on Motion for TRO / Preliminary Injunction — held (major)** |
+| 2026-04-22 | Joint Stipulation and Proposed Order Setting Case Schedule (major) |
+| 2026-05-23 | Certified Administrative Record (major) |
+
+**Jury-process and CIPA filings.** Akhter: Jury Questionnaire Objections, the 2026-04-20 Hearing on Disputed Jury Instructions (held), the 2026-04-29 Final Pretrial Conference (held). *US v. Ashtor* (`1:25-cr-20021`, S.D. Fla.): the CIPA-pretrial-conference response deadline. McGonigal: the classified-information letter, classified summary of sentencing submission, and the **surrender for service of sentence** deadline. These are first-class criminal-case events Gemini drops.
+
+**Multi-defendant per-name disambiguation.** On Akhter, Anthropic distinguishes per-defendant ("Initial Appearance - Muneeb Akhter (held)" vs "Initial Appearance - Sohaib Akhter (cancelled)") where Gemini sometimes collapses them. Some of these "Anthropic-only" buckets are real distinctions; others are the same event named differently. The score aggregates over this.
+
+### Caveats
+
+- **Bucketing by `(docket, type, status, date)` is fuzzy.** Some "unique" buckets are the same event represented with slightly different keys or dates ±1 day; the Akhter "Initial Appearance" rows are the canonical example.
+- **"Unique to a model" ≠ "correct".** Both models hallucinate events that don't exist on the actual docket, and both miss real events. The score measures net match to the human's count, not the absolute set of real events. A "unique to Gemini" event might be a hallucination; a "unique to Anthropic" event might be a real event Gemini wrongly dropped — or the inverse. The qualitative diffs above just suggest the kinds of events each model is biased toward catching.
+
 ## Per-docket detail
 
 Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passed/cancelled`.
