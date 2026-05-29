@@ -752,6 +752,8 @@ def build_for_variant(
     cases: list[CaseConfig],
     raw_cases: dict[str, Any],
     cl: CourtListener,
+    *,
+    skip_summaries: bool = False,
 ) -> str:
     """Build the full store + rendered outputs for one comparison column.
     Thread-safe: variant selection is thread-local (provider for detection,
@@ -786,16 +788,26 @@ def build_for_variant(
         logger.info("[%s] replaying case %s (%s)", name, case.case_id, case.name)
         _replay_case(syncer, store, case)
 
-    logger.info("[%s] generating case summaries", name)
-    summary.refresh_stale(
-        cl=cl,
-        store=store,
-        cases=cases,
-        case_overrides=raw_cases,
-        force=True,
-        provider=variant.provider,
-        model=variant.summary_model,
-    )
+    if skip_summaries:
+        logger.info(
+            "[%s] skipping case summaries (--skip-summaries set); the per-column "
+            "store will have 0 case_summaries rows and the rendered out/ pages "
+            "will show no per-docket summary blocks — this is intentional and "
+            "score.py only reads hearings + deadlines, so the comparison is still "
+            "complete on the calendar-events question",
+            name,
+        )
+    else:
+        logger.info("[%s] generating case summaries", name)
+        summary.refresh_stale(
+            cl=cl,
+            store=store,
+            cases=cases,
+            case_overrides=raw_cases,
+            force=True,
+            provider=variant.provider,
+            model=variant.summary_model,
+        )
 
     # Fold the WAL into the main file so the kept store is a single cp-able file.
     try:
@@ -1090,6 +1102,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="don't capture the per-entry extractor DECISION trace into each "
         "column's build.log (the per-column build.log itself is always written)",
     )
+    ap.add_argument(
+        "--skip-summaries",
+        action="store_true",
+        help="skip the summary.refresh_stale phase per column. Useful when "
+        "iterating on extractor-prompt changes: the comparison's score.py "
+        "only reads hearings + deadlines, so summaries aren't needed to "
+        "rank columns, and skipping them saves the higher-tier model spend "
+        "(typically the biggest cost line per column).",
+    )
     ap.add_argument("--out", help="also write the markdown report to this path")
     args = ap.parse_args(argv)
 
@@ -1194,7 +1215,15 @@ def main(argv: Optional[list[str]] = None) -> int:
         _TL.extract_model = v.extract_model
         _TL.label = v.label
         logger.info("==================== building %s ====================", v.label)
-        return build_for_variant(v, src_path, cfg, cases, raw_cases, cl)
+        return build_for_variant(
+            v,
+            src_path,
+            cfg,
+            cases,
+            raw_cases,
+            cl,
+            skip_summaries=args.skip_summaries,
+        )
 
     def _safe_build(v: Variant) -> None:
         # One column's failure must not abort the others or the final report.

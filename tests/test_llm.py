@@ -2115,6 +2115,113 @@ class TestSystemPromptTranscriptRules:
         assert 'significance="major"' in llm.SYSTEM_PROMPT
 
 
+class TestSystemPromptWhenInDoubtAdd:
+    """The META-RULE telling the LLM to lean toward ADD when uncertain
+    after ruling out the explicit-IGNORE patterns. Added after the v0.8.1
+    provider comparison showed both top-2 models systematically silent on
+    classes of events neither hallucinated nor explicitly excluded.
+    """
+
+    def test_meta_rule_present(self):
+        assert "META-RULE — when in doubt about extraction, ADD" in llm.SYSTEM_PROMPT
+
+    def test_meta_rule_explains_significance_recovery(self):
+        # The justification: significance gate filters minor noise,
+        # verify pass catches hallucinations, so over-extraction is
+        # recoverable while a missed substantive event is not.
+        assert "over-extraction is recoverable" in llm.SYSTEM_PROMPT
+
+    def test_meta_rule_disclaims_explicit_ignore_overrides(self):
+        # The meta-rule does NOT override the explicit-IGNORE patterns
+        # (motion for hearing without a date, plea agreement anticipating,
+        # bare stipulation) or the CANCEL/MARK_HELD grounding rule.
+        # Check pieces that don't span the prompt's line-wrap boundary.
+        assert "explicit-IGNORE patterns" in llm.SYSTEM_PROMPT
+        assert "CANCEL/MARK_HELD" in llm.SYSTEM_PROMPT
+        assert "non-negotiable" in llm.SYSTEM_PROMPT
+
+
+class TestSystemPromptFederalProcedureVocabulary:
+    """Pin the named federal-procedure event classes the prompt now lists
+    by name. Both top-2 models in the v0.8.1 comparison silently dropped
+    classes that fall under generic deadline rules but whose specific names
+    they didn't recognize. The named list is illustrative, not exhaustive
+    — delete a category here and the next provider rebuild silently
+    regresses on docket types that use it (e.g. dropping Speedy Trial Act
+    exclusions across every criminal case).
+    """
+
+    def test_section_header_present(self):
+        assert "NAMED FEDERAL-PROCEDURE EVENT CLASSES" in llm.SYSTEM_PROMPT
+
+    def test_speedy_trial_act_exclusions(self):
+        assert "Speedy Trial Act exclusions" in llm.SYSTEM_PROMPT
+        assert "18 U.S.C. § 3161" in llm.SYSTEM_PROMPT
+
+    def test_psir_deadlines(self):
+        assert "Pre-Sentence Investigation Report (PSIR) deadlines" in llm.SYSTEM_PROMPT
+
+    def test_cipa_submissions(self):
+        assert "CIPA submissions" in llm.SYSTEM_PROMPT
+        assert "Classified Information Procedures Act" in llm.SYSTEM_PROMPT
+
+    def test_jury_process_deadlines(self):
+        assert "Jury-process deadlines" in llm.SYSTEM_PROMPT
+        # Both the questionnaire-objection and instructions classes matter.
+        # Use substrings that don't span the prompt's line-wrap boundary.
+        assert "Questionnaire Objections" in llm.SYSTEM_PROMPT
+        assert "Proposed Jury Instructions" in llm.SYSTEM_PROMPT
+        assert "Hearing on Disputed Jury Instructions" in llm.SYSTEM_PROMPT
+
+    def test_forfeiture_orders(self):
+        assert "Forfeiture orders and money judgments" in llm.SYSTEM_PROMPT
+
+    def test_discovery_and_expert_disclosures(self):
+        assert "Discovery cutoffs and expert disclosures" in llm.SYSTEM_PROMPT
+
+    def test_surrender_for_service_of_sentence(self):
+        assert "Surrender for service of sentence" in llm.SYSTEM_PROMPT
+
+    def test_motion_in_limine_briefing_chains(self):
+        assert "Motion-in-limine briefing chains" in llm.SYSTEM_PROMPT
+
+    def test_list_explicitly_illustrative_not_exhaustive(self):
+        # The list itself can grow; what we pin is the disclaimer that
+        # it's illustrative, so the LLM keeps applying the same logic
+        # to classes outside the list (e.g. Daubert deadlines).
+        assert "illustrative, not exhaustive" in llm.SYSTEM_PROMPT
+
+
+class TestSystemPromptMultiDefendantRowing:
+    """The strengthened multi-defendant rule added after the v0.8.1
+    comparison showed Gemini collapsing per-defendant events on the
+    Akhter docket (Initial Appearance, Arraignment, Change of Plea,
+    Sentencing) into one row each, instead of keeping a row per
+    defendant. The Anthropic title-naming rule already had the suffix
+    convention; this version tightens it into a CRITICAL same-row /
+    same-status rule.
+    """
+
+    def test_critical_emphasis_on_multi_defendant_rowing(self):
+        # The CRITICAL tag puts it in the same emphasis tier as the
+        # cross-docket and same-slot rules.
+        assert "CRITICAL — multi-defendant naming and rowing" in llm.SYSTEM_PROMPT
+
+    def test_explicit_per_defendant_row_rule(self):
+        # "A held Initial Appearance for Defendant A does NOT mark held
+        # an Initial Appearance for Defendant B" — the Akhter pattern.
+        assert "does NOT mark held an Initial Appearance for Defendant B" in (
+            llm.SYSTEM_PROMPT
+        )
+
+    def test_per_defendant_hearing_key_example(self):
+        # Show the per-defendant suffix on hearing_key, so the LLM
+        # doesn't try to reuse one key for two defendants' same-type
+        # proceedings.
+        assert "initial-appearance-akhter-muneeb" in llm.SYSTEM_PROMPT
+        assert "initial-appearance-akhter-sohaib" in llm.SYSTEM_PROMPT
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the
