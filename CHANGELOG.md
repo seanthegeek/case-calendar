@@ -8,6 +8,76 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.8.3] - 2026-05-29
+
+### Changed
+
+- **Default LLM provider switched back to Gemini.** The 0.8.2 release
+  reverted from Gemini to Anthropic on the basis that Gemini was
+  systematically dropping substantive event classes (preliminary-injunction
+  hearings on civil-litigation dockets, Speedy Trial Act exclusions, PSIR
+  deadlines, CIPA submissions, jury-process deadlines, surrender for service
+  of sentence) that the comparison's deviation-from-human-truth score
+  didn't penalize hard enough. This release closes those gaps via
+  matched prompt edits — explicit MARK_HELD trigger phrases (Electronic
+  Clerk's Notes / Minute Entry / "Proceeding held as to Defendant" / verdict
+  form / judgment-after-trial), the sealed-transcript carve-out (IGNORE
+  for `***SEALED***` / `***RESTRICTED***` / "Sealed Transcript" entries
+  since the public version on the same docket carries the real deadlines),
+  the per-proceeding transcript-deadline suffix rule (so a docket with
+  arraignment + sentencing transcripts doesn't see one's deadlines
+  silently overwrite the other's), TRANSCRIPT ORDER strict-IGNORE
+  including MARK_HELD (the actual transcript entry filed shortly after
+  carries the specific proceeding identifier), and a pretrial-transcript-
+  isn't-trial-cancel anti-inference guard. Both providers now catch
+  every class the 0.8.2 SCORECARD flagged on either side; the deviation
+  gap reopens in Gemini's favor without the qualitative-coverage gap
+  that justified the 0.8.2 revert.
+
+  `case_calendar.llmkit.providers._detect_provider` priority changed
+  to `gemini > openai > anthropic` — a fresh operator who provisions
+  multiple keys without setting `LLM_PROVIDER` lands on the default
+  ranked highest by the published comparison. `.env.example`,
+  `config.example.yaml`, `docs/installation.md`, `docs/architecture.md`,
+  `model-comparison/README.md`, `docs/cost.md`, and `AGENTS.md` all
+  reordered Gemini-first.
+
+- **Dedupe sweeps now DELETE absorbed same-slot siblings instead of
+  flipping them to `cancelled`.** Both `_dedupe_concurrent_hearings`
+  (LLM-driven, future scheduled clusters) and
+  `_dedupe_concurrent_held_hearings` (deterministic, held clusters)
+  previously folded siblings' `source_entry_ids` onto the canonical row
+  then upserted each sibling back with `status='cancelled'` and an audit
+  note pointing at the target. The cancelled rows were noise from a
+  subscriber-calendar perspective (renderers skip them) but inflated
+  H_canc deviation in the provider scorer — each absorbed key-drift
+  artifact counted as a spurious cancellation in the totals even though
+  it was never a real court-ordered cancellation. The Akhter case
+  (1:25-cr-00307, vaed) was the canonical example: its logical PACER
+  docket is split across three CourtListener `docket_id`s and the
+  cross-docket rule forbids RESCHEDULE across docket_ids, so both
+  providers correctly emit ADD with new `-N` suffixes on each sibling's
+  pass and rely on dedupe to clean up — producing ~8 extra "cancelled"
+  arraignment rows per build solely as merge byproducts. Both sweeps
+  now DELETE siblings outright via a new
+  `Store.delete_hearing(case_id, hearing_key)` primitive; the audit
+  trail of WHICH sibling keys were absorbed (and, for the LLM-driven
+  sweep, the LLM's reason) moves to the canonical row's `audit_notes`
+  so it survives the deletions. `source_entry_ids` were already being
+  merged onto the canonical and continue to be.
+
+- **Operator's prod SQLite store rebuilt with the Gemini default.**
+  The Gemini-built store from the new 0.8.3 backfill was copied over
+  `data/case-calendar.sqlite`. The previous (Anthropic-built) 0.8.2
+  store is preserved as
+  `data/case-calendar.sqlite.bak-2026-05-29-pre-switch-to-gemini`.
+  Fresh installs initialize their own store on first sync.
+
+- **`model-comparison/SCORECARD.md` regenerated from a fresh
+  all-provider build against the current prompts + dedupe-deletion
+  code path.** Per-docket deviations, totals, and qualitative
+  event-set diffs all reflect the new state.
+
 ## [0.8.2] - 2026-05-28
 
 ### Changed

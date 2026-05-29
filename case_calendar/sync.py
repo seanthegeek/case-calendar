@@ -303,6 +303,15 @@ def _local_to_utc(
 ) -> Optional[str]:
     if not date_str:
         return None
+    # The schema says ``local_time`` is ``"HH:MM" | null`` but some LLMs
+    # occasionally emit the literal string ``"null"`` (or ``"None"``) when
+    # they would otherwise emit no time — gpt-5.4-mini did this on a
+    # verify-pass response and crashed the column with
+    # ``ValueError: Invalid isoformat string: '2026-01-07Tnull'``.
+    # Treat those as no-time (date-only) rather than letting them through
+    # to ``fromisoformat``.
+    if time_str and time_str.strip().lower() in ("null", "none", ""):
+        time_str = None
     if time_str:
         dt = datetime.fromisoformat(f"{date_str}T{time_str}")
     else:
@@ -325,6 +334,11 @@ def _deadline_local_to_utc(
     """Same as _local_to_utc but defaults missing times to 17:00 court-local
     rather than midnight. Used by the deadline path so the stored UTC
     timestamp already reflects end-of-business semantics."""
+    # Normalize the same way ``_local_to_utc`` does — the literal
+    # ``"null"`` / ``"None"`` strings are treated as missing so the
+    # 17:00 default fires instead of crashing in ``fromisoformat``.
+    if time_str and time_str.strip().lower() in ("null", "none", ""):
+        time_str = None
     return _local_to_utc(date_str, time_str or DEADLINE_DEFAULT_LOCAL_TIME, tz)
 
 
@@ -1087,9 +1101,7 @@ class CaseSyncer:
             # stays attached to the surviving row after the siblings are
             # deleted.
             sibling_keys = [
-                dup.get("hearing_key")
-                for dup in ranked[1:]
-                if dup.get("hearing_key")
+                dup.get("hearing_key") for dup in ranked[1:] if dup.get("hearing_key")
             ]
             target["audit_notes"] = _append_audit_line(
                 target.get("audit_notes"),

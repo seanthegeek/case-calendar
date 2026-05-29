@@ -252,14 +252,13 @@ def test_default_variants_cover_providers_plus_eval_candidates():
     assert by_label["anthropic/claude-haiku-4-5"].provider == "anthropic"
     assert by_label["openai/gpt-5.4-nano"].extract_model == "gpt-5.4-nano"
     assert "gemini/gemini-3.1-flash-lite" in by_label  # the gemini default
-    # Evaluation candidates: same provider, different EXTRACTION model only.
-    g = by_label["gemini/gemini-3.5-flash"]
-    assert g.provider == "gemini" and g.extract_model == "gemini-3.5-flash"
-    # summary unchanged from the provider's default column
-    assert g.summary_model == by_label["gemini/gemini-3.1-flash-lite"].summary_model
+    # Evaluation candidate: same provider, different EXTRACTION model only.
     o = by_label["openai/gpt-5.4-mini"]
     assert o.provider == "openai" and o.extract_model == "gpt-5.4-mini"
     assert o.summary_model == by_label["openai/gpt-5.4-nano"].summary_model
+    # gemini-3.5-flash was dropped from the default set due to long
+    # processing times; if you need it, pass --extra-variant explicitly.
+    assert "gemini/gemini-3.5-flash" not in by_label
 
 
 def test_parse_extra_variant_two_fields_defaults_summary():

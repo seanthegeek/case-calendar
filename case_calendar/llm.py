@@ -833,10 +833,10 @@ def extract_actions(
     uniform across all dockets. Returned actions are a flat list; callers
     dispatch on the ``type`` field.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1156,10 +1156,10 @@ def verify_hearing(
     response, returns {"type": "UNCLEAR", ...} so the caller leaves the
     row untouched rather than guessing.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1267,10 +1267,10 @@ def verify_deadline(
     max_tokens: int = 512,
 ) -> dict[str, Any]:
     """Audit a single pending deadline against recent docket entries."""
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1393,10 +1393,10 @@ def resolve_duplicate_hearings(
     error or unparseable response, returns UNCLEAR so the caller leaves
     the cluster alone rather than guessing.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 

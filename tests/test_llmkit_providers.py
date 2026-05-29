@@ -46,10 +46,67 @@ class TestDetectProvider:
     def test_no_keys_returns_none(self):
         assert providers._detect_provider() is None
 
-    def test_anthropic_wins_when_both_set(self, monkeypatch):
+    def test_gemini_wins_when_all_three_set(self, monkeypatch):
+        # Priority order is gemini > openai > anthropic per the published
+        # provider comparison: a fresh operator who provisions every key
+        # without setting LLM_PROVIDER should land on the recommended
+        # default.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        assert providers._detect_provider() == "anthropic"
+        monkeypatch.setenv("GEMINI_API_KEY", "g")
+        assert providers._detect_provider() == "gemini"
+
+    def test_openai_wins_over_anthropic_when_both_set(self, monkeypatch):
+        # Without GEMINI/GOOGLE keys, openai is next in the priority.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+        monkeypatch.setenv("OPENAI_API_KEY", "oai")
+        assert providers._detect_provider() == "openai"
+
+
+class TestDetectExtractionProvider:
+    """``_detect_extraction_provider`` layers ``LLM_EXTRACTION_PROVIDER``
+    on top of ``_detect_provider``. This is the function the four
+    extractor entry points (extract / verify_hearing / verify_deadline /
+    resolve_duplicate_hearings) call, so it controls which provider runs
+    on the per-entry pipeline. ``LLM_PROVIDER`` continues to be the
+    global default that applies when no per-track override is set.
+    """
+
+    def test_extraction_override_takes_precedence_over_global(self, monkeypatch):
+        # LLM_EXTRACTION_PROVIDER beats LLM_PROVIDER for the extraction
+        # track — letting an operator pin Gemini for extraction while
+        # keeping Anthropic for summaries (or any other split).
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "gemini")
+        assert providers._detect_extraction_provider() == "gemini"
+
+    def test_global_provider_used_when_no_extraction_override(self, monkeypatch):
+        # When only LLM_PROVIDER is set, both tracks share it.
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        assert providers._detect_extraction_provider() == "openai"
+
+    def test_falls_through_to_key_autodetect(self, monkeypatch):
+        # When neither LLM_EXTRACTION_PROVIDER nor LLM_PROVIDER is set,
+        # API-key auto-detect applies in the usual priority.
+        monkeypatch.setenv("GEMINI_API_KEY", "g")
+        assert providers._detect_extraction_provider() == "gemini"
+
+    def test_extraction_override_normalized(self, monkeypatch):
+        # Same lower/strip normalization as LLM_PROVIDER.
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "  GEMINI ")
+        assert providers._detect_extraction_provider() == "gemini"
+
+    def test_invalid_extraction_override_falls_through_to_global(self, monkeypatch):
+        # An unrecognized value is treated like unset and the global
+        # LLM_PROVIDER / key auto-detect resolves.
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "bogus")
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        assert providers._detect_extraction_provider() == "anthropic"
+
+    def test_no_provider_configured_returns_none(self):
+        # Nothing set → None (caller raises the "No LLM provider
+        # configured" error).
+        assert providers._detect_extraction_provider() is None
 
 
 # --- _parse_actions ---

@@ -54,16 +54,55 @@ _DEFAULT_MODELS = {
 
 
 def _detect_provider() -> Optional[str]:
+    """The base/global provider selection used by both tracks.
+
+    Reads ``LLM_PROVIDER`` (the global default that applies to both
+    extraction and summaries) and falls back to API-key auto-detection
+    in priority order ``gemini > openai > anthropic``. Gemini sits
+    first because the published provider comparison (see
+    ``model-comparison/SCORECARD.md``) ranks ``gemini-3.1-flash-lite``
+    as the most accurate extraction model AND the cheapest backfill on
+    the current prompt revision; a fresh operator who provisions
+    multiple keys without setting ``LLM_PROVIDER`` should land on the
+    project's recommended starting point.
+
+    The per-track override env vars layer on top of this:
+      * ``LLM_EXTRACTION_PROVIDER`` overrides for extraction +
+        verify-pass + dedupe calls — checked by
+        :func:`_detect_extraction_provider`.
+      * ``LLM_SUMMARY_PROVIDER`` overrides for case summaries —
+        checked by ``llm.summary_provider_info`` /
+        ``llm.generate_docket_summary``.
+    """
     provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
     if provider in ("anthropic", "openai", "gemini"):
         return provider
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
     return None
+
+
+def _detect_extraction_provider() -> Optional[str]:
+    """The provider used for extraction + verify-pass + dedupe calls.
+
+    Precedence:
+      1. ``LLM_EXTRACTION_PROVIDER`` env var (track-specific override).
+      2. Whatever :func:`_detect_provider` returns — i.e.
+         ``LLM_PROVIDER`` (the global default) or API-key
+         auto-detection.
+
+    This mirrors the summary-track resolution in
+    ``llm.summary_provider_info`` so both tracks can be pinned
+    independently while sharing a global default when one isn't set.
+    """
+    extract = os.environ.get("LLM_EXTRACTION_PROVIDER", "").lower().strip()
+    if extract in ("anthropic", "openai", "gemini"):
+        return extract
+    return _detect_provider()
 
 
 def _call_anthropic(
@@ -268,10 +307,11 @@ def _dispatch_llm_call(
 
 
 def provider_info() -> str:
-    """One-line ``provider=… model=…`` for the auto-detected provider, or a
-    ``no provider configured`` notice. Reflects ``LLM_PROVIDER`` / ``LLM_MODEL``
-    overrides and the per-provider defaults."""
-    p = _detect_provider()
+    """One-line ``provider=… model=…`` for the extraction track, or a
+    ``no provider configured`` notice. Reflects ``LLM_EXTRACTION_PROVIDER``
+    > ``LLM_PROVIDER`` for the provider, plus ``LLM_MODEL`` and the
+    per-provider defaults for the model."""
+    p = _detect_extraction_provider()
     if p is None:
         return "no provider configured"
     model = os.environ.get("LLM_MODEL", _DEFAULT_MODELS[p])

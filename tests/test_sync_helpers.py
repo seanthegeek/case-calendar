@@ -240,6 +240,20 @@ class TestLocalToUtc:
     def test_empty_date_returns_none(self):
         assert _local_to_utc("", None, "America/New_York") is None
 
+    def test_literal_null_string_time_treated_as_missing(self):
+        # gpt-5.4-mini regression — the verify-pass response emitted
+        # ``local_time: "null"`` (string) on a REINSTATE action and the
+        # crash was ``ValueError: Invalid isoformat string:
+        # '2026-01-07Tnull'``. Treat the literal "null" / "None" / ""
+        # strings as missing (date-only) rather than letting them through
+        # to ``fromisoformat``.
+        midnight_et = "2026-01-07T05:00:00+00:00"  # EST → UTC at midnight
+        assert _local_to_utc("2026-01-07", "null", "America/New_York") == midnight_et
+        assert _local_to_utc("2026-01-07", "None", "America/New_York") == midnight_et
+        assert _local_to_utc("2026-01-07", "", "America/New_York") == midnight_et
+        # Casing + leading/trailing whitespace also normalize.
+        assert _local_to_utc("2026-01-07", "NULL ", "America/New_York") == midnight_et
+
 
 # --- _default_duration ---
 
@@ -570,6 +584,15 @@ class TestDeadlineLocalToUtc:
 
     def test_empty_date_returns_none(self):
         assert _deadline_local_to_utc("", None, "America/New_York") is None
+
+    def test_literal_null_string_falls_back_to_default_5pm(self):
+        # Same gpt-5.4-mini failure mode as on _local_to_utc, but for
+        # deadlines the missing-time semantics is the 17:00 default
+        # rather than midnight.
+        out = _deadline_local_to_utc("2026-05-24", "null", "America/New_York")
+        assert out == "2026-05-24T21:00:00+00:00"
+        out = _deadline_local_to_utc("2026-05-24", "None", "America/New_York")
+        assert out == "2026-05-24T21:00:00+00:00"
 
 
 # --- compact_recap_documents ---

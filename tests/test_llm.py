@@ -2174,9 +2174,7 @@ class TestSystemPromptTranscriptRules:
         # emphasis level as the must-not-drop rules elsewhere in the
         # prompt. A future edit must not strip the "CRITICAL —" prefix
         # without consciously deciding to demote the rule.
-        assert (
-            "CRITICAL — a transcript public-release deadline" in llm.SYSTEM_PROMPT
-        )
+        assert "CRITICAL — a transcript public-release deadline" in llm.SYSTEM_PROMPT
 
     def test_transcripts_section_header_is_plain_statement(self):
         # The header reads "Transcripts are similar:" — a direct
@@ -2253,9 +2251,10 @@ class TestSystemPromptHeldEventRecognition:
         assert "initial-appearance-muneeb" in llm.SYSTEM_PROMPT
         assert "initial-appearance-sohaib" in llm.SYSTEM_PROMPT
         # Whitespace-normalized check so a future wrap doesn't break the test.
-        assert "do not also mark_held the sibling key" in " ".join(
-            llm.SYSTEM_PROMPT.split()
-        ).lower()
+        assert (
+            "do not also mark_held the sibling key"
+            in " ".join(llm.SYSTEM_PROMPT.split()).lower()
+        )
 
 
 class TestSummaryPromptDatedReferenceGuards:

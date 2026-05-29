@@ -11,10 +11,11 @@ Case Calendar is a Python CLI. You'll need:
 - A **CourtListener API token** — sign up for a free account at
   [courtlistener.com](https://www.courtlistener.com/) and copy the token from
   the user-profile page.
-- An **LLM API key** for one of: Anthropic, OpenAI, or Google (Gemini).
+- An **LLM API key** for one of: Google (Gemini), OpenAI, or Anthropic.
   Pick whichever you already use. The extractor pipeline uses the cheap /
   small-model tier of each provider; expect cents per case per day on a
-  busy docket.
+  busy docket. Gemini is the recommended default — see
+  [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md).
 
 [← Back to docs](index.md)
 
@@ -43,13 +44,31 @@ Open `.env` and fill in:
 
 ```bash
 COURTLISTENER_TOKEN=your_token_here
-ANTHROPIC_API_KEY=sk-ant-...      # or OPENAI_API_KEY=sk-... / GEMINI_API_KEY=...
+GEMINI_API_KEY=...                # or OPENAI_API_KEY=sk-... / ANTHROPIC_API_KEY=sk-ant-...
 CASE_CALENDAR_WEBHOOK_SECRET=...  # only needed for `case-calendar serve`
 ```
 
 You only need one LLM key. The tool auto-detects which provider to use from
-whichever `*_API_KEY` is set. To force a specific provider, set
-`LLM_PROVIDER=anthropic` (or `openai` / `gemini`).
+whichever `*_API_KEY` is set, with priority **gemini > openai > anthropic** — a
+fresh operator who provisions multiple keys without setting `LLM_PROVIDER`
+lands on the project's recommended default (see
+[../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). To
+force a specific provider, set `LLM_PROVIDER=gemini` (or `openai` /
+`anthropic`) — this is the global default for BOTH the extraction track
+and the case-summary track.
+
+If you want to pin a different provider on each track independently
+(common: Gemini for cheap+fast extraction, Anthropic for richer case
+summaries), use the per-track override env vars:
+
+- `LLM_EXTRACTION_PROVIDER` beats `LLM_PROVIDER` for extraction +
+  verify + dedupe calls.
+- `LLM_SUMMARY_PROVIDER` beats `LLM_PROVIDER` for the case-summary
+  track.
+
+Either or both can be set with or without `LLM_PROVIDER` — when an
+override is set, that track uses it; otherwise the track falls back to
+`LLM_PROVIDER` or, last, the key auto-detect.
 
 > ⚠️ The `.env` file should never be committed to source control — the
 > repository's `.gitignore` already lists it.
