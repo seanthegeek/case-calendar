@@ -72,8 +72,8 @@ The two tracks are independent (separate env vars — see
   [SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md),
   ~2× faster per call than Anthropic, ~4× cheaper for the same workload.
 - **Summaries** are low-volume (~34 calls per backfill, near-zero ongoing),
-  long-context, synthesis-heavy. The dollar delta is small — Gemini's
-  summary track is $1.09, Anthropic's is $2.24 — but the **quality
+  long-context, synthesis-heavy. In the example above, the dollar delta is small — Gemini's
+  summary track cost $1.09, Anthropic's cost was $2.24 — but the **quality
   difference is large**. Anthropic captures case-distinguishing detail
   (statute citations, count numbers, sentence breakdowns, forfeiture
   amounts split out by money judgment vs identified-property, custody
@@ -92,16 +92,11 @@ GEMINI_API_KEY=...
 ANTHROPIC_API_KEY=...
 ```
 
-That costs you the ~$1.15 summary-track delta (extraction stays on Gemini, so
-the dominant ~$1.60 extract+verify line is unchanged). The total backfill
-under this split is **~$3.85** — Gemini extraction + Anthropic summaries.
-
-> Want a head-to-head cost **and accuracy** comparison across providers and
-> model tiers — including the per-docket deviation breakdown, the
-> wall-clock and mean-call-latency numbers, and the bucket-confusion
-> examples behind the summary-track recommendation? See
-> [`model-comparison/`](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)
-> in the repository.
+Want a head-to-head cost **and accuracy** comparison across providers and model tiers — including the per-docket deviation breakdown, the
+wall-clock and mean-call-latency numbers, and the bucket-confusion
+examples behind the summary-track recommendation? See
+[`model-comparison/`](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)
+in the repository.
 
 ## CourtListener API limits
 
