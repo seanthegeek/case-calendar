@@ -64,14 +64,14 @@ your own with the `llm-tokens` lines.
 The two tracks are independent (separate env vars — see
 [Installation](installation.md)) and they reward different model strengths:
 
-* **Extraction** is high-volume (~1,230 calls per backfill on the
+- **Extraction** is high-volume (~1,230 calls per backfill on the
   maintainer's caseload), structured-output classification. The cheap
   small/fast tier handles it fine, and the dominant cost line is the
   extractor's per-call rate × call volume. **Gemini wins this track**
   outright — best accuracy on the
   [SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md),
   ~2× faster per call than Anthropic, ~4× cheaper for the same workload.
-* **Summaries** are low-volume (~34 calls per backfill, near-zero ongoing),
+- **Summaries** are low-volume (~34 calls per backfill, near-zero ongoing),
   long-context, synthesis-heavy. The dollar delta is small — Gemini's
   summary track is $1.09, Anthropic's is $2.24 — but the **quality
   difference is large**. Anthropic captures case-distinguishing detail
@@ -145,13 +145,13 @@ llm-tokens call purpose=summary provider=gemini model=gemini-2.5-pro docket=1234
 llm-tokens call purpose=extract provider=gemini model=gemini-3.1-flash-lite docket=12345 in=1820 out=64 cached=0 cache_write=0 cost_est=$0.0002
 ```
 
-* `in` — total prompt tokens (the cached portion **included**).
-* `out` — completion tokens.
-* `cached` — prompt tokens served from the cache (billed at the cheaper
+- `in` — total prompt tokens (the cached portion **included**).
+- `out` — completion tokens.
+- `cached` — prompt tokens served from the cache (billed at the cheaper
   cache-read rate).
-* `cache_write` — prompt tokens written to the cache (Anthropic only; billed
+- `cache_write` — prompt tokens written to the cache (Anthropic only; billed
   at the higher cache-write rate). Other providers report `0`.
-* `cost_est` — estimated USD for the call (see the caveat below).
+- `cost_est` — estimated USD for the call (see the caveat below).
 
 `purpose` distinguishes the cheap extractor calls (`extract`,
 `verify_hearing`, `verify_deadline`, `dedupe_hearings`) from the higher-tier
@@ -203,8 +203,8 @@ uv run case-calendar sync --force-summaries
 
 ## Next steps
 
-* [Configuration](configuration.md) — the complete `config.yaml` reference,
+- [Configuration](configuration.md) — the complete `config.yaml` reference,
   including the `case_summaries` block.
-* [AI case summaries](case-summaries.md) — the opt-in summary track that adds
+- [AI case summaries](case-summaries.md) — the opt-in summary track that adds
   the higher-tier model cost.
-* [CLI reference](cli.md) — every `case-calendar` subcommand and flag.
+- [CLI reference](cli.md) — every `case-calendar` subcommand and flag.

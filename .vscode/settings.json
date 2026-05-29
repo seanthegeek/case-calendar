@@ -172,6 +172,9 @@
         "zoneinfo"
     ],
     "markdownlint.config": {
-        "MD024": false
+        "MD024": false,
+        "MD004": {
+            "style": "dash"
+        }
     }
 }

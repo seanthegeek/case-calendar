@@ -33,8 +33,8 @@ Gemini is **~2× faster than Anthropic per call**, ~30% faster than OpenAI nano,
 
 The codebase has two independent provider/model knobs:
 
-* **Extraction track** — every relevant docket entry: `LLM_EXTRACTION_PROVIDER` (override) > `LLM_PROVIDER` (global) > API-key auto-detect. ~1230 calls per backfill. High-volume, low-context, structured-output classification.
-* **Summary track** — one call per docket when a primary document or disposition lands (opt-in via `case_summaries.enabled`): `LLM_SUMMARY_PROVIDER` (override) > `LLM_PROVIDER` (global) > auto-detect. ~34 calls per backfill, ~near zero ongoing. Low-volume, long-context, synthesis-heavy.
+- **Extraction track** — every relevant docket entry: `LLM_EXTRACTION_PROVIDER` (override) > `LLM_PROVIDER` (global) > API-key auto-detect. ~1230 calls per backfill. High-volume, low-context, structured-output classification.
+- **Summary track** — one call per docket when a primary document or disposition lands (opt-in via `case_summaries.enabled`): `LLM_SUMMARY_PROVIDER` (override) > `LLM_PROVIDER` (global) > auto-detect. ~34 calls per backfill, ~near zero ongoing. Low-volume, long-context, synthesis-heavy.
 
 The two tracks have fundamentally different cost shapes (the extractor's 1230 calls vs the summary's 34), and as the **Summary track** section below shows, they reward different model strengths. The recommended `LLM_PROVIDER=gemini` + `LLM_SUMMARY_PROVIDER=anthropic` split optimizes both.
 
@@ -537,4 +537,3 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/0/0` — deviation 0
 - openai/gpt-5.4-mini: `H 0/0/0 D 1/0/0` — deviation 0
 - openai/gpt-5.4-nano: `H 0/0/0 D 1/0/0` — deviation 0
-

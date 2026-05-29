@@ -162,7 +162,7 @@ These rules apply to anyone — human or agent — making changes to this repo. 
 ## Markdown Style
 
 - All markdown must pass VSCode's default markdownlint config
-  - VScode projects must be configured with `"markdownlint.config": {"MD024": false}` to allow for proper changelog headings
+  - VSCode projects must be configured with `"markdownlint.config": {"MD024": false, "MD004": {"style": "dash"}}` — `MD024` is disabled to allow for proper changelog headings, and `MD004` is pinned to `dash` because the project prefers `- list items` over `* list items` and the default `consistent` rule otherwise picks whichever style appears first in any given file, producing churn when a file's lists get reshuffled. Use `-` followed by a space for every unordered list across the codebase
 
 ## GitHub releases
 
