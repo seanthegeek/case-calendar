@@ -49,7 +49,7 @@ CASE_CALENDAR_WEBHOOK_SECRET=...  # only needed for `case-calendar serve`
 ```
 
 You only need one LLM key. The tool auto-detects which provider to use from
-whichever `*_API_KEY` is set, with priority **gemini > openai > anthropic** — a
+whichever `*_API_KEY` is set, with priority **gemini > anthropic > openai** — a
 fresh operator who provisions multiple keys without setting `LLM_PROVIDER`
 lands on the project's recommended default (see
 [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). To

@@ -5,7 +5,7 @@
 #   GEMINI_API_KEY       — for the LLM extractor (default provider). Set
 #                          OPENAI_API_KEY or ANTHROPIC_API_KEY instead if you
 #                          prefer those — auto-detect priority is
-#                          gemini > openai > anthropic per
+#                          gemini > anthropic > openai per
 #                          model-comparison/SCORECARD.md
 #
 # Run order:

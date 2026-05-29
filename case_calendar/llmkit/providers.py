@@ -58,13 +58,17 @@ def _detect_provider() -> Optional[str]:
 
     Reads ``LLM_PROVIDER`` (the global default that applies to both
     extraction and summaries) and falls back to API-key auto-detection
-    in priority order ``gemini > openai > anthropic``. Gemini sits
+    in priority order ``gemini > anthropic > openai``. Gemini sits
     first because the published provider comparison (see
     ``model-comparison/SCORECARD.md``) ranks ``gemini-3.1-flash-lite``
     as the most accurate extraction model AND the cheapest backfill on
-    the current prompt revision; a fresh operator who provisions
-    multiple keys without setting ``LLM_PROVIDER`` should land on the
-    project's recommended starting point.
+    the current prompt revision; Anthropic sits second because its
+    extractor deviation (381) is meaningfully better than either
+    OpenAI column's (425 / 435) on the same fixture, and its summary
+    track captures case-distinguishing detail neither OpenAI tier
+    matches — so a fresh operator who provisions multiple keys without
+    setting ``LLM_PROVIDER`` lands on the recommended fallback rather
+    than the third-best column.
 
     The per-track override env vars layer on top of this:
       * ``LLM_EXTRACTION_PROVIDER`` overrides for extraction +
@@ -79,10 +83,10 @@ def _detect_provider() -> Optional[str]:
         return provider
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
     if os.environ.get("ANTHROPIC_API_KEY"):
         return "anthropic"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
     return None
 
 

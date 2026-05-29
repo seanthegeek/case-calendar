@@ -996,11 +996,10 @@ class CaseSyncer:
         seen: set[Any] = set(merged_sources)
         sibling_keys: list[str] = []
         for dup in cluster:
-            if dup.get("hearing_key") == target_key:
+            dup_key = dup["hearing_key"]
+            if dup_key == target_key:
                 continue
-            sk = dup.get("hearing_key")
-            if sk:
-                sibling_keys.append(sk)
+            sibling_keys.append(dup_key)
             for sid in dup.get("source_entry_ids") or []:
                 if sid not in seen:
                     seen.add(sid)
@@ -1024,9 +1023,10 @@ class CaseSyncer:
         # cancellation even though it was just a key-drift artifact).
         n_deleted = 0
         for dup in cluster:
-            if dup.get("hearing_key") == target_key:
+            dup_key = dup["hearing_key"]
+            if dup_key == target_key:
                 continue
-            self.store.delete_hearing(case.case_id, dup.get("hearing_key"))
+            self.store.delete_hearing(case.case_id, dup_key)
             n_deleted += 1
 
         log.info(
@@ -1100,9 +1100,7 @@ class CaseSyncer:
             # audit_notes so the audit trail of WHICH keys were absorbed
             # stays attached to the surviving row after the siblings are
             # deleted.
-            sibling_keys = [
-                dup.get("hearing_key") for dup in ranked[1:] if dup.get("hearing_key")
-            ]
+            sibling_keys: list[str] = [dup["hearing_key"] for dup in ranked[1:]]
             target["audit_notes"] = _append_audit_line(
                 target.get("audit_notes"),
                 "dedupe-held",
@@ -1111,7 +1109,7 @@ class CaseSyncer:
             self.store.upsert_hearing(target)
 
             for dup in ranked[1:]:
-                self.store.delete_hearing(case.case_id, dup.get("hearing_key"))
+                self.store.delete_hearing(case.case_id, dup["hearing_key"])
                 n_deleted += 1
             log.info(
                 "dedupe-held: absorbed %d hearing(s) into %r at %s (case=%s)",

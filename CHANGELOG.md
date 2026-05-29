@@ -35,7 +35,7 @@ adheres to [Semantic Versioning][semver].
   that justified the 0.8.2 revert.
 
   `case_calendar.llmkit.providers._detect_provider` priority changed
-  to `gemini > openai > anthropic` — a fresh operator who provisions
+  to `gemini > anthropic > openai` — a fresh operator who provisions
   multiple keys without setting `LLM_PROVIDER` lands on the default
   ranked highest by the published comparison. `.env.example`,
   `config.example.yaml`, `docs/installation.md`, `docs/architecture.md`,

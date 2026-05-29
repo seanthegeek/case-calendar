@@ -47,7 +47,7 @@ class TestDetectProvider:
         assert providers._detect_provider() is None
 
     def test_gemini_wins_when_all_three_set(self, monkeypatch):
-        # Priority order is gemini > openai > anthropic per the published
+        # Priority order is gemini > anthropic > openai per the published
         # provider comparison: a fresh operator who provisions every key
         # without setting LLM_PROVIDER should land on the recommended
         # default.
@@ -56,11 +56,16 @@ class TestDetectProvider:
         monkeypatch.setenv("GEMINI_API_KEY", "g")
         assert providers._detect_provider() == "gemini"
 
-    def test_openai_wins_over_anthropic_when_both_set(self, monkeypatch):
-        # Without GEMINI/GOOGLE keys, openai is next in the priority.
+    def test_anthropic_wins_over_openai_when_both_set(self, monkeypatch):
+        # Without GEMINI/GOOGLE keys, anthropic is next in the priority
+        # — its extraction deviation (381) is meaningfully better than
+        # either OpenAI column's (425 / 435) on the published 46-record
+        # fixture, and the recommended-split's summary track defaults
+        # to Anthropic anyway, so an operator with only OpenAI +
+        # Anthropic keys lands on the better column.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
-        assert providers._detect_provider() == "openai"
+        assert providers._detect_provider() == "anthropic"
 
 
 class TestDetectExtractionProvider:
