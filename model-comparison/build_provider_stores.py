@@ -80,7 +80,7 @@ For each column C (folder ``<provider>/<extraction-model>``):
   4. Render ICS + index.html into <C>/out/ (push-ids stripped, so nothing goes
      to a real Google / M365 calendar). Keep everything.
 
-Prove the replay is faithful with ``--validate``: the anthropic default column's
+Prove the replay is faithful with ``--validate``: the gemini default column's
 row counts should match your current prod store (which that column produced) —
 once that holds, the other columns are trustworthy.
 
@@ -93,8 +93,8 @@ Usage:
     # no API calls, no spend — validate the replay plumbing on one case:
     uv run python model-comparison/build_provider_stores.py --fake --case <case_id>
 
-    # build the anthropic store for one case and check it against prod:
-    uv run python model-comparison/build_provider_stores.py --variants anthropic --case <case_id> --validate
+    # build the gemini store for one case and check it against prod:
+    uv run python model-comparison/build_provider_stores.py --variants gemini --case <case_id> --validate
 
     # full build, write the cost report:
     uv run python model-comparison/build_provider_stores.py --validate --out model-comparison/cost.md
@@ -180,22 +180,26 @@ def _default_variants() -> list[Variant]:
     """The committed comparison set: one column per provider at its default
     models, plus the extraction-model evaluation candidates.
 
-    The two extra columns vary ONLY the extraction model (same summary model as
-    their provider's default column), because the open question is which
-    extraction model each provider should default to. They are evaluation
-    candidates: if one wins it becomes that provider's default in
-    ``providers._DEFAULT_MODELS`` (and its default column then IS that model, so
-    the extra column is dropped); if it loses, the extra column is removed.
+    The extra column varies ONLY the extraction model (same summary model as
+    its provider's default column), because the open question is which
+    extraction model each provider should default to. It is an evaluation
+    candidate: if it wins it becomes that provider's default in
+    ``providers._DEFAULT_MODELS`` (and its default column then IS that model,
+    so the extra column is dropped); if it loses, the extra column is
+    removed.
+
+    The Gemini extraction candidate ``gemini-3.5-flash`` was dropped from the
+    default set due to long processing times — its single-column rebuild rate
+    (~14 LLM calls/min) projects to roughly an extra 100 minutes of wall-clock
+    per run, and the existing gemini default ``gemini-3.1-flash-lite`` is the
+    overall comparison leader, so the throughput cost of carrying it across
+    re-runs isn't justified. Pass it explicitly via ``--extra-variant
+    gemini:gemini-3.5-flash`` to add it back for a one-off run.
     """
     out = [
         Variant(p, providers._DEFAULT_MODELS[p], llm._DEFAULT_SUMMARY_MODELS[p])
         for p in ALL_PROVIDERS
     ]
-    out.append(
-        # Google extraction candidate: gemini-3.5-flash vs the gemini default
-        # (gemini-3.1-flash-lite). Summary stays on the gemini default tier.
-        Variant("gemini", "gemini-3.5-flash", llm._DEFAULT_SUMMARY_MODELS["gemini"])
-    )
     out.append(
         # OpenAI extraction candidate: gpt-5.4-mini vs the openai default
         # (gpt-5.4-nano). Summary stays on the openai default tier.

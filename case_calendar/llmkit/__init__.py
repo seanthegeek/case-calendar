@@ -22,6 +22,9 @@ from .providers import (
     _DEFAULT_MODELS as DEFAULT_MODELS,
 )
 from .providers import (
+    _detect_extraction_provider as detect_extraction_provider,
+)
+from .providers import (
     _detect_provider as detect_provider,
 )
 from .providers import (
@@ -37,6 +40,7 @@ __all__ = [
     "OutputTruncatedError",
     "TokenLedger",
     "TokenUsage",
+    "detect_extraction_provider",
     "detect_provider",
     "dispatch",
     "provider_info",

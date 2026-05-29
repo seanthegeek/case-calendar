@@ -2086,6 +2086,49 @@ class TestSystemPromptAntiInferenceGuards:
         assert "NO inferred commentary" in llm.SYSTEM_PROMPT
         assert "circular-reasoning trap" in llm.SYSTEM_PROMPT
 
+    def test_pretrial_transcript_filing_not_grounds_for_trial_cancel(self):
+        # Wei (3:23-cr-01471, casd) regression — a NOTICE OF FILING OF
+        # OFFICIAL TRANSCRIPT of an MIL hearing triggered CANCEL on the
+        # trial key by inference. The rule must forbid this class.
+        assert "A transcript filing for a PRETRIAL event" in llm.SYSTEM_PROMPT
+        # The "what counts as actual trial-status evidence" list must
+        # stay explicit so the model has a concrete substitute for the
+        # forbidden inference.
+        assert "verdict form" in llm.SYSTEM_PROMPT
+        assert "judgment-after-trial" in llm.SYSTEM_PROMPT
+        # And the worked example must stay — without it the rule reads
+        # as abstract advice the small/fast tier can talk itself out of.
+        assert "3:23-cr-01471" in llm.SYSTEM_PROMPT
+
+
+class TestSystemPromptAmicusRules:
+    """Regression guards for the amicus deadline rules. The rule body
+    itself predates this PR; what's pinned here is the new direct-
+    statement header wording ("Amicus filings are CRITICAL ...") that
+    replaced the meta-reference phrasing ("The amicus distinction is
+    critical ..."). The plain wording is intentional so a future
+    stylistic revert doesn't silently change the prompt cue.
+    """
+
+    def test_amicus_section_header_is_plain_statement(self):
+        # The new wording reads as a directive ("Amicus filings are
+        # CRITICAL ..."), at the same emphasis level as the surrounding
+        # CRITICAL blocks elsewhere in the prompt.
+        assert "Amicus filings are CRITICAL and NOT a judgment call:" in (
+            llm.SYSTEM_PROMPT
+        )
+        # Negative: the old meta-reference phrasing must NOT come back.
+        assert "amicus distinction is critical" not in llm.SYSTEM_PROMPT
+
+    def test_amicus_master_window_marked_major(self):
+        # The rule body — the master amicus filing window is major
+        # (subscribers want to know when third-party briefs land),
+        # while the leave-to-file shuffle is minor. Pin both poles so
+        # a future edit can't flip them.
+        assert "MASTER amicus filing window" in llm.SYSTEM_PROMPT
+        assert "MAJOR. Watchers want to know" in llm.SYSTEM_PROMPT
+        assert "Motion for Leave to File Amici Curiae Brief" in llm.SYSTEM_PROMPT
+
 
 class TestSystemPromptTranscriptRules:
     """Regression guards for the three transcript-handling rules added
@@ -2103,6 +2146,18 @@ class TestSystemPromptTranscriptRules:
         assert "ORDER for Transcript" in llm.SYSTEM_PROMPT
         assert "PRIVATE REQUESTS" in llm.SYSTEM_PROMPT
 
+    def test_transcript_order_ignore_covers_mark_held_too(self):
+        # Ding 01/23/2026 regression: a TRANSCRIPT ORDER triggered a
+        # spurious MARK_HELD(trial-ding) when 01/23 was actually a
+        # Daubert sub-day. The IGNORE rule must cover hearing actions
+        # too, not just deadline-extraction — even when the order text
+        # contains "proceedings held on <date>".
+        assert "no MARK_HELD even when the order references" in llm.SYSTEM_PROMPT
+        # The follow-on rationale must explain WHY: the real TRANSCRIPT
+        # entry is filed shortly after and carries the specific
+        # proceeding identifier, so the right MARK_HELD lands there.
+        assert "actual TRANSCRIPT entry filed\n  shortly after" in llm.SYSTEM_PROMPT
+
     def test_redaction_deadline_marked_minor(self):
         # The redaction-request window: procedural, off-calendar.
         assert "transcript-redaction-request deadline" in llm.SYSTEM_PROMPT
@@ -2113,6 +2168,93 @@ class TestSystemPromptTranscriptRules:
         # on-calendar.
         assert "transcript public-release deadline" in llm.SYSTEM_PROMPT
         assert 'significance="major"' in llm.SYSTEM_PROMPT
+
+    def test_public_release_bullet_carries_critical_marker(self):
+        # The public-release transcript bullet stands out at the same
+        # emphasis level as the must-not-drop rules elsewhere in the
+        # prompt. A future edit must not strip the "CRITICAL —" prefix
+        # without consciously deciding to demote the rule.
+        assert "CRITICAL — a transcript public-release deadline" in llm.SYSTEM_PROMPT
+
+    def test_transcripts_section_header_is_plain_statement(self):
+        # The header reads "Transcripts are similar:" — a direct
+        # statement, not the meta-reference phrasing it replaced
+        # ("The transcript distinction is similar and is NOT a judgment
+        # call"). The plain wording is intentional and tests pin it
+        # so a stylistic revert doesn't silently change the cue.
+        assert "Transcripts are similar:" in llm.SYSTEM_PROMPT
+        # Negative: the old meta-reference phrasing must NOT come back.
+        assert "transcript distinction is similar" not in llm.SYSTEM_PROMPT
+
+    def test_transcript_deadline_keys_must_be_proceeding_suffixed(self):
+        # Gholinejad regression: bare `redaction-request-gholinejad`
+        # was reused across sentencing AND arraignment transcripts and
+        # the second silently overwrote the first in the store. The
+        # rule must spell out that transcript-deadline keys carry a
+        # per-proceeding suffix, AND must explicitly distinguish a
+        # PROCEEDING date (stable, OK in the key) from a DEADLINE date
+        # (changeable, forbidden in the key).
+        assert "Transcript-deadline keys MUST carry a per-proceeding suffix" in (
+            llm.SYSTEM_PROMPT
+        )
+        assert "COLLIDE WITH AND OVERWRITE" in llm.SYSTEM_PROMPT
+        # The proceeding-date carve-out from the broader "no dates in
+        # keys" rule must be explicit; without it the Knoot
+        # `redaction-request-knoot-7-30` form looks like a violation.
+        assert "proceeding date is a STABLE identifier" in llm.SYSTEM_PROMPT
+
+    def test_sealed_or_restricted_transcript_ignored(self):
+        # Sealed / restricted transcripts are filed alongside the public
+        # version; the public entry handles real deadlines. Emit IGNORE
+        # for the sealed copy. Pins the canonical marker strings + the
+        # IGNORE outcome so a future prompt edit can't silently drop the
+        # carve-out (which would re-introduce the Ding Vol 7-10 flip-flop
+        # and the spurious public-release deadline on sealed entries).
+        assert "Sealed / restricted transcript entries" in llm.SYSTEM_PROMPT
+        assert '"Sealed Transcript"' in llm.SYSTEM_PROMPT
+        assert '"***SEALED***"' in llm.SYSTEM_PROMPT
+        assert '"***RESTRICTED***"' in llm.SYSTEM_PROMPT
+        # The outcome — must say IGNORE for the sealed entry — and the
+        # reason — sealed transcripts have no public release.
+        assert "Emit IGNORE for the\n  sealed / restricted entry" in llm.SYSTEM_PROMPT
+        assert "will not become" in llm.SYSTEM_PROMPT
+
+
+class TestSystemPromptHeldEventRecognition:
+    """Regression guards for the prompt edits aimed at the Haiku-tier
+    failure modes surfaced by the provider-accuracy scorecard — false
+    cancellations on "vacated and reset" entries, and missed MARK_HELD
+    on standard minute-entry trigger phrases. Each phrase pinned here
+    is one the small/fast model was observed to miss or misread, so
+    a future prompt edit that drops a phrase must replace it with an
+    equivalent that preserves the same handle for the model.
+    """
+
+    def test_vacated_and_reset_is_reschedule_not_cancel(self):
+        # "vacate" alone is not enough — the absence of a new date is
+        # what distinguishes CANCEL from RESCHEDULE.
+        assert '"vacated and reset to <date>"' in llm.SYSTEM_PROMPT
+        assert "RESCHEDULE, NOT CANCEL" in llm.SYSTEM_PROMPT
+        assert "ABSENCE of a new date" in llm.SYSTEM_PROMPT
+
+    def test_mark_held_trigger_phrases_enumerated(self):
+        # The small/fast tier needs explicit trigger phrases, not just
+        # "minute entry, etc.".
+        assert "Electronic Clerk's Notes for proceedings held" in llm.SYSTEM_PROMPT
+        assert "Minute Entry for proceedings held" in llm.SYSTEM_PROMPT
+        assert "held as to <Defendant>" in llm.SYSTEM_PROMPT
+
+    def test_multi_defendant_mark_held_worked_example(self):
+        # Per-defendant keys must diverge: a minute entry naming one
+        # defendant MARK_HELDs only that key, not the sibling.
+        assert "Multi-defendant MARK_HELD" in llm.SYSTEM_PROMPT
+        assert "initial-appearance-muneeb" in llm.SYSTEM_PROMPT
+        assert "initial-appearance-sohaib" in llm.SYSTEM_PROMPT
+        # Whitespace-normalized check so a future wrap doesn't break the test.
+        assert (
+            "do not also mark_held the sibling key"
+            in " ".join(llm.SYSTEM_PROMPT.split()).lower()
+        )
 
 
 class TestSummaryPromptDatedReferenceGuards:

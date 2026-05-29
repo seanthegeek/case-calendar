@@ -120,17 +120,29 @@ Action types:
 - UPDATE_DETAILS — entry adds dial-in, courtroom, judge, or notes for a known
                    hearing without moving it.
 - CANCEL         — entry cancels (vacates) a known hearing without rescheduling.
+                   "vacated and reset to <date>", "continued to <date>", or
+                   "rescheduled" with a new date is RESCHEDULE, NOT CANCEL —
+                   the trigger word "vacate" alone is not enough. CANCEL
+                   requires the ABSENCE of a new date in the same entry.
                    ALWAYS include `local_date` on CANCEL: the date the cancelled
                    hearing was scheduled for. If the hearing isn't in the known
                    list (its original scheduling entry was filtered out before
                    reaching the LLM), emit CANCEL with the date anyway — the
                    system will insert a new row directly into 'cancelled'
                    status so the audit trail captures the adjournment.
-- MARK_HELD      — entry indicates a hearing was held / completed (minute entry,
-                   "held on", clerk's notes, etc.). Match the SPECIFIC hearing
-                   the minute entry refers to (initial appearance, arraignment,
-                   status conference, etc.) — do NOT mark unrelated hearings
-                   held just because they share a defendant.
+- MARK_HELD      — entry indicates a hearing was held / completed. Trigger
+                   phrases include any of:
+                     - "Electronic Clerk's Notes for proceedings held"
+                     - "Minute Entry for proceedings held"
+                     - "<Proceeding> Held"
+                     - "<Proceeding> held as to <Defendant>"
+                     - "Court convened on"
+                     - a verdict form
+                     - a judgment-after-trial.
+                   Match the SPECIFIC hearing the minute entry refers to
+                   (initial appearance, arraignment, status conference, etc.)
+                   — do NOT mark unrelated hearings held just because they
+                   share a defendant.
                    ALWAYS include `local_date` on MARK_HELD: the date the
                    minute entry says the hearing occurred. The system uses
                    this to validate you matched the right hearing — if the
@@ -206,6 +218,17 @@ must NEVER trigger CANCEL or MARK_HELD on their own:
   decides later.
 - A trial date passing in a case where ANY plea was entered. Trials in
   co-defendant cases are not automatically vacated by one defendant's plea.
+- A transcript filing for a PRETRIAL event (motion in limine, suppression,
+  Daubert, status conference, etc.). The transcript filing tells you the
+  pretrial event was held; it tells you NOTHING about the trial. The
+  trial's status comes from EXPLICIT trial-related entries: a minute
+  entry for the trial, a verdict form, a judgment-after-trial, an ORDER
+  continuing or vacating the trial, or a change-of-plea minute entry
+  that explicitly addresses trial. The Wei (US v. Wei, 3:23-cr-01471,
+  casd) regression — a NOTICE OF FILING OF OFFICIAL TRANSCRIPT of
+  Motion In Limine Hearing emitted CANCEL on the trial key — is the
+  canonical failure. The MIL transcript tells you the MIL was held;
+  use MARK_HELD on the MIL key and emit nothing else.
 
 If you're tempted to emit CANCEL or MARK_HELD from inference rather than
 explicit docket text in the entry being processed, emit IGNORE instead.
@@ -293,6 +316,13 @@ If the entry plainly relates to a hearing already in the known list
 (same defendant, same hearing type), use that key even if the date or
 time differs. The whole point of these actions is to update the existing
 row rather than create a duplicate calendar event.
+
+Multi-defendant MARK_HELD: when a minute entry says "Initial Appearance
+held as to <Defendant> only" in a case with per-defendant keys (e.g.
+`initial-appearance-muneeb` / `initial-appearance-sohaib`), MARK_HELD
+applies ONLY to the named defendant's key. Do NOT also MARK_HELD the
+sibling key — the per-defendant suffix exists precisely so the two
+outcomes can diverge.
 
 CRITICAL — same-slot rule: a single court cannot hold two hearings on one
 docket at the same date and time. If you would ADD a hearing whose date+time
@@ -454,6 +484,20 @@ deadline_key rules — same shape as hearing_key:
   reports every 60 days), suffix with a small integer counting all of them
   ever scheduled, including past ones in the known list:
   "joint-status-report", "joint-status-report-2", "joint-status-report-3".
+- Transcript-deadline keys MUST carry a per-proceeding suffix when the
+  docket has multiple transcripts. A docket with transcripts of an
+  arraignment AND a sentencing AND multiple trial days needs distinct
+  keys for each — without the suffix, the later transcript's redaction /
+  release deadlines COLLIDE WITH AND OVERWRITE the prior ones, silently
+  losing rows. Acceptable suffix forms: the proceeding type
+  ("-plea", "-sentencing", "-conference-308"), the proceeding date as
+  M-D or MM-DD ("knoot-7-30", "-01-23-transcript"), or a volume number
+  ("-vol2"). The proceeding date is a STABLE identifier — distinct from
+  a DEADLINE date, which the "no dates in keys" rule above is about.
+  BAD: a docket with sentencing AND arraignment transcripts both
+  emitting `redaction-request-<defendant>`. GOOD: same docket emitting
+  `redaction-request-<defendant>-sentencing` and
+  `redaction-request-<defendant>-arraignment`.
 
 deadline_type — informational, optional, free-form short string. Use one of:
 "response", "reply", "opposition", "brief", "memo", "status_report", "answer",
@@ -472,7 +516,7 @@ Significance for deadlines:
   that follow a settled disposition, attorney-appearance papers, scheduling
   proposals, AND the leave-to-file-amicus shuffle.
 
-The amicus distinction is critical and is NOT a judgment call:
+Amicus filings are CRITICAL and NOT a judgment call:
 - The MASTER amicus filing window (court-set deadline by which any amicus
   curiae must submit its brief) → MAJOR. Watchers want to know when
   substantive third-party content will land in the docket.
@@ -487,19 +531,36 @@ The amicus distinction is critical and is NOT a judgment call:
   Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
   deadline", "Deadline for amici curiae to file briefs".
 
-The transcript distinction is similar and is NOT a judgment call:
+Transcripts are similar:
 - "ORDER for Transcript" / "Transcript Order" / "Order Form" entries are
   PRIVATE REQUESTS to purchase a copy of a transcript — they are NOT court
   orders, and the date on them is when the request was placed, not a
-  deadline. Emit IGNORE for these.
+  deadline. Emit IGNORE for these — IGNORE meaning NO actions of any
+  kind, including no MARK_HELD even when the order references
+  "proceedings held on <date>". The actual TRANSCRIPT entry filed
+  shortly after carries the same date PLUS the specific proceeding
+  identifier, and emits MARK_HELD on the correct hearing key. Using a
+  TRANSCRIPT ORDER to MARK_HELD a generic trial / sentencing / hearing
+  key has been observed to misclassify Daubert sub-days, motion
+  hearings, and status conferences as the trial itself.
 - A transcript-redaction-request deadline (e.g., "Notice of Intent to
   Request Redaction due ...", "redaction request period ends ...") IS a
   deadline, but procedural. ADD_DEADLINE with significance="minor" so it
   stays in the audit trail without appearing on subscriber calendars.
-- A transcript public-release deadline (the date a filed transcript
-  becomes publicly viewable on the docket) IS a deadline AND substantive:
-  ADD_DEADLINE with significance="major". Subscribers want to know when
-  a trial transcript enters the public record.
+- CRITICAL — a transcript public-release deadline (the date a filed
+  transcript becomes publicly viewable on the docket) IS a deadline AND
+  substantive: ADD_DEADLINE with significance="major". Subscribers want
+  to know when a trial transcript enters the public record.
+- Sealed / restricted transcript entries (entry text leads with
+  "Sealed Transcript", "***SEALED***", "***RESTRICTED***", or similar
+  markers) are filed ALONGSIDE the public version of the same transcript;
+  the public version carries the real deadlines. Emit IGNORE for the
+  sealed / restricted entry — a sealed transcript will not become
+  publicly viewable, so emitting a "public-release" deadline for it is
+  wrong, and the matching public-transcript entry (filed on the same
+  docket, usually adjacent) handles the redaction window AND the release
+  deadline. This rule overrides the redaction-request and public-release
+  bullets above for the sealed / restricted copy specifically.
 
 Default to "major" when uncertain. Same render-time gate as hearings —
 minor deadlines stay in the DB for the audit trail but don't appear on the
@@ -772,10 +833,10 @@ def extract_actions(
     uniform across all dockets. Returned actions are a flat list; callers
     dispatch on the ``type`` field.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1095,10 +1156,10 @@ def verify_hearing(
     response, returns {"type": "UNCLEAR", ...} so the caller leaves the
     row untouched rather than guessing.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1206,10 +1267,10 @@ def verify_deadline(
     max_tokens: int = 512,
 ) -> dict[str, Any]:
     """Audit a single pending deadline against recent docket entries."""
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 
@@ -1332,10 +1393,10 @@ def resolve_duplicate_hearings(
     error or unparseable response, returns UNCLEAR so the caller leaves
     the cluster alone rather than guessing.
     """
-    provider = providers._detect_provider()
+    provider = providers._detect_extraction_provider()
     if provider is None:
         raise RuntimeError(
-            "No LLM provider configured. Set LLM_PROVIDER and the matching "
+            "No LLM provider configured. Set LLM_EXTRACTION_PROVIDER or LLM_PROVIDER and the matching "
             "*_API_KEY env var (or put them in .env)."
         )
 

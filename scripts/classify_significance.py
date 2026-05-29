@@ -21,7 +21,8 @@ import sys
 
 from dotenv import load_dotenv
 
-from case_calendar.llm import _DEFAULT_MODELS, _detect_provider, SIGNIFICANCE_RULES
+from case_calendar.llm import SIGNIFICANCE_RULES
+from case_calendar.llmkit.providers import _DEFAULT_MODELS, _detect_provider
 from case_calendar.store import Store
 
 
@@ -66,7 +67,7 @@ def _call_anthropic_deterministic(system: str, user: str, max_tokens: int) -> st
     """Local anthropic call with temperature=0 so re-runs are deterministic."""
     import anthropic
 
-    model = os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
+    model = os.environ.get("LLM_MODEL") or _DEFAULT_MODELS["anthropic"]
     client = anthropic.Anthropic(timeout=60.0)
     resp = client.messages.create(
         model=model,

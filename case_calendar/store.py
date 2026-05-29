@@ -1566,6 +1566,20 @@ class Store:
         counts["case_summaries"] = int(cs_count)
         return counts
 
+    def delete_hearing(self, case_id: str, hearing_key: str) -> int:
+        """Delete a single hearing row by ``(case_id, hearing_key)``.
+
+        Used by the dedupe sweeps to remove same-slot key-drift siblings
+        outright once their ``source_entry_ids`` have been merged onto
+        the canonical row. Returns the number of rows deleted (0 or 1).
+        """
+        with self.tx():
+            cur = self.conn.execute(
+                "DELETE FROM hearings WHERE case_id=? AND hearing_key=?",
+                (case_id, hearing_key),
+            )
+            return cur.rowcount
+
     def delete_docket(self, docket_id: int) -> dict[str, int]:
         """Cascade-delete every row tied to a docket_id. Returns per-table counts.
 
