@@ -28,5 +28,8 @@ tokens/*
 .claude/scheduled_tasks.lock
 scripts/*.json
 
+#LibreOffice lock files
+*~lock.*#
+
 # Local-only operational scripts (deploy creds, host-specific commands).
 private/

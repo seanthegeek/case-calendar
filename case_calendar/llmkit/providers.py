@@ -49,7 +49,7 @@ class OutputTruncatedError(RuntimeError):
 _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5",
     "openai": "gpt-5.4-nano",
-    "gemini": "gemini-2.5-flash-lite",
+    "gemini": "gemini-3.1-flash-lite",
 }
 
 
@@ -57,12 +57,18 @@ def _detect_provider() -> Optional[str]:
     provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
     if provider in ("anthropic", "openai", "gemini"):
         return provider
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
+    # Fallback priority when LLM_PROVIDER is unset: gemini > openai > anthropic.
+    # Gemini sits first because the published provider comparison (see
+    # ``model-comparison/SCORECARD.md``) ranks ``gemini-3.1-flash-lite`` as the
+    # most accurate extraction model AND the cheapest backfill; a fresh operator
+    # who provisions multiple keys without setting ``LLM_PROVIDER`` should land
+    # on the project's recommended starting point.
     if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
         return "gemini"
+    if os.environ.get("OPENAI_API_KEY"):
+        return "openai"
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return "anthropic"
     return None
 
 

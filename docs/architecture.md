@@ -25,7 +25,7 @@ CourtListener docket
           │
           ▼
 ┌───────────────────┐
-│ LLM extractor     │  small/fast tier (Claude Haiku, gpt-5.4-nano, Gemini Flash Lite);
+│ LLM extractor     │  small/fast tier (Gemini Flash Lite, gpt-5.4-nano, Claude Haiku);
 │ per docket entry  │  returns ADD / RESCHEDULE / CANCEL / MARK_HELD / ...
 └─────────┬─────────┘
           │
@@ -99,14 +99,14 @@ to independent provider and model knobs:
 
 | Track | Volume | Default model | Why |
 | --- | --- | --- | --- |
-| **Extraction** | High (one call per relevant entry) | Claude Haiku / gpt-5.4-nano / Gemini Flash Lite | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
-| **Summarization** | Low (one call per docket, rarely re-run) | Sonnet / GPT-5.4 / Gemini Pro | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
+| **Extraction** | High (one call per relevant entry) | Gemini Flash Lite / gpt-5.4-nano / Claude Haiku | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
+| **Summarization** | Low (one call per docket, rarely re-run) | Gemini Pro / GPT-5.4 / Sonnet | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
 
 The two tracks have independent provider / model knobs
 (`LLM_PROVIDER` / `LLM_MODEL` for the extractor; `LLM_SUMMARY_PROVIDER` /
 `LLM_SUMMARY_MODEL` for summaries) so changing one doesn't affect the
 other. For measured per-provider backfill costs across a real caseload, see
-[Case summaries → Cost](case-summaries.md#cost).
+the [Cost](cost.md#llm-cost) page.
 
 ## Why LLM-driven extraction, not regex?
 

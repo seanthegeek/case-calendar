@@ -23,7 +23,7 @@ Every prompt also receives a per-call **user message** assembled at runtime (the
 
 [Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86)
 
-Runs against one docket entry plus the case's known-hearings list and known-deadlines list, and returns zero or more structured actions covering both. The major-vs-minor `SIGNIFICANCE_RULES` rubric is interpolated into this prompt and is reproduced inline below. This is the small/fast tier (Haiku / `gpt-5.4-nano` / Flash Lite by default).
+Runs against one docket entry plus the case's known-hearings list and known-deadlines list, and returns zero or more structured actions covering both. The major-vs-minor `SIGNIFICANCE_RULES` rubric is interpolated into this prompt and is reproduced inline below. This is the small/fast tier (Flash Lite / `gpt-5.4-nano` / Haiku by default).
 
 ````text
 You extract structured court-hearing information from PACER docket entries
