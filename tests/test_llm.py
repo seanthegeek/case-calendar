@@ -2115,32 +2115,6 @@ class TestSystemPromptTranscriptRules:
         assert 'significance="major"' in llm.SYSTEM_PROMPT
 
 
-class TestSystemPromptWhenInDoubtAdd:
-    """The META-RULE telling the LLM to lean toward ADD when uncertain
-    after ruling out the explicit-IGNORE patterns. Added after the v0.8.1
-    provider comparison showed both top-2 models systematically silent on
-    classes of events neither hallucinated nor explicitly excluded.
-    """
-
-    def test_meta_rule_present(self):
-        assert "META-RULE — when in doubt about extraction, ADD" in llm.SYSTEM_PROMPT
-
-    def test_meta_rule_explains_significance_recovery(self):
-        # The justification: significance gate filters minor noise,
-        # verify pass catches hallucinations, so over-extraction is
-        # recoverable while a missed substantive event is not.
-        assert "over-extraction is recoverable" in llm.SYSTEM_PROMPT
-
-    def test_meta_rule_disclaims_explicit_ignore_overrides(self):
-        # The meta-rule does NOT override the explicit-IGNORE patterns
-        # (motion for hearing without a date, plea agreement anticipating,
-        # bare stipulation) or the CANCEL/MARK_HELD grounding rule.
-        # Check pieces that don't span the prompt's line-wrap boundary.
-        assert "explicit-IGNORE patterns" in llm.SYSTEM_PROMPT
-        assert "CANCEL/MARK_HELD" in llm.SYSTEM_PROMPT
-        assert "non-negotiable" in llm.SYSTEM_PROMPT
-
-
 class TestSystemPromptFederalProcedureVocabulary:
     """Pin the named federal-procedure event classes the prompt now lists
     by name. Both top-2 models in the v0.8.1 comparison silently dropped

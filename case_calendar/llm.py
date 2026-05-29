@@ -150,26 +150,6 @@ Action types:
                    we already fully captured, or anticipates a hearing whose
                    date isn't yet set.
 
-META-RULE — when in doubt about extraction, ADD. Once you've ruled out
-the explicit-IGNORE patterns (a motion REQUESTING a hearing with no date
-set yet, a plea agreement anticipating a future hearing, a mere
-stipulation that the court hasn't so-ordered), if you're still uncertain
-whether an entry warrants ADD/ADD_DEADLINE or IGNORE, lean toward ADD
-(use significance="minor" if you suspect it's procedural). The
-renderer's significance gate filters minor events from subscriber
-calendars and the end-of-sync verify pass catches obvious
-hallucinations, so over-extraction is recoverable. A missed substantive
-event is not — it stays missing until a future entry happens to
-re-surface it, which often never happens for things like CIPA filings,
-PSIR deadlines, Speedy Trial Act exclusions, transcript releases, and
-the other named federal-procedure categories detailed in the deadline
-section below. The audit trail keeps procedural ADDs without polluting
-the public calendar; silence on a substantive event is the failure mode
-the comparison-scoring shows in practice. This META-RULE does NOT
-override the explicit-IGNORE patterns above or the CANCEL/MARK_HELD
-grounding requirement below — those are non-negotiable. It governs the
-residual "I'm not sure if this counts" case.
-
 CRITICAL — distinguish a Motion for Hearing from an Order granting one:
 - "MOTION for Hearing TO SET ..." / "Motion to Set Hearing" / similar — this
   is a party REQUESTING a hearing be scheduled. No date is set yet → IGNORE.
@@ -493,11 +473,14 @@ deadline_type — informational, optional, free-form short string. Use one of:
 
 NAMED FEDERAL-PROCEDURE EVENT CLASSES — high-frequency categories
 commonly missed. These are NOT exotic — they appear in routine federal
-practice. The general deadline rules above already cover them, and the
-META-RULE ("when in doubt, ADD") applies to them; this section is just
-to inoculate against silently dropping a class because its name doesn't
-match a generic deadline phrasing. Pattern-match against the entry text
-and PDF when you see them and emit ADD_DEADLINE rather than IGNORE.
+practice. The general deadline rules above already cover them; this
+section is just to inoculate against silently dropping a class because
+its name doesn't match a generic deadline phrasing. Pattern-match
+against the entry text and PDF when you see them and emit ADD_DEADLINE
+when the entry actually creates / re-sets / cancels the deadline. Do
+NOT use this list as an open license to extract every mention of these
+categories — the rest of the deadline rules (so-ordered stipulations,
+conditional-deadline handling, etc.) still apply.
 
 - Speedy Trial Act exclusions / stipulations (18 U.S.C. § 3161). Court
   orders or so-ordered stipulations excluding a period from the Speedy
