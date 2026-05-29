@@ -39,14 +39,11 @@ RULE 2 — Type wins. If the hearing's title clearly matches one of these
 types, emit "major" without further reasoning:
   - trial / jury trial / bench trial
   - sentencing / sentencing hearing
-  - arraignment (where the indictment / information is read or its
-    substance stated, per Fed. R. Crim. P. 10(a))
-  - initial appearance (advice of the complaint and rights, per Fed. R.
-    Crim. P. 5(d) — charges are NOT read at this proceeding)
+  - arraignment
+  - initial appearance (NOT the arraignment — charges are not read here)
   - initial conference (the criminal case's first scheduling status
     conference, separate from the initial appearance)
-  - change of plea / plea hearing / Rule 11 hearing (Fed. R. Crim. P. 11)
-    / waiver of indictment (Fed. R. Crim. P. 7)
+  - change of plea / plea hearing / Rule 11 hearing / waiver of indictment
   - oral argument
   - evidentiary hearing / suppression hearing / Franks hearing
   - motion-in-limine hearing / Daubert hearing
@@ -76,8 +73,8 @@ Conference Call", "Chambers Conference", or untyped "Hearing":
     status conference that became a plea hearing).
   - minor if the agenda is only setting next dates, attorney
     substitutions, case-management housekeeping, joint status reports,
-    initial-pretrial / Fed. R. Civ. P. 16(b) scheduling (or its
-    criminal-case scheduling analogue), or clerk's housekeeping.
+    initial-pretrial / Rule 16(b) scheduling (or its criminal-case
+    scheduling analogue), or clerk's housekeeping.
 
 RULE 5 — Default to "major" when uncertain. Only emit "minor" when one
 of rules 1–4 clearly applies."""
@@ -203,11 +200,10 @@ must NEVER trigger CANCEL or MARK_HELD on their own:
 
 - Another row's status in `known_hearings`. A `held` Change-of-Plea or
   `held` Sentencing for ONE defendant does NOT vacate or "hold" a Trial
-  scheduled for OTHER defendants. Multi-defendant cases routinely have
-  one defendant plead while others proceed to trial — the McGonigal /
-  Shestakov case is the textbook example. The `known_hearings` list is
-  context for KEY REUSE and same-slot detection, not evidence of what
-  happened to OTHER hearings. Hearings don't carry defendant info in
+  scheduled for OTHER defendants — multi-defendant cases routinely have
+  one defendant plead while others proceed to trial. The `known_hearings`
+  list is context for KEY REUSE and same-slot detection, not evidence of
+  what happened to OTHER hearings. Hearings don't carry defendant info in
   the key, so you cannot tell from the list which row applies to which
   defendant — don't guess.
 - Absence of docket activity. A hearing whose scheduled date has passed
@@ -224,11 +220,10 @@ must NEVER trigger CANCEL or MARK_HELD on their own:
   trial's status comes from EXPLICIT trial-related entries: a minute
   entry for the trial, a verdict form, a judgment-after-trial, an ORDER
   continuing or vacating the trial, or a change-of-plea minute entry
-  that explicitly addresses trial. The Wei (US v. Wei, 3:23-cr-01471,
-  casd) regression — a NOTICE OF FILING OF OFFICIAL TRANSCRIPT of
-  Motion In Limine Hearing emitted CANCEL on the trial key — is the
-  canonical failure. The MIL transcript tells you the MIL was held;
-  use MARK_HELD on the MIL key and emit nothing else.
+  that explicitly addresses trial. A worked example of the wrong move:
+  a NOTICE OF FILING OF OFFICIAL TRANSCRIPT of a Motion In Limine Hearing
+  is NOT grounds to CANCEL the trial key. The MIL transcript tells you
+  the MIL was held; emit MARK_HELD on the MIL key and emit nothing else.
 
 If you're tempted to emit CANCEL or MARK_HELD from inference rather than
 explicit docket text in the entry being processed, emit IGNORE instead.
@@ -283,10 +278,9 @@ type and (where useful) its subject — e.g. "Sentencing", "Jury Trial",
 "Telephonic Pretrial Conference (CIPA)". Append " - <Defendant Lastname>"
 ONLY when the case is multi-defendant (the entry text or known hearings
 show multiple defendant last names) AND the proceeding is specific to
-one of them. For a single-defendant docket "Sentencing - Knoot" is
-redundant noise; just emit "Sentencing". For Ashtor's 5-co-defendant
-case, "Initial Appearance - Prince" disambiguates from Ashtor's own
-initial appearance and is correct.
+one of them. For a single-defendant docket the suffix is redundant
+noise; just emit "Sentencing". For a multi-defendant case, the suffix
+disambiguates one co-defendant's row from another's.
 
 The new entry is still the source of truth for dates; the related
 entries are context only.
@@ -491,7 +485,7 @@ deadline_key rules — same shape as hearing_key:
   release deadlines COLLIDE WITH AND OVERWRITE the prior ones, silently
   losing rows. Acceptable suffix forms: the proceeding type
   ("-plea", "-sentencing", "-conference-308"), the proceeding date as
-  M-D or MM-DD ("knoot-7-30", "-01-23-transcript"), or a volume number
+  M-D or MM-DD ("-7-30", "-01-23-transcript"), or a volume number
   ("-vol2"). The proceeding date is a STABLE identifier — distinct from
   a DEADLINE date, which the "no dates in keys" rule above is about.
   BAD: a docket with sentencing AND arraignment transcripts both
@@ -588,9 +582,9 @@ dismiss". You MUST NOT estimate a calendar date for these. Instead:
   the JSON-safety rules allow — paraphrase only when the original text
   contains an unescaped `"`, a newline, or runs past ~200 chars (e.g.
   "Appellants must file a motion for appropriate relief within 21 days
-  after resolution of Anthropic PBC v. U.S. Department of War, No.
-  26-1049 (D.C. Cir.)"). The case-summary renderer reads `notes`
-  directly and describes the deadline in the court's own words.
+  after resolution of the related D.C. Circuit petition"). The
+  case-summary renderer reads `notes` directly and describes the
+  deadline in the court's own words.
 - The calendar layer skips rows with `local_date: null`, so no fake
   date will appear. The deadline still flows into the audit trail and
   the case summary — just not the ICS feeds.
@@ -603,7 +597,7 @@ those still have a calendar date, so emit them the normal way.
 Title rules for deadlines:
 - Short, human-readable, identifies who files what.
 - Examples: "Government's response to MTD", "Reply ISO Motion to Dismiss",
-  "Joint Status Report", "Anthropic's opposition to MSJ".
+  "Joint Status Report", "Plaintiff's opposition to MSJ".
 - Do NOT prepend the case name (the renderer adds it).
 - DO NOT prepend "[DEADLINE]" — the renderer adds that too.
 
@@ -1004,9 +998,10 @@ you must cite at least ONE explicit signal from the recent entries:
 If you see none of those AND recent docket activity contradicts a
 cancellation (later filings, new deadlines set, new scheduling order
 referencing the case as live, etc.), return REINSTATE. The caller flips
-the row to 'scheduled' with an audit-trail entry. This is exactly the
-inverse-Moucka shape: a trial that the case docket clearly continued
-past, but a prior pass marked the trial row 'cancelled' on inference.
+the row to 'scheduled' with an audit-trail entry. This is the inverse
+of the false-MARK_HELD case: a trial that the case docket clearly
+continued past, but a prior pass marked the trial row 'cancelled' on
+inference.
 
 If a 'cancelled' row's recent entries show the hearing DID happen
 (minute entry, verdict, transcript, judgment-after), return MARK_HELD
@@ -1645,11 +1640,10 @@ CRITICAL — do NOT confuse closely-related dispositions:
 CRITICAL — a trial DATE in a scheduling order is NOT proof a trial OCCURRED.
 - A scheduling-order trial date can be moved or vacated before it arrives.
 - A guilty plea entered before the scheduled trial date moots the trial —
-  the trial does NOT go forward. (Fed. R. Crim. P. 11 doesn't itself use
-  "vacate"; courts vary on whether they enter a formal vacatur order or
-  just take the date off-calendar.) Do not write "a jury trial was held"
-  merely because the structured-events scaffold lists a trial hearing on
-  some date.
+  the trial does NOT go forward. Courts vary on whether they enter a
+  formal vacatur order or just take the date off-calendar. Do not write
+  "a jury trial was held" merely because the structured-events scaffold
+  lists a trial hearing on some date.
 - Say "a jury trial was held" or "tried before a jury" ONLY when there is a
   verdict form (jury or bench), a judgment after trial, or unambiguous text
   in a disposition document confirming a verdict was returned.
@@ -1702,14 +1696,9 @@ such a row as if it were still upcoming. The honest framing is to state
 the original date AND the unconfirmed status, without inventing a
 reason:
 - BAD:  "a trial date is set" (silently suggesting future)
-- BAD:  "a pretrial conference is scheduled" (when the date already
-        passed)
 - GOOD: "a trial was originally set for June 12, 2024; no public
         docket entry confirms either the proceeding or its vacatur,
         and the case has continued actively in the time since"
-- GOOD: "the final pretrial conference set for May 30, 2024 does not
-        appear to have been held publicly, and the case has continued
-        actively without a new public scheduling order"
 This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
@@ -1723,8 +1712,6 @@ date; drop the hypothetical/boilerplate consequence clause:
         be remanded to the custody of the Bureau of Prisons if a term of
         imprisonment is imposed"
 - GOOD: "sentencing is scheduled for June 3, 2026"
-- BAD:  "if convicted, X faces up to 20 years"
-- BAD:  "should the court impose a sentence, X will surrender to the BOP"
 Phrasings like "if convicted", "if a term of imprisonment is imposed",
 "should the court impose", and "will be remanded to the Bureau of
 Prisons" (as a future/conditional consequence) are FORBIDDEN — state
@@ -1745,20 +1732,16 @@ a positive claim about case posture. Don't do this. Forbidden phrasings
 a state worth describing:
 - BAD: "no hearings have been recorded"
 - BAD: "no deadlines are set"
-- BAD: "no hearings or deadlines have been recorded on this docket"
 - BAD: "the case remains pending" (as a closing positive claim — when a
        case is pending, say so by describing what IS happening, such as
        briefing underway or a scheduled hearing with a date, not by
        asserting the absence of a disposition document)
 - BAD: "no disposition has been entered"
-- BAD: "no disposition documents have been entered"
 - BAD: "the docket shows no recent activity"
-- BAD: "no new public scheduling order is reflected"
 - BAD: "no public docket entries reflecting arrests or initial appearances"
-- BAD: "no apparent arrest is reflected in the docket"
-The last three are the custody-status form of this error — characterizing
-the absence of an arrest / appearance / scheduling entry as if it were a
-documented fact. State a defendant's custody status only when a document
+The custody-status form of this error — characterizing the absence of an
+arrest / appearance entry as if it were a documented fact — falls under
+the same rule. State a defendant's custody status only when a document
 establishes it; otherwise OMIT it (per the custody-status rule above) —
 do not derive it from what the docket omits, and do not announce that it
 is "unknown" or "cannot be determined" either, since that too is just
@@ -1795,13 +1778,10 @@ signals you have to write a normal subscriber-facing summary. Do NOT
 narrate the document quality issue to the reader. Document-quality
 issues are operator-side concerns logged separately — they are not
 subscriber-facing content. Examples of FORBIDDEN meta-commentary:
-- BAD: "The primary document text consists only of page-header
-       citations with no substantive charge allegations visible, but..."
 - BAD: "While the indictment PDF could not be extracted, the
        structured events show..."
 - BAD: "Based on the available minute entries, [defendant] is charged
        with..."
-- BAD: "Per the limited disposition documents available..."
 This rule does NOT relax the refuse-rather-than-fabricate rule below.
 The boundary stays: if you can confidently state what the case is
 about — parties + charges or claims — produce a normal summary. If you
@@ -1909,12 +1889,9 @@ restitution, and a $100 special assessment" — full stop, no
 mention of the forfeiture money judgment. NOT acceptable:
 - "$15,100 in restitution ... with a forfeiture money judgment of
   $15,100 also entered against him" — reads as $30,200 to lay
-  subscribers (the canonical us-v-knoot regression);
+  subscribers;
 - "$15,100 in restitution and a forfeiture money judgment in the
-  same amount" — technically accurate but still redundant noise for
-  the audience this summary is written for;
-- "$15,100 in restitution; the court entered a forfeiture money
-  judgment for the same $15,100" — same problem.
+  same amount" — technically accurate but still redundant noise.
 
 GUARDRAILS — the omission rule applies ONLY when ALL of these hold:
 1. The forfeiture money judgment and the restitution are entered

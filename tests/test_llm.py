@@ -2098,7 +2098,11 @@ class TestSystemPromptAntiInferenceGuards:
         assert "judgment-after-trial" in llm.SYSTEM_PROMPT
         # And the worked example must stay — without it the rule reads
         # as abstract advice the small/fast tier can talk itself out of.
-        assert "3:23-cr-01471" in llm.SYSTEM_PROMPT
+        # The specific case citation was dropped (per the prompt-slim
+        # pass that removes regression citations from prompt text), but
+        # the worked example must still describe the MIL-transcript class.
+        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in llm.SYSTEM_PROMPT
+        assert "Motion In Limine Hearing" in llm.SYSTEM_PROMPT
 
 
 class TestSystemPromptAmicusRules:
@@ -2359,13 +2363,13 @@ class TestSummaryPromptAbsenceOfActivityGuard:
         ) in normalized
 
     def test_explicitly_forbids_the_dubranova_phrasings(self):
-        # The exact closer the Dubranova summary produced — pin it so a
-        # future "shorten the rule" edit can't drop the canonical
-        # forbidden form.
-        assert (
-            '"no hearings or deadlines have been recorded on this docket"'
-            in llm.SUMMARY_SYSTEM_PROMPT
-        )
+        # The exact closer the Dubranova summary produced — pin a
+        # representative set so a future "shorten the rule" edit can't
+        # drop every canonical forbidden form. (The redundant
+        # "no hearings or deadlines have been recorded on this docket"
+        # variant was dropped in the prompt-slim pass; the shorter
+        # "no hearings have been recorded" pin below still covers the
+        # same class.)
         assert '"no hearings have been recorded"' in llm.SUMMARY_SYSTEM_PROMPT
         assert '"no deadlines are set"' in llm.SUMMARY_SYSTEM_PROMPT
         # The "remains pending" closer is the other half of the failure
@@ -2503,20 +2507,14 @@ class TestSummaryPromptDocumentNarrationGuard:
         ) in normalized
 
     def test_canonical_forbidden_meta_commentary_pinned(self):
-        # The exact opening clause us-v-moucka produced — pin it so a
-        # future "shorten the rule" edit can't drop the canonical
-        # forbidden form. Re-flowed across two lines in the prompt.
+        # Pin a representative BAD example so a future "shorten the rule"
+        # edit can't drop every canonical forbidden form. The exact
+        # us-v-moucka opening clause ("The primary document text consists
+        # only of page-header citations...") was dropped in the prompt-slim
+        # pass; the variant pinned here is structurally equivalent.
         import re
 
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
-        assert (
-            '"The primary document text consists only of page-header '
-            "citations with no substantive charge allegations visible, "
-            'but..."'
-        ) in normalized
-        # And a representative variant — the LLM might phrase it as
-        # "based on minute entries" or "per the limited disposition
-        # documents available" instead of the moucka shape.
         assert (
             '"Based on the available minute entries, [defendant] is charged with..."'
         ) in normalized
@@ -2604,9 +2602,12 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
     def test_explicit_mention_forms_also_forbidden(self):
         # The previous iteration of the rule made the relationship
         # explicit ("in the same amount" / "for the same $15,100").
-        # The new rule forbids those forms too — the user judged them
+        # The new rule forbids that form too — the user judged it
         # technically accurate but still redundant noise for lay
-        # subscribers. Pin both forms as NOT acceptable.
+        # subscribers. Pin the canonical "same amount" form as NOT
+        # acceptable. (The third "for the same $15,100" variant was
+        # dropped in the prompt-slim pass — the kept variant covers
+        # the same class.)
         import re
 
         normalized = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
@@ -2614,14 +2615,10 @@ class TestSummaryPromptRestitutionForfeitureSameAmountGuard:
             '"$15,100 in restitution and a forfeiture money judgment '
             'in the same amount"'
         ) in normalized
-        assert (
-            "the court entered a forfeiture money judgment for the same $15,100"
-        ) in normalized
-        # And both must appear in the NOT-acceptable list, not the
-        # acceptable one. The simplest pin: the "still redundant" or
-        # "same problem" framing follows each one.
+        # And it must appear in the NOT-acceptable list, not the
+        # acceptable one. The simplest pin: the "still redundant" framing
+        # follows it.
         assert "still redundant noise" in normalized
-        assert "same problem" in normalized
 
     def test_acceptable_shape_pinned(self):
         # The single acceptable shape — restitution stated, forfeiture
