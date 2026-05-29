@@ -1,5 +1,7 @@
 # Provider store build — cost + output comparison
 
+> **Why the cheapest column is NOT the project default (read this before reading the cost totals).** The 0.8.1 release promoted Gemini-Flash-Lite to default partly on the basis that it backfilled the entire caseload for $2.56 vs Anthropic's $8.56 — a 3.3× cost advantage. The 0.8.2 release reverted that and switched back to Anthropic. The reason is documented in `SCORECARD.md`: Gemini systematically drops substantive event classes that subscribers depend on (preliminary-injunction hearings on civil-litigation dockets, Speedy Trial Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines, surrender-for-service-of-sentence). The cost differential is real but small — over a 5-year horizon for a 28-case caseload, the Anthropic premium is roughly $60 (≈$6 once at backfill, ≈$0.20/week steady-state) — orders of magnitude below the value of not silently missing a docket's PI hearing. Read these cost totals as "what the comparison measured," not as "Gemini is the right default."
+>
 > **Note on the gemini/gemini-3.5-flash column.** The OpenAI extraction candidate
 > (gpt-5.4-mini) finished cleanly. The Gemini extraction candidate
 > (gemini-3.5-flash) was attempted but its store build hit the
