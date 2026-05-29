@@ -120,17 +120,29 @@ Action types:
 - UPDATE_DETAILS — entry adds dial-in, courtroom, judge, or notes for a known
                    hearing without moving it.
 - CANCEL         — entry cancels (vacates) a known hearing without rescheduling.
+                   "vacated and reset to <date>", "continued to <date>", or
+                   "rescheduled" with a new date is RESCHEDULE, NOT CANCEL —
+                   the trigger word "vacate" alone is not enough. CANCEL
+                   requires the ABSENCE of a new date in the same entry.
                    ALWAYS include `local_date` on CANCEL: the date the cancelled
                    hearing was scheduled for. If the hearing isn't in the known
                    list (its original scheduling entry was filtered out before
                    reaching the LLM), emit CANCEL with the date anyway — the
                    system will insert a new row directly into 'cancelled'
                    status so the audit trail captures the adjournment.
-- MARK_HELD      — entry indicates a hearing was held / completed (minute entry,
-                   "held on", clerk's notes, etc.). Match the SPECIFIC hearing
-                   the minute entry refers to (initial appearance, arraignment,
-                   status conference, etc.) — do NOT mark unrelated hearings
-                   held just because they share a defendant.
+- MARK_HELD      — entry indicates a hearing was held / completed. Trigger
+                   phrases include any of:
+                     - "Electronic Clerk's Notes for proceedings held"
+                     - "Minute Entry for proceedings held"
+                     - "<Proceeding> Held"
+                     - "<Proceeding> held as to <Defendant>"
+                     - "Court convened on"
+                     - a verdict form
+                     - a judgment-after-trial.
+                   Match the SPECIFIC hearing the minute entry refers to
+                   (initial appearance, arraignment, status conference, etc.)
+                   — do NOT mark unrelated hearings held just because they
+                   share a defendant.
                    ALWAYS include `local_date` on MARK_HELD: the date the
                    minute entry says the hearing occurred. The system uses
                    this to validate you matched the right hearing — if the
@@ -293,6 +305,13 @@ If the entry plainly relates to a hearing already in the known list
 (same defendant, same hearing type), use that key even if the date or
 time differs. The whole point of these actions is to update the existing
 row rather than create a duplicate calendar event.
+
+Multi-defendant MARK_HELD: when a minute entry says "Initial Appearance
+held as to <Defendant> only" in a case with per-defendant keys (e.g.
+`initial-appearance-muneeb` / `initial-appearance-sohaib`), MARK_HELD
+applies ONLY to the named defendant's key. Do NOT also MARK_HELD the
+sibling key — the per-defendant suffix exists precisely so the two
+outcomes can diverge.
 
 CRITICAL — same-slot rule: a single court cannot hold two hearings on one
 docket at the same date and time. If you would ADD a hearing whose date+time
@@ -472,7 +491,7 @@ Significance for deadlines:
   that follow a settled disposition, attorney-appearance papers, scheduling
   proposals, AND the leave-to-file-amicus shuffle.
 
-The amicus distinction is critical and is NOT a judgment call:
+Amicus filings are CRITICAL and NOT a judgment call:
 - The MASTER amicus filing window (court-set deadline by which any amicus
   curiae must submit its brief) → MAJOR. Watchers want to know when
   substantive third-party content will land in the docket.
@@ -487,7 +506,7 @@ The amicus distinction is critical and is NOT a judgment call:
   Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
   deadline", "Deadline for amici curiae to file briefs".
 
-The transcript distinction is similar and is NOT a judgment call:
+Transcripts are similar:
 - "ORDER for Transcript" / "Transcript Order" / "Order Form" entries are
   PRIVATE REQUESTS to purchase a copy of a transcript — they are NOT court
   orders, and the date on them is when the request was placed, not a
@@ -496,10 +515,10 @@ The transcript distinction is similar and is NOT a judgment call:
   Request Redaction due ...", "redaction request period ends ...") IS a
   deadline, but procedural. ADD_DEADLINE with significance="minor" so it
   stays in the audit trail without appearing on subscriber calendars.
-- A transcript public-release deadline (the date a filed transcript
-  becomes publicly viewable on the docket) IS a deadline AND substantive:
-  ADD_DEADLINE with significance="major". Subscribers want to know when
-  a trial transcript enters the public record.
+- CRITICAL — a transcript public-release deadline (the date a filed
+  transcript becomes publicly viewable on the docket) IS a deadline AND
+  substantive: ADD_DEADLINE with significance="major". Subscribers want
+  to know when a trial transcript enters the public record.
 
 Default to "major" when uncertain. Same render-time gate as hearings —
 minor deadlines stay in the DB for the audit trail but don't appear on the

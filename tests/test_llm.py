@@ -2115,6 +2115,42 @@ class TestSystemPromptTranscriptRules:
         assert 'significance="major"' in llm.SYSTEM_PROMPT
 
 
+class TestSystemPromptHeldEventRecognition:
+    """Regression guards for the prompt edits aimed at the Haiku-tier
+    failure modes surfaced by the provider-accuracy scorecard — false
+    cancellations on "vacated and reset" entries, and missed MARK_HELD
+    on standard minute-entry trigger phrases. Each phrase pinned here
+    is one the small/fast model was observed to miss or misread, so
+    a future prompt edit that drops a phrase must replace it with an
+    equivalent that preserves the same handle for the model.
+    """
+
+    def test_vacated_and_reset_is_reschedule_not_cancel(self):
+        # "vacate" alone is not enough — the absence of a new date is
+        # what distinguishes CANCEL from RESCHEDULE.
+        assert '"vacated and reset to <date>"' in llm.SYSTEM_PROMPT
+        assert "RESCHEDULE, NOT CANCEL" in llm.SYSTEM_PROMPT
+        assert "ABSENCE of a new date" in llm.SYSTEM_PROMPT
+
+    def test_mark_held_trigger_phrases_enumerated(self):
+        # The small/fast tier needs explicit trigger phrases, not just
+        # "minute entry, etc.".
+        assert "Electronic Clerk's Notes for proceedings held" in llm.SYSTEM_PROMPT
+        assert "Minute Entry for proceedings held" in llm.SYSTEM_PROMPT
+        assert "held as to <Defendant>" in llm.SYSTEM_PROMPT
+
+    def test_multi_defendant_mark_held_worked_example(self):
+        # Per-defendant keys must diverge: a minute entry naming one
+        # defendant MARK_HELDs only that key, not the sibling.
+        assert "Multi-defendant MARK_HELD" in llm.SYSTEM_PROMPT
+        assert "initial-appearance-muneeb" in llm.SYSTEM_PROMPT
+        assert "initial-appearance-sohaib" in llm.SYSTEM_PROMPT
+        # Whitespace-normalized check so a future wrap doesn't break the test.
+        assert "do not also mark_held the sibling key" in " ".join(
+            llm.SYSTEM_PROMPT.split()
+        ).lower()
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the
