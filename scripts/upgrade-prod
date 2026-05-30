@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Run system + app upgrades on prod: apt package upgrades, push the
+# local .env so any provider/key changes ride along with the upgrade,
+# then pull latest case-calendar code, re-emit, and restart the service.
+# Does NOT touch the prod DB or config.yaml — use push-db-to-prod for those.
+#
+# Reads the prod connection settings from .env (gitignored, NOT in
+# .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
+# CC_PROD_SERVICE, CC_PROD_STAGE_DIR. See scripts/_prod-env.sh for what
+# each one is.
+
+set -euo pipefail
+
+# shellcheck source=scripts/_prod-env.sh
+source "$(dirname "$0")/_prod-env.sh"
+
+# 1. Make sure an SSH key is loaded; if not, prompt for it.
+if ! ssh-add -l >/dev/null 2>&1; then
+    ssh-add
+fi
+
+# 2. System package upgrades. DEBIAN_FRONTEND=noninteractive keeps apt
+#    from prompting for config-file conflicts on packages that have new
+#    upstream defaults; the Dpkg::Options keep the existing local
+#    config (case-calendar's own files are all under the app dir, not
+#    /etc, so this is just about distro packages we haven't customized).
+ssh "$CC_PROD_SSH" "\
+    DEBIAN_FRONTEND=noninteractive apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get \
+        -o Dpkg::Options::=--force-confdef \
+        -o Dpkg::Options::=--force-confold \
+        -y upgrade \
+"
+
+# 3. Stop the service so emit doesn't race the running serve process's
+#    own auto-emit AND so a .env replacement can't take effect mid-call.
+ssh "$CC_PROD_SSH" "systemctl stop $CC_PROD_SERVICE"
+
+# 4. Push the local .env to prod. Common case: an upgrade that swaps
+#    provider defaults (e.g. anthropic -> gemini) needs the matching
+#    *_API_KEY in .env to be present before the service comes back up.
+#    cp at the install step preserves the destination's ownership / 0600
+#    permissions for the secrets file; stage in the staging dir then move
+#    into place, then remove the staging copy so secrets don't linger.
+scp .env "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
+ssh "$CC_PROD_SSH" "\
+    cp $CC_PROD_STAGE_DIR/.env $CC_PROD_APP_DIR/.env && \
+    rm -f $CC_PROD_STAGE_DIR/.env \
+"
+
+# 5. Pull latest code and sync the venv as the service account. Both
+#    commands must run under the same sudo -u so the && stays inside the
+#    service account's shell — otherwise `uv sync` runs as the SSH user
+#    and writes its-owned files into .venv that later `uv run` as the
+#    service account can't overwrite.
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE bash -c 'git pull && ./.local/bin/uv sync'"
+
+# 6. Re-emit so out/*.ics + out/index.html reflect any rendering changes
+#    in the new code. PYTHONUNBUFFERED=1 so emit's stdout streams to this
+#    terminal as it runs (sudo strips env vars by default; wrap with
+#    `env` to set it inside the service account's environment).
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar emit"
+
+# 7. Restart.
+ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"
+
+# 8. Heads-up if the kernel/libc upgrade asked for a reboot.
+if ssh "$CC_PROD_SSH" "test -e /var/run/reboot-required" 2>/dev/null; then
+    echo "NOTE: $CC_PROD_HOST has /var/run/reboot-required — a reboot is needed to pick up apt upgrades (likely kernel or libc)."
+fi
+
+echo "upgrade complete: $CC_PROD_HOST"

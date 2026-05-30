@@ -40,5 +40,7 @@ scripts/*.json
 #LibreOffice lock files
 *~lock.*#
 
-# Local-only operational scripts (deploy creds, host-specific commands).
+# Local-only scratch space (anything host-specific you don't want tracked).
+# The deployment scripts that used to live here are now in scripts/, with
+# their identifying values read from .env (see scripts/_prod-env.sh).
 private/
