@@ -573,26 +573,26 @@ class TestMarkHeldDateMatches:
 
 class TestDeadlineLocalToUtc:
     def test_explicit_time_used_as_is(self):
-        # Real time supplied → no 17:00 default.
+        # Real time supplied → no 16:00 default.
         out = _deadline_local_to_utc("2026-05-24", "09:00", "America/New_York")
         assert out == "2026-05-24T13:00:00+00:00"  # 9am EDT == 13:00 UTC
 
-    def test_missing_time_defaults_to_5pm(self):
+    def test_missing_time_defaults_to_4pm(self):
         out = _deadline_local_to_utc("2026-05-24", None, "America/New_York")
-        # 5pm EDT (DST in May) = 21:00 UTC.
-        assert out == "2026-05-24T21:00:00+00:00"
+        # 4pm EDT (DST in May) = 20:00 UTC.
+        assert out == "2026-05-24T20:00:00+00:00"
 
     def test_empty_date_returns_none(self):
         assert _deadline_local_to_utc("", None, "America/New_York") is None
 
-    def test_literal_null_string_falls_back_to_default_5pm(self):
+    def test_literal_null_string_falls_back_to_default_4pm(self):
         # Same gpt-5.4-mini failure mode as on _local_to_utc, but for
-        # deadlines the missing-time semantics is the 17:00 default
+        # deadlines the missing-time semantics is the 16:00 default
         # rather than midnight.
         out = _deadline_local_to_utc("2026-05-24", "null", "America/New_York")
-        assert out == "2026-05-24T21:00:00+00:00"
+        assert out == "2026-05-24T20:00:00+00:00"
         out = _deadline_local_to_utc("2026-05-24", "None", "America/New_York")
-        assert out == "2026-05-24T21:00:00+00:00"
+        assert out == "2026-05-24T20:00:00+00:00"
 
 
 # --- compact_recap_documents ---

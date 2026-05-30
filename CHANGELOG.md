@@ -8,6 +8,31 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.12.0] - 2026-05-30
+
+Headline: timeless filing deadlines now anchor at **4 PM court-local**
+instead of 5 PM. Most federal clerk's offices close at 4:00 PM (the
+sampled districts — D.D.C., D. Del., D. Md., E.D. Pa., M.D. Fla.,
+C.D. Cal. — close at 4:00 PM almost uniformly), so a 4 PM reminder lands
+as close as possible to when a filing would actually hit the docket. The
+watcher can check PACER right then and, if what they're after isn't on
+RECAP yet, still has the evening to follow up. The 4 PM value remains a
+reminder anchor, not the legal deadline — electronic filing itself runs
+to midnight in the court's time zone under FRCP 6(a)(4) (and the parallel
+FRAP 26(a)(4) / FRCrP 45(a)(4)); orders that state an explicit time are
+still honored verbatim.
+
+### Changed
+
+- **`DEADLINE_DEFAULT_LOCAL_TIME` moved from `"17:00"` to `"16:00"`**
+  (`case_calendar/sync.py`). Filing deadlines extracted without an
+  explicit clock time now fire at 4 PM court-local rather than 5 PM.
+  Stored `due_at_utc` timestamps for new timeless deadlines shift one
+  hour earlier (e.g. 21:00 UTC → 20:00 UTC for an EDT court). Existing
+  rows are not rewritten; the new anchor applies as deadlines are
+  re-extracted. The matching guidance in the extractor `SYSTEM_PROMPT`
+  and `docs/llm-prompts.md` now reads "4 PM court time".
+
 ## [0.11.0] - 2026-05-29
 
 Headline: the verify pass is now **deterministic and correct at

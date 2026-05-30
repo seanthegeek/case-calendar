@@ -322,21 +322,25 @@ def _local_to_utc(
     return dt.astimezone(timezone.utc).isoformat()
 
 
-# Filing deadlines without an explicit clock time fire at end-of-business
-# court time, so calendar reminders give the watcher a useful "check PACER
-# tonight" anchor rather than a midnight alert nobody acts on.
-DEADLINE_DEFAULT_LOCAL_TIME = "17:00"
+# Filing deadlines without an explicit clock time fire at 4 PM court time —
+# the hour most federal clerk's offices close (the sampled districts close at
+# 4:00 PM almost uniformly; e-filing itself runs to midnight under FRCP
+# 6(a)(4)). A 4 PM anchor lands the reminder as close to when a filing would
+# actually hit the docket as possible, so the watcher can check PACER right
+# then (and still has the evening to follow up if it isn't on RECAP yet)
+# rather than getting a midnight alert nobody acts on.
+DEADLINE_DEFAULT_LOCAL_TIME = "16:00"
 
 
 def _deadline_local_to_utc(
     date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
-    """Same as _local_to_utc but defaults missing times to 17:00 court-local
+    """Same as _local_to_utc but defaults missing times to 16:00 court-local
     rather than midnight. Used by the deadline path so the stored UTC
-    timestamp already reflects end-of-business semantics."""
+    timestamp already reflects the clerk's-office-close anchor."""
     # Normalize the same way ``_local_to_utc`` does — the literal
     # ``"null"`` / ``"None"`` strings are treated as missing so the
-    # 17:00 default fires instead of crashing in ``fromisoformat``.
+    # 16:00 default fires instead of crashing in ``fromisoformat``.
     if time_str and time_str.strip().lower() in ("null", "none", ""):
         time_str = None
     return _local_to_utc(date_str, time_str or DEADLINE_DEFAULT_LOCAL_TIME, tz)

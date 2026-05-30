@@ -568,7 +568,7 @@ Date / time rules for deadlines:
   filed by 9:00 AM"). For the much more common case where the order
   states a day with no time ("due by 5/24/2026", "responses due May 24"),
   leave `local_time` null — the renderer will pick a sensible default
-  (5 PM court time) so the calendar fires a useful end-of-day reminder.
+  (4 PM court time) so the calendar fires a useful end-of-day reminder.
 
 CRITICAL — conditional deadlines (relative to an unknown future event):
 Some orders set a deadline RELATIVE to an event whose date is not yet

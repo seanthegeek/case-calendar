@@ -112,7 +112,7 @@ def _deadline_to_hearing(d: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a deadline row to a hearing-shaped dict the renderers accept.
 
     Deadlines store their UTC due-instant directly (the syncer applied the
-    17:00-court-local default at write time when the LLM didn't supply a
+    16:00-court-local default at write time when the LLM didn't supply a
     specific time), so this is mostly key remapping. The category/case-name
     prefixing happens later in :func:`_compose_title`. Returns None if the
     deadline has no due timestamp.
