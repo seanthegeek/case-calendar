@@ -174,6 +174,8 @@ on GitHub Pages:
 - [Public index page](docs/public-page.md) — generate `index.html` for
   public hosting.
 - [Architecture](docs/architecture.md) — how the pipeline fits together.
+- [Development](docs/development.md) — dev environment setup, tests, and
+  cheap prompt/model iteration.
 
 ## Status
 
@@ -199,3 +201,7 @@ about 25 seconds:
 uv sync --extra test
 uv run pytest
 ```
+
+See the [Development guide](docs/development.md) for full environment
+setup, the lint/format/type-check commands CI runs, and how to iterate on
+the prompts and models cheaply.
