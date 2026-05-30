@@ -262,8 +262,7 @@ Failures are logged but don't abort sync / serve — polling still works
 without webhook alerts, and a temporary CourtListener outage during
 the reconcile shouldn't block the rest of the pipeline. The summary
 line in the log reads
-`docket alerts: <created> created, <exists> already subscribed,
-<failed> failed`.
+`docket alerts: <created> created, <exists> already subscribed, <failed> failed`.
 
 To opt out — say you maintain alerts through some other surface (a
 bulk CSV upload, a separate admin tool) — set
