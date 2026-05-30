@@ -890,6 +890,23 @@ def extract_actions(
     return actions
 
 
+# Output-token budget shared by every per-row verify call
+# (verify_hearing, verify_deadline, resolve_duplicate_hearings). 512
+# was the historical default, but the verify pass cites the docket
+# entries that justify its verdict in the `reason` field — and on a
+# busy past trial with multiple contradicting entries to weigh, the
+# model wants to write several hundred chars of citation. At 512 the
+# response gets truncated mid-sentence and `_call_lm_and_parse` returns
+# UNCLEAR (the safe fallback for unparseable JSON). The us-v-knoot
+# trial-knoot truncation observed in the temp=0 provider-store build —
+# the model emitted 2063 partial chars before hitting the cap — is the
+# canonical case the bump targets. 1500 leaves plenty of headroom for
+# verbose citation reasoning without pushing the per-call cost
+# meaningfully (output tokens are a small fraction of total spend; the
+# 8900-token cached system prompt dominates input cost).
+_VERIFY_MAX_TOKENS = 1500
+
+
 VERIFY_SYSTEM_PROMPT = """\
 You audit a single court hearing against recent docket activity. The user
 gives you ONE candidate hearing (the row currently in the calendar — its
@@ -1145,7 +1162,7 @@ def verify_hearing(
     court_tz: str,
     hearing: dict[str, Any],
     recent_entries: list[dict[str, Any]],
-    max_tokens: int = 512,
+    max_tokens: int = _VERIFY_MAX_TOKENS,
 ) -> dict[str, Any]:
     """Audit a single hearing against recent docket entries.
 
@@ -1261,7 +1278,7 @@ def verify_deadline(
     court_tz: str,
     deadline: dict[str, Any],
     recent_entries: list[dict[str, Any]],
-    max_tokens: int = 512,
+    max_tokens: int = _VERIFY_MAX_TOKENS,
 ) -> dict[str, Any]:
     """Audit a single pending deadline against recent docket entries."""
     provider = providers._detect_extraction_provider()
@@ -1382,7 +1399,7 @@ def resolve_duplicate_hearings(
     court_tz: str,
     cluster: list[dict[str, Any]],
     recent_entries: list[dict[str, Any]],
-    max_tokens: int = 512,
+    max_tokens: int = _VERIFY_MAX_TOKENS,
 ) -> dict[str, Any]:
     """Decide whether a cluster of same-slot hearings is one event or many.
 
