@@ -476,3 +476,249 @@ def test_timing_rows_formats_and_marks_missing():
     body = "\n".join(rows)
     assert "| a/m1 | 2.0 m | 10 | 3.0 |" in body
     assert "| b/m2 | — | — | — |" in body  # no timing recorded for this column
+
+
+# ---------------------------------------------------------------------------
+# Persistent LLM-response cache
+# ---------------------------------------------------------------------------
+
+
+def _make_counting_base():
+    """Return (base, calls) where base records each (provider, model, system,
+    user) it's called with and returns a deterministic response string."""
+    calls: list[tuple] = []
+
+    def base(
+        provider,
+        system,
+        user,
+        max_tokens,
+        *,
+        model=None,
+        json_mode=True,
+        purpose="llm",
+        docket=None,
+        temperature=None,
+    ):
+        calls.append(
+            (provider, model, system, user, max_tokens, json_mode, temperature)
+        )
+        return f"resp::{provider}::{model}::{system}::{user}"
+
+    return base, calls
+
+
+def test_llm_cache_miss_then_hit(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    r1 = wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)
+    r2 = wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)
+
+    assert r1 == r2
+    assert len(calls) == 1  # second call served from cache, base hit once
+    assert sum(cache.hits.values()) == 1
+    assert sum(cache.misses.values()) == 1
+    cache.close()
+
+
+def test_llm_cache_persists_across_instances(tmp_path):
+    path = str(tmp_path / "c.sqlite")
+    base, calls = _make_counting_base()
+
+    c1 = mod._LLMCache(path)
+    first = c1.wrap(base)("gemini", "sys", "usr", 256, model="flash", temperature=0.0)
+    c1.close()
+
+    # A SECOND run (new process → new _LLMCache on the same file) replays the
+    # identical request for free: this is the dev-iteration win.
+    c2 = mod._LLMCache(path)
+    second = c2.wrap(base)("gemini", "sys", "usr", 256, model="flash", temperature=0.0)
+    c2.close()
+
+    assert first == second
+    assert len(calls) == 1  # base never called on the second instance
+    assert sum(c2.hits.values()) == 1
+    assert sum(c2.misses.values()) == 0
+
+
+def test_llm_cache_busts_on_model_change(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)
+    wrapped("anthropic", "sys", "usr", 512, model="sonnet", temperature=0.0)
+
+    assert len(calls) == 2  # different model → different key → live call
+    cache.close()
+
+
+def test_llm_cache_busts_on_prompt_change(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    wrapped("anthropic", "sys-v1", "usr", 512, model="haiku", temperature=0.0)
+    wrapped(
+        "anthropic", "sys-v2", "usr", 512, model="haiku", temperature=0.0
+    )  # system edit
+    wrapped(
+        "anthropic", "sys-v2", "usr-b", 512, model="haiku", temperature=0.0
+    )  # user edit
+
+    assert len(calls) == 3  # each distinct prompt re-runs live
+    cache.close()
+
+
+def test_llm_cache_does_not_cache_errors(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    boom_count = {"n": 0}
+
+    def base(
+        provider,
+        system,
+        user,
+        max_tokens,
+        *,
+        model=None,
+        json_mode=True,
+        purpose="llm",
+        docket=None,
+        temperature=None,
+    ):
+        boom_count["n"] += 1
+        if boom_count["n"] == 1:
+            raise RuntimeError("transient")
+        return "recovered"
+
+    wrapped = cache.wrap(base)
+    with pytest.raises(RuntimeError):
+        wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)
+    # The failed request was NOT stored, so the retry hits base again (and
+    # succeeds), rather than replaying a cached error.
+    assert (
+        wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)
+        == "recovered"
+    )
+    assert boom_count["n"] == 2
+    assert sum(cache.misses.values()) == 1  # only the successful store counts
+    cache.close()
+
+
+def test_llm_cache_buckets_counts_by_label(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, _ = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    mod._TL.label = "anthropic/claude-haiku-4-5"
+    wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)  # miss
+    wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)  # hit
+    mod._TL.label = "gemini/flash"
+    wrapped("gemini", "sys", "usr", 512, model="flash", temperature=0.0)  # miss
+
+    assert cache.misses["anthropic/claude-haiku-4-5"] == 1
+    assert cache.hits["anthropic/claude-haiku-4-5"] == 1
+    assert cache.misses["gemini/flash"] == 1
+    cache.close()
+
+
+def test_llm_cache_forwards_all_kwargs(tmp_path):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    seen: dict = {}
+
+    def base(
+        provider,
+        system,
+        user,
+        max_tokens,
+        *,
+        model=None,
+        json_mode=True,
+        purpose="llm",
+        docket=None,
+        temperature=None,
+    ):
+        seen.update(
+            model=model,
+            json_mode=json_mode,
+            purpose=purpose,
+            docket=docket,
+            temperature=temperature,
+        )
+        return "ok"
+
+    cache.wrap(base)(
+        "openai",
+        "sys",
+        "usr",
+        99,
+        model="gpt",
+        json_mode=False,
+        purpose="summary",
+        docket=123,
+        temperature=0.0,
+    )
+    assert seen == {
+        "model": "gpt",
+        "json_mode": False,
+        "purpose": "summary",
+        "docket": 123,
+        "temperature": 0.0,
+    }
+    cache.close()
+
+
+def test_llm_cache_log_summary_emits_totals(tmp_path, caplog):
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, _ = _make_counting_base()
+    wrapped = cache.wrap(base)
+    mod._TL.label = "anthropic/claude-haiku-4-5"
+    wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)  # miss
+    wrapped("anthropic", "sys", "usr", 512, model="haiku", temperature=0.0)  # hit
+
+    with caplog.at_level(logging.INFO, logger="provider_stores"):
+        cache.log_summary()
+    text = caplog.text
+    assert "llm-cache [anthropic/claude-haiku-4-5] hits=1 misses=1" in text
+    assert "llm-cache TOTAL hits=1 misses=1" in text
+    cache.close()
+
+
+def test_llm_cache_keys_on_resolved_model_not_none_arg(tmp_path, monkeypatch):
+    """model=None resolves via LLM_MODEL when the request is built, so two
+    None-arg calls under DIFFERENT LLM_MODEL values are DIFFERENT requests and
+    must not collide on one cache entry (the soundness bug: keying on the
+    unresolved dispatch arg would have let them share a response)."""
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    monkeypatch.setenv("LLM_MODEL", "model-A")
+    wrapped("anthropic", "sys", "usr", 512, model=None, temperature=0.0)
+    monkeypatch.setenv("LLM_MODEL", "model-B")
+    wrapped("anthropic", "sys", "usr", 512, model=None, temperature=0.0)
+
+    assert len(calls) == 2  # different resolved model → no collision
+    cache.close()
+
+
+def test_llm_cache_none_arg_equals_explicit_resolved_model(tmp_path, monkeypatch):
+    """A model=None call and an explicit call naming the SAME resolved model
+    build the identical request, so the second is a HIT — the key reflects what
+    is actually sent, not how the caller spelled it."""
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    default = mod.providers._DEFAULT_MODELS["anthropic"]
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    wrapped("anthropic", "sys", "usr", 512, model=None, temperature=0.0)  # → default
+    wrapped(
+        "anthropic", "sys", "usr", 512, model=default, temperature=0.0
+    )  # same request
+
+    assert len(calls) == 1  # second served from cache
+    assert sum(cache.hits.values()) == 1
+    cache.close()

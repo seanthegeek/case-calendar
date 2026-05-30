@@ -1,0 +1,264 @@
+# Case Calendar — DEVELOPER FIXTURE config
+#
+# A small subset of config.yaml covering ONLY the cases that have driven a
+# documented regression in one of the LLM-driven layers (extractor, verify
+# pass, dedupe sweeps, summary pipeline). Each case below is annotated with the
+# failure mode it pins — every one is described in AGENTS.md's Key Design
+# Decisions. Running the pipeline against just these cases is the tight
+# iteration loop for prompt / model changes: it exercises every documented
+# failure mode for cents instead of a full-caseload spend, so you reserve the
+# full `config.yaml` build as the final pre-commit gate.
+#
+# Typical use — re-validate a prompt change cheaply against the warm store:
+#   uv run python model-comparison/build_provider_stores.py --config config.dev.yaml
+#   uv run case-calendar -c config.dev.yaml summarize --force   # summaries only
+#   uv run case-calendar -c config.dev.yaml show
+#
+# Pair this with the persistent LLM-response cache in build_provider_stores.py
+# (on by default): the first build over these cases warms the cache, and a
+# second build after a single-track prompt tweak re-bills only the track whose
+# prompt changed.
+
+# Points at the PROD store on purpose: build_provider_stores.py copies the
+# store and never mutates it (read-only on the live file), so it needs the
+# warm entries for these cases to replay without a fresh CourtListener sync.
+# NOTE: a DIRECT `case-calendar -c config.dev.yaml sync` would share this same
+# store file (and re-fetch these dockets from CourtListener, burning quota). For
+# a throwaway sandbox instead, repoint this at data/case-calendar.dev.sqlite —
+# that store starts cold, so its first sync re-fetches every entry.
+store_path: data/case-calendar.sqlite
+
+# Don't reconcile CourtListener docket-alert subscriptions from the dev config —
+# the prod sync already owns that list. Leaving it on would make alert-create
+# API calls for dockets prod has already subscribed.
+ensure_docket_alerts: false
+
+# Dev output dir, kept separate from the prod `out/` so a dev emit can't
+# clobber the live ICS feeds / index that Caddy serves. public_base_url is
+# omitted so subscribe links render as relative filenames (local viewing only).
+index_path: out/dev/index.html
+site_title: "CaseCalendar.net (dev fixture)"
+
+# Summaries on — most of the fixture cases pin summary-pipeline regressions.
+case_summaries:
+  enabled: true
+  allow_ocr: true
+  debounce_seconds: 300
+
+calendars:
+  cybercrime:
+    name: "Cybercrime cases (dev)"
+    ics_path: out/dev/cybercrime.ics
+  tech:
+    name: "Tech cases (dev)"
+    ics_path: out/dev/tech.ics
+  natsec:
+    name: "National security cases (dev)"
+    ics_path: out/dev/natsec.ics
+
+cases:
+  # Posture-change stale-refresh: the D.C. Cir. oral argument was correctly
+  # flipped to `held` by the verify pass, but the summary stayed frozen at
+  # "scheduled" until upsert_hearing started flagging the summary stale on a
+  # status change (the supplemental-briefing follow-ups match neither
+  # is_primary_document nor is_disposition).
+  - id: anthropic-v-dow
+    name: "Anthropic v. DOW"
+    calendar: tech
+    dockets: [72380208, 72379655, 73136734]
+    tags: [defense, AI, LLM]
+    aggregation_note: "parallel suits challenging separate Department of War actions taken under distinct statutory authorities, each filed in the proper venue for the action it targets"
+
+  # Verify-pass max_tokens truncation (trial-knoot fell open to UNCLEAR at the
+  # old 512 budget) AND the forfeiture-money-judgment-equals-restitution
+  # omission rule ("$15,100 restitution ... forfeiture money judgment of
+  # $15,100" reading as $30,200). Also an appeal aggregated with the district
+  # case.
+  - id: us-v-knoot
+    name: "United States v. Knoot"
+    calendar: cybercrime
+    dockets: [69026861, 73388385]
+    tags: [DPRK, IT worker fraud, laptop farm]
+    aggregation_note: >-
+      The sane defendant is appealing his conviction.
+
+  # Cross-CourtListener-sibling same-slot key drift: sentencing-didenko vs
+  # sentencing-didenko-2 allocated across two records of one logical docket,
+  # collapsed by the group-aware dedupe sweeps.
+  - id: us-v-didenko
+    name: "United States v. Didenko"
+    calendar: cybercrime
+    dockets: [68810724, 68810897]
+    tags: [DPRK, IT worker fraud, marketplace]
+
+  # Documents-only custody rule: summary asserted defendants "remain at large
+  # with no public docket entries reflecting arrests" — an absence-of-record
+  # inference the prompt + deterministic guard now forbid.
+  - id: us-v-jin
+    name: "United States v. Kim Kwang Jin et al."
+    calendar: cybercrime
+    dockets: [70673091]
+    tags: [DPRK, IT worker fraud]
+
+  # Multiple regressions: the past-trial false-flip to `held` (no minute entry
+  # / verdict / transcript / judgment-after), the stale cached recap_documents
+  # auto-rebuild (entry #1 indictment with empty stored plain_text while
+  # CourtListener carried 39 KB), and the <1500-char primary-text WARN.
+  - id: us-v-moucka
+    name: "United States v. Moucka"
+    calendar: cybercrime
+    dockets: [69362701]
+
+  # Figure-fabrication grounding guard: garbled restitution OCR ("Total AD2,
+  # O52. 1S") decoded into a confident $492,052.15 that varied run to run, plus
+  # the redundant-forfeiture suppression when restitution is unreadable.
+  - id: us-v-chapman
+    name: "United States v. Chapman"
+    calendar: cybercrime
+    dockets: [68534169]
+    tags: [DPRK, IT worker fraud, laptop farm]
+
+  # Garbled-plain_text hallucination (the canonical CSRERI / "Roskomnadzor"
+  # confabulation from 27 KB of font-encoding noise) AND the programmatic
+  # sealing detection -> DOCKET VISIBILITY ADVISORY (the re-sealed C.D. Cal.
+  # docket).
+  - id: us-v-dubranova
+    name: "United States v. Dubranova"
+    calendar: cybercrime
+    dockets: [72013021]
+    tags: [DDoS]
+
+  # Speculative / conditional future outcome: "X will be remanded to the Bureau
+  # of Prisons if a term of imprisonment is imposed" — the hypothetical-
+  # consequence clause the prompt + guard now strip while keeping the scheduled
+  # event + date.
+  - id: us-v-martino
+    name: "United States v. Martino"
+    calendar: cybercrime
+    dockets: [72389253]
+    tags: [ransomware, ALPHV, BlackCat]
+
+  # extra_documents work-around (sealed indictment via DoJ press release + the
+  # is_available=false entry-20 PDF under an older pacer_case_id) AND the
+  # charged-then-arrested-and-extradited custody case that would make a
+  # fugitive-by-absence inference flatly false. The two notes below are fed to
+  # the summary LLM as trusted provenance; the document text stays untrusted.
+  - id: us-v-zewei
+    name: "United States v. Zewei"
+    calendar: cybercrime
+    dockets: [70789744]
+    tags: [PRC, China]
+    extra_documents:
+      - docket: 70789744
+        url: https://www.justice.gov/opa/media/1407196/dl
+        note: >-
+          This PDF is the unsealed indictment in S.D. Tex. case
+          4:23-cr-00523 (United States v. Xu Zewei).
+      - docket: 70789744
+        url: https://storage.courtlistener.com/recap/gov.uscourts.txsd.1940635/gov.uscourts.txsd.1940635.20.0_1.pdf
+        note: >-
+          This PDF is "Government's Agreed Motion to Designate the
+          Case as Complex under the Speedy Trial Act and for
+          Continuance" — docket entry 20 in S.D. Tex. 4:23-cr-00523
+          (United States v. Xu Zewei).
+
+  # Docket-group keying: three CourtListener docket_ids map to one logical
+  # E.D. Va. 1:25-cr-00307, each carrying a non-overlapping slice of entries —
+  # pins the (case_id, docket_number, court_id) summary key and the entry-dedup
+  # across the group.
+  - id: us-v-akhter
+    name: "United States v. Akhter"
+    calendar: cybercrime
+    dockets: [71989485, 73320754, 73333500]
+    tags: [wiper]
+
+  # Grounding-guard false positive (an appeal docket whose summary correctly
+  # cited a sentencing date conveyed via the aggregation_note, which the
+  # documents-only guard flagged as fabricated until operator notes joined the
+  # grounding corpus) AND the appellate-scope rule (district summary narrating
+  # the appellate public-defender appointment).
+  - id: us-v-gholinejad
+    name: "United States v. Gholinejad"
+    calendar: cybercrime
+    dockets: [70378502, 70402649, 71906511]
+    tags: [ransomware, Robbinhood]
+    aggregation_note: >-
+      The same defendant in two courts. In the Eastern District of North
+      Carolina case (4:24-cr-00016), Gholinejad pled guilty and on
+      November 3, 2025 was sentenced to 72 months' imprisonment; this
+      Fourth Circuit docket (25-4607) is his appeal of that final criminal
+      judgment. He is in federal custody.
+
+  # Primary-document failure-state classification: the indictment recap_document
+  # had description='Indictment' but is_available=False (PDF not yet on RECAP),
+  # which drove the four distinct fallback messages (sealed / not-available /
+  # unreadable / insufficient) instead of a silent drop.
+  - id: us-v-lytvynenko
+    name: "United States v. Lytvynenko"
+    calendar: cybercrime
+    dockets: [71820111]
+    tags: [ransomware, Conti]
+
+  # Hedged absence-of-record claims: "no disposition documents have been filed",
+  # "the docket does not reflect any scheduled hearings" — rewordings around the
+  # literal forbidden strings that the construction-matching guard catches.
+  - id: us-v-berezhnoy
+    name: "United States v. Berezhnoy et al."
+    calendar: cybercrime
+    dockets: [69629801, 70711269, 70821399]
+    tags: [ransomware, Phobos, 8Base]
+    aggregation_note: >-
+      Co-defendants Roman Berezhnoy and Egor Nikolaevich Glebov charged
+      together in one indictment as operators of the Phobos / 8Base
+      ransomware program.
+
+  # Borderline verify-pass CANCEL on a civil status conference (status-conf-
+  # gallyamov-5, mooted by a default judgment) AND a docket-level sealing case
+  # carried via aggregation_note.
+  - id: us-v-gallyamov
+    name: "United States v. Gallyamov"
+    calendar: cybercrime
+    dockets: [70341311]
+    tags: [ransomware, Qakbot, Qbot]
+    aggregation_note: >-
+     The docket for case number 2:25-CR-340-SB is sealed.
+
+  # PACER-stamps-only OCR shape (pypdf read 1538 chars of pure header stamps
+  # from an 18-page scan) AND the docket-group plain_text upgrade (freshest
+  # sibling 73292090 had an empty plain_text while older 73353898 carried 20 KB).
+  - id: us-v-schmitz
+    name: "United States v. Schmitz"
+    calendar: cybercrime
+    dockets: [73292090, 73353898]
+    tags: [marketplace, drugs]
+
+  # McGonigal-trial-class: a 2024 jury trial scheduled by a 2023 order was
+  # DELETE_HALLUCINATION'd to cancelled at temperature=0 because the scheduling
+  # order sat outside the verify window — fixed by source-entry context + the
+  # _delete_hallucination_allowed guard. Also the 12/14/2023 sentencing-miss
+  # (around-date window) and the past-but-unconfirmed framing.
+  - id: us-v-mcgonigal
+    name: "United States v. McGonigal"
+    calendar: natsec
+    dockets: [66749883]
+    tags: [Russia, espionage]
+
+  # Verdict-form link target: the form's extracted text is the blank/filled
+  # checkbox template (the jury's marks aren't in the text layer), so linking
+  # "returned a verdict" to it is misleading — _is_verdict_form maps it to no
+  # link, and the prompt licenses "a jury trial was held" but not per-count
+  # findings.
+  - id: us-v-ding
+    name: "United States v. Ding"
+    calendar: natsec
+    dockets: [68317014]
+    tags: [PRC, China, espionage, AI, Google]
+
+  # Cross-status, non-identical-slot dedupe GAP (known, not yet fixed): a
+  # sentencing that is `held` on one record of the group but `scheduled` at a
+  # different time on a sibling renders twice — collapsed by neither sweep.
+  - id: us-v-wei
+    name: "United States v. Wei"
+    calendar: natsec
+    dockets: [67661286, 67661185]
+    tags: [PRC, China, espionage, defence]

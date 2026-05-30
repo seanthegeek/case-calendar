@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Push the local case-calendar.sqlite + .env + config.yaml to prod, pull
+# latest code, re-emit, and restart the service. Run from the repo root.
+#
+# Reads the prod connection settings from .env (gitignored, NOT in
+# .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
+# CC_PROD_SERVICE, CC_PROD_STAGE_DIR. See scripts/_prod-env.sh for what
+# each one is.
+
+set -euo pipefail
+
+# shellcheck source=scripts/_prod-env.sh
+source "$(dirname "$0")/_prod-env.sh"
+
+# 0. Confirm — this overwrites the prod DB, .env, and config.yaml with
+#    the local copies.
+read -r -p "Do you really want to upload the dev database into prod? (y/N) " reply
+case "$reply" in
+    [yY]|[yY][eE][sS]) ;;
+    *) echo "aborted"; exit 1 ;;
+esac
+
+# 1. Make sure an SSH key is loaded; if not, prompt for it.
+if ! ssh-add -l >/dev/null 2>&1; then
+    ssh-add
+fi
+
+# 2. Stop the service so writes can't race the file replacement.
+ssh "$CC_PROD_SSH" "systemctl stop $CC_PROD_SERVICE"
+
+# 3. Stage the DB, .env, and config in the staging dir (writable by the
+#    SSH user without needing intermediate sudo). .env goes BEFORE
+#    config.yaml so a provider/key change reaches prod in lockstep with the
+#    matching config — e.g. a Gemini-default switch needs the new
+#    GEMINI_API_KEY in .env to be present when the service comes back up.
+scp data/case-calendar.sqlite "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
+scp .env                      "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
+scp config.yaml               "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
+
+# 4. Remove any stale WAL sidecars from the previous prod DB. If we leave
+#    them in place, SQLite will try to replay them against our newly-
+#    copied main file and fail with "database disk image is malformed"
+#    (the WAL's page checksums won't match the new main file). systemctl
+#    stop above doesn't guarantee the sidecars are gone — a hard-killed
+#    or incompletely-checkpointed prior run can leave them behind.
+ssh "$CC_PROD_SSH" "rm -f \
+    $CC_PROD_APP_DIR/data/case-calendar.sqlite-wal \
+    $CC_PROD_APP_DIR/data/case-calendar.sqlite-shm"
+
+# 5. Overwrite in place with cp — preserves the destination file's
+#    existing ownership and permissions (the service account's user:group /
+#    0640 etc., and .env is 0600 with secrets), which a mv would clobber.
+ssh "$CC_PROD_SSH" "\
+    cp $CC_PROD_STAGE_DIR/case-calendar.sqlite $CC_PROD_APP_DIR/data/case-calendar.sqlite && \
+    cp $CC_PROD_STAGE_DIR/.env                 $CC_PROD_APP_DIR/.env && \
+    cp $CC_PROD_STAGE_DIR/config.yaml          $CC_PROD_APP_DIR/config.yaml \
+"
+
+# 6. Remove the temporary staging copies — .env carries secrets, so don't
+#    let it linger in the staging dir after the in-place install.
+ssh "$CC_PROD_SSH" "rm -f $CC_PROD_STAGE_DIR/case-calendar.sqlite $CC_PROD_STAGE_DIR/.env $CC_PROD_STAGE_DIR/config.yaml"
+
+# 7. Pull latest code as the service account (so file ownership stays
+#    correct on any new files git creates).
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE git pull"
+
+# 8. Re-emit so out/*.ics + out/index.html reflect the new DB state.
+#    PYTHONUNBUFFERED=1 so emit's stdout streams to this terminal as it
+#    runs (sudo strips env vars by default; wrap with `env` to set it
+#    inside the service account's environment).
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar emit"
+
+# 9. Bring the service back up.
+ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"
+
+echo "deploy complete: $CC_PROD_HOST"

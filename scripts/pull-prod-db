@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# Pull the prod case-calendar.sqlite down to dev — DB only, no prod-side
+# sync, no service restart, no emit. Run from the repo root.
+#
+# Use case: you want dev to mirror prod's current view of the store
+# (entries, hearings, deadlines, case_summaries, etc.) without running a
+# prod sync first. Common reasons:
+#   - You're about to regenerate summaries locally under new code and
+#     want to compare against prod's current outputs.
+#   - You're debugging a prod issue against the prod DB on dev.
+#   - You're about to do something destructive (--force-summaries,
+#     prune --apply, a migration) and want a known-good pre-state.
+#
+# Direction is the inverse of push-db-to-prod: prod → dev only. If you
+# need to push a local DB up to prod, use push-db-to-prod. If you
+# want to sync prod first AND then pull the DB, use sync-via-prod.
+#
+# The snapshot uses SQLite's online-backup API so prod's serve process
+# can keep handling webhooks during the pull — no service downtime.
+#
+# Reads the prod connection settings from .env (gitignored, NOT in
+# .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
+# CC_PROD_SERVICE. See scripts/_prod-env.sh for what each one is.
+
+set -euo pipefail
+
+# shellcheck source=scripts/_prod-env.sh
+source "$(dirname "$0")/_prod-env.sh"
+
+# 1. Make sure an SSH key is loaded; if not, prompt for it.
+if ! ssh-add -l >/dev/null 2>&1; then
+    ssh-add
+fi
+
+# 2. Back up the local DB before overwriting. WAL mode means we need the
+#    sidecars too — see AGENTS.md "Back up the SQLite store before any
+#    schema or migration change" convention. (This isn't a schema
+#    change, but it's a wholesale DB swap on dev, so the same precaution
+#    applies — if the prod pull lands a state you didn't expect, the
+#    backup is the escape hatch.)
+stamp=$(date +%Y-%m-%d-%H%M%S)
+backup_base="data/case-calendar.sqlite.bak-${stamp}-pull-prod-db"
+cp data/case-calendar.sqlite "${backup_base}"
+[ -e data/case-calendar.sqlite-wal ] && cp data/case-calendar.sqlite-wal "${backup_base}-wal"
+[ -e data/case-calendar.sqlite-shm ] && cp data/case-calendar.sqlite-shm "${backup_base}-shm"
+echo "local backup: ${backup_base}"
+
+# 3. Snapshot prod's DB using SQLite's online backup API into /tmp.
+#    This produces a consistent file copy even while prod's serve
+#    process is handling webhooks — no extra service downtime needed.
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ./.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
+
+# 4. Clear dev's WAL sidecars before the swap — if they're left in
+#    place, SQLite will try to replay them against the newly-copied
+#    main file and fail with "database disk image is malformed" (the
+#    WAL's page checksums won't match the new main file).
+rm -f data/case-calendar.sqlite-wal data/case-calendar.sqlite-shm
+
+# 5. Download to a temp path and mv atomically so a mid-transfer
+#    failure doesn't corrupt the in-place DB.
+scp "$CC_PROD_SSH:/tmp/case-calendar-snapshot.sqlite" data/case-calendar.sqlite.tmp
+mv data/case-calendar.sqlite.tmp data/case-calendar.sqlite
+
+# 6. Clean up the prod-side snapshot.
+ssh "$CC_PROD_SSH" "rm -f /tmp/case-calendar-snapshot.sqlite"
+
+echo "pull-prod-db complete: $CC_PROD_HOST"

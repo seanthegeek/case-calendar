@@ -104,10 +104,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import logging
 import os
 import shutil
+import sqlite3
 import sys
 import threading
 import time
@@ -647,6 +649,190 @@ def _install_pdf_cache() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Persistent LLM-response cache (the developer-iteration lever)
+# ---------------------------------------------------------------------------
+
+
+class _LLMCache:
+    """Persistent, content-addressed cache for LLM dispatch responses.
+
+    The whole pipeline runs at ``temperature=0`` (every domain call in
+    ``case_calendar.llm`` pins it), so a call's output is a *pure function*
+    of its request. Keying on the FULL resolved request — provider, model,
+    system prompt, user message, ``max_tokens``, ``json_mode``,
+    ``temperature`` — means a cached response is byte-identical to what a
+    fresh call would return. There's no separate version tag because the
+    request IS the version: change the model and the key changes; change a
+    word of any prompt and the key changes; both miss naturally and re-run
+    live, while every UNCHANGED call replays for free.
+
+    Why it exists: the CourtListener / PDF caches above already make a
+    rebuild's data layer free, but the LLM calls — the entire dollar cost of
+    a build — were re-paid in full on every run. That made each prompt tweak
+    a full-caseload spend even when only one track's prompt changed. With
+    this cache persisted to a SQLite sidecar across runs, a second build
+    after a single-track prompt edit re-bills ONLY that track's calls (their
+    requests changed); the other tracks' calls hit the cache. A summary-only
+    tweak drops from a full rebuild to just the summary track, automatically,
+    with no flag — the request hashes do the scoping.
+
+    Determinism caveat: this inherits exactly the same near-determinism the
+    project already relies on for its temperature=0 verify-pass validation.
+    A cached response equals what the model would return for an identical
+    request *within a model version*; a provider-side model/infra update is
+    the same epsilon the rest of the harness already accepts. Pass
+    ``--no-llm-cache`` for a guaranteed-fresh build.
+
+    Thread-safety: columns build in parallel. All cache reads/writes are
+    serialized under ``self._lock``; the real model call on a miss happens
+    OUTSIDE the lock (it's slow, and distinct columns use distinct models →
+    distinct keys, so two threads computing the same key essentially never
+    happens). Errors are never cached — an exception from the wrapped call
+    propagates without a store, so a transient failure can't poison the
+    cache.
+    """
+
+    def __init__(self, path: str) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        # check_same_thread=False is safe because every access is under _lock.
+        self._conn = sqlite3.connect(path, check_same_thread=False)
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS llm_responses ("
+            "key TEXT PRIMARY KEY, response TEXT NOT NULL, "
+            "provider TEXT, model TEXT, purpose TEXT)"
+        )
+        self._conn.commit()
+        self.hits: dict[str, int] = {}
+        self.misses: dict[str, int] = {}
+
+    @staticmethod
+    def _effective_model(provider: str, model: Optional[str]) -> Optional[str]:
+        """Resolve the model the actual request will carry, mirroring the
+        per-provider call functions' ``model or os.environ['LLM_MODEL'] or
+        default`` resolution EXACTLY.
+
+        This is the soundness pivot of the whole cache: the key must capture
+        what is *actually sent to the provider*, not the dispatch argument.
+        When the caller passes ``model=None``, the real request's model comes
+        from ``LLM_MODEL`` (or the provider default) — so two ``model=None``
+        calls under different ``LLM_MODEL`` values build DIFFERENT requests and
+        must NOT share a cache entry. Keying on the unresolved arg would let
+        them collide. (In this harness ``model`` is always concrete at the
+        cache boundary and ``LLM_MODEL`` is popped from the env, so the gap is
+        closed by construction today — but the cache must not silently depend
+        on that invariant.)"""
+        return model or os.environ.get(
+            "LLM_MODEL", providers._DEFAULT_MODELS.get(provider)
+        )
+
+    @staticmethod
+    def _key(
+        provider: str,
+        model: Optional[str],
+        system: str,
+        user: str,
+        max_tokens: int,
+        json_mode: bool,
+        temperature: Optional[float],
+    ) -> str:
+        payload = json.dumps(
+            [provider, model, system, user, max_tokens, json_mode, temperature],
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def wrap(self, base: Any) -> Any:
+        """Return a dispatch function with ``base``'s signature that serves
+        identical requests from the persistent cache and falls through to
+        ``base`` on a miss. ``base`` is the real ``_dispatch_llm_call`` (the
+        cache is never installed in ``--fake`` mode — synthetic calls are
+        already free)."""
+
+        def wrapped(
+            provider: str,
+            system: str,
+            user: str,
+            max_tokens: int,
+            *,
+            model: Optional[str] = None,
+            json_mode: bool = True,
+            purpose: str = "llm",
+            docket: Any = None,
+            temperature: Optional[float] = None,
+        ) -> str:
+            # Key on the RESOLVED model the request will actually carry, not
+            # the (possibly None) dispatch arg — see _effective_model.
+            eff_model = self._effective_model(provider, model)
+            key = self._key(
+                provider, eff_model, system, user, max_tokens, json_mode, temperature
+            )
+            label = _tl_label() or provider
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT response FROM llm_responses WHERE key=?", (key,)
+                ).fetchone()
+                if row is not None:
+                    self.hits[label] = self.hits.get(label, 0) + 1
+                    return row[0]
+            # MISS — the real model call (and its usage.record cost capture)
+            # happens here, OUTSIDE the lock. Only successful returns are
+            # stored; an exception propagates with nothing written.
+            resp = base(
+                provider,
+                system,
+                user,
+                max_tokens,
+                model=model,
+                json_mode=json_mode,
+                purpose=purpose,
+                docket=docket,
+                temperature=temperature,
+            )
+            with self._lock:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO llm_responses"
+                    "(key, response, provider, model, purpose) VALUES(?,?,?,?,?)",
+                    (key, resp, provider, eff_model, purpose),
+                )
+                self._conn.commit()
+                self.misses[label] = self.misses.get(label, 0) + 1
+            return resp
+
+        return wrapped
+
+    def log_summary(self) -> None:
+        """Log per-column and total hit/miss counts. The cost report's TOTAL
+        already reflects only the misses (a hit skips ``usage.record``), so
+        these counts explain *why* a re-run was cheap."""
+        with self._lock:
+            labels = sorted(set(self.hits) | set(self.misses))
+            for label in labels:
+                h = self.hits.get(label, 0)
+                m = self.misses.get(label, 0)
+                logger.info(
+                    "llm-cache [%s] hits=%d misses=%d "
+                    "(cost reflects the %d live calls only)",
+                    label,
+                    h,
+                    m,
+                    m,
+                )
+            if labels:
+                logger.info(
+                    "llm-cache TOTAL hits=%d misses=%d",
+                    sum(self.hits.values()),
+                    sum(self.misses.values()),
+                )
+
+    def close(self) -> None:
+        with self._lock:
+            self._conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Store handling
 # ---------------------------------------------------------------------------
 
@@ -1122,6 +1308,23 @@ def main(argv: Optional[list[str]] = None) -> int:
         "rank columns, and skipping them saves the higher-tier model spend "
         "(typically the biggest cost line per column).",
     )
+    ap.add_argument(
+        "--no-llm-cache",
+        action="store_true",
+        help="disable the persistent content-addressed LLM-response cache. By "
+        "default, identical requests (same provider/model/prompts/temperature) "
+        "are served from a SQLite sidecar across runs, so a prompt tweak only "
+        "re-bills the track whose prompt changed; everything unchanged replays "
+        "for free. Pass this for a guaranteed-fresh build (no replay). Ignored "
+        "under --fake (synthetic calls are already free).",
+    )
+    ap.add_argument(
+        "--llm-cache-path",
+        default="data/llm-cache.sqlite",
+        help="path to the persistent LLM-response cache (default: "
+        "data/llm-cache.sqlite, which is gitignored). Delete the file to "
+        "invalidate every cached response.",
+    )
     ap.add_argument("--out", help="also write the markdown report to this path")
     args = ap.parse_args(argv)
 
@@ -1195,6 +1398,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     providers._detect_provider = _tl_detect  # type: ignore[assignment]
     orig_dispatch = providers._dispatch_llm_call
     base_dispatch = _fake_dispatch if args.fake else orig_dispatch
+    # Persistent LLM-response cache wraps the REAL dispatch (never the fake
+    # one), keyed on the fully-resolved request. _make_variant_dispatch
+    # injects the column's extraction model BEFORE calling base, so the cache
+    # sees the concrete model and keys on it correctly.
+    llm_cache: Optional[_LLMCache] = None
+    if not args.fake and not args.no_llm_cache:
+        llm_cache = _LLMCache(args.llm_cache_path)
+        base_dispatch = llm_cache.wrap(base_dispatch)
     providers._dispatch_llm_call = _make_variant_dispatch(  # type: ignore[assignment]
         base_dispatch
     )
@@ -1268,6 +1479,9 @@ def main(argv: Optional[list[str]] = None) -> int:
         for k, v in saved_models.items():
             if v is not None:
                 os.environ[k] = v
+        if llm_cache is not None:
+            llm_cache.log_summary()
+            llm_cache.close()
         try:
             cl.log_request_stats()
         except Exception:  # noqa: BLE001

@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Push local config.yaml to prod, run a sync there (so prod's CourtListener token
+# does the work — not dev's), restart the service so the running serve
+# process picks up the new config, then download the resulting DB back
+# to dev so the two stay aligned. Run from the repo root.
+#
+# Use case: you added a new case (or changed an existing one) in
+# config.yaml on dev. This propagates the config to prod, lets prod's
+# CourtListener token do the initial backfill of the new dockets, restarts the
+# serve process so webhooks for any new cases get processed, then
+# pulls the resulting DB so dev mirrors prod's view. Pass `--prune`
+# in addition if your config edit removed or corrected a docket id
+# and you want the now-orphaned store rows cleaned up at the same
+# time.
+#
+# Direction is asymmetric and intentional: config flows dev → prod
+# only; DB flows prod → dev only. Use push-db-to-prod to push a
+# local DB up to prod instead.
+#
+# Reads the prod connection settings from .env (gitignored, NOT in
+# .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
+# CC_PROD_SERVICE, CC_PROD_STAGE_DIR. See scripts/_prod-env.sh for what
+# each one is.
+#
+# Script-level flag (consumed here, NOT forwarded to sync):
+#   --prune   Run `case-calendar prune --apply` between the code pull
+#             and the sync, to delete store rows for dockets no
+#             longer referenced by config (renames, CourtListener-id
+#             corrections). Off by default because --apply is
+#             destructive and prod has no automatic backup — opt in
+#             only when you intentionally orphaned dockets and have
+#             `git diff config.yaml` confirming no accidents.
+#
+# All other args are forwarded to `case-calendar sync`, e.g.:
+#   ./scripts/sync-via-prod
+#   ./scripts/sync-via-prod --only-new
+#   ./scripts/sync-via-prod --prune --only-new
+#   ./scripts/sync-via-prod --case us-v-dubranova
+#   ./scripts/sync-via-prod --force-summaries
+
+set -euo pipefail
+
+# shellcheck source=scripts/_prod-env.sh
+source "$(dirname "$0")/_prod-env.sh"
+
+# Parse script-level flags. Everything that isn't a script-level flag
+# rides along to `case-calendar sync` in step 6.
+prune=0
+sync_args=""
+for arg in "$@"; do
+    case "$arg" in
+        --prune) prune=1 ;;
+        *) sync_args="$sync_args $arg" ;;
+    esac
+done
+
+# 1. Make sure an SSH key is loaded; if not, prompt for it.
+if ! ssh-add -l >/dev/null 2>&1; then
+    ssh-add
+fi
+
+# 2. Back up the local DB before we overwrite it. WAL mode means we
+#    need the sidecars too — see AGENTS.md "Back up the SQLite store
+#    before any schema or migration change" convention. (This isn't a
+#    schema change, but it's still a wholesale DB swap on dev, so the
+#    same precaution applies.)
+stamp=$(date +%Y-%m-%d-%H%M%S)
+backup_base="data/case-calendar.sqlite.bak-${stamp}-sync-via-prod"
+cp data/case-calendar.sqlite "${backup_base}"
+[ -e data/case-calendar.sqlite-wal ] && cp data/case-calendar.sqlite-wal "${backup_base}-wal"
+[ -e data/case-calendar.sqlite-shm ] && cp data/case-calendar.sqlite-shm "${backup_base}-shm"
+echo "local backup: ${backup_base}"
+
+# 3. Stage config.yaml on prod in the staging dir (writable without
+#    intermediate sudo), then cp into place — cp preserves the destination
+#    file's existing owner / perms (the service account's user:group /
+#    0640), which a direct scp into the app dir would clobber.
+scp config.yaml "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
+ssh "$CC_PROD_SSH" "cp $CC_PROD_STAGE_DIR/config.yaml $CC_PROD_APP_DIR/config.yaml && rm -f $CC_PROD_STAGE_DIR/config.yaml"
+
+# 4. Pull latest code on prod so the sync we're about to run picks up
+#    any flags / behaviors that were added on dev since the last
+#    upgrade-prod (e.g. --only-new). Safe to do while the serve process
+#    is running — Python modules are pinned in memory on import, so the
+#    running serve keeps using the old code until the restart in step 7
+#    swaps it for the new code.
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE git pull"
+
+# 5. Prune any store rows tied to dockets no longer in config — handles
+#    the case where a docket was renamed, removed, or had its CourtListener id
+#    corrected (e.g. typo fix). Runs against the new config we just
+#    uploaded, so it sees the up-to-date case list. Done BEFORE sync so
+#    the sync's auto-emit reflects the post-prune state — otherwise the
+#    orphan's stale calendar rows would still appear in the emit.
+#
+#    Opt-in via the script-level --prune flag because --apply is
+#    destructive and prod has no in-script backup. The local DB backup
+#    at step 2 covers dev recovery only.
+if [ "$prune" -eq 1 ]; then
+    ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar prune --apply"
+else
+    echo "skipping prune (pass --prune to clean up orphaned dockets in the same run)"
+fi
+
+# 6. Run sync against the new config as the service account. The
+#    running serve process can keep going — WAL journaling + busy_timeout
+#    (see AGENTS.md "Sync and serve are separate processes" design note)
+#    handle the cross-process write contention safely. Auto-emit fires
+#    inside sync, so prod's out/ is already up to date when sync returns.
+#    PYTHONUNBUFFERED=1 + `env` wrapper so sync's stdout streams to this
+#    terminal in real time (python block-buffers when stdout isn't a TTY,
+#    which it isn't on the far end of ssh; sudo strips the env var by
+#    default).
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar sync $sync_args"
+
+# 7. Restart the service so the running serve process picks up both the
+#    new config (case-calendar.serve reads config.yaml at process startup
+#    only — without a restart it would keep using the pre-upload config
+#    and ignore any newly-added cases on webhook deliveries) and the
+#    new code pulled in step 4.
+ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"
+
+# 8. Snapshot the prod DB using SQLite's online backup API into /tmp.
+#    This produces a consistent file copy even while the just-restarted
+#    serve process is back to handling webhooks — no extra service
+#    downtime needed for the DB pull.
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ./.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
+
+# 9. Clear dev's WAL sidecars before the swap — if they're left in
+#    place, SQLite will try to replay them against the newly-copied
+#    main file and fail with "database disk image is malformed" (the
+#    WAL's page checksums won't match the new main file).
+rm -f data/case-calendar.sqlite-wal data/case-calendar.sqlite-shm
+
+# 10. Download to a temp path and mv atomically so a mid-transfer
+#     failure doesn't corrupt the in-place DB.
+scp "$CC_PROD_SSH:/tmp/case-calendar-snapshot.sqlite" data/case-calendar.sqlite.tmp
+mv data/case-calendar.sqlite.tmp data/case-calendar.sqlite
+
+# 11. Clean up the prod-side snapshot.
+ssh "$CC_PROD_SSH" "rm -f /tmp/case-calendar-snapshot.sqlite"
+
+# 12. Re-emit on dev so the local out/ directory reflects the new DB
+#     state — useful if you want to eyeball index.html locally before
+#     prod's next render cycle.
+uv run case-calendar emit
+
+echo "sync-via-prod complete: $CC_PROD_HOST"

@@ -40,7 +40,8 @@ store_path: data/case-calendar.sqlite
 # page lists every calendar (with one-click subscribe links) and every
 # tracked case (with docket links, date filed, and last activity), and
 # is sortable client-side. Pair with a static HTTPS server like Caddy
-# pointed at the `out/` directory (see Caddyfile in repo root).
+# pointed at the `out/` directory (see the Caddy example in
+# docs/public-page.md).
 #
 # `public_base_url` is the URL where Caddy serves the `out/` directory.
 # When set, the index emits absolute https:// + webcal:// subscribe links;

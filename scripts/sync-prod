@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Run `case-calendar sync` on prod. Pass extra args through, e.g.
+#   ./scripts/sync-prod
+#   ./scripts/sync-prod --case us-v-knoot
+#   ./scripts/sync-prod --force-summaries
+#
+# Does NOT stop the service — sync and serve are safe to run concurrently
+# (WAL journaling + busy_timeout cover the cross-process write contention).
+#
+# Reads the prod connection settings from .env (gitignored, NOT in
+# .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
+# CC_PROD_SERVICE. See scripts/_prod-env.sh for what each one is.
+
+set -euo pipefail
+
+# shellcheck source=scripts/_prod-env.sh
+source "$(dirname "$0")/_prod-env.sh"
+
+if ! ssh-add -l >/dev/null 2>&1; then
+    ssh-add
+fi
+
+# PYTHONUNBUFFERED=1 so case-calendar's stdout streams to this terminal
+# in real time instead of being block-buffered (python's default when it
+# detects its stdout isn't a TTY, which it isn't on the far end of ssh).
+# `sudo` doesn't preserve env vars by default, so wrap with `env` to set
+# it inside the service account's environment.
+ssh "$CC_PROD_SSH" \
+    "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar sync $*"
