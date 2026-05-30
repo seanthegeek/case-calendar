@@ -268,6 +268,95 @@ class TestEntries:
     def test_get_entry_numbers_empty_input(self, store: Store):
         assert store.get_entry_numbers([]) == {}
 
+    def test_get_entries_by_ids_returns_full_rows(self, store: Store):
+        # Same column shape as get_recent_relevant_entries /
+        # get_relevant_entries_in_date_range so the verify-pass merge can
+        # treat all three sources interchangeably. Used to surface a
+        # hearing's source entries (the entries that allocated the row)
+        # in the verify-pass context — the McGonigal scheduling-order-
+        # too-old-for-recent-window class of regression.
+        store.mark_entry(
+            1,
+            100,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed="2023-08-01",
+            description="ORDER: TRIAL SET FOR JUNE 12, 2024",
+            entry_number=42,
+        )
+        store.mark_entry(
+            1,
+            101,
+            "2026-01-02T00:00:00Z",
+            "fp",
+            date_filed="2023-08-15",
+            description="Minute Entry: status conference held",
+            entry_number=43,
+        )
+        got = store.get_entries_by_ids(1, [100, 101])
+        ids = {r["entry_id"] for r in got}
+        assert ids == {100, 101}
+        assert {r["entry_number"] for r in got} == {42, 43}
+        # Same shape — description / short_description / date_filed are
+        # always returned, even when None.
+        assert all(
+            {
+                "entry_id",
+                "entry_number",
+                "date_filed",
+                "description",
+                "short_description",
+            }
+            <= set(r)
+            for r in got
+        )
+
+    def test_get_entries_by_ids_empty_input(self, store: Store):
+        assert store.get_entries_by_ids(1, []) == []
+
+    def test_get_entries_by_ids_silently_drops_unknown(self, store: Store):
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", description="known", entry_number=1
+        )
+        got = store.get_entries_by_ids(1, [100, 999, 1000])
+        assert {r["entry_id"] for r in got} == {100}
+
+    def test_get_entries_by_ids_includes_filter_failed_stubs(self, store: Store):
+        # Filter-failed stubs (NULL description) ARE returned — the
+        # source entry might be a stub if its body wasn't worth keeping
+        # at sync time, but the verify pass still needs the model to see
+        # SOME evidence the row was scheduled, even just the short
+        # description. Differs from get_recent_relevant_entries /
+        # get_relevant_entries_in_date_range which both gate on
+        # ``description IS NOT NULL``.
+        store.mark_entry(
+            1,
+            100,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            description=None,  # filter-failed stub
+            short_description="Notice of Hearing",
+            entry_number=42,
+        )
+        got = store.get_entries_by_ids(1, [100])
+        assert len(got) == 1
+        assert got[0]["entry_id"] == 100
+        assert got[0]["description"] is None
+        assert got[0]["short_description"] == "Notice of Hearing"
+
+    def test_get_entries_by_ids_scoped_to_docket(self, store: Store):
+        # Entry_id alone is unique, but the verify pass is per-docket and
+        # sibling-docket entries shouldn't bleed into a different
+        # docket's verify context — so the query is scoped on both.
+        store.mark_entry(
+            1, 100, "2026-01-01T00:00:00Z", "fp", description="docket 1", entry_number=1
+        )
+        store.mark_entry(
+            2, 200, "2026-01-01T00:00:00Z", "fp", description="docket 2", entry_number=1
+        )
+        assert {r["entry_id"] for r in store.get_entries_by_ids(1, [100, 200])} == {100}
+        assert {r["entry_id"] for r in store.get_entries_by_ids(2, [100, 200])} == {200}
+
     def test_get_entry_documents_roundtrip(self, store: Store):
         docs = [
             {

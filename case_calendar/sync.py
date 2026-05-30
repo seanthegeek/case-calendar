@@ -684,11 +684,14 @@ class CaseSyncer:
         return stats
 
     def _verify_context_entries(
-        self, docket_id: int, starts_at_utc: Optional[str]
+        self,
+        docket_id: int,
+        target_date_utc: Optional[str],
+        source_entry_ids: Optional[list[int]] = None,
     ) -> list[dict[str, Any]]:
         """Docket entries to hand the verify-pass LLM for one hearing.
 
-        Combines two sets, de-duplicated by entry id:
+        Combines three sets, de-duplicated by entry id:
 
         1. The 15 most-recent hearing-relevant entries — "what's happening
            now" (continuances, reschedules, the current posture).
@@ -700,6 +703,23 @@ class CaseSyncer:
            the evidence it needs to MARK_HELD and the row wrongly stays
            'scheduled'. For a FUTURE hearing the window is in the future and
            returns nothing, so this only adds signal for past-dated rows.
+        3. The hearing's SOURCE entries (``source_entry_ids``) — the docket
+           entries that originally allocated the row. Without these the
+           model's DELETE_HALLUCINATION rule ("you've seen the original
+           source entry and concluded it does NOT actually schedule this
+           hearing") is unsatisfiable when the scheduling order is older
+           than the recent window AND outside the around-date window, and
+           the model breaks the rule rather than picking UNCLEAR. The
+           McGonigal-trial regression — a 2024 jury trial scheduled by an
+           older order, then mooted by a plea without a formal vacatur
+           entry, that the verify pass marked DELETE_HALLUCINATION because
+           the scheduling order wasn't visible — is the canonical case.
+           Including source entries makes the rule satisfiable; the
+           matching deterministic guard in :meth:`_apply_verify_action`
+           enforces the rule the other way (downgrade
+           DELETE_HALLUCINATION to UNCLEAR if any source entry was
+           absent from what the LLM saw, which can still happen if a
+           source row was deleted or its id is malformed).
 
         This widens what the LLM can SEE; it does not loosen the bar for
         marking a hearing held — the prompt still requires a cited record.
@@ -708,27 +728,30 @@ class CaseSyncer:
             docket_id, "9999-12-31T00:00:00", limit=15
         )
         near: list[dict[str, Any]] = []
-        if starts_at_utc:
+        if target_date_utc:
             try:
-                hearing_date = datetime.fromisoformat(
-                    starts_at_utc.replace("Z", "+00:00")
+                anchor_date = datetime.fromisoformat(
+                    target_date_utc.replace("Z", "+00:00")
                 ).date()
             except ValueError:
-                hearing_date = None
-            if hearing_date is not None:
+                anchor_date = None
+            if anchor_date is not None:
                 start = (
-                    hearing_date - timedelta(days=_VERIFY_OUTCOME_LOOKBACK_DAYS)
+                    anchor_date - timedelta(days=_VERIFY_OUTCOME_LOOKBACK_DAYS)
                 ).isoformat()
                 end = (
-                    hearing_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
+                    anchor_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
                 ).isoformat()
                 near = self.store.get_relevant_entries_in_date_range(
                     docket_id, start, end, limit=20
                 )
+        sources: list[dict[str, Any]] = []
+        if source_entry_ids:
+            sources = self.store.get_entries_by_ids(docket_id, source_entry_ids)
 
         seen: set[int] = set()
         merged: list[dict[str, Any]] = []
-        for entry in (*recent, *near):
+        for entry in (*recent, *near, *sources):
             eid = entry["entry_id"]  # always present from the store query
             if eid in seen:
                 continue
@@ -798,7 +821,9 @@ class CaseSyncer:
             tz = tz_for(court_id)
 
             recent = self._verify_context_entries(
-                docket_id, hearing.get("starts_at_utc")
+                docket_id,
+                hearing.get("starts_at_utc"),
+                source_entry_ids=hearing.get("source_entry_ids"),
             )
             action = llm_mod.verify_hearing(
                 case_name=case.name,
@@ -1158,10 +1183,10 @@ class CaseSyncer:
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
 
-            recent = self.store.get_recent_relevant_entries(
+            recent = self._verify_context_entries(
                 docket_id,
-                "9999-12-31T00:00:00",
-                limit=15,
+                d.get("due_at_utc"),
+                source_entry_ids=d.get("source_entry_ids"),
             )
             action = llm_mod.verify_deadline(
                 case_name=case.name,

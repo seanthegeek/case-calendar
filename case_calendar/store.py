@@ -869,6 +869,45 @@ class Store:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def get_entries_by_ids(
+        self, docket_id: int, entry_ids: Iterable[int]
+    ) -> list[dict[str, Any]]:
+        """Return stored entry rows for the given CourtListener entry_ids.
+
+        Same column shape as :meth:`get_recent_relevant_entries` and
+        :meth:`get_relevant_entries_in_date_range` so callers can mix and
+        merge results into one context list. Used by the verify pass to
+        always include each hearing's source entries (the entries that
+        originally allocated the row) in the LLM context — without that,
+        the model's DELETE_HALLUCINATION rule "you've seen the original
+        source entry and concluded it does NOT actually schedule this
+        hearing" is unsatisfiable when the source entry sits outside the
+        recent and around-date windows, and the model breaks the rule
+        rather than picking UNCLEAR.
+
+        Filters by ``docket_id`` even though entry_id is unique because the
+        verify pass is per-docket (sibling-docket entries shouldn't bleed
+        into a different docket's verify context) and the index is on
+        ``(docket_id, entry_id)``. NULL ``description`` rows (filter-failed
+        stubs) ARE returned here, unlike the relevant-entries methods —
+        the source entry may be a stub if its body wasn't worth keeping at
+        sync time, but the verify pass still needs the model to see SOME
+        evidence the row was scheduled, even if it's just the short
+        description.
+        """
+        ids = [int(i) for i in entry_ids]
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = self.conn.execute(
+            f"SELECT entry_id, entry_number, date_filed, "
+            f"description, short_description "
+            f"FROM entries "
+            f"WHERE docket_id=? AND entry_id IN ({placeholders})",
+            [docket_id, *ids],
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_entry_numbers(self, entry_ids: Iterable[int]) -> dict[int, int]:
         """Return ``entry_id -> entry_number`` for known entries.
 

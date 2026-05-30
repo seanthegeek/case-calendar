@@ -4043,6 +4043,82 @@ class TestVerifyContextEntries:
             ctx = syncer._verify_context_entries(100, ts)
             assert sorted(e["entry_id"] for e in ctx) == [500, 501]
 
+    def test_source_entries_surfaced_when_outside_recent_and_near_windows(
+        self, store: Store
+    ):
+        # The McGonigal regression shape: a 2024 jury trial was scheduled
+        # by an order filed in 2023. The verify pass runs in 2026 on a
+        # docket that kept moving — so the scheduling order's
+        # date_modified is far older than the most-recent-15 cutoff AND
+        # its date_filed is far older than the around-hearing-date window
+        # (45 days). Without source-entry surfacing the model can't see
+        # the order that scheduled the trial, the DELETE_HALLUCINATION
+        # rule ("you've seen the original source entry and concluded it
+        # does NOT actually schedule this hearing") is unsatisfiable, and
+        # at temperature=0 the model emits DELETE_HALLUCINATION anyway
+        # rather than UNCLEAR. Source-entry surfacing makes the rule
+        # satisfiable.
+        self._seed_recent(store)  # 16 recent entries crowd out older rows
+        store.mark_entry(
+            100,
+            42,
+            "2023-08-01T00:00:00Z",  # old date_modified
+            "fp",
+            date_filed="2023-08-01",  # outside the 45-day around-hearing window for 2024-06-15
+            description="ORDER: TRIAL SET FOR JUNE 12, 2024",
+            entry_number=23,
+        )
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(
+            100, "2024-06-15T21:30:00+00:00", source_entry_ids=[42]
+        )
+        ids = [e["entry_id"] for e in ctx]
+        assert 42 in ids, "source entry must be in verify-pass context"
+
+    def test_source_entries_deduplicated_with_recent_and_near(self, store: Store):
+        # Source entry overlap with recent/near sets must produce exactly
+        # one row per entry_id in the context. (Otherwise the LLM sees
+        # the same docket entry twice and may give it double weight.)
+        self._seed_recent(store, n=3)  # entries 500, 501, 502
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        # Pass entry 501 as a source entry — it's already in the recent
+        # set, so the merge must collapse it to one row.
+        ctx = syncer._verify_context_entries(
+            100, "2026-02-02T12:00:00+00:00", source_entry_ids=[501]
+        )
+        ids = [e["entry_id"] for e in ctx]
+        assert sorted(ids) == [500, 501, 502]
+        assert len(ids) == len(set(ids))
+
+    def test_source_entries_none_or_empty_works(self, store: Store):
+        # Both ``None`` and ``[]`` are valid "no source entries to
+        # include" inputs — the helper must not raise on either.
+        self._seed_recent(store, n=2)
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        for sids in (None, []):
+            ctx = syncer._verify_context_entries(100, None, source_entry_ids=sids)
+            assert sorted(e["entry_id"] for e in ctx) == [500, 501]
+
+    def test_source_entries_from_different_docket_not_surfaced(self, store: Store):
+        # The verify pass is per-docket; if a hearing's source_entry_ids
+        # accidentally include an entry id from a different docket (data
+        # corruption shape), Store.get_entries_by_ids filters it out
+        # before it can leak across.
+        self._seed_recent(store, n=1)  # entry 500 on docket 100
+        store.mark_entry(
+            200,
+            600,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            description="other docket",
+            entry_number=1,
+        )
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(100, None, source_entry_ids=[600])
+        ids = [e["entry_id"] for e in ctx]
+        assert 600 not in ids
+        assert sorted(ids) == [500]
+
     @staticmethod
     def _seed_past_sentencing(store):
         store.upsert_hearing(
