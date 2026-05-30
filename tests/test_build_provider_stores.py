@@ -426,6 +426,7 @@ def test_variant_dispatch_records_latency_and_injects_model():
         json_mode=True,
         purpose="llm",
         docket=None,
+        temperature=None,
     ):
         seen["model"] = model
         return "RESULT"
@@ -453,6 +454,7 @@ def test_variant_dispatch_leaves_summary_model_untouched():
         json_mode=True,
         purpose="llm",
         docket=None,
+        temperature=None,
     ):
         seen["model"] = model
         return "S"
