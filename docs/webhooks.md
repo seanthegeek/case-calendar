@@ -73,11 +73,16 @@ dedicated unprivileged user, with the install in `/opt/case-calendar`.
 
 ```bash
 # A locked-down system account that owns the install and runs the service.
-sudo useradd --system --home-dir /opt/case-calendar --shell /usr/sbin/nologin case-calendar
+sudo useradd --system --no-create-home --home-dir /opt/case-calendar --shell /usr/sbin/nologin case-calendar
 
-# Put the code in place and hand it to that user.
-sudo git clone https://github.com/seanthegeek/case-calendar.git /opt/case-calendar
-sudo chown -R case-calendar:case-calendar /opt/case-calendar
+# Create the install directory
+sudo mkdir /opt/case-calendar
+
+# Set ownership of the directory to case-calendar
+sudo chown case-calendar:case-calendar /opt/case-calendar
+
+# Clone the code into the directory as the service user
+sudo -u case-calendar git clone https://github.com/seanthegeek/case-calendar.git /opt/case-calendar
 
 # Install uv for the service user and build the venv. The unit below runs
 # /opt/case-calendar/.local/bin/uv, which is where the installer drops it
