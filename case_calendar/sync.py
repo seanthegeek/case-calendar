@@ -832,11 +832,66 @@ class CaseSyncer:
                 hearing=hearing,
                 recent_entries=recent,
             )
-            if self._apply_verify_action(case, docket_id, tz, hearing, action):
+            if self._apply_verify_action(
+                case, docket_id, tz, hearing, action, recent_entries=recent
+            ):
                 n_changed += 1
         if n_changed:
             self.store.conn.commit()
         return n_changed
+
+    @staticmethod
+    def _delete_hallucination_allowed(
+        row_label: str,
+        case_id: str,
+        key: Optional[str],
+        source_entry_ids: list[int],
+        recent_entries: list[dict[str, Any]],
+    ) -> bool:
+        """Deterministic guard: only allow DELETE_HALLUCINATION when the
+        verify-pass LLM was shown every one of the row's source entries.
+
+        The model's rule (from VERIFY_SYSTEM_PROMPT) is "only emit
+        DELETE_HALLUCINATION when you've SEEN the original source entry
+        and concluded it does NOT actually schedule this hearing." When
+        the source entry isn't in the recent_entries the model saw, the
+        rule is unsatisfiable: the model can't have read what it didn't
+        receive. At temperature=0 the model breaks the rule anyway —
+        the McGonigal trial regression (a 2024 jury trial scheduled by
+        a 2023 order that fell outside both the recent and around-date
+        windows, then mooted by a plea without a vacatur entry) was
+        emitted as DELETE_HALLUCINATION because the model saw no
+        scheduling evidence and concluded the row was hallucinated. The
+        Fix #2 context enrichment now always passes source entries into
+        the context, but a source row could still be missing for
+        legitimate reasons (the row was deleted from the local store,
+        the source_entry_ids list is malformed, the entries query
+        returned fewer rows than requested). This guard makes the
+        contract explicit: if any source entry was absent from what the
+        model saw, the verdict is downgraded to UNCLEAR (no-op,
+        WARN-logged) regardless of what the LLM emitted.
+
+        An empty ``source_entry_ids`` list is vacuously satisfied — the
+        guard returns True. (A row with no source entries is suspicious
+        regardless of which verdict the model emits, but that's a
+        separate concern; this guard only checks "did the model see
+        what it claims to have seen.")
+        """
+        if not source_entry_ids:
+            return True
+        shown = {e["entry_id"] for e in recent_entries}
+        missing = [eid for eid in source_entry_ids if eid not in shown]
+        if not missing:
+            return True
+        log.warning(
+            "verify-pass rejecting DELETE_HALLUCINATION on %s: model didn't see "
+            "source entries %s for case=%s key=%r — downgrading to UNCLEAR",
+            row_label,
+            missing,
+            case_id,
+            key,
+        )
+        return False
 
     def _apply_verify_action(
         self,
@@ -845,12 +900,20 @@ class CaseSyncer:
         tz: str,
         hearing: dict[str, Any],
         action: dict[str, Any],
+        recent_entries: Optional[list[dict[str, Any]]] = None,
     ) -> bool:
         """Apply a single verify-pass action to the hearing row.
 
         Returns True if the row changed. Uses the same upsert path as the
         regular extraction pipeline so source_entry_ids and audit fields
         stay consistent.
+
+        ``recent_entries`` is the same context payload that was sent to
+        the LLM, used by the DELETE_HALLUCINATION guard to verify the
+        model saw what its rule says it must have seen. Defaults to
+        ``None``/empty so the guard is permissive when no context was
+        recorded (any non-default test path); production always passes
+        the real context.
         """
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype in ("CONFIRM", "UNCLEAR"):
@@ -864,6 +927,14 @@ class CaseSyncer:
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "Cancelled per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
+            if not self._delete_hallucination_allowed(
+                "hearing",
+                case.case_id,
+                hearing.get("hearing_key"),
+                sources,
+                recent_entries or [],
+            ):
+                return False
             # Don't actually delete — preserve the audit trail by marking
             # cancelled with an explanatory note. Renderers skip cancelled
             # rows so the calendar shows the right thing.
@@ -1195,7 +1266,9 @@ class CaseSyncer:
                 deadline=d,
                 recent_entries=recent,
             )
-            if self._apply_verify_deadline_action(case, docket_id, tz, d, action):
+            if self._apply_verify_deadline_action(
+                case, docket_id, tz, d, action, recent_entries=recent
+            ):
                 n_changed += 1
         if n_changed:
             self.store.conn.commit()
@@ -1208,6 +1281,7 @@ class CaseSyncer:
         tz: str,
         deadline: dict[str, Any],
         action: dict[str, Any],
+        recent_entries: Optional[list[dict[str, Any]]] = None,
     ) -> bool:
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype in ("CONFIRM", "UNCLEAR"):
@@ -1221,6 +1295,14 @@ class CaseSyncer:
             merged["status"] = "cancelled"
             audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
+            if not self._delete_hallucination_allowed(
+                "deadline",
+                case.case_id,
+                deadline.get("deadline_key"),
+                sources,
+                recent_entries or [],
+            ):
+                return False
             merged["status"] = "cancelled"
             audit_note = (
                 action.get("reason") or "No docket entry supports this deadline"

@@ -2058,7 +2058,24 @@ class TestVerifyScheduledHearings:
     ):
         # Hallucinated row — LLM says no docket entry supports it. Marked
         # cancelled (preserves audit trail; renderers skip cancelled rows).
+        #
+        # The source entry MUST be in the store so the verify-pass
+        # deterministic guard sees it in the recent_entries context: the
+        # rule is "DELETE_HALLUCINATION is only valid when the model has
+        # seen the original source entry and concluded it does NOT
+        # actually schedule this hearing." Without the source entry
+        # present, the guard downgrades to UNCLEAR (see the dedicated
+        # test below for that path).
         self._seed_future_hearing(store, key="hallucinated-conf")
+        store.mark_entry(
+            100,
+            42,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed="2026-01-01",
+            description="NOTICE — Set Hearing (text mentions a date but doesn't actually schedule)",
+            entry_number=10,
+        )
         stub_verify(
             monkeypatch,
             by_key={
@@ -2074,6 +2091,55 @@ class TestVerifyScheduledHearings:
         h = store.get_hearings("us-v-x")[0]
         assert h["status"] == "cancelled"
         assert "no docket entry" in (h["audit_notes"] or "")
+
+    def test_delete_hallucination_downgraded_when_source_entry_not_in_context(
+        self,
+        store,
+        case,
+        monkeypatch,
+        caplog,
+    ):
+        # The deterministic guard: when the verify-pass LLM emits
+        # DELETE_HALLUCINATION but the source entry isn't in the
+        # recent_entries it was shown, the verdict is downgraded to
+        # UNCLEAR (no-op). The McGonigal-trial regression — a 2024 jury
+        # trial scheduled by a 2023 order outside both context windows,
+        # then mooted by a plea without a vacatur entry — was emitted
+        # as DELETE_HALLUCINATION at temperature=0 because the rule
+        # "you've seen the original source entry" was unsatisfiable.
+        # Fix #2 always adds source entries to the context now, but the
+        # entries query can return fewer rows than asked for if a source
+        # row was deleted from the store or the source_entry_ids list
+        # is malformed — that's the case this guard catches.
+        import logging
+
+        self._seed_future_hearing(store, key="trial-mcgonigal")
+        # NOTE: source_entry_ids on the hearing is [42], but entry 42 is
+        # NOT seeded in the store. So _verify_context_entries can't
+        # surface it and recent_entries given to the LLM is empty.
+        stub_verify(
+            monkeypatch,
+            by_key={
+                "trial-mcgonigal": {
+                    "type": "DELETE_HALLUCINATION",
+                    "reason": "no scheduling order found in recent entries",
+                },
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        with caplog.at_level(logging.WARNING, logger="case_calendar.sync"):
+            stats = CaseSyncer(cl, store).sync_case(case)
+        # Guard fires -> no row change -> verified count is 0.
+        assert stats["verified"] == 0
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "scheduled"  # unchanged
+        # And a WARN log line names the rejected verdict + the missing
+        # source entry so an operator can investigate the upstream
+        # missing-row root cause.
+        assert any(
+            "rejecting DELETE_HALLUCINATION" in r.message and "[42]" in r.message
+            for r in caplog.records
+        )
 
     def test_reschedule_moves_starts_at_utc(self, store, case, monkeypatch):
         self._seed_future_hearing(store)
@@ -3467,7 +3533,20 @@ class TestVerifyPendingDeadlines:
         case,
         monkeypatch,
     ):
+        # Source entry seeded — guard sees it in the verify-pass context
+        # so DELETE_HALLUCINATION is applied. See the matching hearing
+        # test for the guard's rationale; the deadline equivalent has
+        # the same shape.
         self._seed_future_deadline(store)
+        store.mark_entry(
+            100,
+            99,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed="2026-01-01",
+            description="ambiguous entry the extractor misread as setting a deadline",
+            entry_number=15,
+        )
         stub_verify(monkeypatch)
         stub_verify_deadline(
             monkeypatch,
@@ -3484,6 +3563,41 @@ class TestVerifyPendingDeadlines:
         d = store.get_deadlines("us-v-x")[0]
         assert d["status"] == "cancelled"
         assert "no scheduling order" in (d["audit_notes"] or "")
+
+    def test_delete_hallucination_downgraded_when_source_entry_not_in_context(
+        self,
+        store,
+        case,
+        monkeypatch,
+        caplog,
+    ):
+        # Deadline mirror of the hearing-side guard test: when the
+        # source entry isn't in the context the model saw,
+        # DELETE_HALLUCINATION is downgraded to UNCLEAR no-op.
+        import logging
+
+        self._seed_future_deadline(store)
+        # source_entry_ids=[99] on the deadline, but entry 99 not in store.
+        stub_verify(monkeypatch)
+        stub_verify_deadline(
+            monkeypatch,
+            by_key={
+                "reply-mtd": {
+                    "type": "DELETE_HALLUCINATION",
+                    "reason": "no scheduling order in context",
+                },
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        with caplog.at_level(logging.WARNING, logger="case_calendar.sync"):
+            stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deadlines_verified"] == 0
+        d = store.get_deadlines("us-v-x")[0]
+        assert d["status"] == "pending"  # unchanged
+        assert any(
+            "rejecting DELETE_HALLUCINATION" in r.message and "[99]" in r.message
+            for r in caplog.records
+        )
 
     def test_mark_filed_flips_to_met(self, store, case, monkeypatch):
         self._seed_future_deadline(store)
@@ -4171,3 +4285,53 @@ class TestVerifyContextEntries:
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
+
+
+class TestDeleteHallucinationGuard:
+    """Unit tests for ``CaseSyncer._delete_hallucination_allowed`` —
+    the deterministic guard that downgrades DELETE_HALLUCINATION to
+    UNCLEAR when the model couldn't have seen the source entry. The
+    integration tests above exercise the guard through the full
+    verify-pass; these tests cover the helper's edge cases directly
+    so the branch behavior is pinned independent of test scaffolding.
+    """
+
+    def test_empty_source_entry_ids_vacuously_allowed(self):
+        # A row with no source entries trivially satisfies the rule
+        # ("you've seen every source entry") — there are no source
+        # entries to have missed. Whether the row should EXIST without
+        # source entries is a separate concern (suspicious data, but
+        # not this guard's job).
+        assert CaseSyncer._delete_hallucination_allowed(
+            "hearing", "us-v-x", "trial-x", [], []
+        )
+
+    def test_all_source_entries_shown_allowed(self):
+        # Happy path: every source entry is in the recent_entries the
+        # model saw, so the model's "you've seen the source entry"
+        # rule is satisfiable and its DELETE_HALLUCINATION verdict
+        # stands.
+        recent = [{"entry_id": 42}, {"entry_id": 43}, {"entry_id": 99}]
+        assert CaseSyncer._delete_hallucination_allowed(
+            "hearing", "us-v-x", "trial-x", [42, 43], recent
+        )
+
+    def test_any_missing_source_entry_rejects(self, caplog):
+        # One source entry missing -> rejected, WARN-logged. The
+        # warning names BOTH the missing entry ids (so the operator
+        # knows what to investigate) and the row key (so the operator
+        # knows where to look).
+        import logging
+
+        recent = [{"entry_id": 42}]
+        with caplog.at_level(logging.WARNING, logger="case_calendar.sync"):
+            ok = CaseSyncer._delete_hallucination_allowed(
+                "deadline", "us-v-x", "reply-mtd", [42, 99], recent
+            )
+        assert ok is False
+        assert any(
+            "rejecting DELETE_HALLUCINATION on deadline" in r.message
+            and "[99]" in r.message
+            and "reply-mtd" in r.message
+            for r in caplog.records
+        )
