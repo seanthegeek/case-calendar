@@ -2244,7 +2244,7 @@ class TestDeadlineExtraction:
             calendar="cyber",
         )
 
-    def test_add_deadline_creates_row_at_5pm_court_time(
+    def test_add_deadline_creates_row_at_4pm_court_time(
         self,
         store: Store,
         case,
@@ -2278,8 +2278,8 @@ class TestDeadlineExtraction:
         d = rows[0]
         assert d["deadline_key"] == "govt-response-mtd"
         assert d["status"] == "pending"
-        # 17:00 ET (no DST 5/24 — so 5pm EDT = 21:00 UTC) by default.
-        assert d["due_at_utc"] == "2026-05-24T21:00:00+00:00"
+        # 16:00 ET (EDT in May — so 4pm EDT = 20:00 UTC) by default.
+        assert d["due_at_utc"] == "2026-05-24T20:00:00+00:00"
         assert d["docket_id"] == 100
 
     def test_add_deadline_with_explicit_time(self, store, case, monkeypatch):
@@ -2351,7 +2351,7 @@ class TestDeadlineExtraction:
         )
         rows = store.get_deadlines("us-v-x")
         assert len(rows) == 1
-        assert rows[0]["due_at_utc"] == "2026-06-14T21:00:00+00:00"
+        assert rows[0]["due_at_utc"] == "2026-06-14T20:00:00+00:00"
         assert set(rows[0]["source_entry_ids"]) == {1, 2}
 
     def test_update_details_on_deadline_coerces_to_reschedule_deadline(
@@ -2594,7 +2594,7 @@ class TestDeadlineExtraction:
         rows = store.get_deadlines("us-v-x")
         assert len(rows) == 1
         # Date is unchanged from the ADD.
-        assert rows[0]["due_at_utc"] == "2026-05-31T21:00:00+00:00"
+        assert rows[0]["due_at_utc"] == "2026-05-31T20:00:00+00:00"
         # Notes did get updated.
         assert rows[0]["notes"] == "extension administratively docketed"
 
@@ -2911,7 +2911,7 @@ class TestConditionalDeadline:
             _entry(2, "ORDER lifting stay; relief motion due by 8/15/2026."),
         )
         d = store.get_deadlines("us-v-x")[0]
-        assert d["due_at_utc"] == "2026-08-15T21:00:00+00:00"
+        assert d["due_at_utc"] == "2026-08-15T20:00:00+00:00"
 
 
 # --- end-of-sync dedupe sweep (same-docket same-slot hearings) ---
@@ -3630,8 +3630,8 @@ class TestVerifyPendingDeadlines:
         stats = CaseSyncer(cl, store).sync_case(case)
         assert stats["deadlines_verified"] == 1
         d = store.get_deadlines("us-v-x")[0]
-        # 5pm ET default for the deadline = 22:00 UTC (Jan 15 is EST, not EDT).
-        assert d["due_at_utc"] == "2099-01-15T22:00:00+00:00"
+        # 4pm ET default for the deadline = 21:00 UTC (Jan 15 is EST, not EDT).
+        assert d["due_at_utc"] == "2099-01-15T21:00:00+00:00"
 
     def test_reschedule_without_local_date_is_dropped(
         self,
