@@ -2,7 +2,9 @@
 
 Scored **46** of 46 CourtListener records (those with all six counts filled in). Lower deviation = closer to the human-read truth. Deviation is the sum of |model count − your count| over the six status categories.
 
-This release (0.10.0) reverts the default LLM provider to **Anthropic for BOTH the extraction track AND the summary track**, despite Gemini's better deviation score (328 vs Anthropic's 381) on the comparison fixture. The score is real and so are Gemini's cost/latency wins (~4× cheaper, ~2× faster) — what the score doesn't capture is the failure mode that drove this reversion: Gemini systematically classifies substantive federal-procedure deadline classes as **procedural-minor**, which silently drops them from subscriber calendars at the render-time significance gate. Real-world cases discovered while running Gemini in production after 0.9.0:
+This release (0.11.0) keeps the 0.10.0 default of **Anthropic for BOTH tracks** for the silent-substantive-drops reason laid out below, and adds a **deterministic, temperature=0 verify pass** (the [verify-pass-determinism work](https://github.com/seanthegeek/case-calendar/pull/47)) that **improves the Anthropic column's deviation by 28 points vs the 0.10.0 prod baseline** — 343 here vs prod's 371 — making Anthropic competitive again with Gemini's 314 instead of trailing by ~50. The 0.11.0 work also fixed the McGonigal-trial-class regression where a 2024 jury trial scheduled by a 2023 order would get DELETE_HALLUCINATION'd to `cancelled` at temperature=0 because the scheduling order was outside the verify pass's context window; the verify pass now always sees each row's source entries, and a deterministic `_delete_hallucination_allowed` guard in `CaseSyncer` downgrades any DELETE_HALLUCINATION verdict to UNCLEAR if the model couldn't have seen the source entries that justify the verdict. Validation: all 6 hearing rows that flipped state incorrectly at temperature=0 in the pre-0.11.0 design now match prod, the McGonigal trial deterministically stays `scheduled`, and the trial-knoot truncation that fell open to UNCLEAR at the 0.10.0 max_tokens=512 budget is gone after the bump to 1500.
+
+Despite the 0.11.0 Anthropic-column improvement, Gemini still leads on aggregate deviation (314 vs Anthropic's 343), and the cost spread (Gemini at $2.89 vs Anthropic at $9.82 per backfill) is still real. The reason Anthropic remains the default is unchanged from 0.10.0 — Gemini systematically classifies substantive federal-procedure deadline classes as **procedural-minor**, which silently drops them from subscriber calendars at the render-time significance gate. Real-world cases discovered while running Gemini in production after 0.9.0:
 
 - PSR interview, first PSR disclosure, PSR objection windows — all dropped as minor
 - Speedy Trial Act 18 U.S.C. § 3161(h) exclusion orders — dropped as minor
@@ -20,13 +22,13 @@ The score-vs-coverage gap is the recurring lesson here: aggregate deviation rewa
 
 | model | total deviation | H sched | H held | H canc | D pend | D met/pass | D canc |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| gemini/gemini-3.1-flash-lite | **328** | 25 | 76 | 31 | 17 | 167 | 12 |
-| anthropic/claude-haiku-4-5 | **381** | 27 | 90 | 20 | 24 | 182 | 38 |
-| prod (live, 0.8.2 anthropic) | **413** | 28 | 84 | 63 | 21 | 203 | 14 |
-| openai/gpt-5.4-nano | **425** | 72 | 115 | 14 | 60 | 164 | 0 |
-| openai/gpt-5.4-mini | **435** | 44 | 94 | 19 | 26 | 236 | 16 |
+| gemini/gemini-3.1-flash-lite | **314** | 24 | 78 | 28 | 35 | 143 | 6 |
+| anthropic/claude-haiku-4-5 | **343** | 30 | 83 | 32 | 30 | 143 | 25 |
+| openai/gpt-5.4-nano | **367** | 61 | 118 | 17 | 59 | 111 | 1 |
+| prod (live, 0.10.0 anthropic) | **371** | 21 | 87 | 23 | 29 | 172 | 39 |
+| openai/gpt-5.4-mini | **418** | 64 | 105 | 13 | 55 | 177 | 4 |
 
-The dedupe-deletion change alone closed roughly 40 points on each of Anthropic and Gemini vs the prior intermediate measurement — H_canc on Anthropic dropped from `69` to `20`, on Gemini from `76` to `31` (each absorbed sibling used to count as a `cancelled` deviation point). OpenAI nano's `H_canc=14` is the cleanest in the table — also because it under-extracts on the held and scheduled axes overall (note `H_sched=72`, the highest in the table — nano's pattern is to leave many proceedings in `scheduled` rather than transitioning them).
+The 0.11.0 verify-pass-determinism work closed **28 points** between the prior 0.10.0 anthropic build (the prod row at 371) and the new 0.11.0 anthropic column (343). The improvement is almost entirely on the deadline axes — `D met/pass` (143 vs prod's 172, a **29-point improvement** that captures the Akhter / Ding / Wei deadline-recovery story when verify_deadline now sees source entries) and `D canc` (25 vs prod's 39, a **14-point improvement** from the deterministic guard preventing false DELETE_HALLUCINATION verdicts on pending deadlines). The hearing axes moved slightly the other way (`H_sched` 30 vs prod's 21, `H_canc` 32 vs prod's 23 — small +9 deviations each) because the verify pass's new step-by-step audit process is slightly more aggressive about CANCEL on borderline civil status conferences (see e.g. `us-v-gallyamov status-conf-gallyamov-5` in the validation walkthrough in [PR #47](https://github.com/seanthegeek/case-calendar/pull/47), where the 4/3/2026 default judgment makes the 6/19/2026 status conference moot — both `cancelled` and `held` are defensible verdicts on that row). The McGonigal-trial-class fixes (preventing false-cancellations on past trials) are visible in the per-docket detail at the bottom of this page on the McGonigal / Knoot / Moucka / Akhter rows where the model now correctly leaves past trials as `scheduled` rather than DELETE_HALLUCINATION'ing them. OpenAI nano's `H_canc=17` is the cleanest in the table — also because it under-extracts on the held and scheduled axes overall (note `H_sched=61`, the highest in the table — nano's pattern is to leave many proceedings in `scheduled` rather than transitioning them, the same pattern from 0.10.0).
 
 ## Wall-clock + cost per column
 
@@ -34,12 +36,14 @@ Full from-scratch backfill of the maintainer's caseload (28 cases / 34 logical P
 
 | column | wall-clock | LLM calls | mean s/call | extract | verify | summary | **TOTAL** |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| gemini/gemini-3.1-flash-lite | **38.9m** | 1230 | **1.90s** | $1.49 | $0.11 | $1.09 | **$2.69** |
-| openai/gpt-5.4-mini | 47.1m | 1275 | 2.22s | $3.59 | $0.47 | $1.64 | $5.70 |
-| openai/gpt-5.4-nano | 55.4m | 1254 | 2.65s | $1.00 | $0.12 | $1.62 | **$2.75** |
-| anthropic/claude-haiku-4-5 | 74.6m | 1232 | 3.64s | $6.07 | $0.55 | $2.24 | $8.86 |
+| gemini/gemini-3.1-flash-lite | **38.2m** | 1301 | **1.7s** | $1.58 | $0.18 | $1.13 | **$2.89** |
+| openai/gpt-5.4-mini | 40.6m | 1335 | 1.8s | $3.86 | $0.51 | $1.69 | $6.06 |
+| openai/gpt-5.4-nano | 52.4m | 1321 | 2.3s | $1.00 | $0.14 | $1.65 | **$2.78** |
+| anthropic/claude-haiku-4-5 | 72.8m | 1316 | 3.3s | $6.58 | $0.95 | $2.29 | $9.82 |
 
-Gemini is **~2× faster than Anthropic per call**, ~30% faster than OpenAI nano, and ~15% faster than the OpenAI mini. The cost spread on the extract+verify pair (what runs constantly) is starker: **$1.60 (gemini) / $1.12 (openai-nano) / $4.06 (openai-mini) / $6.62 (anthropic)** — Anthropic costs ~4× what Gemini costs for the same workload. Over a 5-year steady-state run a 28-case caseload, Gemini would save **~$60-80 in extract+verify alone** vs Anthropic (and ~$40 vs the OpenAI mini). The summary track is rare (one call per docket, only when a primary document or disposition lands) so its cost delta is small. Despite this, the 0.10.0 default is Anthropic on both tracks: dollars-per-year on a hobby-scale caseload is a smaller concern than silently dropping a substantive deadline from a subscriber's calendar because Gemini classified it minor (see the intro). Operators running this at larger scale, who can verify their caseload's substantive-class profile and either accept the misses or maintain a prompt-vocabulary addendum, get the cost win by pinning `LLM_EXTRACTION_PROVIDER=gemini`.
+Gemini is **~2× faster than Anthropic per call**, ~25% faster than OpenAI nano, and ~5% faster than the OpenAI mini. The cost spread on the extract+verify pair (what runs constantly) is starker: **$1.76 (gemini) / $1.14 (openai-nano) / $4.37 (openai-mini) / $7.53 (anthropic)** — Anthropic costs ~4× what Gemini costs for the same workload. Over a 5-year steady-state run on a 28-case caseload, Gemini would save **~$60-80 in extract+verify alone** vs Anthropic (and ~$40 vs the OpenAI mini). The summary track is rare (one call per docket, only when a primary document or disposition lands) so its cost delta is small. Despite this, the 0.11.0 default remains Anthropic on both tracks: dollars-per-year on a hobby-scale caseload is a smaller concern than silently dropping a substantive deadline from a subscriber's calendar because Gemini classified it minor (see the intro). Operators running this at larger scale, who can verify their caseload's substantive-class profile and either accept the misses or maintain a prompt-vocabulary addendum, get the cost win by pinning `LLM_EXTRACTION_PROVIDER=gemini`.
+
+The 0.11.0 anthropic column's verify-track cost ($0.95 vs the 0.10.0 baseline ~$0.55) reflects two changes the verify-pass-determinism work made and one cost the work targeted but didn't achieve: (1) the `max_tokens` budget bump 512 → 1500 lets the model write longer citation reasoning in `reason` fields (no more truncation-to-UNCLEAR on verbose verdicts); (2) the user message now includes each row's source entries (~3-5 extra entries per call); (3) **the merged `VERIFY_SYSTEM_PROMPT` was sized to clear Anthropic Haiku 4.5's prompt-cache floor but did NOT in practice** — Anthropic's `count_tokens` reports the merged prompt at 2941 tokens, well over the documented 2048-token Haiku minimum, yet `cached=0` and `cache_write=0` across all 130 verify calls in the validation build. This implies the actual undocumented Haiku 4.5 cache threshold is higher than 2048 (likely 4096, based on the fact that `SYSTEM_PROMPT` at 9302 tokens caches but `VERIFY_SYSTEM_PROMPT` at 2941 doesn't). Bringing the verify track into cache would require pushing the merged prompt to ~4500+ tokens of substantive content — a stretch given the rule space is already enumerated. AGENTS.md's prompt-cache threshold design note now records the empirical chars/token ratio (3.81 for verify-prompt content, 3.83 for system-prompt content) so the next prompt-edit pass can size accurately against the empirical floor instead of the documented one.
 
 ## Two tracks, two providers
 
@@ -117,13 +121,13 @@ So the Sonnet-over-Gemini summary upgrade is about **$1.15 across a 28-case back
 
 ## Recommended provider split
 
-The 0.10.0 default is **Anthropic on both tracks**. That's the simple configuration: set `LLM_PROVIDER=anthropic` once and both extraction + summaries use it. The per-track override env vars are still wired up — operators can pin different providers per track when they have measured their own caseload — but the project no longer documents a split as the recommended starting point.
+The 0.11.0 default is **Anthropic on both tracks**, unchanged from 0.10.0. That's the simple configuration: set `LLM_PROVIDER=anthropic` once and both extraction + summaries use it. The per-track override env vars are still wired up — operators can pin different providers per track when they have measured their own caseload — but the project no longer documents a split as the recommended starting point.
 
-### The 0.10.0 default — Anthropic on both tracks
+### The 0.11.0 default — Anthropic on both tracks
 
 | Track | Provider / model | Why |
 | --- | --- | --- |
-| **Extraction** | `claude-haiku-4-5` (via `LLM_PROVIDER=anthropic`) | Loads federal-procedure priors implicitly — substantive deadline classes (PSR, STA exclusions, surrender for service of sentence, civil-forfeiture claim/answer, sealing motion practice, exhibit-filing deadlines, certified administrative record) classify as `major` without a prompt-vocabulary enumeration. The aggregate deviation score is slightly higher than Gemini's (381 vs 328) on the fixture, but the out-of-fixture failure modes (silent drops of substantive classes) are absent. |
+| **Extraction** | `claude-haiku-4-5` (via `LLM_PROVIDER=anthropic`) | Loads federal-procedure priors implicitly — substantive deadline classes (PSR, STA exclusions, surrender for service of sentence, civil-forfeiture claim/answer, sealing motion practice, exhibit-filing deadlines, certified administrative record) classify as `major` without a prompt-vocabulary enumeration. The aggregate deviation score is slightly higher than Gemini's (343 vs 314) on the 0.11.0 fixture, but the out-of-fixture failure modes (silent drops of substantive classes) are absent. The 0.11.0 verify-pass-determinism work closed 28 points vs the 0.10.0 prod baseline (371 → 343). |
 | **Summaries** | `claude-sonnet-4-6` (via the same `LLM_PROVIDER=anthropic`) | Captures case-distinguishing detail (statute citations, count numbers, sentence breakdowns, cancelled-schedule notes, custody status, full briefing schedules) that Gemini's terser version glosses over. See the **Summary track** section above for the full pattern catalog. |
 
 ```bash
@@ -132,7 +136,7 @@ LLM_PROVIDER=anthropic               # global default — applies to extraction 
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-This is the configuration the maintainer runs in production. The downside is cost: a full backfill of the maintainer's 28-case caseload is about $8.86 on Anthropic vs $2.69 on the Gemini-default; ongoing steady-state cost runs an order of magnitude higher than Gemini for the same workload. For a hobby-scale calendar this is dollars per year, not dollars per day — see [docs/cost.md](../docs/cost.md) for the per-case math an operator can apply to their own caseload.
+This is the configuration the maintainer runs in production. The downside is cost: a full backfill of the maintainer's 28-case caseload is about $9.82 on Anthropic vs $2.89 on the Gemini-default; ongoing steady-state cost runs an order of magnitude higher than Gemini for the same workload. For a hobby-scale calendar this is dollars per year, not dollars per day — see [docs/cost.md](../docs/cost.md) for the per-case math an operator can apply to their own caseload.
 
 ### Splitting the tracks is still supported
 
@@ -152,203 +156,212 @@ The mirror split (Gemini extraction + Anthropic summaries, as the 0.9.0 release 
 
 Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passed/cancelled`.
 
-### United States v. Wei — 3:23-cr-01471 (casd) #67661286
-
-- truth: `H 0/23/0 D 0/74/0`
-- prod (live): `H 0/16/0 D 0/15/1` — deviation 67
-- anthropic/claude-haiku-4-5: `H 0/14/0 D 0/18/1` — deviation 66
-- gemini/gemini-3.1-flash-lite: `H 0/18/2 D 0/15/0` — deviation 66
-- openai/gpt-5.4-mini: `H 0/11/0 D 0/24/1` — deviation 63
-- openai/gpt-5.4-nano: `H 2/12/1 D 4/19/0` — deviation 73
-
 ### United States v. Ding — 3:24-cr-00141 (cand) #68317014
 
 - truth: `H 0/29/0 D 2/59/0`
-- prod (live): `H 4/41/13 D 8/86/0` — deviation 62
-- anthropic/claude-haiku-4-5: `H 4/38/3 D 10/78/0` — deviation 43
-- gemini/gemini-3.1-flash-lite: `H 2/26/5 D 4/75/1` — deviation 29
-- openai/gpt-5.4-mini: `H 12/24/3 D 6/97/1` — deviation 63
-- openai/gpt-5.4-nano: `H 23/13/5 D 19/49/0` — deviation 71
+- prod (live): `H 1/39/5 D 10/82/0` — deviation 47
+- anthropic/claude-haiku-4-5: `H 2/37/6 D 6/77/0` — deviation 38
+- gemini/gemini-3.1-flash-lite: `H 2/35/6 D 4/76/0` — deviation 33
+- openai/gpt-5.4-mini: `H 11/17/7 D 9/93/0` — deviation 71
+- openai/gpt-5.4-nano: `H 19/18/4 D 19/53/0` — deviation 57
 
-### United States v. Wei — 3:23-cr-01471 (casd) #67661185
+### United States v. Wei — 3:23-cr-01471 (casd) #67661286
 
-- truth: `H 0/21/0 D 0/19/0`
-- prod (live): `H 4/3/3 D 0/3/0` — deviation 41
-- anthropic/claude-haiku-4-5: `H 0/7/1 D 0/17/1` — deviation 18
-- gemini/gemini-3.1-flash-lite: `H 1/2/3 D 0/19/0` — deviation 23
-- openai/gpt-5.4-mini: `H 0/3/0 D 0/5/0` — deviation 32
-- openai/gpt-5.4-nano: `H 5/4/2 D 1/15/0` — deviation 29
+- truth: `H 0/23/0 D 0/74/0`
+- prod (live): `H 0/16/0 D 7/38/1` — deviation 51
+- anthropic/claude-haiku-4-5: `H 0/19/0 D 7/36/1` — deviation 50
+- gemini/gemini-3.1-flash-lite: `H 0/23/1 D 17/56/0` — deviation 36
+- openai/gpt-5.4-mini: `H 3/9/0 D 14/59/1` — deviation 47
+- openai/gpt-5.4-nano: `H 3/12/1 D 14/50/0` — deviation 53
 
 ### United States v. Akhter — 1:25-cr-00307 (vaed) #73333500
 
 - truth: `H 0/15/0 D 0/14/0`
-- prod (live): `H 2/7/7 D 3/4/3` — deviation 33
-- anthropic/claude-haiku-4-5: `H 1/4/0 D 6/1/7` — deviation 38
-- gemini/gemini-3.1-flash-lite: `H 1/7/4 D 6/10/1` — deviation 24
-- openai/gpt-5.4-mini: `H 0/6/2 D 7/16/2` — deviation 22
-- openai/gpt-5.4-nano: `H 1/1/0 D 6/7/0` — deviation 28
+- prod (live): `H 1/4/0 D 6/1/7` — deviation 38
+- anthropic/claude-haiku-4-5: `H 3/5/2 D 6/6/5` — deviation 34
+- gemini/gemini-3.1-flash-lite: `H 1/4/2 D 6/9/3` — deviation 28
+- openai/gpt-5.4-mini: `H 2/3/1 D 8/11/0` — deviation 26
+- openai/gpt-5.4-nano: `H 0/1/1 D 7/11/0` — deviation 25
+
+### United States v. Wei — 3:23-cr-01471 (casd) #67661185
+
+- truth: `H 0/21/0 D 0/19/0`
+- prod (live): `H 0/7/1 D 0/17/1` — deviation 18
+- anthropic/claude-haiku-4-5: `H 2/3/4 D 0/17/0` — deviation 26
+- gemini/gemini-3.1-flash-lite: `H 1/1/2 D 0/17/0` — deviation 25
+- openai/gpt-5.4-mini: `H 2/4/0 D 1/19/0` — deviation 20
+- openai/gpt-5.4-nano: `H 0/1/0 D 3/10/0` — deviation 32
 
 ### United States v. McGonigal — 1:23-cr-00016 (nysd) #66749883
 
 - truth: `H 0/4/0 D 0/26/0`
-- prod (live): `H 1/8/6 D 0/34/0` — deviation 19
-- anthropic/claude-haiku-4-5: `H 4/7/2 D 0/32/0` — deviation 15
-- gemini/gemini-3.1-flash-lite: `H 1/8/5 D 0/42/0` — deviation 26
-- openai/gpt-5.4-mini: `H 4/5/0 D 0/59/0` — deviation 38
-- openai/gpt-5.4-nano: `H 4/5/0 D 2/27/0` — deviation 8
+- prod (live): `H 4/7/1 D 0/32/0` — deviation 14
+- anthropic/claude-haiku-4-5: `H 5/6/2 D 0/28/1` — deviation 12
+- gemini/gemini-3.1-flash-lite: `H 3/8/2 D 0/45/0` — deviation 28
+- openai/gpt-5.4-mini: `H 8/3/0 D 0/44/0` — deviation 27
+- openai/gpt-5.4-nano: `H 5/4/1 D 2/26/0` — deviation 8
 
 ### United States v. Knoot — 3:24-cr-00151 (tnmd) #69026861
 
 - truth: `H 0/11/0 D 0/4/0`
-- prod (live): `H 0/11/2 D 0/14/0` — deviation 12
-- anthropic/claude-haiku-4-5: `H 0/12/0 D 0/8/6` — deviation 11
-- gemini/gemini-3.1-flash-lite: `H 0/10/2 D 0/13/2` — deviation 14
-- openai/gpt-5.4-mini: `H 4/10/1 D 1/20/6` — deviation 29
-- openai/gpt-5.4-nano: `H 5/7/0 D 3/13/0` — deviation 21
+- prod (live): `H 0/12/0 D 0/8/6` — deviation 11
+- anthropic/claude-haiku-4-5: `H 0/13/1 D 0/14/2` — deviation 15
+- gemini/gemini-3.1-flash-lite: `H 0/10/3 D 0/15/0` — deviation 15
+- openai/gpt-5.4-mini: `H 5/11/0 D 5/20/1` — deviation 27
+- openai/gpt-5.4-nano: `H 4/5/2 D 1/13/1` — deviation 23
 
 ### United States v. Akhter — 1:25-cr-00307 (vaed) #73320754
 
 - truth: `H 0/7/0 D 0/7/0`
-- prod (live): `H 0/3/11 D 1/3/3` — deviation 23
-- anthropic/claude-haiku-4-5: `H 2/1/2 D 0/0/8` — deviation 25
-- gemini/gemini-3.1-flash-lite: `H 0/3/3 D 0/9/2` — deviation 11
-- openai/gpt-5.4-mini: `H 1/0/1 D 1/4/0` — deviation 13
-- openai/gpt-5.4-nano: `H 2/1/0 D 1/4/0` — deviation 12
+- prod (live): `H 2/1/2 D 0/0/8` — deviation 25
+- anthropic/claude-haiku-4-5: `H 4/2/2 D 0/5/4` — deviation 17
+- gemini/gemini-3.1-flash-lite: `H 1/2/3 D 0/8/0` — deviation 10
+- openai/gpt-5.4-mini: `H 3/2/1 D 0/5/0` — deviation 11
+- openai/gpt-5.4-nano: `H 2/1/1 D 0/2/0` — deviation 14
 
 ### United States v. Gallyamov — 2:25-cv-04631 (cacd) #70341311
 
 - truth: `H 0/6/0 D 0/2/0`
-- prod (live): `H 0/6/0 D 0/10/0` — deviation 8
-- anthropic/claude-haiku-4-5: `H 0/7/0 D 0/13/0` — deviation 12
-- gemini/gemini-3.1-flash-lite: `H 2/4/0 D 0/11/0` — deviation 13
-- openai/gpt-5.4-mini: `H 2/2/0 D 0/14/0` — deviation 18
-- openai/gpt-5.4-nano: `H 3/2/0 D 2/14/0` — deviation 21
+- prod (live): `H 0/7/2 D 0/22/1` — deviation 24
+- anthropic/claude-haiku-4-5: `H 0/3/3 D 0/13/0` — deviation 17
+- gemini/gemini-3.1-flash-lite: `H 0/6/1 D 0/17/0` — deviation 16
+- openai/gpt-5.4-mini: `H 2/1/0 D 0/12/0` — deviation 17
+- openai/gpt-5.4-nano: `H 2/2/0 D 0/5/0` — deviation 9
 
 ### Anthropic v. DOW — 3:26-cv-01996 (cand) #72379655
 
 - truth: `H 0/2/0 D 7/22/0`
-- prod (live): `H 1/3/0 D 5/29/1` — deviation 12
-- anthropic/claude-haiku-4-5: `H 1/3/0 D 7/27/0` — deviation 7
-- gemini/gemini-3.1-flash-lite: `H 1/3/0 D 7/30/1` — deviation 11
-- openai/gpt-5.4-mini: `H 1/4/0 D 8/35/1` — deviation 18
-- openai/gpt-5.4-nano: `H 1/3/0 D 10/29/0` — deviation 12
+- prod (live): `H 1/3/0 D 7/27/0` — deviation 7
+- anthropic/claude-haiku-4-5: `H 1/3/1 D 4/27/2` — deviation 13
+- gemini/gemini-3.1-flash-lite: `H 1/2/0 D 7/31/0` — deviation 10
+- openai/gpt-5.4-mini: `H 1/3/0 D 8/39/0` — deviation 20
+- openai/gpt-5.4-nano: `H 1/2/0 D 5/21/0` — deviation 4
 
 ### United States v. Ashtor — 1:25-cr-20021 (flsd) #69570297
 
 - truth: `H 0/5/1 D 0/13/0`
-- prod (live): `H 0/5/7 D 0/9/1` — deviation 11
-- anthropic/claude-haiku-4-5: `H 0/5/6 D 0/4/3` — deviation 17
-- gemini/gemini-3.1-flash-lite: `H 0/6/5 D 0/8/1` — deviation 11
-- openai/gpt-5.4-mini: `H 1/3/5 D 1/15/1` — deviation 11
-- openai/gpt-5.4-nano: `H 3/4/2 D 3/6/0` — deviation 15
+- prod (live): `H 0/5/6 D 0/4/3` — deviation 17
+- anthropic/claude-haiku-4-5: `H 0/6/5 D 0/7/3` — deviation 14
+- gemini/gemini-3.1-flash-lite: `H 0/6/4 D 0/9/0` — deviation 8
+- openai/gpt-5.4-mini: `H 2/4/2 D 1/19/1` — deviation 12
+- openai/gpt-5.4-nano: `H 1/5/2 D 2/7/0` — deviation 10
 
-### United States v. Didenko — 1:24-cr-00261 (dcd) #68810897
+### United States v. Akhter — 1:25-cr-00307 (vaed) #71989485
 
-- truth: `H 0/6/0 D 0/5/0`
-- prod (live): `H 0/1/2 D 0/2/0` — deviation 10
-- anthropic/claude-haiku-4-5: `H 0/2/0 D 0/2/3` — deviation 10
-- gemini/gemini-3.1-flash-lite: `H 0/1/0 D 0/5/0` — deviation 5
-- openai/gpt-5.4-mini: `H 0/2/1 D 0/5/0` — deviation 5
-- openai/gpt-5.4-nano: `H 1/0/0 D 0/0/0` — deviation 12
+- truth: `H 0/6/0 D 0/6/0`
+- prod (live): `H 1/8/2 D 0/8/2` — deviation 9
+- anthropic/claude-haiku-4-5: `H 1/8/2 D 0/8/1` — deviation 8
+- gemini/gemini-3.1-flash-lite: `H 1/5/1 D 0/6/0` — deviation 3
+- openai/gpt-5.4-mini: `H 4/5/0 D 1/14/0` — deviation 14
+- openai/gpt-5.4-nano: `H 5/4/1 D 0/8/0` — deviation 10
 
 ### United States v. Gholinejad — 4:24-cr-00016 (nced) #70402649
 
 - truth: `H 0/2/1 D 0/9/0`
 - prod (live): `H 0/0/0 D 0/0/0` — deviation 12
 - anthropic/claude-haiku-4-5: `H 0/0/0 D 0/0/0` — deviation 12
-- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 0/0/0` — deviation 12
-- openai/gpt-5.4-mini: `H 0/0/0 D 0/0/0` — deviation 12
+- gemini/gemini-3.1-flash-lite: `H 1/0/1 D 0/0/0` — deviation 12
+- openai/gpt-5.4-mini: `H 1/0/0 D 0/0/0` — deviation 13
 - openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 12
 
-### United States v. Moucka — 2:24-cr-00180 (wawd) #69362701
+### United States v. Didenko — 1:24-cr-00261 (dcd) #68810897
 
-- truth: `H 0/2/0 D 0/0/0`
-- prod (live): `H 2/1/1 D 1/3/1` — deviation 9
-- anthropic/claude-haiku-4-5: `H 1/1/2 D 1/3/1` — deviation 9
-- gemini/gemini-3.1-flash-lite: `H 2/1/1 D 1/4/1` — deviation 10
-- openai/gpt-5.4-mini: `H 2/1/1 D 1/4/0` — deviation 9
-- openai/gpt-5.4-nano: `H 2/1/1 D 2/5/0` — deviation 11
-
-### United States v. Akhter — 1:25-cr-00307 (vaed) #71989485
-
-- truth: `H 0/6/0 D 0/6/0`
-- prod (live): `H 0/6/4 D 0/6/0` — deviation 4
-- anthropic/claude-haiku-4-5: `H 1/8/2 D 0/8/2` — deviation 9
-- gemini/gemini-3.1-flash-lite: `H 1/6/0 D 0/5/1` — deviation 3
-- openai/gpt-5.4-mini: `H 2/7/1 D 1/11/1` — deviation 11
-- openai/gpt-5.4-nano: `H 0/7/1 D 1/5/0` — deviation 4
+- truth: `H 0/6/0 D 0/5/0`
+- prod (live): `H 0/2/0 D 0/2/3` — deviation 10
+- anthropic/claude-haiku-4-5: `H 0/1/0 D 0/3/0` — deviation 7
+- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 0/0/0` — deviation 11
+- openai/gpt-5.4-mini: `H 0/1/0 D 1/4/0` — deviation 7
+- openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 11
 
 ### Anthropic v. DOW — 26-1049 (cadc) #72380208
 
 - truth: `H 0/1/0 D 1/12/0`
-- prod (live): `H 0/1/0 D 2/5/1` — deviation 9
-- anthropic/claude-haiku-4-5: `H 0/1/0 D 2/5/2` — deviation 10
+- prod (live): `H 0/1/0 D 2/5/2` — deviation 10
+- anthropic/claude-haiku-4-5: `H 0/1/0 D 2/6/2` — deviation 9
 - gemini/gemini-3.1-flash-lite: `H 0/1/0 D 1/9/0` — deviation 3
-- openai/gpt-5.4-mini: `H 0/1/0 D 1/12/0` — deviation 0
-- openai/gpt-5.4-nano: `H 0/1/0 D 4/9/0` — deviation 6
+- openai/gpt-5.4-mini: `H 0/1/0 D 1/15/0` — deviation 3
+- openai/gpt-5.4-nano: `H 0/1/0 D 1/9/0` — deviation 3
 
-### United States v. Didenko — 1:24-cr-00261 (dcd) #68810724
+### United States v. Moucka — 2:24-cr-00180 (wawd) #69362701
 
-- truth: `H 0/8/0 D 0/5/0`
-- prod (live): `H 0/5/0 D 0/5/0` — deviation 3
-- anthropic/claude-haiku-4-5: `H 0/3/0 D 0/5/1` — deviation 6
-- gemini/gemini-3.1-flash-lite: `H 0/4/0 D 0/5/0` — deviation 4
-- openai/gpt-5.4-mini: `H 1/5/0 D 0/7/3` — deviation 9
-- openai/gpt-5.4-nano: `H 0/4/0 D 0/5/0` — deviation 4
-
-### United States v. Tymoshchuk — 1:23-cr-00324 (nyed) #70029216
-
-- truth: `H 1/4/0 D 0/3/0`
-- prod (live): `H 0/0/0 D 0/0/0` — deviation 8
-- anthropic/claude-haiku-4-5: `H 0/0/0 D 0/0/0` — deviation 8
-- gemini/gemini-3.1-flash-lite: `H 0/1/0 D 0/0/0` — deviation 7
-- openai/gpt-5.4-mini: `H 0/0/1 D 0/0/0` — deviation 9
-- openai/gpt-5.4-nano: `H 3/0/0 D 0/0/0` — deviation 9
-
-### United States v. Zolotarjovs — 1:24-cr-00076 (ohsd) #69060414
-
-- truth: `H 0/10/0 D 0/1/0`
-- prod (live): `H 0/8/2 D 0/3/0` — deviation 6
-- anthropic/claude-haiku-4-5: `H 0/9/1 D 0/3/0` — deviation 4
-- gemini/gemini-3.1-flash-lite: `H 0/10/1 D 0/1/0` — deviation 1
-- openai/gpt-5.4-mini: `H 0/4/1 D 0/2/0` — deviation 8
-- openai/gpt-5.4-nano: `H 1/5/1 D 0/2/0` — deviation 8
-
-### United States v. Martino — 1:26-cr-20065 (flsd) #72389253
-
-- truth: `H 0/2/0 D 1/3/0`
-- prod (live): `H 1/2/0 D 0/5/0` — deviation 4
-- anthropic/claude-haiku-4-5: `H 1/2/0 D 1/5/1` — deviation 4
-- gemini/gemini-3.1-flash-lite: `H 1/3/0 D 1/7/0` — deviation 6
-- openai/gpt-5.4-mini: `H 1/2/1 D 2/7/0` — deviation 7
-- openai/gpt-5.4-nano: `H 1/2/0 D 4/6/0` — deviation 7
-
-### Anthropic v. DOW — 26-2011 (ca9) #73136734
-
-- truth: `H 0/1/0 D 0/1/0`
-- prod (live): `H 0/0/0 D 0/1/3` — deviation 4
-- anthropic/claude-haiku-4-5: `H 0/0/0 D 1/2/2` — deviation 5
-- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/2/2` — deviation 5
-- openai/gpt-5.4-mini: `H 0/0/0 D 1/5/0` — deviation 6
-- openai/gpt-5.4-nano: `H 0/0/0 D 2/3/0` — deviation 5
+- truth: `H 0/2/0 D 0/0/0`
+- prod (live): `H 1/1/2 D 1/3/1` — deviation 9
+- anthropic/claude-haiku-4-5: `H 1/1/2 D 1/3/1` — deviation 9
+- gemini/gemini-3.1-flash-lite: `H 2/1/1 D 1/4/1` — deviation 10
+- openai/gpt-5.4-mini: `H 2/1/1 D 2/4/0` — deviation 10
+- openai/gpt-5.4-nano: `H 2/1/1 D 1/4/0` — deviation 9
 
 ### United States v. Chapman — 1:24-cr-00220 (dcd) #68534169
 
 - truth: `H 0/5/0 D 0/3/0`
-- prod (live): `H 0/4/0 D 0/7/0` — deviation 5
-- anthropic/claude-haiku-4-5: `H 0/5/0 D 0/8/0` — deviation 5
-- gemini/gemini-3.1-flash-lite: `H 0/5/0 D 0/5/0` — deviation 2
-- openai/gpt-5.4-mini: `H 0/3/0 D 0/7/0` — deviation 6
-- openai/gpt-5.4-nano: `H 1/3/0 D 0/6/0` — deviation 6
+- prod (live): `H 0/5/0 D 0/8/0` — deviation 5
+- anthropic/claude-haiku-4-5: `H 0/5/0 D 0/6/0` — deviation 3
+- gemini/gemini-3.1-flash-lite: `H 0/6/0 D 0/6/0` — deviation 4
+- openai/gpt-5.4-mini: `H 1/2/0 D 1/8/0` — deviation 10
+- openai/gpt-5.4-nano: `H 1/1/1 D 0/6/0` — deviation 9
+
+### United States v. Zolotarjovs — 1:24-cr-00076 (ohsd) #69060414
+
+- truth: `H 0/10/0 D 0/1/0`
+- prod (live): `H 0/9/1 D 0/3/0` — deviation 4
+- anthropic/claude-haiku-4-5: `H 0/9/1 D 0/1/0` — deviation 2
+- gemini/gemini-3.1-flash-lite: `H 0/10/1 D 0/1/0` — deviation 1
+- openai/gpt-5.4-mini: `H 0/5/1 D 1/2/0` — deviation 8
+- openai/gpt-5.4-nano: `H 0/5/1 D 1/1/0` — deviation 7
 
 ### United States v. Gholinejad — 25-4607 (ca4) #71906511
 
 - truth: `H 0/0/0 D 0/8/0`
-- prod (live): `H 0/0/0 D 1/3/0` — deviation 6
-- anthropic/claude-haiku-4-5: `H 0/0/0 D 1/3/0` — deviation 6
-- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/3/0` — deviation 6
-- openai/gpt-5.4-mini: `H 0/0/0 D 1/3/0` — deviation 6
+- prod (live): `H 0/0/0 D 0/6/0` — deviation 2
+- anthropic/claude-haiku-4-5: `H 0/0/0 D 2/3/0` — deviation 7
+- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/4/0` — deviation 5
+- openai/gpt-5.4-mini: `H 0/0/0 D 1/4/0` — deviation 5
 - openai/gpt-5.4-nano: `H 0/0/0 D 1/3/0` — deviation 6
+
+### Anthropic v. DOW — 26-2011 (ca9) #73136734
+
+- truth: `H 0/1/0 D 0/1/0`
+- prod (live): `H 0/0/0 D 1/2/2` — deviation 5
+- anthropic/claude-haiku-4-5: `H 0/0/0 D 1/2/2` — deviation 5
+- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/2/2` — deviation 5
+- openai/gpt-5.4-mini: `H 0/0/0 D 1/4/1` — deviation 6
+- openai/gpt-5.4-nano: `H 0/0/0 D 1/4/0` — deviation 5
+
+### United States v. Zhenxing Wang — 1:25-cr-10273 (mad) #70678228
+
+- truth: `H 0/5/0 D 0/0/0`
+- prod (live): `H 0/3/0 D 0/1/0` — deviation 3
+- anthropic/claude-haiku-4-5: `H 0/4/0 D 0/0/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/3/1 D 0/0/0` — deviation 3
+- openai/gpt-5.4-mini: `H 2/3/0 D 1/1/0` — deviation 6
+- openai/gpt-5.4-nano: `H 1/2/1 D 0/0/0` — deviation 5
+
+### United States v. Didenko — 1:24-cr-00261 (dcd) #68810724
+
+- truth: `H 0/8/0 D 0/5/0`
+- prod (live): `H 0/3/0 D 0/5/1` — deviation 6
+- anthropic/claude-haiku-4-5: `H 0/4/0 D 0/6/0` — deviation 5
+- gemini/gemini-3.1-flash-lite: `H 0/6/0 D 0/5/0` — deviation 2
+- openai/gpt-5.4-mini: `H 1/4/0 D 1/5/0` — deviation 6
+- openai/gpt-5.4-nano: `H 1/3/0 D 0/5/0` — deviation 6
+
+### United States v. Martino — 1:26-cr-20065 (flsd) #72389253
+
+- truth: `H 0/2/0 D 1/3/0`
+- prod (live): `H 1/2/0 D 1/5/1` — deviation 4
+- anthropic/claude-haiku-4-5: `H 1/2/0 D 1/3/1` — deviation 2
+- gemini/gemini-3.1-flash-lite: `H 1/3/0 D 1/7/0` — deviation 6
+- openai/gpt-5.4-mini: `H 1/2/0 D 1/7/0` — deviation 5
+- openai/gpt-5.4-nano: `H 2/1/0 D 1/4/0` — deviation 4
+
+### United States v. Tymoshchuk — 1:23-cr-00324 (nyed) #70029216
+
+- truth: `H 1/4/0 D 0/3/0`
+- prod (live): `H 1/1/0 D 1/2/0` — deviation 5
+- anthropic/claude-haiku-4-5: `H 1/4/0 D 1/2/0` — deviation 2
+- gemini/gemini-3.1-flash-lite: `H 1/5/0 D 1/2/0` — deviation 3
+- openai/gpt-5.4-mini: `H 2/3/0 D 1/2/0` — deviation 4
+- openai/gpt-5.4-nano: `H 2/1/0 D 1/2/0` — deviation 6
 
 ### United States v. Tymoshchuk — 1:23-cr-00324 (nyed) #71300581
 
@@ -359,13 +372,22 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - openai/gpt-5.4-mini: `H 0/0/0 D 0/0/0` — deviation 6
 - openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 6
 
+### United States v. Gholinejad — 4:24-cr-00016 (nced) #70378502
+
+- truth: `H 0/2/1 D 0/9/0`
+- prod (live): `H 0/3/1 D 0/9/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 0/3/1 D 0/9/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/3/1 D 0/9/0` — deviation 1
+- openai/gpt-5.4-mini: `H 0/3/1 D 0/13/0` — deviation 5
+- openai/gpt-5.4-nano: `H 1/3/1 D 1/8/0` — deviation 4
+
 ### United States v. Lytvynenko — 3:23-cr-00088 (tnmd) #71820111
 
 - truth: `H 0/2/0 D 0/4/0`
-- prod (live): `H 3/2/1 D 1/3/0` — deviation 6
+- prod (live): `H 3/2/0 D 1/3/0` — deviation 5
 - anthropic/claude-haiku-4-5: `H 3/2/0 D 1/3/0` — deviation 5
-- gemini/gemini-3.1-flash-lite: `H 4/2/0 D 1/3/0` — deviation 6
-- openai/gpt-5.4-mini: `H 3/2/0 D 2/3/0` — deviation 6
+- gemini/gemini-3.1-flash-lite: `H 3/2/0 D 1/3/0` — deviation 5
+- openai/gpt-5.4-mini: `H 4/2/0 D 1/4/0` — deviation 5
 - openai/gpt-5.4-nano: `H 3/2/0 D 1/3/0` — deviation 5
 
 ### United States v. Knoot — 26-5455 (ca6) #73388385
@@ -377,32 +399,23 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - openai/gpt-5.4-mini: `H 0/0/0 D 0/0/0` — deviation 4
 - openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 4
 
-### United States v. Zhenxing Wang — 1:25-cr-10273 (mad) #70678228
-
-- truth: `H 0/5/0 D 0/0/0`
-- prod (live): `H 0/4/1 D 0/1/0` — deviation 3
-- anthropic/claude-haiku-4-5: `H 0/3/0 D 0/1/0` — deviation 3
-- gemini/gemini-3.1-flash-lite: `H 0/5/0 D 0/0/0` — deviation 0
-- openai/gpt-5.4-mini: `H 0/4/1 D 0/2/0` — deviation 4
-- openai/gpt-5.4-nano: `H 1/3/0 D 0/1/0` — deviation 4
-
-### United States v. Gholinejad — 4:24-cr-00016 (nced) #70378502
-
-- truth: `H 0/2/1 D 0/9/0`
-- prod (live): `H 1/2/1 D 0/6/0` — deviation 4
-- anthropic/claude-haiku-4-5: `H 0/3/1 D 0/9/0` — deviation 1
-- gemini/gemini-3.1-flash-lite: `H 0/3/1 D 0/9/0` — deviation 1
-- openai/gpt-5.4-mini: `H 1/2/1 D 0/11/0` — deviation 3
-- openai/gpt-5.4-nano: `H 2/2/1 D 0/8/0` — deviation 3
-
-### United States v. Kejia "Tony" Wang — 1:25-cr-10274 (mad) #70691920
+### United States v. Tymoshchuk — 1:23-cr-00324 (nyed) #70701403
 
 - truth: `H 0/2/0 D 0/0/0`
-- prod (live): `H 1/1/0 D 0/1/0` — deviation 3
-- anthropic/claude-haiku-4-5: `H 1/1/0 D 1/0/0` — deviation 3
-- gemini/gemini-3.1-flash-lite: `H 1/1/0 D 0/0/0` — deviation 2
-- openai/gpt-5.4-mini: `H 1/1/0 D 0/1/0` — deviation 3
-- openai/gpt-5.4-nano: `H 1/1/0 D 0/0/0` — deviation 2
+- prod (live): `H 0/3/0 D 0/0/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 1/0/0 D 0/0/0` — deviation 3
+- gemini/gemini-3.1-flash-lite: `H 1/0/0 D 0/0/0` — deviation 3
+- openai/gpt-5.4-mini: `H 2/0/0 D 0/0/0` — deviation 4
+- openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 2
+
+### United States v. Eileen Wang — 2:26-cr-00186 (cacd) #73323008
+
+- truth: `H 0/3/0 D 0/0/0`
+- prod (live): `H 1/1/0 D 0/0/0` — deviation 3
+- anthropic/claude-haiku-4-5: `H 1/1/0 D 0/0/0` — deviation 3
+- gemini/gemini-3.1-flash-lite: `H 1/0/0 D 0/0/0` — deviation 4
+- openai/gpt-5.4-mini: `H 1/1/0 D 0/0/0` — deviation 3
+- openai/gpt-5.4-nano: `H 1/0/0 D 0/0/0` — deviation 4
 
 ### United States v. Zewei — 4:23-cr-00523 (txsd) #70789744
 
@@ -410,53 +423,8 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - prod (live): `H 2/3/0 D 1/2/0` — deviation 3
 - anthropic/claude-haiku-4-5: `H 2/3/0 D 1/2/0` — deviation 3
 - gemini/gemini-3.1-flash-lite: `H 2/3/0 D 1/2/0` — deviation 3
-- openai/gpt-5.4-mini: `H 2/2/0 D 1/2/0` — deviation 2
+- openai/gpt-5.4-mini: `H 2/3/0 D 1/2/0` — deviation 3
 - openai/gpt-5.4-nano: `H 2/2/0 D 1/2/0` — deviation 2
-
-### United States v. Tymoshchuk — 1:23-cr-00324 (nyed) #70701403
-
-- truth: `H 0/2/0 D 0/0/0`
-- prod (live): `H 1/2/0 D 0/0/0` — deviation 1
-- anthropic/claude-haiku-4-5: `H 1/2/0 D 0/0/0` — deviation 1
-- gemini/gemini-3.1-flash-lite: `H 1/2/0 D 0/0/0` — deviation 1
-- openai/gpt-5.4-mini: `H 1/2/0 D 0/0/0` — deviation 1
-- openai/gpt-5.4-nano: `H 1/0/0 D 0/0/0` — deviation 3
-
-### United States v. Stryzhak — 1:25-cr-00381 (nyed) #72011504
-
-- truth: `H 0/1/0 D 0/0/0`
-- prod (live): `H 1/1/2 D 0/0/0` — deviation 3
-- anthropic/claude-haiku-4-5: `H 1/1/0 D 0/0/0` — deviation 1
-- gemini/gemini-3.1-flash-lite: `H 1/1/0 D 0/0/0` — deviation 1
-- openai/gpt-5.4-mini: `H 1/1/0 D 0/0/0` — deviation 1
-- openai/gpt-5.4-nano: `H 2/1/0 D 0/0/0` — deviation 2
-
-### United States v. Eileen Wang — 2:26-cr-00186 (cacd) #73323008
-
-- truth: `H 0/3/0 D 0/0/0`
-- prod (live): `H 1/1/0 D 0/0/0` — deviation 3
-- anthropic/claude-haiku-4-5: `H 1/1/0 D 0/0/0` — deviation 3
-- gemini/gemini-3.1-flash-lite: `H 1/1/0 D 0/0/0` — deviation 3
-- openai/gpt-5.4-mini: `H 1/1/0 D 0/0/0` — deviation 3
-- openai/gpt-5.4-nano: `H 1/1/0 D 0/0/0` — deviation 3
-
-### United States v. Zheng et al. — 1:26-mj-00315 (gand) #73103748
-
-- truth: `H 0/1/1 D 1/0/0`
-- prod (live): `H 0/1/1 D 0/0/0` — deviation 1
-- anthropic/claude-haiku-4-5: `H 0/2/0 D 0/0/0` — deviation 3
-- gemini/gemini-3.1-flash-lite: `H 0/1/1 D 0/0/0` — deviation 1
-- openai/gpt-5.4-mini: `H 0/1/1 D 0/0/0` — deviation 1
-- openai/gpt-5.4-nano: `H 0/0/2 D 0/0/0` — deviation 3
-
-### United States v. Schmitz — 1:24-cr-00234 (njd) #73292090
-
-- truth: `H 1/1/0 D 0/0/0`
-- prod (live): `H 0/1/1 D 0/0/0` — deviation 2
-- anthropic/claude-haiku-4-5: `H 0/1/0 D 0/0/0` — deviation 1
-- gemini/gemini-3.1-flash-lite: `H 0/1/0 D 1/0/0` — deviation 2
-- openai/gpt-5.4-mini: `H 0/1/0 D 1/0/0` — deviation 2
-- openai/gpt-5.4-nano: `H 1/1/0 D 1/0/0` — deviation 1
 
 ### United States v. Schmitz — 1:24-cr-00234 (njd) #73353898
 
@@ -464,35 +432,71 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - prod (live): `H 0/0/0 D 0/0/0` — deviation 2
 - anthropic/claude-haiku-4-5: `H 0/0/0 D 0/0/0` — deviation 2
 - gemini/gemini-3.1-flash-lite: `H 0/0/0 D 0/0/0` — deviation 2
-- openai/gpt-5.4-mini: `H 0/0/0 D 0/0/0` — deviation 2
+- openai/gpt-5.4-mini: `H 0/0/0 D 1/0/0` — deviation 3
 - openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 2
 
 ### United States v. Eileen Wang — 2:26-cr-00186 (cacd) #73326420
 
 - truth: `H 0/2/0 D 0/0/0`
-- prod (live): `H 0/0/0 D 0/0/0` — deviation 2
-- anthropic/claude-haiku-4-5: `H 0/0/0 D 0/0/0` — deviation 2
-- gemini/gemini-3.1-flash-lite: `H 0/0/0 D 0/0/0` — deviation 2
+- prod (live): `H 0/1/0 D 0/0/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 0/0/1 D 0/0/0` — deviation 3
+- gemini/gemini-3.1-flash-lite: `H 0/1/0 D 0/0/0` — deviation 1
 - openai/gpt-5.4-mini: `H 0/0/0 D 0/0/0` — deviation 2
-- openai/gpt-5.4-nano: `H 0/0/0 D 0/0/0` — deviation 2
+- openai/gpt-5.4-nano: `H 0/1/0 D 0/0/0` — deviation 1
+
+### United States v. Zheng et al. — 1:26-mj-00315 (gand) #73103748
+
+- truth: `H 0/1/1 D 1/0/0`
+- prod (live): `H 0/2/0 D 0/0/0` — deviation 3
+- anthropic/claude-haiku-4-5: `H 0/1/1 D 0/0/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/2/0 D 0/0/0` — deviation 3
+- openai/gpt-5.4-mini: `H 0/1/1 D 0/0/0` — deviation 1
+- openai/gpt-5.4-nano: `H 1/0/1 D 0/0/0` — deviation 3
 
 ### United States v. Zheng et al. — 3:26-mj-70297 (cand) #72532372
 
 - truth: `H 0/4/0 D 0/0/0`
-- prod (live): `H 0/5/0 D 0/0/0` — deviation 1
-- anthropic/claude-haiku-4-5: `H 0/6/0 D 0/0/0` — deviation 2
-- gemini/gemini-3.1-flash-lite: `H 0/5/0 D 0/0/0` — deviation 1
-- openai/gpt-5.4-mini: `H 0/4/0 D 0/0/0` — deviation 0
-- openai/gpt-5.4-nano: `H 1/3/0 D 0/0/0` — deviation 2
+- prod (live): `H 0/6/0 D 0/0/0` — deviation 2
+- anthropic/claude-haiku-4-5: `H 0/5/0 D 0/0/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/4/0 D 0/0/0` — deviation 0
+- openai/gpt-5.4-mini: `H 0/3/0 D 0/0/0` — deviation 1
+- openai/gpt-5.4-nano: `H 1/2/0 D 0/0/0` — deviation 3
+
+### United States v. Kejia "Tony" Wang — 1:25-cr-10274 (mad) #70691920
+
+- truth: `H 0/2/0 D 0/0/0`
+- prod (live): `H 0/2/0 D 0/1/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 0/2/0 D 0/0/0` — deviation 0
+- gemini/gemini-3.1-flash-lite: `H 0/2/0 D 1/0/0` — deviation 1
+- openai/gpt-5.4-mini: `H 0/2/0 D 1/1/0` — deviation 2
+- openai/gpt-5.4-nano: `H 0/2/0 D 0/0/0` — deviation 0
+
+### United States v. Schmitz — 1:24-cr-00234 (njd) #73292090
+
+- truth: `H 1/1/0 D 0/0/0`
+- prod (live): `H 0/1/0 D 0/0/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 0/1/0 D 0/0/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/1/0 D 1/0/0` — deviation 2
+- openai/gpt-5.4-mini: `H 0/1/0 D 1/0/0` — deviation 2
+- openai/gpt-5.4-nano: `H 1/1/0 D 1/0/0` — deviation 1
 
 ### United States v. Volkov — 1:25-cr-00211 (insd) #71842241
 
 - truth: `H 0/3/0 D 1/1/0`
-- prod (live): `H 0/3/0 D 0/1/0` — deviation 1
-- anthropic/claude-haiku-4-5: `H 0/3/0 D 0/1/0` — deviation 1
-- gemini/gemini-3.1-flash-lite: `H 0/3/0 D 0/1/0` — deviation 1
-- openai/gpt-5.4-mini: `H 0/3/0 D 1/1/0` — deviation 0
-- openai/gpt-5.4-nano: `H 0/3/0 D 0/1/0` — deviation 1
+- prod (live): `H 0/3/0 D 1/2/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 0/3/0 D 1/2/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 0/3/0 D 1/2/0` — deviation 1
+- openai/gpt-5.4-mini: `H 0/3/0 D 1/2/0` — deviation 1
+- openai/gpt-5.4-nano: `H 0/3/0 D 1/2/0` — deviation 1
+
+### United States v. Stryzhak — 1:25-cr-00381 (nyed) #72011504
+
+- truth: `H 0/1/0 D 0/0/0`
+- prod (live): `H 1/1/0 D 0/0/0` — deviation 1
+- anthropic/claude-haiku-4-5: `H 1/1/0 D 0/0/0` — deviation 1
+- gemini/gemini-3.1-flash-lite: `H 1/1/0 D 0/0/0` — deviation 1
+- openai/gpt-5.4-mini: `H 1/1/0 D 0/0/0` — deviation 1
+- openai/gpt-5.4-nano: `H 1/1/0 D 0/0/0` — deviation 1
 
 ### United States v. Kim Kwang Jin et al. — 1:25-cr-00291 (gand) #70673091
 
@@ -565,3 +569,4 @@ Truth vs each model. Format: `H scheduled/held/cancelled  D pending/met-or-passe
 - gemini/gemini-3.1-flash-lite: `H 0/0/0 D 1/0/0` — deviation 0
 - openai/gpt-5.4-mini: `H 0/0/0 D 1/0/0` — deviation 0
 - openai/gpt-5.4-nano: `H 0/0/0 D 1/0/0` — deviation 0
+

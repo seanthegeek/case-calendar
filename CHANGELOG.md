@@ -182,24 +182,35 @@ conference, the Akhter Muneeb trial, the Gallyamov status conference
 
 ### Known limitations (0.11.0)
 
-- **Verify-track cache eligibility was the stated goal of the
-  prompt consolidation but did NOT trigger in practice.** The
-  merged prompt landed at an estimated ~2104 tokens by our
-  4-chars-per-token rule of thumb, but cross-calibrating against
-  the extract track's measured cached count (35569 chars →
-  9296 cached tokens, ratio 3.83) implies the merged prompt is
-  actually closer to ~2000 tokens — just under the Anthropic-
-  measured 2048 floor. Result: cache_write=0 AND cached=0 on every
-  verify call in the validation build (101 verify_hearing + 38
-  verify_deadline + 1 dedupe_hearings, all uncached). The verify
-  track actually got slightly MORE expensive ($0.94 vs the 0.10.0
-  baseline $0.70) because the `max_tokens` bump + source-entry-
-  enriched user message produce larger calls with no cache offset.
-  Steady-state cost impact is small (the verify track is ~$0.24
-  more per full sync), but a follow-up should bump the merged
-  prompt by ~200-300 tokens to actually clear the Anthropic-measured
-  floor. AGENTS.md's prompt-cache threshold design note now
-  documents this exact failure mode for the next prompt-edit pass.
+- **Verify-track cache eligibility was the stated goal of the prompt
+  consolidation but DID NOT trigger in practice, and the documented
+  Haiku 4.5 cache threshold turns out to be inaccurate.** Initial
+  estimate of the merged prompt at ~2104 tokens (4-chars-per-token
+  rule of thumb) was followed by a post-validation bump that added
+  ~2800 chars of substantive content (a step-by-step audit process,
+  MARK_FILED subject-matching guidance, RESCHEDULE-vs-CANCEL
+  ambiguity rule, notice-vs-status-report caveat). Measured against
+  Anthropic's `count_tokens` API, the post-bump prompt is **2941
+  tokens** — well over the documented 2048-token Haiku 4.5 floor.
+  Despite that, `cached=0` and `cache_write=0` on every one of the
+  130 verify calls in the validation build. The empirical conclusion
+  is that **Haiku 4.5's real cache floor is higher than the
+  documented 2048**, likely 4096 (since `SYSTEM_PROMPT` at 9302
+  measured tokens does cache and `VERIFY_SYSTEM_PROMPT` at 2941
+  doesn't). The verify track is ~$0.40/sync more expensive than the
+  0.10.0 baseline ($0.95 vs ~$0.55) because of the substantive
+  prompt size + `max_tokens` bump + source-entry-enriched user
+  message, with no cache offset to absorb the increase. Steady-state
+  cost impact is small but real. Bringing the verify track into
+  cache would require pushing the merged prompt past ~4500 measured
+  tokens with substantive content, which is a stretch given the
+  verify rule space is already fully enumerated; a follow-up could
+  alternatively route the verify track to Sonnet (which actually
+  caches at 1024 tokens per the docs) and accept the higher Sonnet
+  per-token rate in exchange for the cache discount. AGENTS.md's
+  prompt-cache threshold design note has been corrected with the
+  empirical 2941-token measurement + the likely 4096-token real
+  Haiku floor for the next prompt-edit pass.
 
 ## [0.10.0] - 2026-05-29
 
