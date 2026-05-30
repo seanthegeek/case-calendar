@@ -721,6 +721,105 @@ class TestExtractActionsDispatch:
         assert out == [{"type": "IGNORE"}]
 
 
+class TestDomainCallsPinTemperatureZero:
+    """Every domain-level LLM call in llm.py — extract / verify / dedupe /
+    summary — pins ``temperature=0.0`` at the dispatch boundary. The user-
+    facing principle is "always show the correct data, not base things on
+    chance": the calendar's correctness must not depend on a coin-flip in
+    the sampler, so the model's decisions are made deterministically given
+    the inputs.
+
+    Each test mocks the provider call and asserts the dispatch carried
+    ``temperature=0.0``. A future refactor that drops the kwarg from one
+    call site will be caught here.
+    """
+
+    def _capture(self, monkeypatch):
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["kw"] = kw
+            # Each domain function expects a different response shape;
+            # extract / verify / dedupe want JSON, summary wants prose.
+            # Return a value that satisfies all of them in the parsers
+            # they hand it to.
+            return (
+                '{"type": "CONFIRM", "actions": [{"type": "IGNORE"}], "reason": "ok"}'
+            )
+
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
+        return captured
+
+    def test_extract_actions(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        llm.extract_actions(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            entry={"id": 1, "description": "", "recap_documents": []},
+            pdf_texts=[],
+            known_hearings=[],
+        )
+        assert captured["kw"]["temperature"] == 0.0
+
+    def test_verify_hearing(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        llm.verify_hearing(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            hearing=_hearing(),
+            recent_entries=[],
+        )
+        assert captured["kw"]["temperature"] == 0.0
+
+    def test_verify_deadline(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        llm.verify_deadline(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            deadline={
+                "deadline_key": "x",
+                "title": "T",
+                "due_at_utc": "2026-01-01T00:00:00+00:00",
+                "status": "pending",
+                "significance": "major",
+                "deadline_type": "response",
+                "docket_id": 1,
+                "source_entry_ids": [1],
+                "notes": None,
+            },
+            recent_entries=[],
+        )
+        assert captured["kw"]["temperature"] == 0.0
+
+    def test_resolve_duplicate_hearings(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        llm.resolve_duplicate_hearings(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            cluster=[_hearing(), _hearing(hearing_key="trial-y")],
+            recent_entries=[],
+        )
+        assert captured["kw"]["temperature"] == 0.0
+
+    def test_generate_docket_summary(self, monkeypatch):
+        captured = self._capture(monkeypatch)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x", "court_id": "x"},
+            primary_documents=[{"text": "Indictment text", "ref": "D1"}],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+        )
+        assert captured["kw"]["temperature"] == 0.0
+
+
 # --- build_user_message: deadlines + referenced_entries ---
 
 

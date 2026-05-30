@@ -861,6 +861,7 @@ def extract_actions(
             max_tokens,
             purpose="extract",
             docket=docket_id,
+            temperature=0.0,
         )
     except OutputTruncatedError as exc:
         logger.warning(
@@ -1053,6 +1054,7 @@ def _call_lm_and_parse(
             max_tokens,
             purpose=purpose,
             docket=docket,
+            temperature=0.0,
         )
     except OutputTruncatedError as exc:
         logger.warning(
@@ -2318,6 +2320,7 @@ def generate_docket_summary(
         json_mode=False,
         purpose="summary",
         docket=docket.get("docket_id"),
+        temperature=0.0,
     )
 
     summary = text.strip()

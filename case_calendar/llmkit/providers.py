@@ -129,6 +129,7 @@ def _call_anthropic(
     model: Optional[str] = None,
     purpose: str = "llm",
     docket: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     import anthropic
 
@@ -146,18 +147,21 @@ def _call_anthropic(
     # Retry-After, so steady-state cost is minimal — this just buys
     # headroom for the worst case.
     client = anthropic.Anthropic(timeout=120.0, max_retries=8)
-    resp = client.messages.create(
-        model=chosen,
-        max_tokens=max_tokens,
-        system=[
+    create_kwargs: dict[str, Any] = {
+        "model": chosen,
+        "max_tokens": max_tokens,
+        "system": [
             {
                 "type": "text",
                 "text": system,
                 "cache_control": {"type": "ephemeral"},
             }
         ],
-        messages=[{"role": "user", "content": user}],
-    )
+        "messages": [{"role": "user", "content": user}],
+    }
+    if temperature is not None:
+        create_kwargs["temperature"] = temperature
+    resp = client.messages.create(**create_kwargs)
     usage.record(
         purpose=purpose,
         provider="anthropic",
@@ -186,6 +190,7 @@ def _call_openai(
     json_mode: bool = True,
     purpose: str = "llm",
     docket: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     import openai
 
@@ -210,6 +215,8 @@ def _call_openai(
     }
     if json_mode:
         kwargs["response_format"] = {"type": "json_object"}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
     resp = client.chat.completions.create(**kwargs)
     usage.record(
         purpose=purpose,
@@ -236,6 +243,7 @@ def _call_gemini(
     json_mode: bool = True,
     purpose: str = "llm",
     docket: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     from google import genai
     from google.genai import types as gtypes
@@ -248,6 +256,8 @@ def _call_gemini(
     }
     if json_mode:
         config_kwargs["response_mime_type"] = "application/json"
+    if temperature is not None:
+        config_kwargs["temperature"] = temperature
     resp = client.models.generate_content(
         model=chosen,
         contents=user,
@@ -283,6 +293,7 @@ def _dispatch_llm_call(
     json_mode: bool = True,
     purpose: str = "llm",
     docket: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     """Route to the per-provider call function by ``provider`` name.
 
@@ -294,12 +305,29 @@ def _dispatch_llm_call(
     kwarg shape shifts. ``OutputTruncatedError`` and any other exceptions
     propagate unchanged so callers can convert them into their own
     caller-specific fallback shape (IGNORE list vs UNCLEAR dict vs raise).
+
+    ``temperature`` is a single optional knob in [0, 2]: when ``None``
+    (the default) each provider's SDK default is used unchanged
+    (currently 1.0 across all three); when set, the value is forwarded
+    to whatever per-provider parameter that SDK names for it (Anthropic
+    ``temperature``, OpenAI ``temperature``, Gemini
+    ``GenerateContentConfig.temperature``). The intent is one common
+    knob for "how stochastic should this call be" — pinning to ``0.0``
+    is what ``case_calendar.llm`` uses for every domain call so
+    extraction / verify / dedupe / summary decisions don't depend on
+    sampling variance across syncs.
     """
     if provider == "anthropic":
         # Anthropic has no `json_mode` knob (no JSON mode flag in the
         # SDK; we just rely on the prompt and validate the response).
         return _call_anthropic(
-            system, user, max_tokens, model=model, purpose=purpose, docket=docket
+            system,
+            user,
+            max_tokens,
+            model=model,
+            purpose=purpose,
+            docket=docket,
+            temperature=temperature,
         )
     if provider == "openai":
         return _call_openai(
@@ -310,6 +338,7 @@ def _dispatch_llm_call(
             json_mode=json_mode,
             purpose=purpose,
             docket=docket,
+            temperature=temperature,
         )
     return _call_gemini(
         system,
@@ -319,6 +348,7 @@ def _dispatch_llm_call(
         json_mode=json_mode,
         purpose=purpose,
         docket=docket,
+        temperature=temperature,
     )
 
 
