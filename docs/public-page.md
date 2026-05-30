@@ -84,9 +84,8 @@ sort even when their own contents didn't.
 ## Hosting with Caddy
 
 [Caddy](https://caddyserver.com/) is the simplest option for serving the
-`out/` directory over HTTPS with Let's Encrypt. The repo ships a working
-[`Caddyfile`](https://github.com/seanthegeek/case-calendar/blob/main/Caddyfile)
-you can adapt:
+`out/` directory over HTTPS with Let's Encrypt. Create `/etc/caddy/Caddyfile`
+with:
 
 ```caddyfile
 calendars.example.com {
@@ -110,10 +109,9 @@ values. Caddy needs inbound TCP/80 + TCP/443 reachable from the public
 internet for the ACME HTTP-01 challenge; if you're behind a firewall, use
 the DNS-01 plugin instead.
 
-Install it as the system Caddyfile and reload:
+Save it and reload Caddy:
 
 ```bash
-sudo ln -s /opt/case-calendar/Caddyfile /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
@@ -132,7 +130,7 @@ https://calendars.example.com/
 ## Combining with the webhook receiver
 
 The same Caddy install can also reverse-proxy the webhook receiver on a
-sibling subdomain. The shipped Caddyfile has a commented-out template:
+sibling subdomain. Add a second site block to the same `Caddyfile`:
 
 ```caddyfile
 webhook.example.com {
