@@ -21,8 +21,11 @@ tokens/*
 # Per-build cost report written by `build_provider_stores.py --out
 # model-comparison/cost.md`. The committed cost numbers live in
 # `model-comparison/SCORECARD.md`; this file is just the build's own
-# scratch report and shouldn't go in git.
+# scratch report and shouldn't go in git. The dot-suffixed variants
+# (e.g. `cost.temp0-slim.md`) are scratch outputs from comparison
+# sweeps where the operator preserved several builds side by side.
 model-comparison/cost.md
+model-comparison/cost.*.md
 
 # Local user config
 .local/
