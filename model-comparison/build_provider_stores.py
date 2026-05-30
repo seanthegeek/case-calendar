@@ -358,11 +358,18 @@ def _fake_dispatch(
     json_mode: bool = True,
     purpose: str = "llm",
     docket: Any = None,
+    temperature: Optional[float] = None,
 ) -> str:
     """Stand-in for ``_dispatch_llm_call`` in --fake mode: synthetic token
     counts proportional to prompt length, no API call, no spend. ``provider``
     is the resolved provider the caller passed (thread-local for extraction,
-    explicit for summaries), so the synthetic call is tagged correctly."""
+    explicit for summaries), so the synthetic call is tagged correctly.
+
+    ``temperature`` is accepted and ignored — the fake doesn't sample, so
+    the value is irrelevant. The signature must match the real dispatch
+    so callers passing ``temperature=0.0`` don't trip on an unexpected
+    kwarg under ``--fake``.
+    """
     m = model or (SUMMARY_MODELS if purpose == "summary" else EXTRACT_MODELS).get(
         provider, "fake"
     )
@@ -398,6 +405,7 @@ def _make_variant_dispatch(base: Any) -> Any:
         json_mode: bool = True,
         purpose: str = "llm",
         docket: Any = None,
+        temperature: Optional[float] = None,
     ) -> str:
         if model is None and purpose != "summary":
             model = getattr(_TL, "extract_model", None)
@@ -413,6 +421,7 @@ def _make_variant_dispatch(base: Any) -> Any:
                 json_mode=json_mode,
                 purpose=purpose,
                 docket=docket,
+                temperature=temperature,
             )
         finally:
             dt = time.monotonic() - t0

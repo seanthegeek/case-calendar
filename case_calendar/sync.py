@@ -684,11 +684,14 @@ class CaseSyncer:
         return stats
 
     def _verify_context_entries(
-        self, docket_id: int, starts_at_utc: Optional[str]
+        self,
+        docket_id: int,
+        target_date_utc: Optional[str],
+        source_entry_ids: Optional[list[int]] = None,
     ) -> list[dict[str, Any]]:
         """Docket entries to hand the verify-pass LLM for one hearing.
 
-        Combines two sets, de-duplicated by entry id:
+        Combines three sets, de-duplicated by entry id:
 
         1. The 15 most-recent hearing-relevant entries — "what's happening
            now" (continuances, reschedules, the current posture).
@@ -700,6 +703,23 @@ class CaseSyncer:
            the evidence it needs to MARK_HELD and the row wrongly stays
            'scheduled'. For a FUTURE hearing the window is in the future and
            returns nothing, so this only adds signal for past-dated rows.
+        3. The hearing's SOURCE entries (``source_entry_ids``) — the docket
+           entries that originally allocated the row. Without these the
+           model's DELETE_HALLUCINATION rule ("you've seen the original
+           source entry and concluded it does NOT actually schedule this
+           hearing") is unsatisfiable when the scheduling order is older
+           than the recent window AND outside the around-date window, and
+           the model breaks the rule rather than picking UNCLEAR. The
+           McGonigal-trial regression — a 2024 jury trial scheduled by an
+           older order, then mooted by a plea without a formal vacatur
+           entry, that the verify pass marked DELETE_HALLUCINATION because
+           the scheduling order wasn't visible — is the canonical case.
+           Including source entries makes the rule satisfiable; the
+           matching deterministic guard in :meth:`_apply_verify_action`
+           enforces the rule the other way (downgrade
+           DELETE_HALLUCINATION to UNCLEAR if any source entry was
+           absent from what the LLM saw, which can still happen if a
+           source row was deleted or its id is malformed).
 
         This widens what the LLM can SEE; it does not loosen the bar for
         marking a hearing held — the prompt still requires a cited record.
@@ -708,27 +728,30 @@ class CaseSyncer:
             docket_id, "9999-12-31T00:00:00", limit=15
         )
         near: list[dict[str, Any]] = []
-        if starts_at_utc:
+        if target_date_utc:
             try:
-                hearing_date = datetime.fromisoformat(
-                    starts_at_utc.replace("Z", "+00:00")
+                anchor_date = datetime.fromisoformat(
+                    target_date_utc.replace("Z", "+00:00")
                 ).date()
             except ValueError:
-                hearing_date = None
-            if hearing_date is not None:
+                anchor_date = None
+            if anchor_date is not None:
                 start = (
-                    hearing_date - timedelta(days=_VERIFY_OUTCOME_LOOKBACK_DAYS)
+                    anchor_date - timedelta(days=_VERIFY_OUTCOME_LOOKBACK_DAYS)
                 ).isoformat()
                 end = (
-                    hearing_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
+                    anchor_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
                 ).isoformat()
                 near = self.store.get_relevant_entries_in_date_range(
                     docket_id, start, end, limit=20
                 )
+        sources: list[dict[str, Any]] = []
+        if source_entry_ids:
+            sources = self.store.get_entries_by_ids(docket_id, source_entry_ids)
 
         seen: set[int] = set()
         merged: list[dict[str, Any]] = []
-        for entry in (*recent, *near):
+        for entry in (*recent, *near, *sources):
             eid = entry["entry_id"]  # always present from the store query
             if eid in seen:
                 continue
@@ -798,7 +821,9 @@ class CaseSyncer:
             tz = tz_for(court_id)
 
             recent = self._verify_context_entries(
-                docket_id, hearing.get("starts_at_utc")
+                docket_id,
+                hearing.get("starts_at_utc"),
+                source_entry_ids=hearing.get("source_entry_ids"),
             )
             action = llm_mod.verify_hearing(
                 case_name=case.name,
@@ -807,11 +832,66 @@ class CaseSyncer:
                 hearing=hearing,
                 recent_entries=recent,
             )
-            if self._apply_verify_action(case, docket_id, tz, hearing, action):
+            if self._apply_verify_action(
+                case, docket_id, tz, hearing, action, recent_entries=recent
+            ):
                 n_changed += 1
         if n_changed:
             self.store.conn.commit()
         return n_changed
+
+    @staticmethod
+    def _delete_hallucination_allowed(
+        row_label: str,
+        case_id: str,
+        key: Optional[str],
+        source_entry_ids: list[int],
+        recent_entries: list[dict[str, Any]],
+    ) -> bool:
+        """Deterministic guard: only allow DELETE_HALLUCINATION when the
+        verify-pass LLM was shown every one of the row's source entries.
+
+        The model's rule (from VERIFY_SYSTEM_PROMPT) is "only emit
+        DELETE_HALLUCINATION when you've SEEN the original source entry
+        and concluded it does NOT actually schedule this hearing." When
+        the source entry isn't in the recent_entries the model saw, the
+        rule is unsatisfiable: the model can't have read what it didn't
+        receive. At temperature=0 the model breaks the rule anyway —
+        the McGonigal trial regression (a 2024 jury trial scheduled by
+        a 2023 order that fell outside both the recent and around-date
+        windows, then mooted by a plea without a vacatur entry) was
+        emitted as DELETE_HALLUCINATION because the model saw no
+        scheduling evidence and concluded the row was hallucinated. The
+        Fix #2 context enrichment now always passes source entries into
+        the context, but a source row could still be missing for
+        legitimate reasons (the row was deleted from the local store,
+        the source_entry_ids list is malformed, the entries query
+        returned fewer rows than requested). This guard makes the
+        contract explicit: if any source entry was absent from what the
+        model saw, the verdict is downgraded to UNCLEAR (no-op,
+        WARN-logged) regardless of what the LLM emitted.
+
+        An empty ``source_entry_ids`` list is vacuously satisfied — the
+        guard returns True. (A row with no source entries is suspicious
+        regardless of which verdict the model emits, but that's a
+        separate concern; this guard only checks "did the model see
+        what it claims to have seen.")
+        """
+        if not source_entry_ids:
+            return True
+        shown = {e["entry_id"] for e in recent_entries}
+        missing = [eid for eid in source_entry_ids if eid not in shown]
+        if not missing:
+            return True
+        log.warning(
+            "verify-pass rejecting DELETE_HALLUCINATION on %s: model didn't see "
+            "source entries %s for case=%s key=%r — downgrading to UNCLEAR",
+            row_label,
+            missing,
+            case_id,
+            key,
+        )
+        return False
 
     def _apply_verify_action(
         self,
@@ -820,12 +900,20 @@ class CaseSyncer:
         tz: str,
         hearing: dict[str, Any],
         action: dict[str, Any],
+        recent_entries: Optional[list[dict[str, Any]]] = None,
     ) -> bool:
         """Apply a single verify-pass action to the hearing row.
 
         Returns True if the row changed. Uses the same upsert path as the
         regular extraction pipeline so source_entry_ids and audit fields
         stay consistent.
+
+        ``recent_entries`` is the same context payload that was sent to
+        the LLM, used by the DELETE_HALLUCINATION guard to verify the
+        model saw what its rule says it must have seen. Defaults to
+        ``None``/empty so the guard is permissive when no context was
+        recorded (any non-default test path); production always passes
+        the real context.
         """
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype in ("CONFIRM", "UNCLEAR"):
@@ -839,6 +927,14 @@ class CaseSyncer:
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "Cancelled per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
+            if not self._delete_hallucination_allowed(
+                "hearing",
+                case.case_id,
+                hearing.get("hearing_key"),
+                sources,
+                recent_entries or [],
+            ):
+                return False
             # Don't actually delete — preserve the audit trail by marking
             # cancelled with an explanatory note. Renderers skip cancelled
             # rows so the calendar shows the right thing.
@@ -1158,10 +1254,10 @@ class CaseSyncer:
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
 
-            recent = self.store.get_recent_relevant_entries(
+            recent = self._verify_context_entries(
                 docket_id,
-                "9999-12-31T00:00:00",
-                limit=15,
+                d.get("due_at_utc"),
+                source_entry_ids=d.get("source_entry_ids"),
             )
             action = llm_mod.verify_deadline(
                 case_name=case.name,
@@ -1170,7 +1266,9 @@ class CaseSyncer:
                 deadline=d,
                 recent_entries=recent,
             )
-            if self._apply_verify_deadline_action(case, docket_id, tz, d, action):
+            if self._apply_verify_deadline_action(
+                case, docket_id, tz, d, action, recent_entries=recent
+            ):
                 n_changed += 1
         if n_changed:
             self.store.conn.commit()
@@ -1183,6 +1281,7 @@ class CaseSyncer:
         tz: str,
         deadline: dict[str, Any],
         action: dict[str, Any],
+        recent_entries: Optional[list[dict[str, Any]]] = None,
     ) -> bool:
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype in ("CONFIRM", "UNCLEAR"):
@@ -1196,6 +1295,14 @@ class CaseSyncer:
             merged["status"] = "cancelled"
             audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
+            if not self._delete_hallucination_allowed(
+                "deadline",
+                case.case_id,
+                deadline.get("deadline_key"),
+                sources,
+                recent_entries or [],
+            ):
+                return False
             merged["status"] = "cancelled"
             audit_note = (
                 action.get("reason") or "No docket entry supports this deadline"

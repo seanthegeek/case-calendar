@@ -8,6 +8,211 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.11.0] - 2026-05-29
+
+Headline: the verify pass is now **deterministic and correct at
+temperature=0**. At 0.10.0 the pass made occasional borderline
+decisions stochastically (temperature=1 default), so whether a past
+trial vacated by guilty plea — without a formal vacatur entry on the
+docket — stayed `scheduled` or got DELETE_HALLUCINATION'd to
+`cancelled` came down to a coin flip in the sampler. The principle
+that drove this release: a calendar must show the correct data, not
+data whose correctness depends on chance. This release pins
+temperature to 0 and fixes the verify-pass decision boundaries so the
+deterministic outcome is the correct one.
+
+Validated against the same 28-case fixture used for the 0.10.0
+provider comparison: all 6 hearing rows that had flipped state
+incorrectly at temperature=0 in the pre-fix design now match prod (the
+McGonigal jury trial, the Knoot trial, the Moucka pretrial
+conference, the Akhter Muneeb trial, the Gallyamov status conference
+5, and the Ashtor Prince trial — all of them).
+
+### Added
+
+- **`temperature` parameter on the llmkit dispatch and per-provider
+  call functions.** `case_calendar.llmkit.providers._dispatch_llm_call`
+  and the three SDK wrappers (`_call_anthropic`, `_call_openai`,
+  `_call_gemini`) now accept `temperature: float | None = None`. When
+  `None` (the default), the SDK's own default applies (currently 1.0
+  across all three providers); when set, the value is forwarded to
+  whatever per-provider parameter that SDK names for it (Anthropic
+  `temperature`, OpenAI `temperature`, Gemini
+  `GenerateContentConfig.temperature`). The intent is one common
+  knob for "how stochastic should this call be."
+
+- **Source entries always included in the verify-pass context.** The
+  hearing / deadline row's `source_entry_ids` — the docket entries
+  that originally allocated the row — are now part of the
+  `recent_entries` payload the verify-pass LLM receives. Adds
+  `Store.get_entries_by_ids(docket_id, entry_ids)` and threads
+  `source_entry_ids` through `CaseSyncer._verify_context_entries`.
+  Without this enrichment, an old scheduling order (a 2023 order that
+  set a 2024 trial, on a docket that kept moving past) sat outside
+  both the most-recent-15 window and the around-hearing-date window
+  the verify pass already had, leaving the model's
+  DELETE_HALLUCINATION rule "you've seen the original source entry
+  and concluded it does NOT actually schedule this hearing"
+  unsatisfiable — and the model broke the rule at temperature=0
+  rather than picking UNCLEAR.
+
+- **Deterministic DELETE_HALLUCINATION guard.**
+  `CaseSyncer._delete_hallucination_allowed` checks that every source
+  entry ID for the candidate row was present in the recent_entries
+  payload the LLM actually received. When any source entry was
+  missing — because the row was deleted from the store, the
+  `source_entry_ids` list is malformed, etc. — the verdict is
+  downgraded to UNCLEAR with a WARN log naming the missing entry
+  ids. Pair with the context enrichment above: the enrichment makes
+  the model's rule satisfiable, the guard enforces it deterministically
+  regardless of what the LLM emits.
+
+- **Per-case progress monitor convention (AGENTS.md).** Long-running
+  sync / build operations now emit one line per case start carrying
+  case slug, queue position (X/N), and a rolling ETA computed from
+  the average interval between case starts. The convention is opt-in
+  for the operator who likes that signal; the implementation is
+  Monitor + a small awk on `tail -F` of the script's log, parsing the
+  `replaying case <slug>` line markers. See the Conventions section
+  of AGENTS.md for the full shape.
+
+- **Anthropic prompt-cache threshold documentation (AGENTS.md Key
+  Design Decisions).** Anthropic's prompt cache has a per-model
+  minimum-prompt-size threshold: 1024 tokens on Sonnet/Opus 4.x,
+  2048 on Haiku 4.5. Below the floor, `cache_control: ephemeral` is
+  a no-op (nothing written, nothing read, every call pays full
+  uncached input rate). Each of our prompts is mapped against the
+  floor in the design note, with the bidirectional risk for future
+  prompt edits called out: slim passes can quietly hurt cost by
+  dropping a prompt below the floor; merge passes can quietly help
+  cost by lifting one above it.
+
+- **Model-comparison directory section (AGENTS.md Architecture).**
+  Moves `build_provider_stores.py` out of "One-shot maintenance
+  scripts (scripts/)" — where it doesn't live — into a new "Model
+  comparison (model-comparison/)" section, and documents the sibling
+  files (`ground_truth_worksheet.py`, `export_model_events.py`,
+  `score.py`, `SCORECARD.md`) that were undocumented previously.
+
+### Changed
+
+- **Every domain-level LLM call now pins `temperature=0.0`.** Each of
+  `extract_actions`, `verify_hearing`, `verify_deadline`,
+  `resolve_duplicate_hearings`, and `generate_docket_summary` in
+  `case_calendar.llm` now passes `temperature=0.0` through dispatch.
+  In production this means the model's decisions are deterministic
+  given the inputs — same prompt + same context produces the same
+  verdict, sync after sync. The 0.10.0 default of 1.0 (Anthropic's
+  SDK default) made the verify pass's borderline-cancellation
+  decisions a coin flip, so the McGonigal-trial-stays-scheduled
+  outcome that prod accidentally got right at 0.10.0 could have
+  flipped on any future sync. This release closes that gap.
+
+- **Verify `max_tokens` bumped from 512 to 1500.** The verify pass
+  cites the docket entries that justify its verdict in the `reason`
+  field; on a busy past trial with multiple contradicting entries to
+  weigh, the model wants to write several hundred chars of citation.
+  At 512 the response was getting truncated mid-sentence and
+  `_call_lm_and_parse` returned UNCLEAR (the safe fallback for
+  unparseable JSON). The us-v-knoot `trial-knoot` truncation observed
+  during the 0.10.0 provider-store run — model emitted 2063 partial
+  chars before hitting the cap — is the canonical case. 1500 leaves
+  plenty of headroom for verbose citation reasoning without pushing
+  per-call cost meaningfully (output tokens are a small fraction of
+  total spend; the cached 8900-token system prompt dominates input
+  cost).
+
+- **`VERIFY_SYSTEM_PROMPT` consolidates BOTH hearing verify AND
+  deadline verify into one prompt.** Pre-0.11.0 had two separate
+  prompts; both fell under Haiku 4.5's 2048-token cache floor (the
+  hearing one at ~1770 tok, the deadline one at ~420), so the verify
+  track paid full input-token rate on every call. The merged prompt
+  handles either row type — the user message's "CANDIDATE HEARING" /
+  "CANDIDATE DEADLINE" header plus the hearing_key vs deadline_key
+  field tell the model which kind it's auditing — and adds a new
+  rule that explicitly tells the model to return UNCLEAR (not
+  DELETE_HALLUCINATION) when the source entry isn't visible in the
+  recent_entries. (Note: the cache-eligibility goal was MISSED in
+  practice — the merged prompt landed ~50 tokens short of the
+  Anthropic-measured threshold; see [Known Limitations](#known-limitations-0110)
+  below.)
+
+- **Phase 1 prompt slim (mechanical removals).** Trims roughly 1500
+  chars of regression-citation prose and verbose example clusters
+  from the prompts without touching any rule. Specifically:
+  case-name regression citations (us-v-knoot, McGonigal/Shestakov,
+  Wei 3:23-cr-01471, Anthropic v. DOW conditional-deadline example,
+  etc.) stripped from prompt TEXT but kept as PR-description and
+  AGENTS.md context; Federal Rules of Criminal Procedure citations
+  removed from `SIGNIFICANCE_RULES` proceeding-type list; BAD/GOOD
+  example clusters in `SUMMARY_SYSTEM_PROMPT` pruned from 3-4 to 1-2.
+  The original test pins that referenced removed citations were
+  updated to track the new wording. Validated against the 28-case
+  fixture before and after — no behavior change observed.
+
+### Removed
+
+- **`VERIFY_DEADLINE_SYSTEM_PROMPT` constant.** Merged into
+  `VERIFY_SYSTEM_PROMPT` (see above). `case_calendar.llm.verify_deadline`
+  now calls `_call_lm_and_parse` with the merged prompt.
+
+### Fixed
+
+- **Verify pass's McGonigal-class DELETE_HALLUCINATION false positive
+  at temperature=0.** The context enrichment + deterministic guard
+  together make the verdict only reachable when the model can cite
+  the source entry it read. Validated: `trial-mcgonigal` stays
+  `scheduled` in the 0.11.0 validation build with the verify pass
+  explicitly citing source entry 331170599 (the 2023 scheduling
+  order) in its UNCLEAR verdict; in the pre-fix build at
+  temperature=0 the same row was DELETE_HALLUCINATION'd to
+  `cancelled` because that exact 2023 entry wasn't in the model's
+  window.
+
+- **Verify pass truncation on verbose verdicts.** The `max_tokens`
+  bump from 512 to 1500 stops the model getting cut off mid-citation
+  on busy past trials and silently falling through to UNCLEAR.
+
+- **AGENTS.md incorrectly claimed all three extractor-track prompts
+  cache on Haiku.** Only `SYSTEM_PROMPT` (the per-entry extract
+  prompt) clears the 2048-token floor; the verify and dedupe
+  prompts fall under and don't cache. The Architecture line for
+  `llm.py` is corrected and a pointer added to the new Key Design
+  Decisions note on the cache threshold.
+
+### Known limitations (0.11.0)
+
+- **Verify-track cache eligibility was the stated goal of the prompt
+  consolidation but DID NOT trigger in practice, and the documented
+  Haiku 4.5 cache threshold turns out to be inaccurate.** Initial
+  estimate of the merged prompt at ~2104 tokens (4-chars-per-token
+  rule of thumb) was followed by a post-validation bump (commit
+  fe62851) that added ~2800 chars of substantive content (a
+  step-by-step audit process, MARK_FILED subject-matching guidance,
+  RESCHEDULE-vs-CANCEL ambiguity rule, notice-vs-status-report
+  caveat) targeting the 2048 floor. Measured against Anthropic's
+  `count_tokens` API, the post-bump prompt was **2941 tokens** —
+  well over the documented 2048-token Haiku 4.5 floor. Despite that,
+  `cached=0` and `cache_write=0` on every one of the 130 verify
+  calls in the validation build. The empirical conclusion is that
+  **Haiku 4.5's real cache floor is higher than the documented
+  2048**, likely 4096 (since `SYSTEM_PROMPT` at 9302 measured tokens
+  does cache and `VERIFY_SYSTEM_PROMPT` at 2941 doesn't). The bump
+  was subsequently reverted (commit c5f0bd0): with no measurable
+  behavior win and no cache offset, the extra content was just
+  cost-without-payoff. The verify track stays uncached at ~2000
+  tokens, costing ~$0.55/sync vs ~$0.30/sync if it were cached.
+  Bringing the verify track into cache would require pushing the
+  merged prompt past ~4500 measured tokens with substantive content,
+  which is a stretch given the verify rule space is already fully
+  enumerated; a follow-up could alternatively route the verify track
+  to Sonnet (which actually caches at 1024 tokens per the docs) and
+  accept the higher Sonnet per-token rate in exchange for the cache
+  discount. AGENTS.md's prompt-cache threshold design note has been
+  corrected with the empirical 2941-token measurement + the likely
+  4096-token real Haiku floor + the lesson that the bump was
+  cost-without-payoff, for the next prompt-edit pass.
+
 ## [0.10.0] - 2026-05-29
 
 ### Changed

@@ -8,6 +8,8 @@ llmkit subpackage.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from case_calendar.llmkit import providers
@@ -203,6 +205,49 @@ class TestDispatchLLMCall:
         assert captured["kw"]["model"] == "gpt-5.4"
         assert captured["kw"]["json_mode"] is False
 
+    def test_temperature_passthrough(self, monkeypatch):
+        # The one common sampling knob the domain layer uses to pin
+        # determinism — must reach all three provider paths from
+        # dispatch. Test all three because a future "I'll move
+        # temperature into the provider helper" refactor would silently
+        # drop it from whichever provider's call site wasn't updated.
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured.setdefault("calls", []).append(kw)
+            return "ok"
+
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_openai", fake)
+        monkeypatch.setattr(providers, "_call_gemini", fake)
+
+        for prov in ("anthropic", "openai", "gemini"):
+            providers._dispatch_llm_call(prov, "s", "u", 50, temperature=0.0)
+        for call in captured["calls"]:
+            assert call["temperature"] == 0.0
+
+    def test_temperature_omitted_by_default(self, monkeypatch):
+        # When the caller doesn't ask for a specific temperature, the
+        # dispatch must still forward `temperature=None` so the
+        # per-provider call knows to leave the SDK default alone. The
+        # alternative — defaulting to 0 here — would mean every caller
+        # silently pins determinism whether they asked for it or not,
+        # taking away the knob.
+        captured: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured.setdefault("calls", []).append(kw)
+            return "ok"
+
+        monkeypatch.setattr(providers, "_call_anthropic", fake)
+        monkeypatch.setattr(providers, "_call_openai", fake)
+        monkeypatch.setattr(providers, "_call_gemini", fake)
+
+        for prov in ("anthropic", "openai", "gemini"):
+            providers._dispatch_llm_call(prov, "s", "u", 50)
+        for call in captured["calls"]:
+            assert call.get("temperature") is None
+
     def test_anthropic_does_not_receive_json_mode(self, monkeypatch):
         # Anthropic's SDK has no json_mode flag — we rely on the prompt
         # to elicit JSON. The helper must NOT pass json_mode through to
@@ -210,10 +255,21 @@ class TestDispatchLLMCall:
         # the unexpected kwarg.
         captured = {}
 
-        def fake(system, user, max_tokens, *, model=None, purpose="llm", docket=None):
+        def fake(
+            system,
+            user,
+            max_tokens,
+            *,
+            model=None,
+            purpose="llm",
+            docket=None,
+            temperature=None,
+        ):
             captured["model"] = model
-            # purpose/docket are expected (token telemetry); json_mode is NOT
-            # — this signature has no json_mode param, so a leak would raise.
+            # purpose/docket/temperature are expected (token telemetry + the
+            # one common sampling knob plumbed through dispatch); json_mode
+            # is NOT — this signature has no json_mode param, so a leak
+            # would raise.
             return "ok"
 
         monkeypatch.setattr(providers, "_call_anthropic", fake)
@@ -326,6 +382,47 @@ class TestCallAnthropic:
         # Partial text is preserved on the exception for logging.
         assert exc_info.value.partial.startswith('{"actions":')
 
+    def test_temperature_omitted_when_none(self, monkeypatch):
+        # Default is temperature=None — the SDK call must NOT carry a
+        # temperature kwarg so the provider's own default (currently
+        # 1.0 on Anthropic) takes effect. Sending temperature=None
+        # explicitly would tighten the interface to "always pin a
+        # value" and lose that default-from-provider behavior.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
+        fake_client.messages.create.return_value.content = [block]
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+
+        providers._call_anthropic("s", "u", 10)
+        assert "temperature" not in fake_client.messages.create.call_args.kwargs
+
+    def test_temperature_forwarded_when_set(self, monkeypatch):
+        # When set, the value goes through unmodified — including 0.0,
+        # which Python's truthiness would silently drop if the
+        # implementation used `if temperature: ...` instead of the
+        # required `if temperature is not None: ...`.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
+        fake_client.messages.create.return_value.content = [block]
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+
+        providers._call_anthropic("s", "u", 10, temperature=0.0)
+        assert fake_client.messages.create.call_args.kwargs["temperature"] == 0.0
+
 
 class TestCallOpenAI:
     def test_returns_message_content(self, monkeypatch):
@@ -427,6 +524,46 @@ class TestCallOpenAI:
             providers._call_openai("s", "u", 2048)
         assert exc_info.value.provider == "openai"
         assert exc_info.value.max_tokens == 2048
+
+    def test_temperature_omitted_when_none(self, monkeypatch):
+        # Mirror of the same Anthropic check — see that test for the
+        # rationale. Default is provider-default sampling, opt-in pinning.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = "ok"
+        choice = MagicMock()
+        choice.message = msg
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+        providers._call_openai("s", "u", 10)
+        assert "temperature" not in fake_client.chat.completions.create.call_args.kwargs
+
+    def test_temperature_forwarded_when_set(self, monkeypatch):
+        # 0.0 specifically — the `is not None` check has to survive the
+        # falsy zero, see the Anthropic mirror for the failure mode.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = "ok"
+        choice = MagicMock()
+        choice.message = msg
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+        providers._call_openai("s", "u", 10, temperature=0.0)
+        assert (
+            fake_client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
+        )
 
 
 class TestCallGemini:
@@ -539,6 +676,65 @@ class TestCallGemini:
             providers._call_gemini("s", "u", 2048)
         assert exc_info.value.provider == "gemini"
         assert exc_info.value.max_tokens == 2048
+
+    def test_temperature_omitted_when_none(self, monkeypatch):
+        # Mirror of the same Anthropic / OpenAI checks. Gemini packs
+        # config kwargs into a GenerateContentConfig object, so this
+        # one inspects the `_Cfg.kw` dict rather than the call kwargs.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock()
+        fake_types = MagicMock()
+
+        class _Cfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        fake_types.GenerateContentConfig = _Cfg
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        fake_client.models.generate_content.return_value.text = "ok"
+
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+        providers._call_gemini("s", "u", 10)
+        cfg = fake_client.models.generate_content.call_args.kwargs["config"]
+        assert "temperature" not in cfg.kw
+
+    def test_temperature_forwarded_when_set(self, monkeypatch):
+        # 0.0 specifically — same falsy-zero check as the Anthropic /
+        # OpenAI mirrors.
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock()
+        fake_types = MagicMock()
+
+        class _Cfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        fake_types.GenerateContentConfig = _Cfg
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        fake_client.models.generate_content.return_value.text = "ok"
+
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+        providers._call_gemini("s", "u", 10, temperature=0.0)
+        cfg = fake_client.models.generate_content.call_args.kwargs["config"]
+        assert cfg.kw["temperature"] == 0.0
 
     def test_no_candidates_returns_text_without_truncation_check(self, monkeypatch):
         # Gemini responses without a `candidates` list (or with an empty

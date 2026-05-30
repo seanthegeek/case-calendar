@@ -230,27 +230,41 @@ fingerprint stable, so the re-sync is a no-op.
 
 ## End-of-sync confidence pass
 
-After per-entry extraction, every scheduled or recently-changed hearing
-gets a separate focused LLM call (`verify_hearing`). The model sees the
-candidate hearing plus a window of hearing-relevant docket entries — the
-most recent on the docket *and* the entries filed around the hearing's
-own date — and returns one of:
+After per-entry extraction, every scheduled-or-cancelled hearing and
+pending deadline gets a separate focused LLM call (`verify_hearing` /
+`verify_deadline`, both backed by the merged `VERIFY_SYSTEM_PROMPT` as
+of 0.11.0). The model sees the candidate row plus a window of
+docket-relevant entries — the most recent on the docket, the entries
+filed around the row's own date, *and* the row's source entries (the
+docket entries that originally allocated it) — and returns one of:
 
 - `CONFIRM` — no-op.
-- `RESCHEDULE` — the docket says the hearing moved; update the row.
-- `CANCEL` — the docket cancelled it.
-- `MARK_HELD` — there's evidence the hearing happened (minute entry,
-  verdict, transcript, judgment).
-- `REINSTATE` — the row is marked cancelled but the docket doesn't
-  actually support that cancellation.
-- `DELETE_HALLUCINATION` — the row was never a real hearing.
-- `UNCLEAR` — leave it alone, re-check next sync.
+- `RESCHEDULE` — the docket says the row moved; update.
+- `CANCEL` — the docket vacated it.
+- `MARK_HELD` *(hearings only)* — there's evidence the hearing happened
+  (minute entry, verdict, transcript, judgment).
+- `MARK_FILED` *(deadlines only)* — the required filing was made.
+- `REINSTATE` *(hearings only)* — the row is marked cancelled but the
+  docket doesn't actually support that cancellation.
+- `DELETE_HALLUCINATION` — the row was never a real event. Only valid
+  when the LLM has seen the original source entry and concluded it
+  does not actually set the event; a deterministic guard
+  (`CaseSyncer._delete_hallucination_allowed`) downgrades this to
+  `UNCLEAR` if any source entry id wasn't in the recent_entries the
+  LLM actually received.
+- `UNCLEAR` — leave it alone, re-check next sync. The safe default in
+  ambiguous cases.
+
+All domain-level LLM calls pin `temperature=0.0` (since 0.11.0) so the
+verify pass's decisions are deterministic given the inputs — same
+prompt + same context produces the same verdict every sync, no
+sampling coin flips on borderline rows.
 
 This catches the classes of bug that per-entry extraction can't see:
 reschedules across multiple entries, trials that got mooted by a plea
 but never explicitly vacated, and (rare) hallucinated rows.
 
-The around-the-hearing-date entries matter for past hearings on busy
+The around-the-row-date entries matter for past hearings on busy
 dockets: the record that proves a hearing happened (a minute entry or
 judgment) is filed near the hearing date and can fall outside the
 most-recent window once the docket moves on. Without it the pass would
@@ -425,8 +439,7 @@ is told without opening the source:
 
 - [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L26) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
 - [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
-- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L828) — the end-of-sync hearing verify pass.
-- [`VERIFY_DEADLINE_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1128) — the parallel verify pass for filing deadlines.
+- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L910) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.
 - [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1451) — the higher-tier case-summary prompt.
 

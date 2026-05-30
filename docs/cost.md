@@ -42,31 +42,47 @@ one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) — **default** | $6.07 | $0.55 | $2.24 | **$8.86** |
-| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.49 | $0.11 | $1.09 | **$2.69** |
-| OpenAI (GPT-5.4-nano / GPT-5.4) | $1.00 | $0.12 | $1.62 | **$2.75** |
-| OpenAI (GPT-5.4-mini / GPT-5.4) | $3.59 | $0.47 | $1.64 | **$5.70** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) — **default** | $6.58 | $0.95 | $2.29 | **$9.82** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.58 | $0.18 | $1.13 | **$2.89** |
+| OpenAI (GPT-5.4-nano / GPT-5.4) | $1.00 | $0.14 | $1.65 | **$2.78** |
+| OpenAI (GPT-5.4-mini / GPT-5.4) | $3.86 | $0.51 | $1.69 | **$6.06** |
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
-the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.22 per
+the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.23 per
 case for extraction** (it scales with entry count, so a busy docket costs
 more) and **$0.03–0.07 per docket for summaries**. After the backfill,
 existing summaries are reused unless a docket gets a new primary document or
 disposition, so ongoing spend is **pennies a week**; the `verify` track (one
-focused call per non-terminal hearing/deadline) is what runs on every sync,
-and even that stayed under $0.55 across the whole caseload on the priciest
-provider.
+focused call per non-terminal hearing/deadline + the new source-entry-aware
+context as of 0.11.0) is what runs on every sync, and even that stayed under
+$1.00 across the whole caseload on the priciest provider.
+
+The Anthropic verify-track cost rose noticeably from 0.10.0 ($0.55) to 0.11.0
+($0.95) because the verify-pass-determinism work (temperature=0 +
+source-entry context + DELETE_HALLUCINATION guard + `max_tokens` bump from
+512 to 1500) increased the per-call input token count. The merged
+`VERIFY_SYSTEM_PROMPT` was sized to clear Anthropic Haiku 4.5's documented
+2048-token prompt-cache floor — at `count_tokens`-measured 2941 tokens it
+went well over the documented floor — but Anthropic still didn't cache it
+(`cached=0`, `cache_write=0` on every verify call). The empirical
+conclusion is that Haiku 4.5's real cache floor is higher than the
+documented 2048, likely 4096, and bringing the verify track into cache
+would require either substantially more substantive content (a stretch
+given the rule space is enumerated) or routing the verify track to Sonnet
+(which caches at 1024 per the docs but bills at the higher Sonnet rate).
+See the AGENTS.md "Anthropic prompt caching" design note for the full
+empirical write-up.
 
 These are **estimates from the price table** (below), not a bill, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.
 
-### Why Anthropic is the 0.10.0 default — and why splitting the tracks is still supported
+### Why Anthropic is the 0.11.0 default — and why splitting the tracks is still supported
 
-The numbers above show Gemini wins on cost: Anthropic costs **~4× more** for the
-same workload, and over a 5-year steady-state run on a 28-case caseload, that
-gap adds up to roughly **$60-80 in extraction + verify alone**. So why did
-0.10.0 revert to Anthropic-as-default?
+The numbers above show Gemini wins on cost: Anthropic costs **~3-4× more** for
+the same workload, and over a 5-year steady-state run on a 28-case caseload,
+that gap adds up to roughly **$60-80 in extraction + verify alone**. So why
+does 0.11.0 keep Anthropic-as-default (the same decision 0.10.0 made)?
 
 Because the cost number isn't the only number. **Gemini's training corpus
 doesn't include enough federal-procedure text** to load priors on the long tail
