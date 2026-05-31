@@ -80,7 +80,7 @@ cases:
     dockets: [69026861, 73388385]
     tags: [DPRK, IT worker fraud, laptop farm]
     aggregation_note: >-
-      The sane defendant is appealing his conviction.
+      The same defendant is appealing his conviction.
 
   # Cross-CourtListener-sibling same-slot key drift: sentencing-didenko vs
   # sentencing-didenko-2 allocated across two records of one logical docket,
