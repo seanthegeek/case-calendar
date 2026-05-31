@@ -2489,6 +2489,70 @@ class TestSummarizeDocket:
             "[from sibling 1:24-cr-100 D.D.C.]"
         )
 
+    def test_borrows_dispositions_from_sibling_for_criminal_appeal(
+        self,
+        store,
+        patch_llm,
+        patch_pdf,
+    ):
+        # The 26-5455 / Knoot regression: an appellate criminal docket has no
+        # documents of its own, and the conviction + sentence being appealed
+        # live only on the trial-court sibling. Borrowing just the indictment
+        # left the appellate summary saying only "was charged" — it never saw
+        # the outcome under review. The borrow must pull the sibling's
+        # DISPOSITIONS (judgment / plea) too, so the LLM can state the
+        # conviction and sentence on appeal.
+        _seed_docket_meta(store, 1, docket_number="24-1234", court_id="ca9")
+        _seed_docket_meta(store, 2, docket_number="1:24-cr-100", court_id="dcd")
+        patch_pdf["texts"] = {
+            500: "INDICTMENT body text...",
+            600: "JUDGMENT body: 18 months imprisonment.",
+        }
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [],
+                (1, "-date_filed"): [],
+                (2, "date_filed"): [
+                    {
+                        "id": 20,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                # Dispositions are walked newest-first (-date_filed).
+                (2, "-date_filed"): [
+                    {
+                        "id": 30,
+                        "description": "JUDGMENT in a Criminal Case",
+                        "date_filed": "2025-05-01",
+                        "recap_documents": [{"id": 600}],
+                    }
+                ],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1, 2], calendar="cyber"
+        )
+
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert row is not None
+        # The borrowed indictment reached the LLM, tagged with the sibling.
+        primary_documents = patch_llm[0]["primary_documents"]
+        assert primary_documents[0]["description"].endswith(
+            "[from sibling 1:24-cr-100 D.D.C.]"
+        )
+        # And so did the borrowed judgment — the whole point of the fix.
+        disposition_documents = patch_llm[0]["disposition_documents"]
+        assert disposition_documents, "borrowed judgment should reach the LLM"
+        assert any("JUDGMENT" in d["description"] for d in disposition_documents)
+        assert all(
+            d["description"].endswith("[from sibling 1:24-cr-100 D.D.C.]")
+            for d in disposition_documents
+        )
+        assert any("18 months" in (d.get("text") or "") for d in disposition_documents)
+
     def test_borrowing_swallows_sibling_failure_and_continues(
         self,
         store,
@@ -4157,6 +4221,238 @@ class TestSummaryGuardRetry:
         assert row is not None
         assert len(calls) == 1  # no retry — grounded in the document
         assert "at large" in row["summary"]
+
+
+class TestSummaryForfeitureGuard:
+    """Tier-4 redundant-forfeiture guard — a forfeiture money judgment whose
+    amount equals a restitution amount also stated reads as a doubled total
+    (us-v-knoot: $15,100 + $15,100 = "$30,200"). Detect, retry to omit it, and
+    deterministically strip the forfeiture clause if the retry still states it.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Leading clause, with the inline-link marker still on the phrase
+            # (the guard runs before link resolution).
+            "He was ordered to pay $15,100 in restitution. A [forfeiture money "
+            "judgment](doc:D5) of $15,100 was also entered against him, and he "
+            "is appealing his conviction.",
+            # Embedded clause.
+            "He was ordered to pay $15,100 in restitution, with a forfeiture "
+            "money judgment of $15,100 also entered against him.",
+            # Reversed wording "$X forfeiture money judgment".
+            "Restitution of $15,100 was ordered, and a $15,100 forfeiture money "
+            "judgment was entered.",
+        ],
+    )
+    def test_redundant_pair_flagged(self, text):
+        assert summary._audit_summary_forfeiture(text) != []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # Different amounts — a real, distinct obligation; keep both.
+            "He was sentenced to a $40,000 fine, with a forfeiture money "
+            "judgment of $17,500 entered against him.",
+            # Identified-property forfeiture (not a money judgment) — stays.
+            "He was ordered to pay $15,100 in restitution and to forfeit a 2019 "
+            "BMW and a cryptocurrency wallet.",
+            # Forfeiture money judgment but no restitution at all — nothing to
+            # double up with.
+            "A forfeiture money judgment of $15,100 was entered against him.",
+            "",
+        ],
+    )
+    def test_non_redundant_not_flagged(self, text):
+        assert summary._audit_summary_forfeiture(text) == []
+
+    def test_strip_leading_clause_keeps_trailing_appeal(self):
+        text = (
+            "Knoot was sentenced to 18 months, $15,100 in restitution, and a "
+            "$100 special assessment. A [forfeiture money judgment](doc:D5) of "
+            "$15,100 was also entered against him, and he is appealing his "
+            "conviction."
+        )
+        out = summary._strip_redundant_forfeiture(text)
+        assert "forfeiture" not in out.lower()
+        assert "$15,100 in restitution" in out
+        assert out.endswith("He is appealing his conviction.")
+
+    def test_strip_embedded_clause_keeps_restitution(self):
+        text = (
+            "He was ordered to pay $15,100 in restitution, and a $100 special "
+            "assessment, with a forfeiture money judgment of $15,100 also "
+            "entered against him."
+        )
+        out = summary._strip_redundant_forfeiture(text)
+        assert "forfeiture" not in out.lower()
+        assert (
+            out
+            == "He was ordered to pay $15,100 in restitution, and a $100 special assessment."
+        )
+
+    def test_strip_standalone_sentence_dropped(self):
+        text = (
+            "He was sentenced to $15,100 in restitution. A forfeiture money "
+            "judgment of $15,100 was entered against him. He has appealed."
+        )
+        out = summary._strip_redundant_forfeiture(text)
+        assert "forfeiture" not in out.lower()
+        assert out == "He was sentenced to $15,100 in restitution. He has appealed."
+
+    def test_strip_noop_when_not_redundant(self):
+        text = "A forfeiture money judgment of $17,500 was entered; restitution was $15,100."
+        assert summary._strip_redundant_forfeiture(text) == text
+
+    @pytest.mark.parametrize(
+        "raw,norm",
+        [
+            ("15,100", "15100"),
+            ("15100.00", "15100"),  # trailing cents zeros + the dot trimmed
+            ("15100.50", "15100.5"),
+            ("14,655,096.24", "14655096.24"),
+        ],
+    )
+    def test_norm_money(self, raw, norm):
+        assert summary._norm_money(raw) == norm
+
+    def test_decimal_amounts_compare_equal_across_formats(self):
+        # "$15,100.00" (a judgment's printed cents) vs "$15,100" (restitution
+        # prose) must still be recognized as the same redundant amount.
+        text = (
+            "He was ordered to pay $15,100 in restitution, with a forfeiture "
+            "money judgment of $15,100.00 also entered against him."
+        )
+        assert summary._audit_summary_forfeiture(text) != []
+
+    def test_redundant_draft_retried_and_cleared(self, store, patch_pdf, monkeypatch):
+        # The $15,100 figure is in the indictment text, so the grounding guard
+        # is satisfied and only the forfeiture guard fires.
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT. Loss and restitution: $15,100."
+        )
+        calls = _queue_llm(
+            monkeypatch,
+            "X pled guilty and was ordered to pay $15,100 in restitution; a "
+            "forfeiture money judgment of $15,100 was also entered against him.",
+            "X pled guilty and was ordered to pay $15,100 in restitution.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2  # retried once
+        assert calls[1].get("correction")  # retry carried the forfeiture correction
+        assert "forfeiture" not in row["summary"].lower()  # clean retry adopted
+        assert "$15,100 in restitution" in row["summary"]
+
+    def test_persistent_redundancy_stripped_and_warns(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        import logging
+
+        cl, case = _indictment_case(
+            store, patch_pdf, primary_text="INDICTMENT. Loss and restitution: $15,100."
+        )
+        # Both draft AND retry state the redundant forfeiture -> the original
+        # draft is kept and the forfeiture clause is deterministically stripped.
+        calls = _queue_llm(
+            monkeypatch,
+            "X pled guilty and was ordered to pay $15,100 in restitution; a "
+            "forfeiture money judgment of $15,100 was also entered against him.",
+            "X pled guilty and was ordered to pay $15,100 in restitution; a "
+            "forfeiture money judgment of $15,100 was also entered against him.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "forfeiture" not in row["summary"].lower()  # stripped
+        assert "$15,100 in restitution" in row["summary"]
+        assert any("forfeiture-redundancy" in r.message for r in caplog.records)
+
+
+class TestSummaryOperatorAttributionGuard:
+    """The aggregation_note / NOTE FROM OPERATOR are context FOR the model, not
+    material to attribute to subscribers. The model occasionally leaks the
+    provenance ("the operator notes that he has appealed his conviction" —
+    us-v-knoot); the fact is trusted, so the deterministic cleanup strips the
+    attribution lead-in and keeps the clause.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "He was sentenced to 18 months; the operator notes that he has appealed.",
+            "According to the operator, the defendant has fled.",
+            "The aggregation note indicates that the cases are related.",
+            "Per the operator's note, X was extradited.",
+            "The operator-provided note states that the docket was reopened.",
+        ],
+    )
+    def test_attribution_flagged(self, text):
+        assert summary._audit_summary_attribution(text) != []
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # "operator" in an unrelated sense — must NOT trip.
+            "Chapman ran a laptop-farm operator network and pled guilty.",
+            "",
+            "He has appealed his conviction.",
+        ],
+    )
+    def test_non_attribution_not_flagged(self, text):
+        assert summary._audit_summary_attribution(text) == []
+
+    def test_strip_keeps_fact_drops_attribution_midsentence(self):
+        text = (
+            "Knoot was sentenced to 18 months and ordered to self-surrender by "
+            "June 30, 2026; the operator notes that he has appealed his conviction."
+        )
+        out = summary._strip_operator_attribution(text)
+        assert "operator" not in out.lower()
+        assert out.endswith("; he has appealed his conviction.")
+
+    def test_strip_capitalizes_at_sentence_start(self):
+        out = summary._strip_operator_attribution(
+            "According to the operator, the defendant has fled. He remains abroad."
+        )
+        assert out == "The defendant has fled. He remains abroad."
+
+    def test_strip_at_sentence_start_followed_by_non_letter(self):
+        # Lead-in opens the text but the kept clause starts with a non-letter
+        # ("$"), so there is nothing to capitalize — the clause is kept as-is.
+        out = summary._strip_operator_attribution(
+            "According to the operator, $2 million was forfeited."
+        )
+        assert out == "$2 million was forfeited."
+
+    def test_strip_noop_when_clean(self):
+        text = "He has appealed his conviction."
+        assert summary._strip_operator_attribution(text) == text
+
+    def test_leak_removed_end_to_end(self, store, patch_pdf, monkeypatch, caplog):
+        import logging
+
+        cl, case = _indictment_case(store, patch_pdf)
+        # The model leaks the aggregation-note provenance; the deterministic
+        # cleanup removes the lead-in and keeps the fact (no retry needed).
+        _queue_llm(
+            monkeypatch,
+            "X pled guilty; the operator notes that he has appealed his conviction.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(
+                cl=cl,
+                store=store,
+                case=case,
+                docket_id=1,
+                aggregation_note="The same defendant is appealing his conviction.",
+            )
+        assert row is not None
+        assert "operator" not in row["summary"].lower()
+        assert "he has appealed his conviction" in row["summary"]
+        assert any("attribution leak" in r.message for r in caplog.records)
 
 
 class TestSummaryGroundingGuard:

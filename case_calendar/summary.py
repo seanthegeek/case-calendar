@@ -1242,15 +1242,25 @@ def _borrow_primary_from_siblings(
     case: CaseConfig,
     primary_docket_id: int,
     allow_ocr: bool = True,
-) -> list[dict[str, Any]]:
-    """Pull primary-document text from any sibling docket on the same case.
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Pull primary AND disposition document text from a sibling docket.
 
-    Stops at the first sibling that yields extractable primary text.
-    Tags the returned entry descriptions with the sibling's docket number
-    and court so the LLM prompt makes the cross-docket borrowing explicit
-    — without that label, the model writes the summary as if the
-    complaint had been filed in the primary docket (e.g. attributing a
-    district-court complaint to the appellate court).
+    Stops at the first sibling that yields extractable primary text and
+    returns that sibling's primary documents together with its disposition
+    documents (judgment, plea agreement, verdict, dismissal). An appellate
+    criminal docket opens with a clerical "case opened / notice of appeal"
+    entry and re-files NEITHER the charging document NOR the trial-court
+    judgment — so without borrowing both, the appellate summary can only say
+    the defendant was "charged", never that he was convicted and sentenced,
+    which is the actual subject of the appeal.
+
+    Both lists' entry descriptions are tagged with the sibling's docket
+    number and court so the LLM prompt makes the cross-docket borrowing
+    explicit — without that label the model writes the summary as if the
+    complaint had been filed in the appellate court, or attributes the
+    district-court sentence to the court of appeals.
+
+    Returns ``([], [])`` when no sibling yields primary text.
     """
     for sibling_id in case.dockets:
         if sibling_id == primary_docket_id:
@@ -1267,23 +1277,33 @@ def _borrow_primary_from_siblings(
             sibling_docket_number,
         )
         try:
-            sibling_primary, _ = find_primary_documents(cl, sibling_id, store=store)
+            sibling_primary, sibling_dispositions = find_primary_documents(
+                cl, sibling_id, store=store
+            )
         except Exception:
             log.exception(
                 "summary: failed to scan sibling docket %s for primary documents",
                 sibling_id,
             )
             continue
-        borrowed = _attach_text(sibling_primary, allow_ocr=allow_ocr)
-        if not borrowed:
+        borrowed_primary = _attach_text(sibling_primary, allow_ocr=allow_ocr)
+        if not borrowed_primary:
             continue
+        # The disposition is the conviction/sentence on appeal — attach it
+        # the same way summarize_docket does its own dispositions (the
+        # description fallback covers paperless minute-entry judgments).
+        borrowed_dispositions = _attach_text(
+            sibling_dispositions,
+            allow_ocr=allow_ocr,
+            allow_description_fallback=True,
+        )
         label_bits = [b for b in (sibling_docket_number, sibling_court_citation) if b]
         label = " ".join(label_bits) or f"docket {sibling_id}"
-        for doc in borrowed:
-            existing = doc.get("description") or "primary document"
+        for doc in borrowed_primary + borrowed_dispositions:
+            existing = doc.get("description") or "document"
             doc["description"] = f"{existing} [from sibling {label}]"
-        return borrowed
-    return []
+        return borrowed_primary, borrowed_dispositions
+    return [], []
 
 
 # ---------------------------------------------------------------------------
@@ -1582,6 +1602,204 @@ def _strip_ungrounded_sentences(
     return result or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
 
 
+# Tier 4 — redundant forfeiture money judgment. When the prose states a
+# forfeiture MONEY JUDGMENT whose dollar amount equals a restitution amount it
+# also states, a lay reader sums the two into a fictional larger liability: the
+# us-v-knoot case — "$15,100 in restitution" plus "a forfeiture money judgment
+# of $15,100" reads as $30,200. The SUMMARY_SYSTEM_PROMPT omission rule is meant
+# to drop the forfeiture in exactly this case, but it is soft and the model
+# applies it inconsistently — and the appellate-summary borrow now feeds the
+# trial-court judgment (which carries the forfeiture order) into appellate
+# summaries, widening where the rule has to hold. This deterministic backstop
+# detects the equal-amount pair and, after a correction retry, strips the
+# forfeiture clause. Scoped to forfeiture MONEY JUDGMENTS only (the literal
+# "forfeiture money judgment" wording) — identified-property forfeiture (a named
+# house, vehicle, or cryptocurrency wallet) takes things, not a dollar sum, and
+# stays. CAVEAT: detection is amount-equality only, so two CO-DEFENDANTS who
+# each happen to draw the same-dollar restitution and forfeiture could trip it;
+# that is rare, the retry gives the model a chance to keep them separate first,
+# and a WARNING is always logged for operator review (matching the grounding
+# guard's risk posture).
+_FORF_AMOUNT_RE = r"\$\s?(\d[\d,]*(?:\.\d{1,2})?)"
+# The phrase may be wrapped in an inline-link marker ("[forfeiture money
+# judgment](doc:D5)") because the guard runs on the token-bearing prose BEFORE
+# link resolution; tolerate the optional brackets + (doc:..) target.
+_FMJ_PHRASE = r"\[?forfeiture\s+money\s+judgment\]?(?:\(doc:[^)]*\))?"
+_FORF_JUDGMENT_AMOUNT_RES = [
+    re.compile(
+        _FMJ_PHRASE + r"\s+(?:of|in\s+the\s+amount\s+of|for)\s+" + _FORF_AMOUNT_RE,
+        re.I,
+    ),
+    re.compile(_FORF_AMOUNT_RE + r"\s+forfeiture\s+money\s+judgment", re.I),
+]
+_RESTITUTION_AMOUNT_RES = [
+    re.compile(_FORF_AMOUNT_RE + r"\s+in\s+restitution", re.I),
+    re.compile(
+        r"restitution\s+(?:of|in\s+the\s+amount\s+of|totaling)?\s*" + _FORF_AMOUNT_RE,
+        re.I,
+    ),
+]
+# The forfeiture STATEMENT — the money-judgment phrase, its amount, and the
+# usual "entered against <defendant>" tail — as one removable span.
+_FORF_STATEMENT = (
+    _FMJ_PHRASE
+    + r"\s+(?:of|in\s+the\s+amount\s+of|for)\s+\$\s?\d[\d,]*(?:\.\d{1,2})?"
+    + r"(?:\s+(?:was|is|were))?(?:\s+also)?(?:\s+entered)?"
+    + r"(?:\s+against\s+(?:him|her|them|the\s+defendants?))?"
+)
+# Embedded / trailing clause: ", and a forfeiture money judgment ... against him".
+_FORF_EMBEDDED_RE = re.compile(
+    r"[,;]\s*(?:and\s+|with\s+)?(?:a\s+)?" + _FORF_STATEMENT, re.I
+)
+# Leading clause followed by ", and <rest>": "A forfeiture money judgment ...
+# against him, and he is appealing" -> "He is appealing".
+_FORF_LEADING_RE = re.compile(
+    r"\b(?:A\s+)?" + _FORF_STATEMENT + r",?\s+and\s+(\w)", re.I
+)
+
+
+def _norm_money(raw: str) -> str:
+    """Canonical form of a dollar-amount string for equality compares
+    (commas dropped, trailing cents zeros trimmed): "15,100" / "15100.00" ->
+    "15100"."""
+    s = raw.replace(",", "").strip()
+    if "." in s:
+        s = s.rstrip("0").rstrip(".")
+    return s
+
+
+def _money_amounts(text: str, patterns: list[re.Pattern[str]]) -> set[str]:
+    out: set[str] = set()
+    for rx in patterns:
+        for m in rx.finditer(text):
+            out.add(_norm_money(m.group(1)))
+    return out
+
+
+def _audit_summary_forfeiture(text: str) -> list[str]:
+    """Return a violation when the prose states a forfeiture money judgment
+    whose amount equals a restitution amount it also states (empty == clean).
+
+    Detection only — :func:`_strip_redundant_forfeiture` does the removal and
+    the matching SUMMARY_SYSTEM_PROMPT omission rule explains the why.
+    """
+    if not text:
+        return []
+    restitution = _money_amounts(text, _RESTITUTION_AMOUNT_RES)
+    if not restitution:
+        return []
+    forfeiture = _money_amounts(text, _FORF_JUDGMENT_AMOUNT_RES)
+    dup = sorted(restitution & forfeiture)
+    if dup:
+        return [
+            f"redundant forfeiture money judgment of ${dup[0]} duplicates the "
+            "restitution amount"
+        ]
+    return []
+
+
+def _strip_redundant_forfeiture(text: str) -> str:
+    """Deterministically remove a redundant forfeiture-money-judgment clause.
+
+    The backstop behind the forfeiture retry: after the model has had one
+    correction retry and STILL states a forfeiture money judgment equal to the
+    restitution, the forfeiture clause is excised so the doubled figure cannot
+    reach subscribers. Removes the clause surgically when it is joined to other
+    content (keeping that content — e.g. the trailing "is appealing" clause on
+    an appellate summary), and drops a whole sentence only when the sentence is
+    solely the forfeiture statement.
+    """
+    if not _audit_summary_forfeiture(text):
+        return text
+    redundant = _money_amounts(text, _RESTITUTION_AMOUNT_RES) & _money_amounts(
+        text, _FORF_JUDGMENT_AMOUNT_RES
+    )
+    # Leading-clause shape first (keeps the trailing clause, capitalized).
+    new = _FORF_LEADING_RE.sub(lambda m: m.group(1).upper(), text)
+    # Then embedded / trailing clauses.
+    new = _FORF_EMBEDDED_RE.sub("", new)
+
+    # Any remaining standalone forfeiture-money-judgment sentence carrying a
+    # redundant amount → drop the whole sentence (a per-sentence forfeiture
+    # check, since such a sentence has no restitution amount of its own to
+    # pair with).
+    def _redundant_forf_sentence(s: str) -> bool:
+        for rx in _FORF_JUDGMENT_AMOUNT_RES:
+            if any(_norm_money(m.group(1)) in redundant for m in rx.finditer(s)):
+                return True
+        return False
+
+    if any(_redundant_forf_sentence(s) for s in _split_sentences(new)):
+        new = " ".join(
+            s.strip() for s in _split_sentences(new) if not _redundant_forf_sentence(s)
+        ).strip()
+
+    # Tidy stranded punctuation / doubled spaces left by the excision.
+    new = re.sub(r"\s+([,;.])", r"\1", new)
+    new = re.sub(r"\s{2,}", " ", new).strip()
+    return new or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+
+# Operator-note provenance leak. The AGGREGATION NOTE and any NOTE FROM
+# OPERATOR are trusted CONTEXT for the model, not material to attribute to the
+# subscriber — the fact they carry should be stated directly, never sourced to
+# "the operator" or "the note". The model occasionally leaks the attribution
+# anyway (us-v-knoot: "...; the operator notes that he has appealed his
+# conviction"). Removing the lead-in while keeping the clause is ALWAYS safe
+# (the note is trusted, so the fact stands on its own), so this is a plain
+# deterministic cleanup — no retry, applied unconditionally. Scoped to the
+# operator-AS-SOURCE sense ("the operator notes that ...", "according to the
+# operator", "per the operator's note") so an unrelated "operator" in the prose
+# (a "laptop-farm operator") is untouched.
+_ATTRIB_LEADIN_RE = re.compile(
+    r"(?:the\s+)?(?:operator(?:'s)?(?:[-\s]provided)?\s+note[sd]?|aggregation\s+note)"
+    r"\s+(?:that|states?\s+that|indicates?\s+that|says?\s+that|notes?\s+that"
+    r"|reflects?\s+that)\s+"
+    r"|according\s+to\s+the\s+(?:operator(?:'s)?|(?:provided\s+)?note[s]?)\s*,?\s*"
+    r"|as\s+noted\s+by\s+the\s+operator\s*,?\s*"
+    r"|per\s+the\s+operator(?:'s)?\s+note\s*,?\s*",
+    re.I,
+)
+
+
+def _audit_summary_attribution(text: str) -> list[str]:
+    """Return a violation when the prose attributes a fact to the operator /
+    note as a source (empty == clean). See :func:`_strip_operator_attribution`.
+    """
+    m = _ATTRIB_LEADIN_RE.search(text or "")
+    return [f"operator-note attribution leak: {m.group(0).strip()!r}"] if m else []
+
+
+def _strip_operator_attribution(text: str) -> str:
+    """Remove operator/note attribution lead-ins, keeping the clause they
+    introduce (capitalized when the lead-in opened a sentence).
+
+    "...; the operator notes that he has appealed" -> "...; he has appealed".
+    Always safe — the note is trusted context, so the underlying fact stands on
+    its own; this just strips the provenance the reader should never see.
+    """
+    out: list[str] = []
+    pos = 0
+    for m in _ATTRIB_LEADIN_RE.finditer(text):
+        out.append(text[pos : m.start()])
+        prefix = "".join(out)
+        at_sentence_start = (not prefix.strip()) or bool(
+            re.search(r"[.!?]\s*$", prefix)
+        )
+        pos = m.end()
+        if at_sentence_start:
+            # Capitalize the first letter of the clause we kept.
+            mm = re.match(r"(\s*)([a-zA-Z])", text[pos:])
+            if mm:
+                out.append(mm.group(1) + mm.group(2).upper())
+                pos += mm.end()
+    out.append(text[pos:])
+    new = "".join(out)
+    new = re.sub(r"\s+([,;.])", r"\1", new)
+    new = re.sub(r"\s{2,}", " ", new).strip()
+    return new or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+
 # A clean, substantial dollar figure ($NNN and up). Used to tell whether a
 # restitution order's amount actually extracted vs came through as garbled
 # hand-filled-form OCR.
@@ -1735,6 +1953,69 @@ def _generate_guarded_summary(
                 docket_id,
                 retry_ungrounded or ungrounded,
             )
+
+    # Tier 4 — redundant forfeiture money judgment (forfeiture == restitution).
+    # Retry once asking the model to omit it per the prompt's omission rule; if
+    # it still states the doubled figure, deterministically strip the forfeiture
+    # clause from the known-good draft so the inflated total can't publish.
+    forfeiture = _audit_summary_forfeiture(summary_text)
+    if forfeiture:
+        log.warning(
+            "summary: docket %s draft tripped forfeiture-redundancy guard %s; "
+            "retrying generation once with correction",
+            docket_id,
+            forfeiture,
+        )
+        correction = (
+            "Your draft states a forfeiture money judgment whose dollar amount "
+            "EQUALS the restitution amount. Per the redundant-forfeiture rule, "
+            "OMIT the forfeiture money judgment entirely — report only the "
+            "restitution (and the special assessment, if any). Do not mention "
+            "the forfeiture money judgment or restate its amount."
+        )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction=correction, **gen_kwargs
+        )
+        retry_clean = (
+            not _audit_summary_forfeiture(retry_text)
+            and not _audit_summary_text(retry_text, source_text=source_text)
+            and not _audit_summary_grounding(
+                retry_text, known_dates=known_dates, source_text=source_text
+            )
+        )
+        if retry_clean:
+            log.info(
+                "summary: docket %s retry cleared the forfeiture-redundancy guard",
+                docket_id,
+            )
+            summary_text, model_id = retry_text, retry_model
+        else:
+            # The retry didn't come back fully clean — keep the known-good draft
+            # and excise the forfeiture clause deterministically rather than
+            # adopt a retry that may have regressed elsewhere.
+            summary_text = _strip_redundant_forfeiture(summary_text)
+            log.warning(
+                "summary: docket %s STILL stated a redundant forfeiture money "
+                "judgment after retry; stripped the forfeiture clause from the "
+                "draft — verify against the docket",
+                docket_id,
+            )
+
+    # Operator-note provenance leak — the aggregation_note / NOTE FROM OPERATOR
+    # are context FOR the model, not material to attribute to subscribers. The
+    # model sometimes writes "the operator notes that ..." (us-v-knoot). The
+    # fact is trusted, so stripping just the attribution lead-in (keeping the
+    # clause) is always safe — a deterministic cleanup, no retry needed.
+    if _audit_summary_attribution(summary_text):
+        # The audit matched the lead-in, so the strip is guaranteed to change
+        # the text (it removes that match) — no need to re-compare.
+        log.warning(
+            "summary: docket %s removed operator-note attribution leak "
+            "('the operator notes ...') — the note is context, not "
+            "subscriber-facing material",
+            docket_id,
+        )
+        summary_text = _strip_operator_attribution(summary_text)
     return summary_text, model_id
 
 
@@ -2052,17 +2333,30 @@ def summarize_docket(
         # "case opened, notice of appeal from <lower court>" entry, which
         # the primary-document regex correctly refuses to match. Borrow
         # the primary text from a sibling docket on the same case_id so
-        # we still get a summary; this docket's own entries continue to
-        # supply dispositions and the structured-events scaffold so the
-        # framing stays appellate-perspective rather than collapsing into
-        # the trial-court narrative.
-        primary_documents = _borrow_primary_from_siblings(
+        # we still get a summary, AND borrow the sibling's dispositions —
+        # the conviction/sentence being appealed lives only on the
+        # trial-court docket, so without them the appellate summary can
+        # only describe the charges and never the outcome under review.
+        # The structured-events scaffold below still supplies this
+        # docket's own appellate posture, so the framing stays
+        # appellate-perspective rather than collapsing into the
+        # trial-court narrative.
+        primary_documents, borrowed_dispositions = _borrow_primary_from_siblings(
             cl=cl,
             store=store,
             case=case,
             primary_docket_id=docket_id,
             allow_ocr=allow_ocr,
         )
+        if borrowed_dispositions:
+            # Merge with any disposition this docket carries on its own
+            # (e.g. an appellate ruling), de-duped by entry id — entries
+            # from a different docket can't collide, so this is belt-and-
+            # suspenders for the future appellate-disposition case.
+            seen_ids = {d.get("entry_id") for d in disposition_documents}
+            disposition_documents = disposition_documents + [
+                d for d in borrowed_dispositions if d.get("entry_id") not in seen_ids
+            ]
 
     if not primary_documents and not extra_documents:
         # No extractable document text on this docket. Two distinct
