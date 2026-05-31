@@ -121,8 +121,8 @@ the primary text extraction has already failed.
 
 ## Optional: calendar push backends
 
-By default Case Calendar writes an ICS file you can subscribe to. If you'd
-rather have events show up directly in Google Calendar or Microsoft 365 /
+By default Case Calendar writes an ICS file [you can subscribe to](subscribing.md).
+If you'd rather have events show up directly in Google Calendar or Microsoft 365 /
 Outlook, see the [calendar backends](calendars.md) page for the one-time
 OAuth setup. Both are opt-in and require no per-command flag once
 authorized.
