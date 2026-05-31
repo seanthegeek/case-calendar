@@ -988,8 +988,9 @@ class TestVerifyDeadline:
         monkeypatch.setattr(
             providers,
             "_call_gemini",
-            lambda *a,
-            **kw: '{"type": "RESCHEDULE_HEARING", "local_date": "2026-06-15"}',
+            lambda *a, **kw: (
+                '{"type": "RESCHEDULE_HEARING", "local_date": "2026-06-15"}'
+            ),
         )
         out = llm.verify_deadline(
             case_name="x",
