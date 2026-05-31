@@ -51,21 +51,21 @@ canonical type above:
   prefer status_conference (the modality lives in `location`/`dial_in`).
 
 Action types:
-- ADD            — entry schedules a brand-new hearing not in the known list.
+- ADD_HEARING            — entry schedules a brand-new hearing not in the known list.
                    REQUIRES an explicit hearing date in the entry text or PDF.
                    A motion REQUESTING a hearing, a plea agreement, or any
                    filing that merely anticipates a future hearing is NOT an
-                   ADD — it's IGNORE. The actual scheduling order will arrive
+                   ADD_HEARING — it's IGNORE. The actual scheduling order will arrive
                    as a later entry; we'd rather pick it up clean than create
                    a date-less ghost now.
-- RESCHEDULE     — entry moves an existing known hearing (match by hearing_key).
+- RESCHEDULE_HEARING     — entry moves an existing known hearing (match by hearing_key).
 - UPDATE_DETAILS — entry adds dial-in, courtroom, judge, or notes for a known
                    hearing without moving it.
-- CANCEL         — entry cancels (vacates) a known hearing without rescheduling.
-                   ALWAYS include `local_date` on CANCEL: the date the cancelled
+- CANCEL_HEARING         — entry cancels (vacates) a known hearing without rescheduling.
+                   ALWAYS include `local_date` on CANCEL_HEARING: the date the cancelled
                    hearing was scheduled for. If the hearing isn't in the known
                    list (its original scheduling entry was filtered out before
-                   reaching the LLM), emit CANCEL with the date anyway — the
+                   reaching the LLM), emit CANCEL_HEARING with the date anyway — the
                    system will insert a new row directly into 'cancelled'
                    status so the audit trail captures the adjournment.
 - MARK_HELD      — entry indicates a hearing was held / completed (minute entry,
@@ -82,8 +82,8 @@ Action types:
                    hearing held on date X and NO known hearing has a
                    `starts_utc` within 2 days of X (same hearing type, same
                    defendant), do NOT shoehorn it onto a similar-but-different
-                   row. Emit ADD with status implicit-held instead — i.e.
-                   ADD with `local_date`=X and the hearing_key for a brand-new
+                   row. Emit ADD_HEARING with status implicit-held instead — i.e.
+                   ADD_HEARING with `local_date`=X and the hearing_key for a brand-new
                    hearing. The system will create a new row and the auto-held
                    sweep will mark it held. Same-day proceedings of different
                    types (e.g. CIPA hearing AND status conference both on 3/8)
@@ -99,7 +99,7 @@ CRITICAL — distinguish a Motion for Hearing from an Order granting one:
   "Calendar Call set for ..." / "Jury Trial set for ..." — this IS the
   scheduling order. The court has set the date(s). Extract every date the
   order sets. If a date matches an existing known hearing of the same type
-  for the same defendant, RESCHEDULE it; otherwise ADD. Do NOT IGNORE just
+  for the same defendant, RESCHEDULE_HEARING it; otherwise ADD_HEARING. Do NOT IGNORE just
   because the order's first words contain "Motion for Hearing" — read the
   whole entry, including any attached PDF text, before deciding.
 
@@ -107,14 +107,14 @@ CRITICAL — continuances. Motions to Continue (and Motions to Extend
 Deadlines) are about MOVING an existing hearing or deadline. The only
 interesting effect on the calendar is the new trial / hearing date. So:
 - An "ORDER granting Motion to Continue ... Trial reset to <date>" → emit
-  RESCHEDULE on the trial hearing_key with the new date. Do NOT also ADD
+  RESCHEDULE_HEARING on the trial hearing_key with the new date. Do NOT also ADD_HEARING
   a separate "Motion to Continue" hearing for the conference where the
   ruling happened, even if that conference had its own date/time.
 - A "MOTION to Continue" / "MOTION to Extend" filing by itself (no order
   yet) → IGNORE. The reschedule will land when the court rules.
 - A "Telephonic Conference Call – Motion to Continue" / "Status call to
   rule on Motion to Continue" entry with a date but no ruling yet → if
-  you must emit anything for the call itself, ADD with significance="minor"
+  you must emit anything for the call itself, ADD_HEARING with significance="minor"
   so it stays off the calendar. Prefer IGNORE when the call's only purpose
   is scheduling housekeeping and no substantive issue will be argued.
 The user wants ONE trial row that moves as the continuances stack up, not
@@ -122,14 +122,14 @@ a parade of continuance events. When in doubt, push the date change onto
 the trial / hearing row and skip creating a new row for the procedural
 machinery around it.
 
-CRITICAL — CANCEL / MARK_HELD need EXPLICIT GROUNDING; never inference.
-To emit CANCEL, the entry being processed (or one in RELATED DOCKET
+CRITICAL — CANCEL_HEARING / MARK_HELD need EXPLICIT GROUNDING; never inference.
+To emit CANCEL_HEARING, the entry being processed (or one in RELATED DOCKET
 ENTRIES) must explicitly state the hearing is vacated, cancelled, struck,
 withdrawn, terminated, adjourned, continued without a new date, or that
 the underlying case/charges are dismissed. To emit MARK_HELD, the entry
 must explicitly state the hearing happened (minute entry "held on",
 verdict, transcript, judgment-after). The following are NOT grounds and
-must NEVER trigger CANCEL or MARK_HELD on their own:
+must NEVER trigger CANCEL_HEARING or MARK_HELD on their own:
 
 - Another row's status in `known_hearings`. A `held` Change-of-Plea or
   `held` Sentencing for ONE defendant does NOT vacate or "hold" a Trial
@@ -149,7 +149,7 @@ must NEVER trigger CANCEL or MARK_HELD on their own:
 - A trial date passing in a case where ANY plea was entered. Trials in
   co-defendant cases are not automatically vacated by one defendant's plea.
 
-If you're tempted to emit CANCEL or MARK_HELD from inference rather than
+If you're tempted to emit CANCEL_HEARING or MARK_HELD from inference rather than
 explicit docket text in the entry being processed, emit IGNORE instead.
 
 `notes` echoes what the entry says — NO inferred commentary. The
@@ -210,7 +210,7 @@ initial appearance and is correct.
 The new entry is still the source of truth for dates; the related
 entries are context only.
 
-For ADD actions you MUST invent a stable `hearing_key` — a short kebab-case slug
+For ADD_HEARING actions you MUST invent a stable `hearing_key` — a short kebab-case slug
 that identifies this logical hearing within the case ACROSS reschedules.
 
 CRITICAL hearing_key rules:
@@ -229,7 +229,7 @@ CRITICAL hearing_key rules:
   or status=cancelled. If you see "status-conf-knoot" (held) and
   "status-conf-knoot-2" (held), the next new one is "status-conf-knoot-3".
 
-For RESCHEDULE / UPDATE_DETAILS / CANCEL / MARK_HELD: always copy the
+For RESCHEDULE_HEARING / UPDATE_DETAILS / CANCEL_HEARING / MARK_HELD: always copy the
 matching hearing_key from the known list VERBATIM — never invent a variant.
 If the entry plainly relates to a hearing already in the known list
 (same defendant, same hearing type), use that key even if the date or
@@ -237,7 +237,7 @@ time differs. The whole point of these actions is to update the existing
 row rather than create a duplicate calendar event.
 
 CRITICAL — same-slot rule: a single court cannot hold two hearings on one
-docket at the same date and time. If you would ADD a hearing whose date+time
+docket at the same date and time. If you would ADD_HEARING a hearing whose date+time
 falls on an existing entry in `known_hearings` on the SAME docket, do NOT
 allocate a new hearing_key — emit UPDATE_DETAILS on the existing key
 instead. This applies even when the new entry's vocabulary differs from
@@ -247,14 +247,14 @@ Judgment" is the SAME event; preserve the existing key).
 
 CRITICAL — cross-docket rule: each known hearing has a `docket_id` showing
 which docket it lives on; the new entry has its own `docket_id`. NEVER
-apply RESCHEDULE / UPDATE_DETAILS / CANCEL / MARK_HELD to a known hearing
+apply RESCHEDULE_HEARING / UPDATE_DETAILS / CANCEL_HEARING / MARK_HELD to a known hearing
 whose docket_id differs from the entry's docket_id. Multi-docket cases
 aggregate sibling dockets (e.g. district court + appellate court) under
 one case_id, but each docket holds its OWN hearings: the appellate oral
 argument and the district-court motion hearing are different events at
 different courthouses with different judges. If an entry from docket A
 references a hearing on docket B, treat it as informational only and
-issue ADD with a new hearing_key (or IGNORE if the entry isn't itself
+issue ADD_HEARING with a new hearing_key (or IGNORE if the entry isn't itself
 scheduling something).
 
 Date/time rules:
@@ -271,14 +271,14 @@ Date/time rules:
   local_time. The caller uses the court's IANA timezone to handle DST
   correctly. Example: "March 10, 2026 at 3:00PM (PST)" → local_time "15:00".
 
-Significance — set on every ADD / RESCHEDULE / UPDATE_DETAILS action so the
+Significance — set on every ADD_HEARING / RESCHEDULE_HEARING / UPDATE_DETAILS action so the
 calendar layer knows whether to surface this to subscribers.
 
 Apply the rules in order; stop at the first one that matches.
 
 RULE 1 — Classify the proceeding's NATURE, not its outcome or context.
 The hearing's status (scheduled / held / cancelled), the action that
-produced this row (ADD / RESCHEDULE / etc.), and the specific docket
+produced this row (ADD_HEARING / RESCHEDULE_HEARING / etc.), and the specific docket
 entry that triggered the row are all CONTEXT. They do not affect
 significance. A cancelled trial is still major. A rescheduled MSJ
 hearing is still major. A status conference scheduled by a joint
@@ -360,10 +360,10 @@ Return ONLY a JSON object, no markdown fences, no explanation:
 {
   "actions": [
     {
-      "type": "ADD" | "RESCHEDULE" | "UPDATE_DETAILS" | "CANCEL" | "MARK_HELD" | "IGNORE",
+      "type": "ADD_HEARING" | "RESCHEDULE_HEARING" | "UPDATE_DETAILS" | "CANCEL_HEARING" | "MARK_HELD" | "IGNORE",
       "hearing_key": "string",
-      "hearing_type": "string",        // required for ADD
-      "title": "string",               // human-readable, required for ADD/RESCHEDULE
+      "hearing_type": "string",        // required for ADD_HEARING
+      "title": "string",               // human-readable, required for ADD_HEARING/RESCHEDULE_HEARING
       "local_date": "YYYY-MM-DD" | null,
       "local_time": "HH:MM" | null,
       "duration_minutes": int | null,  // best guess; null if unknown
@@ -406,7 +406,7 @@ array):
 - ADD_DEADLINE          — entry sets a brand-new filing deadline. REQUIRES an
                           explicit due date in the entry text or PDF. A motion
                           REQUESTING an extension, or a proposed-but-not-yet-
-                          ordered stipulation, is NOT an ADD — that's IGNORE;
+                          ordered stipulation, is NOT an ADD_HEARING — that's IGNORE;
                           the order granting it (which sets the new date) is
                           the actual scheduling event.
 - RESCHEDULE_DEADLINE   — entry moves an existing known deadline to a new
@@ -558,7 +558,7 @@ deadline actions:
       "type": "ADD_DEADLINE" | "RESCHEDULE_DEADLINE" | "CANCEL_DEADLINE" | "MARK_FILED",
       "deadline_key": "string",
       "deadline_type": "string" | null,
-      "title": "string",            // required for ADD/RESCHEDULE
+      "title": "string",            // required for ADD_HEARING/RESCHEDULE_HEARING
       "local_date": "YYYY-MM-DD" | null,
       "local_time": "HH:MM" | null, // optional; only when entry states a specific time
       "conditional": true | false,  // ADD_DEADLINE only; true when local_date
@@ -576,14 +576,14 @@ deadline actions:
 
 It is fine — and common — for one entry to emit BOTH hearing actions and
 deadline actions. A scheduling order that sets a hearing date and a briefing
-schedule should emit one ADD plus several ADD_DEADLINE entries.
+schedule should emit one ADD_HEARING plus several ADD_DEADLINE entries.
 ````
 
 ## Row verify pass — `VERIFY_SYSTEM_PROMPT`
 
 [Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L910)
 
-The end-of-sync per-row confidence pass. One unified prompt handles BOTH hearings AND filing deadlines — the user message labels which kind ("CANDIDATE HEARING" or "CANDIDATE DEADLINE") and the system prompt has type-tagged action types (HEARING-ONLY: `MARK_HELD`, `REINSTATE`; DEADLINE-ONLY: `MARK_FILED`; common to both: `CONFIRM` / `RESCHEDULE` / `CANCEL` / `DELETE_HALLUCINATION` / `UNCLEAR`). Before 0.11.0 this was two separate prompts (`VERIFY_SYSTEM_PROMPT` + `VERIFY_DEADLINE_SYSTEM_PROMPT`); the merge consolidates them so the prompt can clear Anthropic's Haiku 4.5 prompt-cache token floor (2048 tokens), though as of 0.11.0 the merged prompt landed ~50 tokens short of the floor in measured tokens — see the changelog's "Known limitations" note.
+The end-of-sync per-row confidence pass. One unified prompt handles BOTH hearings AND filing deadlines — the user message labels which kind ("CANDIDATE HEARING" or "CANDIDATE DEADLINE") and the system prompt has type-tagged action types (HEARING-ONLY: `MARK_HELD`, `REINSTATE`; DEADLINE-ONLY: `MARK_FILED`; common to both: `CONFIRM` / `RESCHEDULE_HEARING` / `CANCEL_HEARING` / `DELETE_HALLUCINATION` / `UNCLEAR`). Before 0.11.0 this was two separate prompts (`VERIFY_SYSTEM_PROMPT` + `VERIFY_DEADLINE_SYSTEM_PROMPT`); the merge consolidates them so the prompt can clear Anthropic's Haiku 4.5 prompt-cache token floor (2048 tokens), though as of 0.11.0 the merged prompt landed ~50 tokens short of the floor in measured tokens — see the changelog's "Known limitations" note.
 
 The model sees the candidate row plus a window of hearing-relevant docket entries: (1) the most recent on its docket, (2) the entries filed around the row's own date (so a past hearing's outcome record — a minute entry or judgment filed days later — is in context even when later filings pushed it out of the recent window), and (3) **the row's source entries** — the docket entries that originally allocated the row, included since 0.11.0 to make the model's DELETE_HALLUCINATION rule satisfiable when the scheduling order is older than both other windows. Without source entries in the context, the model's "you've seen the original source entry and concluded it does NOT actually schedule this row" precondition can't be met for old rows, and the model breaks the rule rather than picking UNCLEAR at temperature=0. Pairs with a deterministic guard in `CaseSyncer._delete_hallucination_allowed` that downgrades any DELETE_HALLUCINATION verdict to UNCLEAR if the model couldn't have seen all of the row's source entries.
 
@@ -610,7 +610,7 @@ Common to BOTH hearings and deadlines:
   means "the cancellation is supported by an explicit docket entry" (a
   vacatur order, plea agreement, dismissal, etc.).
 
-- {"type": "RESCHEDULE", "local_date": "YYYY-MM-DD",
+- {"type": "RESCHEDULE_HEARING", "local_date": "YYYY-MM-DD",
    "local_time": "HH:MM"|null, "reason": "..."}
   Recent entries show the row was moved to a new date/time.
   HEARINGS: include local_time (HH:MM) when the new entry specifies one;
@@ -619,7 +619,7 @@ Common to BOTH hearings and deadlines:
   rarely have wall-clock times — the renderer fills in court-local end
   of day when unset).
 
-- {"type": "CANCEL", "reason": "..."}
+- {"type": "CANCEL_HEARING", "reason": "..."}
   Recent entries show the row was vacated / cancelled / superseded (plea
   agreement moots trial; motion withdrawn; case dismissed; briefing
   schedule replaced wholesale). Only valid on a 'scheduled' / 'pending'

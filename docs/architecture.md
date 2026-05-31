@@ -26,7 +26,7 @@ CourtListener docket
           ▼
 ┌───────────────────┐
 │ LLM extractor     │  small/fast tier (Claude Haiku, Gemini Flash Lite, gpt-5.4-nano);
-│ per docket entry  │  returns ADD / RESCHEDULE / CANCEL / MARK_HELD / ...
+│ per docket entry  │  returns ADD_HEARING / RESCHEDULE_HEARING / CANCEL_HEARING / MARK_HELD / ...
 └─────────┬─────────┘
           │
           ▼
@@ -169,8 +169,8 @@ Courts describe hearings inconsistently. The same event can show up as:
 
 Maintaining regexes per court is a treadmill — and a new clerk's habits
 break them silently. Instead, the LLM sees the entry plus the case's
-known-hearings list, and decides `ADD` vs `RESCHEDULE` vs `UPDATE` vs
-`CANCEL` in one call. A cheap regex pre-filter still runs before the LLM
+known-hearings list, and decides `ADD_HEARING` vs `RESCHEDULE_HEARING` vs `UPDATE` vs
+`CANCEL_HEARING` in one call. A cheap regex pre-filter still runs before the LLM
 to drop the obvious non-hearings (briefs, attorney appearances, sealed
 placeholders) for free.
 
@@ -239,8 +239,8 @@ filed around the row's own date, *and* the row's source entries (the
 docket entries that originally allocated it) — and returns one of:
 
 - `CONFIRM` — no-op.
-- `RESCHEDULE` — the docket says the row moved; update.
-- `CANCEL` — the docket vacated it.
+- `RESCHEDULE_HEARING` — the docket says the row moved; update.
+- `CANCEL_HEARING` — the docket vacated it.
 - `MARK_HELD` *(hearings only)* — there's evidence the hearing happened
   (minute entry, verdict, transcript, judgment).
 - `MARK_FILED` *(deadlines only)* — the required filing was made.

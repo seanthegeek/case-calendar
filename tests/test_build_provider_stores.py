@@ -52,13 +52,13 @@ def test_action_brief_type_only():
 def test_action_brief_full():
     b = mod._action_brief(
         {
-            "type": "add",
+            "type": "add_hearing",
             "hearing_key": "sentencing-wang",
             "significance": "major",
             "local_date": "2026-06-03",
         }
     )
-    assert b.startswith("ADD(")
+    assert b.startswith("ADD_HEARING(")
     assert "sentencing-wang" in b and "major" in b and "2026-06-03" in b
 
 
@@ -87,11 +87,17 @@ def test_format_decision_extract():
             "docket_id": 99,
             "entry": {"id": 7, "short_description": "Order setting Jury Trial"},
         },
-        [{"type": "add", "hearing_key": "jury-trial-wang", "significance": "major"}],
+        [
+            {
+                "type": "add_hearing",
+                "hearing_key": "jury-trial-wang",
+                "significance": "major",
+            }
+        ],
     )
     assert "extract docket=99 entry=7" in out
     assert "Order setting Jury Trial" in out
-    assert "jury-trial-wang" in out and "ADD" in out
+    assert "jury-trial-wang" in out and "ADD_HEARING" in out
 
 
 def test_format_decision_extract_no_actions():
@@ -210,14 +216,14 @@ def test_drop_decisions_filter():
 
 
 def test_wrap_llm_logs_decision_and_returns(monkeypatch, caplog):
-    sentinel = [{"type": "add", "hearing_key": "k1", "significance": "major"}]
+    sentinel = [{"type": "add_hearing", "hearing_key": "k1", "significance": "major"}]
     monkeypatch.setattr(mod.llm, "extract_actions", lambda **k: sentinel)
     wrapped = mod._wrap_llm("extract_actions", "extract")
     mod._TL.provider = "openai"
     with caplog.at_level(logging.INFO, logger=mod._DLOG.name):
         result = wrapped(entry={"id": 5, "short_description": "Order"}, docket_id=9)
     assert result is sentinel  # real result passed through unchanged
-    assert any("k1" in r.message and "ADD" in r.message for r in caplog.records)
+    assert any("k1" in r.message and "ADD_HEARING" in r.message for r in caplog.records)
 
 
 def test_wrap_llm_silent_without_provider(monkeypatch, caplog):

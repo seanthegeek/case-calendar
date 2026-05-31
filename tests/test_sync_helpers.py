@@ -377,7 +377,7 @@ class TestValidateActionDialIn:
             called.append(url)
 
         monkeypatch.setattr(url_validator, "validate_url", _fake)
-        action = {"type": "ADD"}
+        action = {"type": "ADD_HEARING"}
         _validate_action_dial_in(action)
         assert called == []
         assert "dial_in" not in action
@@ -477,9 +477,9 @@ class TestNormalizeActionCategory:
     def test_hearing_types_with_deadline_key_coerce_to_deadline_types(self):
         # Full coercion grid for the hearing→deadline direction.
         for src, dst in [
-            ("ADD", "ADD_DEADLINE"),
-            ("RESCHEDULE", "RESCHEDULE_DEADLINE"),
-            ("CANCEL", "CANCEL_DEADLINE"),
+            ("ADD_HEARING", "ADD_DEADLINE"),
+            ("RESCHEDULE_HEARING", "RESCHEDULE_DEADLINE"),
+            ("CANCEL_HEARING", "CANCEL_DEADLINE"),
             ("MARK_HELD", "MARK_FILED"),
         ]:
             out = _normalize_action_category({"type": src, "deadline_key": "x"})
@@ -490,9 +490,9 @@ class TestNormalizeActionCategory:
     def test_deadline_types_with_hearing_key_coerce_to_hearing_types(self):
         # Reverse direction — same logic.
         for src, dst in [
-            ("ADD_DEADLINE", "ADD"),
-            ("RESCHEDULE_DEADLINE", "RESCHEDULE"),
-            ("CANCEL_DEADLINE", "CANCEL"),
+            ("ADD_DEADLINE", "ADD_HEARING"),
+            ("RESCHEDULE_DEADLINE", "RESCHEDULE_HEARING"),
+            ("CANCEL_DEADLINE", "CANCEL_HEARING"),
             ("MARK_FILED", "MARK_HELD"),
         ]:
             out = _normalize_action_category({"type": src, "hearing_key": "x"})
@@ -502,7 +502,7 @@ class TestNormalizeActionCategory:
 
     def test_matching_type_and_key_unchanged(self):
         # Hearing-typed action with hearing_key — no coercion needed.
-        action = {"type": "ADD", "hearing_key": "sentencing-knoot"}
+        action = {"type": "ADD_HEARING", "hearing_key": "sentencing-knoot"}
         assert _normalize_action_category(action) is action
 
         action = {"type": "RESCHEDULE_DEADLINE", "deadline_key": "reply-mtd"}
@@ -522,7 +522,9 @@ class TestNormalizeActionCategory:
     def test_action_with_no_keys_does_not_coerce(self):
         # No key means downstream will warn and drop — no information
         # to coerce on. Don't invent a category.
-        assert _normalize_action_category({"type": "ADD"})["type"] == "ADD"
+        assert (
+            _normalize_action_category({"type": "ADD_HEARING"})["type"] == "ADD_HEARING"
+        )
 
     def test_unknown_type_passes_through(self):
         # IGNORE / UNCLEAR / typos / etc. — anything not in the

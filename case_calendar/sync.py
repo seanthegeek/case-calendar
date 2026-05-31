@@ -236,16 +236,16 @@ def _validate_action_dial_in(action: dict[str, Any]) -> None:
 # judge, courtroom, dial-in to update), so a RESCHEDULE_DEADLINE with the
 # same date covers the same intent.
 _HEARING_TO_DEADLINE_TYPE: dict[str, str] = {
-    "ADD": "ADD_DEADLINE",
-    "RESCHEDULE": "RESCHEDULE_DEADLINE",
+    "ADD_HEARING": "ADD_DEADLINE",
+    "RESCHEDULE_HEARING": "RESCHEDULE_DEADLINE",
     "UPDATE_DETAILS": "RESCHEDULE_DEADLINE",
-    "CANCEL": "CANCEL_DEADLINE",
+    "CANCEL_HEARING": "CANCEL_DEADLINE",
     "MARK_HELD": "MARK_FILED",
 }
 _DEADLINE_TO_HEARING_TYPE: dict[str, str] = {
-    "ADD_DEADLINE": "ADD",
-    "RESCHEDULE_DEADLINE": "RESCHEDULE",
-    "CANCEL_DEADLINE": "CANCEL",
+    "ADD_DEADLINE": "ADD_HEARING",
+    "RESCHEDULE_DEADLINE": "RESCHEDULE_HEARING",
+    "CANCEL_DEADLINE": "CANCEL_HEARING",
     "MARK_FILED": "MARK_HELD",
 }
 
@@ -676,7 +676,7 @@ class CaseSyncer:
         # get continued or vacated by plea without an explicit cancellation
         # entry; the auto-held heuristic was wrong by default for them.)
         stats["verified"] = self._verify_scheduled_hearings(case)
-        # Run dedupe AFTER verify so any RESCHEDULE / CANCEL from verify
+        # Run dedupe AFTER verify so any RESCHEDULE_HEARING / CANCEL_HEARING from verify
         # gets a chance to clear concurrency before we ask the LLM to
         # resolve it.
         stats["deduped"] = self._dedupe_concurrent_hearings(case)
@@ -781,7 +781,7 @@ class CaseSyncer:
         ``cancelled`` row. The action grid:
 
         - For ``scheduled`` rows the LLM returns CONFIRM (no-op),
-          RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, or
+          RESCHEDULE_HEARING, CANCEL_HEARING, MARK_HELD, DELETE_HALLUCINATION, or
           UNCLEAR. Past-dated rows require explicit evidence
           (minute entry / verdict / transcript / judgment-after) for
           MARK_HELD — date-passed alone is not enough. Trials and other
@@ -934,7 +934,7 @@ class CaseSyncer:
         sources = list(hearing.get("source_entry_ids") or [])
         audit_note: Optional[str] = None
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "Cancelled per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
@@ -966,12 +966,12 @@ class CaseSyncer:
             audit_note = action.get("reason") or (
                 "Cancellation not supported by docket; reinstated to scheduled"
             )
-        elif atype == "RESCHEDULE":
+        elif atype == "RESCHEDULE_HEARING":
             local_date = action.get("local_date")
             local_time = action.get("local_time")
             if not local_date:
                 log.warning(
-                    "verify RESCHEDULE without local_date: case=%s key=%r",
+                    "verify RESCHEDULE_HEARING without local_date: case=%s key=%r",
                     case.case_id,
                     hearing.get("hearing_key"),
                 )
@@ -1302,7 +1302,7 @@ class CaseSyncer:
         sources = list(deadline.get("source_entry_ids") or [])
         audit_note: Optional[str] = None
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             merged["status"] = "cancelled"
             audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
@@ -1320,11 +1320,11 @@ class CaseSyncer:
             )
         elif atype == "MARK_FILED":
             merged["status"] = "met"
-        elif atype == "RESCHEDULE":
+        elif atype == "RESCHEDULE_HEARING":
             local_date = action.get("local_date")
             if not local_date:
                 log.warning(
-                    "verify_deadline RESCHEDULE without local_date: case=%s key=%r",
+                    "verify_deadline RESCHEDULE_HEARING without local_date: case=%s key=%r",
                     case.case_id,
                     deadline.get("deadline_key"),
                 )
@@ -1407,12 +1407,12 @@ class CaseSyncer:
     ) -> None:
         """Insert a brand-new hearing directly into a terminal status.
 
-        Used when CANCEL or MARK_HELD targets a hearing_key that isn't in
+        Used when CANCEL_HEARING or MARK_HELD targets a hearing_key that isn't in
         the store — typically because its original scheduling entry was
         filtered out by the prefilter, but a later memo/minute entry
         explicitly tells us a hearing existed and is now adjourned/held.
         Preserves the audit trail without depending on the LLM emitting
-        an ADD-then-CANCEL pair.
+        an ADD_HEARING-then-CANCEL_HEARING pair.
         """
         local_date = action.get("local_date")
         local_time = action.get("local_time")
@@ -1492,7 +1492,7 @@ class CaseSyncer:
         # Restrict known-events context to siblings in the same court.
         # Parallel proceedings in different venues must not feed each other's
         # context — a "stay appellate proceedings" order in court B would
-        # otherwise contaminate court A's events with bogus CANCEL actions.
+        # otherwise contaminate court A's events with bogus CANCEL_HEARING actions.
         # Co-defendant dockets in the same court (multi-defendant criminal
         # cases) still aggregate correctly.
         known = self.store.get_hearings_in_court(case.case_id, court_id)
@@ -1629,14 +1629,14 @@ class CaseSyncer:
             log.warning("action without hearing_key: %s", action)
             return
 
-        # ADD requires a date. Date-less ADDs come from entries that anticipate
-        # a hearing without scheduling it (motion-for-hearing, plea agreement,
-        # etc.) — they create ghost rows that never get a starts_at_utc and
-        # never appear on the calendar. Drop them; the actual scheduling order
-        # will come through later as its own entry.
-        if atype == "ADD" and not action.get("local_date"):
+        # ADD_HEARING requires a date. Date-less ADD_HEARINGs come from entries
+        # that anticipate a hearing without scheduling it (motion-for-hearing,
+        # plea agreement, etc.) — they create ghost rows that never get a
+        # starts_at_utc and never appear on the calendar. Drop them; the actual
+        # scheduling order will come through later as its own entry.
+        if atype == "ADD_HEARING" and not action.get("local_date"):
             log.warning(
-                "skipping date-less ADD: case=%s key=%r entry=%s "
+                "skipping date-less ADD_HEARING: case=%s key=%r entry=%s "
                 "(LLM should have IGNOREd; treating as such)",
                 case.case_id,
                 key,
@@ -1674,13 +1674,13 @@ class CaseSyncer:
         if eid not in prev_sources:
             prev_sources.append(eid)
 
-        # docket_id is sticky after first ADD — sibling-docket entries can
-        # touch a hearing (CANCEL, MARK_HELD, etc.) but the hearing's
+        # docket_id is sticky after first ADD_HEARING — sibling-docket entries can
+        # touch a hearing (CANCEL_HEARING, MARK_HELD, etc.) but the hearing's
         # canonical home docket (which feeds the description's case citation
         # and CourtListener link) shouldn't drift to whichever docket touched it last.
         sticky_docket_id = existing.get("docket_id") if existing else docket_id
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             if existing:
                 merged = dict(existing)
                 merged.update(
@@ -1706,7 +1706,7 @@ class CaseSyncer:
                 )
             else:
                 log.warning(
-                    "CANCEL on unknown key with no local_date: "
+                    "CANCEL_HEARING on unknown key with no local_date: "
                     "case=%s key=%r entry=%s — dropping",
                     case.case_id,
                     key,
@@ -1739,7 +1739,7 @@ class CaseSyncer:
                 )
                 self.store.upsert_hearing(merged)
             elif action.get("local_date"):
-                # Same as CANCEL-on-unknown: a minute entry for a hearing
+                # Same as CANCEL_HEARING-on-unknown: a minute entry for a hearing
                 # we never saw scheduled. Insert directly into 'held'.
                 self._insert_terminal_hearing(
                     case,
@@ -1760,7 +1760,7 @@ class CaseSyncer:
                 )
             return
 
-        # ADD / RESCHEDULE / UPDATE_DETAILS — figure out the new field set.
+        # ADD_HEARING / RESCHEDULE_HEARING / UPDATE_DETAILS — figure out the new field set.
         local_date = action.get("local_date")
         local_time = action.get("local_time")
 
@@ -1775,13 +1775,13 @@ class CaseSyncer:
         # to the default keeps zero-length blips out of subscribers' calendars.
         # We also treat an EXISTING duration of 0 as "unknown" so a follow-up
         # UPDATE_DETAILS can repair a hearing that was first inserted by an
-        # entry that didn't know the duration (e.g. an ADD whose entry didn't
+        # entry that didn't know the duration (e.g. an ADD_HEARING whose entry didn't
         # specify length, then a later UPDATE_DETAILS that also doesn't —
         # without this, the row stays pinned at 0 forever). For date-only
         # all-day events, _default_duration with time_set=False returns 0,
         # so we still land on 0 in that case — no regression.
         duration = action.get("duration_minutes") or None
-        if duration is None and existing and atype != "RESCHEDULE":
+        if duration is None and existing and atype != "RESCHEDULE_HEARING":
             duration = existing.get("duration_minutes") or None
         if duration is None:
             duration = _default_duration(action.get("hearing_type"), bool(local_time))
@@ -1794,7 +1794,7 @@ class CaseSyncer:
         sticky_tz = existing.get("timezone") if existing else tz
 
         # Significance: stickier than other fields because the LLM rarely sets
-        # it on UPDATE_DETAILS / RESCHEDULE. If the new action has it, prefer
+        # it on UPDATE_DETAILS / RESCHEDULE_HEARING. If the new action has it, prefer
         # that; otherwise keep what we already had.
         significance = action.get("significance") or (
             existing.get("significance") if existing else None

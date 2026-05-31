@@ -1639,7 +1639,7 @@ class TestSummaryStalePostureChange:
         assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
 
     def test_incoming_null_docket_resolves_via_prior_row(self, store: Store):
-        # A sibling-docket CANCEL passes docket_id=None (sticky-docket logic);
+        # A sibling-docket CANCEL_HEARING passes docket_id=None (sticky-docket logic);
         # the flip must still resolve the docket via the prior row.
         self._cache_docket(store, self.HDID)
         store.upsert_hearing(_hearing(docket_id=self.HDID, status="scheduled"))
@@ -1702,7 +1702,7 @@ class TestSummaryStalePostureChange:
         assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is False
 
     def test_deadline_incoming_null_docket_resolves_via_prior_row(self, store: Store):
-        # Mirror of the hearing case: a sibling-docket CANCEL passes
+        # Mirror of the hearing case: a sibling-docket CANCEL_HEARING passes
         # docket_id=None; the flip resolves the docket via the prior row.
         self._cache_docket(store, self.DLID)
         store.upsert_deadline(_deadline(docket_id=self.DLID, status="pending"))

@@ -19,8 +19,8 @@ from case_calendar.llmkit import providers
 
 class TestParseActions:
     def test_clean_json(self):
-        text = '{"actions": [{"type": "ADD", "hearing_key": "x"}]}'
-        assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
+        text = '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x"}]}'
+        assert llm._parse_actions(text) == [{"type": "ADD_HEARING", "hearing_key": "x"}]
 
     def test_strips_markdown_fences(self):
         text = '```json\n{"actions": [{"type": "IGNORE"}]}\n```'
@@ -52,19 +52,21 @@ class TestParseActions:
         # `raw_decode` parses just the first object and ignores the
         # rest.
         text = (
-            '{"actions": [{"type": "RESCHEDULE", "hearing_key": "x"}]}\n'
-            '{"actions": [{"type": "CANCEL", "hearing_key": "y"}]}'
+            '{"actions": [{"type": "RESCHEDULE_HEARING", "hearing_key": "x"}]}\n'
+            '{"actions": [{"type": "CANCEL_HEARING", "hearing_key": "y"}]}'
         )
-        assert llm._parse_actions(text) == [{"type": "RESCHEDULE", "hearing_key": "x"}]
+        assert llm._parse_actions(text) == [
+            {"type": "RESCHEDULE_HEARING", "hearing_key": "x"}
+        ]
 
     def test_trailing_prose_after_json_is_ignored(self):
         # Same fix covers the "valid JSON + trailing commentary" case:
         # the LLM emits the object then narrates what it did.
         text = (
-            '{"actions": [{"type": "ADD", "hearing_key": "x"}]}\n\n'
+            '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x"}]}\n\n'
             "I extracted one hearing from the entry above."
         )
-        assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
+        assert llm._parse_actions(text) == [{"type": "ADD_HEARING", "hearing_key": "x"}]
 
     def test_trailing_brace_in_prose_does_not_corrupt_parse(self):
         # The old `rfind('}')` strategy would have captured a stray `}`
@@ -409,7 +411,9 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     def fake_call(system, user, max_tokens, **kw):
         captured["system"] = system
         captured["user"] = user
-        return '{"actions": [{"type": "ADD", "hearing_key": "x", "title": "T"}]}'
+        return (
+            '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x", "title": "T"}]}'
+        )
 
     monkeypatch.setattr(providers, "_call_anthropic", fake_call)
 
@@ -425,7 +429,7 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
         pdf_texts=[],
         known_hearings=[],
     )
-    assert out == [{"type": "ADD", "hearing_key": "x", "title": "T"}]
+    assert out == [{"type": "ADD_HEARING", "hearing_key": "x", "title": "T"}]
     assert "US v. Z" in captured["user"]
     assert "Hearing types: arraignment" in captured["system"]
 
@@ -475,7 +479,7 @@ class TestVerifyHearing:
             providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
-                '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
+                '{"type": "RESCHEDULE_HEARING", "local_date": "2099-02-01", '
                 '"local_time": "10:00", "reason": "moved"}'
             ),
         )
@@ -486,7 +490,7 @@ class TestVerifyHearing:
             hearing=_hearing(),
             recent_entries=[],
         )
-        assert out["type"] == "RESCHEDULE"
+        assert out["type"] == "RESCHEDULE_HEARING"
         assert out["local_date"] == "2099-02-01"
 
     def test_strips_markdown_fences(self, monkeypatch):
@@ -495,7 +499,7 @@ class TestVerifyHearing:
             providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
-                '```json\n{"type": "CANCEL", "reason": "vacated"}\n```'
+                '```json\n{"type": "CANCEL_HEARING", "reason": "vacated"}\n```'
             ),
         )
         out = llm.verify_hearing(
@@ -505,7 +509,7 @@ class TestVerifyHearing:
             hearing=_hearing(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_unwraps_actions_array(self, monkeypatch):
         # Defensive: model might emit {"actions": [...]} despite the prompt.
@@ -984,7 +988,8 @@ class TestVerifyDeadline:
         monkeypatch.setattr(
             providers,
             "_call_gemini",
-            lambda *a, **kw: '{"type": "RESCHEDULE", "local_date": "2026-06-15"}',
+            lambda *a,
+            **kw: '{"type": "RESCHEDULE_HEARING", "local_date": "2026-06-15"}',
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -993,14 +998,14 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "RESCHEDULE"
+        assert out["type"] == "RESCHEDULE_HEARING"
 
     def test_strips_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
             providers,
             "_call_anthropic",
-            lambda *a, **kw: '```json\n{"type": "CANCEL"}\n```',
+            lambda *a, **kw: '```json\n{"type": "CANCEL_HEARING"}\n```',
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -1009,14 +1014,14 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
             providers,
             "_call_anthropic",
-            lambda *a, **kw: '{"actions": [{"type": "CANCEL"}]}',
+            lambda *a, **kw: '{"actions": [{"type": "CANCEL_HEARING"}]}',
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -1025,7 +1030,7 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
@@ -2166,7 +2171,7 @@ def _norm_prompt() -> str:
 
 class TestSystemPromptAntiInferenceGuards:
     """Regression guards for the prompt sections added after the McGonigal
-    hallucination — a CANCEL emitted by the LLM purely from co-defendant
+    hallucination — a CANCEL_HEARING emitted by the LLM purely from co-defendant
     inference (held plea on one defendant → inferred "trial vacated" for
     another). These tests aren't behavioral (no real LLM call), they
     just assert the key instruction phrases survive future prompt edits.
@@ -2177,7 +2182,7 @@ class TestSystemPromptAntiInferenceGuards:
     def test_cancel_requires_explicit_grounding(self):
         # The header is the essential phrase: a future edit should not drop
         # the explicit-grounding rule without replacing it. The 0.13.0 rewrite
-        # generalized it from "CANCEL / MARK_HELD" to all terminal/negative
+        # generalized it from "CANCEL_HEARING / MARK_HELD" to all terminal/negative
         # transitions (now also covering deadline MARK_FILED), but the
         # explicit-grounding-not-inference bar is what must survive.
         prompt = _norm_prompt()
@@ -2210,7 +2215,7 @@ class TestSystemPromptAntiInferenceGuards:
 
     def test_pretrial_transcript_filing_not_grounds_for_trial_cancel(self):
         # Wei (3:23-cr-01471, casd) regression — a NOTICE OF FILING OF
-        # OFFICIAL TRANSCRIPT of an MIL hearing triggered CANCEL on the
+        # OFFICIAL TRANSCRIPT of an MIL hearing triggered CANCEL_HEARING on the
         # trial key by inference. The rule must forbid this class.
         prompt = _norm_prompt()
         assert "A transcript filing for a PRETRIAL event" in prompt
@@ -2452,10 +2457,10 @@ class TestSystemPromptHeldEventRecognition:
 
     def test_vacated_and_reset_is_reschedule_not_cancel(self):
         # "vacate" alone is not enough — the absence of a new date is
-        # what distinguishes CANCEL from RESCHEDULE.
+        # what distinguishes CANCEL_HEARING from RESCHEDULE_HEARING.
         prompt = _norm_prompt()
         assert '"vacated and reset to <date>"' in prompt
-        assert "RESCHEDULE, NOT CANCEL" in prompt
+        assert "RESCHEDULE_HEARING, NOT CANCEL_HEARING" in prompt
         assert "ABSENCE of a new date" in prompt
 
     def test_mark_held_trigger_phrases_enumerated(self):
@@ -3175,13 +3180,13 @@ class TestVerifyPromptConsolidation:
         assert "CANDIDATE DEADLINE" in p
 
     def test_action_types_common_to_both(self):
-        # CONFIRM / RESCHEDULE / CANCEL / DELETE_HALLUCINATION /
+        # CONFIRM / RESCHEDULE_HEARING / CANCEL_HEARING / DELETE_HALLUCINATION /
         # UNCLEAR apply to both hearings and deadlines.
         p = llm.VERIFY_SYSTEM_PROMPT
         for action in (
             "CONFIRM",
-            "RESCHEDULE",
-            "CANCEL",
+            "RESCHEDULE_HEARING",
+            "CANCEL_HEARING",
             "DELETE_HALLUCINATION",
             "UNCLEAR",
         ):
