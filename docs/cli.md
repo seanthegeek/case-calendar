@@ -26,11 +26,18 @@ uv run case-calendar sync
 | `--only-new` | Sync only cases whose dockets aren't yet in the store — useful after adding new cases to `config.yaml` without remembering their ids. |
 | `--no-emit` | Skip the auto-emit at the end of the sync. Rare; mostly for tests. |
 | `--force-summaries` | Regenerate every AI case summary in the same sync. Use after a model or prompt change so the CourtListener session is reused instead of running `summarize --force` separately. |
+| `--reverify` | Force the per-row verify and dedupe sweeps to run even when no docket changed. By default a sync skips them for any case whose dockets all short-circuit (their verdicts can't change without new entries). Use after a verify-prompt or model change, or after an out-of-band store edit (`reprocess_entries.py` / `classify_significance.py`) that altered rows without advancing any docket. |
 
 A three-tier short-circuit keeps quiet days cheap: the docket-level
 `date_modified` cutoff, the per-entry `modified_after` filter, and the
 content fingerprint dedup mean an unchanged docket costs roughly one cheap
-CourtListener request and zero LLM calls.
+CourtListener request and zero LLM calls. The end-of-sync verify and dedupe
+sweeps are gated on the same signal — a case whose dockets all short-circuit
+skips them entirely, because their inputs come from the local store and
+can't have changed without new entries — so a fully-quiet sync makes no LLM
+calls at all. (Webhook deliveries don't advance the stored cutoff, so a
+docket touched by `serve` always re-runs its sweeps on the next poll.) Pass
+`--reverify` to force the sweeps regardless.
 
 Run on a cron once you're past the initial backfill — every five minutes is
 fine; once an hour is plenty for most cases. Or skip cron entirely and use
