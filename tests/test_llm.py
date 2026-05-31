@@ -3276,29 +3276,34 @@ class TestVerifyPromptConsolidation:
     """Regression guards for the merged ``VERIFY_SYSTEM_PROMPT`` that
     handles BOTH hearing verify and deadline verify in one prompt. The
     prior split (``VERIFY_SYSTEM_PROMPT`` + the now-deleted
-    ``VERIFY_DEADLINE_SYSTEM_PROMPT``) left the deadline prompt below
-    Anthropic's Haiku 4.5 prompt-cache token floor (2048), so the
-    deadline track paid full input-token rate on every verify call.
-    The consolidation lifts the combined prompt over the floor —
-    these tests pin the contract elements that must survive a
+    ``VERIFY_DEADLINE_SYSTEM_PROMPT``) ran two separate prompts. The
+    merge's stated goal was to clear Anthropic's Haiku 4.5 prompt-cache
+    token floor, but that floor is 4096 tokens (2048 is the RETIRED
+    Haiku 3.5's floor), and the merged prompt is only ~2000 tokens — so
+    it still does NOT cache on Haiku 4.5. That's a documented cost
+    limitation, not a bug (see AGENTS.md's cache-threshold design note).
+    These tests pin the contract elements that must survive a
     further-tightening pass.
     """
 
-    def test_merged_prompt_clears_haiku_cache_floor(self):
-        # The structural reason for the consolidation: a merged prompt
-        # of 2048+ tokens clears Anthropic Haiku 4.5's prompt-cache
-        # minimum, so every verify call now benefits from cache reads
-        # at ~10% of uncached input rate. Use the project's standard
-        # ~4 chars/token approximation; the live Anthropic tokenizer
-        # reports within ~5% of this number on this prompt.
+    def test_merged_prompt_under_haiku_cache_floor(self):
+        # Corrected reality check: Claude Haiku 4.5's documented minimum
+        # cacheable prompt length is 4096 tokens (the 2048 figure is the
+        # RETIRED Haiku 3.5's floor — an earlier version of this test
+        # misread the docs table). The merged verify prompt is ~2000
+        # tokens, so it does NOT cache on Haiku 4.5 and the verify track
+        # pays full uncached input rate there — a known cost limitation,
+        # not a bug. Use the project's standard ~4 chars/token
+        # approximation; the live Anthropic tokenizer reports within ~5%
+        # of this. If a future edit pushes the prompt OVER 4096 it starts
+        # caching on Haiku — update the design note + CHANGELOG then.
         chars = len(llm.VERIFY_SYSTEM_PROMPT)
         approx_tokens = chars // 4
-        assert approx_tokens >= 2048, (
-            f"merged VERIFY_SYSTEM_PROMPT shrank to ~{approx_tokens} tokens; "
-            "below Haiku's 2048-token cache floor. Cache reads will stop "
-            "firing on verify calls and the track will pay full uncached "
-            "input rate. See AGENTS.md design note on the per-model "
-            "cache threshold."
+        assert approx_tokens < 4096, (
+            f"VERIFY_SYSTEM_PROMPT grew to ~{approx_tokens} tokens, over "
+            "Haiku 4.5's 4096-token cache floor — it now caches on Haiku. "
+            "That's an improvement, but update the AGENTS.md cache-threshold "
+            "design note and CHANGELOG to reflect it."
         )
 
     def test_old_deadline_prompt_constant_is_removed(self):
