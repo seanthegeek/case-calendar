@@ -42,10 +42,16 @@ one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.72 | $0.83 | $2.30 | **$9.84** |
-| Gemini (3.1 Flash Lite / 2.5 Pro) — **extraction default** | $1.82 | $0.19 | $1.11 | **$3.12** |
 | OpenAI (GPT-5.4-nano / GPT-5.4) | $1.10 | $0.13 | $1.52 | **$2.76** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.82 | $0.19 | $1.11 | **$3.12** |
+| **Default** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.82 | $0.19 | $2.30 | **$4.30** |
 | OpenAI (GPT-5.4-mini / GPT-5.4) | $3.73 | $0.45 | $1.67 | **$5.85** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.72 | $0.83 | $2.30 | **$9.84** |
+
+The **Default** row is what zero-config gives you — it pairs the two tracks'
+own defaults, Gemini extraction with Anthropic summaries; the single-provider
+rows run one provider on both tracks for comparison. Rows are ordered cheapest
+to priciest backfill.
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. Extraction runs roughly
@@ -116,34 +122,55 @@ dropped:
 
 What changed is the **prompt**, not the model. 0.13.0 adds a structured
 `DEADLINE_SIGNIFICANCE_RULES` block (ordered RULE 1-5) to the unified
-extraction `SYSTEM_PROMPT` that enumerates those substantive classes
-explicitly and biases the default toward `major`. Because the classes are now
-**named in the prompt for every provider** — apples-to-apples — Gemini
-classifies them as `major` instead of leaning on intrinsic priors it didn't
-have. The prompt now carries the priors; Gemini's training didn't change. That
-closes the deadline-bucketing gap that had kept Anthropic the default, and the
-measured deviation numbers above are the result.
+extraction `SYSTEM_PROMPT`. It closes the gap two ways. First, **RULE 2 names
+most of the dropped classes outright** — PSR objections / first disclosure /
+sentencing memoranda, surrender for service of sentence, civil-forfeiture claim
+and answer (Supplemental Rule G), the certified administrative record (APA),
+substantive motion-practice deadlines, CIPA filings, exhibit / witness lists
+and final pretrial filings, and substantive sealing/unsealing briefing — and
+classifies all of them `major`. Second, the classes RULE 2 does **not** name —
+a Speedy Trial Act § 3161(h) exclusion, for instance — are caught by **RULE 5**,
+which tells the model to default any substantive litigation deadline to `major`
+unless it is clearly procedural housekeeping. Because both the named classes
+and the default-major bias live **in the prompt for every provider** —
+apples-to-apples — Gemini classifies them as `major` instead of leaning on
+intrinsic priors it didn't have. The prompt now carries the priors; Gemini's
+training didn't change. That closes the deadline-bucketing gap that had kept
+Anthropic the default, and the measured deviation numbers above are the result.
 
-The honest caveat: the ruleset enumerates the substantive classes the project
-currently knows about. An operator whose caseload includes substantive classes
-the ruleset does **not** name should still verify Gemini's output against their
-own docket set — the per-track override env vars remain available for exactly
-that. But the risk is materially **reduced**, not merely shifted onto a
-different provider, because the enumeration is in-prompt for both providers now
-rather than left to whichever model happens to have the prior.
+The honest caveat: RULE 2 enumerates the substantive classes the project
+currently knows about, and RULE 5 is the safety net for the rest. An operator
+whose caseload includes a substantive deadline class the ruleset does **not**
+name should still verify Gemini's output against their own docket set — the
+per-track override env vars remain available for exactly that. But the risk is
+materially **reduced**, not merely shifted onto a different provider: an unnamed
+substantive deadline isn't left to whichever model happens to hold the right
+training prior, because **RULE 5 instructs every provider — Gemini included —
+to lean toward `major`** whenever a deadline is substantive litigation activity
+that doesn't fit an earlier rule. The model has to affirmatively decide an
+entry is procedural housekeeping before it drops to `minor`, so the bias is
+toward keeping the rare substantive deadline rather than silently dropping it,
+and that bias is in-prompt for every provider rather than a property of one
+model's training.
 
 #### Summaries → Anthropic
 
-The summary track stays Anthropic because Sonnet pulls more
-case-distinguishing detail than Gemini: statute citations, count numbers,
-sentence breakdowns, forfeiture amounts split out by money judgment vs
-identified-property, custody status, cancelled-schedule notes, full briefing
-schedules, cross-docket framing. The bucket-confusion problem — multiple cases
-of the same kind blurring into nearly interchangeable Gemini summaries — is
-documented with side-by-side examples in the SCORECARD's **Summary track**
-section. Summaries are low-volume (one call per docket, rarely re-run), so the
-higher Sonnet rate buys distinguishing prose cheaply: summaries added **$2.30**
-on Anthropic across the whole caseload in this build.
+The summary track stays Anthropic, but the margin is narrower than the
+extraction picture and rests on a different basis. Both tracks run a higher
+tier here (Sonnet 4.6 vs Gemini 2.5 Pro), and Gemini 2.5 Pro is **not** the
+weak link the cheap extraction tier was: it writes detailed, case-distinct
+summaries that name the defendants, the imposed sentences, the dollar figures
+(including forfeiture money judgments), the aliases, and the custody status. So
+the choice is no longer "detail vs blur." Anthropic's remaining edge is
+specific and smaller: its summaries run longer (median \~1084 chars vs Gemini's
+\~670, \~62% longer) and carry a few categories of detail Gemini still drops —
+statutory citations (Anthropic names the controlling U.S.C. section; Gemini
+cites none), count-by-number enumeration (`Count 1`, `Count 7`, …), cancelled
+or vacated schedules, and granular charge lists / procedural history. The full
+side-by-side breakdown is in the SCORECARD's **Summary track** section.
+Summaries are low-volume (one call per docket, rarely re-run), so the higher
+Sonnet rate buys that extra detail cheaply: summaries added **$2.30** on
+Anthropic across the whole caseload in this build.
 
 #### Configuration
 
@@ -177,8 +204,8 @@ GEMINI_API_KEY=...
 ```
 
 Want a head-to-head cost **and accuracy** comparison across providers and model tiers — including the per-docket deviation breakdown, the
-wall-clock and mean-call-latency numbers, and the bucket-confusion
-examples behind the summary-track recommendation? See
+wall-clock and mean-call-latency numbers, and the side-by-side
+summary-detail examples behind the summary-track recommendation? See
 [`model-comparison/`](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)
 in the repository.
 
