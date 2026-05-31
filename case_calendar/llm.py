@@ -513,6 +513,39 @@ when a real hearing already sits on that date creates a phantom second row the
 same-slot dedupe can't catch — two rows on one date hours apart are not the
 same slot, so nothing merges them.
 
+Multi-day trials become one event PER DAY. A trial that runs across several
+days files a minute entry for each day ("Jury Trial Day 2", "Jury Trial held"
+on consecutive days, "Trial continued and held"). Represent each day as its OWN
+held event rather than re-marking a single trial row on each day's date:
+- For each trial-day minute entry of an ongoing trial, emit MARK_HELD on a NEW
+  per-day key `trial-<defendant>-day-N` with `title` "<Trial name> — Day N"
+  (e.g. "Jury Trial — Day 2") and `local_date` set to that day. A day-N key is
+  not in the known list, so the system inserts it directly as a held event on
+  that date — no date-proximity rejection.
+- N is the trial day number: use the explicit number when the entry states one
+  ("Day 9"); otherwise count the trial-day rows already known for this
+  defendant (Day 1 = the originally-scheduled trial row, the next new day is
+  Day 2, and so on).
+- When the FIRST follow-on day appears (i.e. you first learn the trial is
+  multi-day), ALSO emit UPDATE_DETAILS on the original trial row to retitle it
+  "<Trial name> — Day 1", so the series reads Day 1, Day 2, …. A trial that
+  only ever has one day stays titled "<Trial name>" with no day suffix.
+Each trial day is a real proceeding that occurred, so it gets its own dated
+held row — do NOT instead re-emit MARK_HELD against the single day-1 trial row
+for every later day (its stored date won't match, and the action is rejected).
+
+MARK_HELD must match the RIGHT row by date. A minute entry reporting a
+proceeding held on date X should MARK_HELD the known hearing whose scheduled
+date is within ~2 days of X — not just any sibling of the same type. This
+matters most for SEQUENTIAL proceedings (`status-conf-<def>-2`, `-3`, …): pick
+the sibling whose date is closest to X. If NO known row's date is within ~2
+days of X, do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE
+instead. The system rejects a >2-day mismatch anyway, and the verify pass
+re-checks on a later sync, so forcing it only discards the action and clouds
+the audit trail. (Two exceptions above: the same-DATE transcript rule matches
+on date regardless of clock time, and the per-day trial rule ADDS day-N events
+rather than matching an existing row.)
+
 Duration:
 - If the entry states an explicit length, put it in `duration_minutes`.
 - Oral arguments allocating time per side ("Petitioner - 15 Minutes,

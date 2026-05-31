@@ -78,6 +78,20 @@ trial phases instead of spawning a separate held row per trial day).
   ("audio observation only", etc., often citing Civ. L.R. 77-3(d)). These
   fold the substance of the closed-unmerged #45 PR into the new PART 2
   structure.
+- **Two MARK_HELD rules that address the date-mismatch warnings at the
+  source** (PART 2), diagnosed from a focused 4-case build where 84/159
+  warnings were multi-day trials and 42/159 were sequential conferences
+  (the warnings are universal across providers; Gemini had the fewest).
+  (A) **Multi-day trials become one event per day** — each trial-day minute
+  entry `MARK_HELD`s a new `trial-<def>-day-N` key titled "<Trial> — Day N"
+  on that day (the existing insert-as-held path creates the dated row), and
+  the original row is retitled "— Day 1" once a Day 2 appears; a single-day
+  trial stays unsuffixed. This turns the per-day minute entries from rejected
+  actions into real per-day calendar events. (B) **MARK_HELD matches the
+  date-closest row or IGNOREs** — for sequential proceedings
+  (`status-conf-<def>-N`) the model targets the sibling within ~2 days of the
+  held date rather than an arbitrary one, and emits IGNORE when none qualifies
+  (the deterministic 2-day guard still backs this).
 
 ### Fixed
 

@@ -2518,6 +2518,39 @@ class TestGeminiExtractionWeaknessRules:
         assert "Civ. L.R. 77-3(d)" in p
 
 
+class TestMarkHeldDateMatchingRules:
+    """The two prompt rules that address the MARK_HELD date-mismatch warnings
+    at the source (diagnosed from a 4-case build: 84/159 multi-day-trial,
+    42/159 sequential-conference). Rule A turns each trial day into its own
+    held event; Rule B makes MARK_HELD pick the date-matching sibling or
+    IGNORE. Both are pure-prompt — the per-day key relies on the existing
+    'MARK_HELD on an unknown key + local_date inserts a held row' path."""
+
+    def test_multi_day_trial_is_one_event_per_day(self):
+        p = _norm_prompt()
+        assert "Multi-day trials become one event PER DAY" in p
+        # Per-day key + day-numbered title via MARK_HELD on a new key.
+        assert "trial-<defendant>-day-N" in p
+        assert '"<Trial name> — Day N"' in p
+        # Day numbering: explicit number, else count known trial-day rows.
+        assert "use the explicit number when the entry states one" in p
+
+    def test_day_one_retitled_only_once_multi_day(self):
+        # Day 1 only gains a "— Day 1" suffix once a follow-on day appears;
+        # a single-day trial stays plain "<Trial name>".
+        p = _norm_prompt()
+        assert "retitle it" in p
+        assert "stays titled" in p and "no day suffix" in p
+
+    def test_mark_held_matches_right_row_by_date_or_ignores(self):
+        p = _norm_prompt()
+        assert "MARK_HELD must match the RIGHT row by date" in p
+        # Sequential proceedings: pick the closest-dated sibling.
+        assert "status-conf-<def>-2" in p
+        # No within-2-day match -> IGNORE, not a forced mismatch.
+        assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the
