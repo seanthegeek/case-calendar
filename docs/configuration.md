@@ -27,6 +27,7 @@ store_path: data/case-calendar.sqlite
 | `site_title` | no | The `<h1>` on the index page. |
 | `site_description` | no | The `<meta name="description">` content for search engines and link previews. Keep under 160 characters. |
 | `case_summaries` | no | Enable AI summaries. See [case summaries](case-summaries.md). |
+| `ensure_docket_alerts` | no (default `true`) | Auto-subscribe each configured docket to CourtListener docket alerts on `sync` / `serve` startup, so the webhook receiver gets real-time pushes. Set `false` if you manage subscriptions another way. See [webhooks](webhooks.md). |
 
 ## Calendars
 
