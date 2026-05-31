@@ -68,36 +68,13 @@ focused call per non-terminal hearing/deadline + the new source-entry-aware
 context as of 0.11.0) is what runs on every sync, and even that stayed under
 $1.00 across the whole caseload on the priciest provider.
 
-If you run the extraction track on Anthropic, its verify pass stays
-uncached on Haiku 4.5 (estimated at $0.83 across the whole caseload in this
-0.13.0 build): the merged `VERIFY_SYSTEM_PROMPT` falls under Haiku 4.5's
-prompt-cache size floor, so every verify call pays the full input rate.
-Routing the verify track to Sonnet would cache it but bill at the higher
-Sonnet rate. The empirical write-up — including why the documented 2048-token
-floor turned out to be wrong — is the "Anthropic prompt caching" design note
-in AGENTS.md.
-
-These are **estimates from the price table** (below), not a bill, and they
+These are **estimates**, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.
 
 ### Why this split?
 
-The *reasoning* behind the default split — which substantive deadline classes
-drive the extraction-track choice, and the case-distinguishing detail the
-summary track buys — lives in the architecture overview, so it stays in one
-place rather than drifting across pages:
-
-> [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
-
-This page covers the *cost* side; the configuration env vars that pin each track
-are on the [Installation](installation.md) page.
-
-Want a head-to-head cost **and accuracy** comparison across providers and model
-tiers — the per-docket deviation breakdown, the wall-clock and mean-call-latency
-numbers, and the side-by-side summary-detail examples? See
-[`model-comparison/`](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)
-in the repository.
+> [Architecture: Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
 
 ## CourtListener API limits
 

@@ -8,10 +8,10 @@ especially when you're tracking 30 cases and can't remember which Wang is
 which.
 
 When enabled, Case Calendar generates a 2-4 sentence prose summary for each
-docket and renders it on the [public index page](public-page.md) next to
-the case row. Summaries are opt-in, off by default, and only run on dockets
-where the source documents actually support a confident answer (the LLM is
-instructed to refuse rather than fabricate when they don't).
+docket and renders it on the [index page](public-page.md) under the case row. Summaries
+are opt-in, off by default, and only run on dockets where the source documents actually
+support a confident answer (the LLM is instructed to refuse rather than fabricate when
+they don't).
 
 [← Back to docs](index.md)
 
@@ -31,6 +31,8 @@ The summary pipeline pulls three sets of source documents for each docket:
 3. **Operator-provided documents** (optional, see
    [`extra_documents`](#extra_documents) below) — anything you've manually
    pointed the pipeline at to fill a CourtListener data gap.
+4. **Operator-provided aggregation notes** (optional, see
+   [`aggregation_note`](#multi-docket-aggregation) below) — Additional text provided for clarification.
 
 Those documents — plus a structured scaffold of the hearings and deadlines
 the extractor already recorded — go into a single LLM call. The model returns
@@ -53,11 +55,7 @@ at [casecalendar.net](https://casecalendar.net/).
 Summaries hyperlink the words themselves, the way a news article does. In the
 example above, **is charged** would link to the indictment, **pled guilty**
 to the plea agreement, and (on a concluded case) **was sentenced** to the
-judgment. Only the short action phrase is linked — the leading verb is kept
-inside the link ("was charged", not just "charged"), and the trailing detail
-(the connecting preposition and everything after it: what they were charged
-with, the sentence terms, the dollar amounts, the dates) stays as plain text,
-so a charge or sentence never turns into one long run-on link. The link lands on the supporting document's PDF —
+judgment. The link points to the supporting document's PDF —
 CourtListener's own copy (`storage.courtlistener.com`) when available, with
 the Internet Archive mirror as a fallback (the same URL the calendar event
 bodies link to). There are no footnote numbers or "(see Doc 1)" markers — just

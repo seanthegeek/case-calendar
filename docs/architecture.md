@@ -147,8 +147,8 @@ exclusion, for instance — fall to **RULE 5, which tells the model to default a
 substantive litigation deadline to `major`** unless it is clearly procedural
 housekeeping. Because both the named classes and the default-major bias live in
 the prompt for *every* provider — apples-to-apples, rather than left to each
-model's intrinsic priors — Gemini now classifies them as `major` too. The
-important framing: the prompt carries the priors for every provider; this is
+model's prior training — Gemini now classifies them as `major` too. The
+important framing: the prompt carries knowledge for every provider; this is
 not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
@@ -165,12 +165,8 @@ cross-docket statutory distinctions, and cancelled-schedule notes.
 One honest caveat survives the change: RULE 2 enumerates the substantive classes
 the project currently knows about, and RULE 5 is the safety net for the rest. An
 operator whose caseload includes substantive classes the ruleset does *not*
-enumerate should still verify Gemini's output against their own docket set, and
-switch to a different LLM model for extraction if needed. The per-track override
-env vars remain available for that. But the risk is materially *reduced* — not
-merely shifted — because an unnamed substantive deadline isn't left to whichever
-model holds the right training prior: RULE 5 instructs *every* provider, Gemini
-included, to lean toward `major` unless the deadline is clearly procedural, so
+enumerate should take additional care to verify Gemini's output against their
+own docket set, and switch to a different LLM model for extraction if needed. The per-track override env vars remain available for that. But the risk is materially *reduced* — not merely shifted — because an unnamed substantive deadline isn't left to whichever model holds the right training data: RULE 5 instructs *every* provider, Gemini included, to lean toward `major` unless the deadline is clearly procedural, so
 the bias is toward keeping the rare substantive deadline rather than silently
 dropping it.
 
