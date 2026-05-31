@@ -247,7 +247,10 @@ _TL = threading.local()
 _REAL_DETECT = providers._detect_provider
 
 
-def _tl_detect() -> Optional[str]:
+def _tl_detect(*_args: Any, **_kwargs: Any) -> Optional[str]:
+    # Accepts (and ignores) the key_priority kwarg the real _detect_provider
+    # now takes — the per-column provider is pinned via the thread-local, so
+    # priority is moot here; this patch just has to be call-compatible.
     return getattr(_TL, "provider", None) or _REAL_DETECT()
 
 

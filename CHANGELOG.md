@@ -78,12 +78,30 @@ trial phases instead of spawning a separate held row per trial day).
   ("audio observation only", etc., often citing Civ. L.R. 77-3(d)). These
   fold the substance of the closed-unmerged #45 PR into the new PART 2
   structure.
+- **Default extraction provider flipped to Gemini; summaries stay on
+  Anthropic** (`case_calendar/llmkit/providers.py`). Auto-detection now
+  uses a per-track API-key priority: the extraction track prefers
+  `gemini > anthropic > openai` (`_detect_extraction_provider`,
+  `_EXTRACTION_KEY_PRIORITY`) and the summary/base track prefers
+  `anthropic > gemini > openai` (`_detect_provider`,
+  `_SUMMARY_KEY_PRIORITY`). A fresh operator who provisions all three
+  keys without setting any `LLM_*` var now lands on the split — Gemini
+  reading docket entries into hearings + deadlines, Anthropic writing the
+  per-docket case summaries — instead of Anthropic for both. `LLM_PROVIDER`
+  still forces one provider for both tracks, and `LLM_EXTRACTION_PROVIDER`
+  / `LLM_SUMMARY_PROVIDER` still override per track. The flip is earned by
+  the `DEADLINE_SIGNIFICANCE_RULES` change above: with the substantive
+  deadline classes named in-prompt for every provider, Gemini no longer
+  silently buckets them as procedural-`minor`, and it posts the best
+  aggregate deviation (305) in the comparison while running \~4× cheaper
+  and \~2× faster per call than Anthropic on the constant-load
+  extract+verify pair. See `model-comparison/SCORECARD.md`.
 - **Two MARK_HELD rules that address the date-mismatch warnings at the
   source** (PART 2), diagnosed from a focused 4-case build where 84/159
   warnings were multi-day trials and 42/159 were sequential conferences
   (the warnings are universal across providers; Gemini had the fewest).
   (A) **Multi-day trials become one event per day** — each trial-day minute
-  entry `MARK_HELD`s a new `trial-<def>-day-N` key titled "<Trial> — Day N"
+  entry `MARK_HELD`s a new `trial-<def>-day-N` key titled `<Trial> — Day N`
   on that day (the existing insert-as-held path creates the dated row), and
   the original row is retitled "— Day 1" once a Day 2 appears; a single-day
   trial stays unsuffixed. This turns the per-day minute entries from rejected

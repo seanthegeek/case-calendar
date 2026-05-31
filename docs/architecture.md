@@ -111,39 +111,72 @@ override is set:
 - **Summarization**: `LLM_SUMMARY_PROVIDER` (override) > `LLM_PROVIDER`
   (global) > API-key auto-detect, and `LLM_SUMMARY_MODEL` for the model.
 
-### Why the two-track split exists — and why Anthropic is the 0.10.0 default for both
+### Why the default is a split — Gemini for extraction, Anthropic for summaries
 
-The two-track split is a configuration capability, not a recommendation: the
-project ships with `LLM_PROVIDER=anthropic` as the default for BOTH tracks,
-because the structural failure mode that drove 0.10.0 — Gemini systematically
-misclassifying substantive federal-procedure deadline classes as
-`procedural-minor` and silently dropping them from subscriber calendars at the
-render-time significance gate — applies to extraction regardless of what
-provider runs summaries. See the
-[SCORECARD intro](../model-comparison/SCORECARD.md) for the full list of
-substantive classes Gemini missed in production after the brief 0.9.0
-Gemini-default flip (PSR, Speedy Trial Act exclusions, surrender for service
-of sentence, civil-forfeiture claim/answer, sealing motion practice,
-exhibit-filing deadlines, certified administrative record).
+As of 0.13.0 the default is no longer a single provider for both tracks. With
+API keys set but no `LLM_*` env vars, Case Calendar auto-detects **Gemini
+(`gemini-3.1-flash-lite`) for extraction** and **Anthropic
+(`claude-sonnet-4-6`) for summaries**. The auto-detect key priority is
+per-track: extraction prefers `gemini > anthropic > openai`, while the
+summary / base resolution prefers `anthropic > gemini > openai`. `LLM_PROVIDER`
+(global) still overrides both tracks, and `LLM_EXTRACTION_PROVIDER` /
+`LLM_SUMMARY_PROVIDER` override their own track.
+
+Earlier releases (0.10.0 / 0.11.0) kept Anthropic as the extraction default for
+a specific reason: relying on its intrinsic training priors, Gemini silently
+classified a long tail of substantive federal-procedure deadline classes —
+PSR, Speedy Trial Act exclusions, surrender for service of sentence,
+civil-forfeiture claim/answer, substantive sealing motion practice,
+exhibit-filing deadlines, certified administrative record — as
+`procedural-minor`, and those then dropped out at the render-time significance
+gate, off subscriber calendars.
+
+0.13.0 closes that gap in the prompt, not the model. The unified extraction
+`SYSTEM_PROMPT` now carries a structured `DEADLINE_SIGNIFICANCE_RULES` block
+(ordered `RULE 1`-`RULE 5`) that enumerates those substantive classes
+explicitly and biases the default toward `major`. Because the classes are now
+named in the prompt for *every* provider — apples-to-apples, rather than left
+to each model's intrinsic priors — Gemini now classifies them as `major` too.
+The important framing: the prompt carries the priors for every provider; this
+is not a claim that Gemini's training improved.
+
+With the bucketing gap closed, the measured comparison favors Gemini for
+extraction. On the full caseload (see the
+[SCORECARD](../model-comparison/SCORECARD.md)) Gemini's deadline axes are the
+best in the table, and its aggregate deviation (305) is the best overall —
+ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 4×
+cheaper and roughly 2× faster per call on the extraction track. The summary
+track stays Anthropic because Sonnet pulls more case-distinguishing detail
+(statute citations, count numbers, sentence breakdowns, custody status,
+cancelled-schedule notes).
+
+One honest caveat survives the change: `DEADLINE_SIGNIFICANCE_RULES` enumerates
+the substantive classes the project currently knows about. An operator whose
+caseload includes substantive classes the ruleset does *not* enumerate should
+still verify Gemini's output against their own docket set, and the per-track
+override env vars remain available for that. But the risk is materially
+*reduced* — not merely shifted — because the enumeration is now in the prompt
+for both providers rather than left to a single model's training corpus.
 
 | | Extraction track | Summary track |
 | --- | --- | --- |
-| Call volume per backfill | ~1,230 | ~34 |
+| Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-4-6`) |
 | Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
-| Anthropic cost (full backfill) | $6.62 | $2.24 |
-| Gemini cost (full backfill) | $1.60 | $1.09 |
-| Anthropic accuracy on substantive classes | Loads legal priors implicitly — substantive classes (PSR, STA exclusions, certified administrative record, etc.) classify as `major` without prompt enumeration | **best** (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes, full briefing schedules) |
-| Gemini accuracy | Best aggregate deviation on the in-fixture set (328 vs 381), but misses out-of-fixture substantive classes that aren't explicitly enumerated in the prompt | terser; blurs cases that fit the same bucket |
+| Anthropic cost (full backfill) | \~$6.72 | \~$2.30 |
+| Gemini cost (full backfill) | \~$1.82 | \~$1.11 |
+| Aggregate deviation (lower is better) | Gemini **305** (best in table) vs Anthropic 349 | — |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best deadline axes, \~4× cheaper, \~2× faster per call | **best** case-distinguishing prose (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes); Gemini is terser and blurs cases that fit the same bucket |
 
-The reason the split capability still exists, even though the default no
-longer uses it: a federal procedural deadline vocabulary list is decades deep
-and unbounded. The maintainer isn't a lawyer, and there's no practical way to
-audit a Gemini extraction stream for silent drops after the fact. Anthropic's
-training corpus covers these classes for free, which is what makes it the safe
-default. An operator who has confirmed Gemini's class profile against their
-own caseload — and accepts the audit burden — can still pin
-`LLM_EXTRACTION_PROVIDER=gemini` for the cost win without losing the
-case-distinguishing Anthropic summaries.
+The full deviation breakdown — measured against a human-scored ground-truth
+worksheet over the whole caseload — is in the
+[SCORECARD](../model-comparison/SCORECARD.md). The split exists because the two
+tracks optimize for different things: extraction is high-volume classification
+where cost and latency multiply over thousands of calls, and the substantive
+deadline classes are now enumerated in the prompt so Gemini handles them as
+well as Anthropic; summaries are low-volume synthesis where Sonnet's
+case-distinguishing detail earns the higher tier. An operator who prefers a
+single provider can still set `LLM_PROVIDER`, or pin either track with
+`LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
 
 The [SCORECARD's Summary track section](../model-comparison/SCORECARD.md)
 documents the bucket-confusion problem with side-by-side examples — three

@@ -94,7 +94,7 @@ case_summaries:
 | Key | Required | Purpose |
 | --- | --- | --- |
 | `enabled` | yes | Master switch. Defaults to `false`. |
-| `provider` | no | Force a specific provider (`anthropic` / `openai` / `gemini`). Defaults to whichever LLM key is set, or `LLM_SUMMARY_PROVIDER`. |
+| `provider` | no | Force a specific provider (`anthropic` / `openai` / `gemini`) for the summary track. When unset, falls back to `LLM_SUMMARY_PROVIDER`, then `LLM_PROVIDER`, then auto-detects from whichever API keys are set in summary key-priority order (anthropic > gemini > openai). With keys for all three present, the summary track defaults to Anthropic (Sonnet 4.6). |
 | `model` | no | Override the model. Defaults to Sonnet / GPT-5.4 / Gemini Pro depending on provider. |
 | `allow_ocr` | no | Run local OCR fallback on PDFs CourtListener hasn't extracted. Defaults to `true`. Set to `false` to skip tesseract entirely. |
 | `debounce_seconds` | no | Webhook-only. How many seconds of quiet to wait after the last summary-relevant entry before re-running the LLM. Defaults to 300. Polling syncs ignore this — they regenerate immediately. |

@@ -1,9 +1,9 @@
 # Model comparison
 
-Why Anthropic (`claude-haiku-4-5` extraction + `claude-sonnet-4-6` summary)
-is the default LLM provider — and the data and tools to check that yourself,
-including scoring it against your own reading of the dockets, or re-running the
-whole thing on other cases and models.
+Why the default is now a **split**: Gemini (`gemini-3.1-flash-lite`) for
+extraction, Anthropic (`claude-sonnet-4-6`) for summaries — and the data and
+tools to check that yourself, including scoring it against your own reading of
+the dockets, or re-running the whole thing on other cases and models.
 
 > **A note on what the score does and does not measure.** The deviation-from-
 > human-truth score this comparison reports is necessary but not sufficient.
@@ -37,15 +37,36 @@ whole thing on other cases and models.
 > per-track override env vars (`LLM_EXTRACTION_PROVIDER` /
 > `LLM_SUMMARY_PROVIDER`) for operators who have measured their own caseload
 > and want to pin Gemini for cost.
+>
+> 0.13.0 makes Gemini the extraction default — and this time the fault line is
+> addressed in the prompt rather than left to a model's intrinsic priors. The
+> deadline classes Gemini kept dropping (PSR windows, Speedy Trial Act
+> exclusions, surrender for service of sentence, civil-forfeiture claim/answer,
+> substantive sealing motion practice, exhibit-filing deadlines, certified
+> administrative record) are now NAMED in a structured `DEADLINE_SIGNIFICANCE_RULES`
+> block in the unified extraction prompt, which also biases the default toward
+> `major`. Because those classes are enumerated in the prompt for **every**
+> provider — not learned from any one model's training corpus — Gemini now
+> classifies them as major (its training didn't change; the prompt now carries
+> the priors). With the deadline-bucketing gap closed, the head-to-head numbers
+> follow: Gemini's deadline axes are the best in the table and its aggregate
+> deviation (305) is the best overall, while it stays the cheapest and fastest.
+> The honest caveat is unchanged in kind, only reduced in degree: the ruleset
+> enumerates the classes the project currently knows about, so an operator whose
+> caseload includes substantive classes the ruleset does not name should still
+> verify against their own docket set, and the per-track override env vars remain
+> available. The summary track stays Anthropic — Sonnet pulls more
+> case-distinguishing detail (statute citations, count numbers, sentence
+> breakdowns, custody status, cancelled-schedule notes) — so the default is now a
+> split: Gemini extraction, Anthropic summaries.
 
 Case Calendar can run on any of three providers (Gemini / OpenAI / Anthropic;
 one line in `config.yaml`). To pick a default we rebuilt every tracked
 case's calendar from the **same** court data with several model configurations
 and compared cost and accuracy. Each configuration is one **column**: by default
-one per provider at its out-of-the-box models, plus extra columns that vary the
-*extraction* model within a provider to test whether a pricier tier earns its
-keep (currently `gemini-3.5-flash` against the Gemini default `gemini-3.1-flash-lite`,
-and `gpt-5.4-mini` against the OpenAI default `gpt-5.4-nano`). This folder holds
+one per provider at its out-of-the-box models, plus an extra column that varies
+the *extraction* model within a provider to test whether a pricier tier earns its
+keep (`gpt-5.4-mini` against the OpenAI default `gpt-5.4-nano`). This folder holds
 the tooling, the model-output data, and a scoring method designed so you don't
 have to take our word for any of it.
 
@@ -87,10 +108,10 @@ stay as gitignored local intermediates under `data/provider-stores/`.
 
 | Path | What it is |
 | --- | --- |
-| `model_events.csv` | **Source data**: one row per hearing/deadline each column (plus the live `prod` baseline) produced — CourtListener record (`docket_id`), logical docket, status, significance, date. The `provider` column is the comparison label `provider/extraction-model` (e.g. `gemini/gemini-3.5-flash`). Raw and unaggregated on purpose (see above). |
+| `model_events.csv` | **Source data**: one row per hearing/deadline each column (plus the live `prod` baseline) produced — CourtListener record (`docket_id`), logical docket, status, significance, date. The `provider` column is the comparison label `provider/extraction-model` (e.g. `gemini/gemini-3.1-flash-lite`). Raw and unaggregated on purpose (see above). |
 | `ground_truth.template.csv` | The blind worksheet — one row per CourtListener record with the docket link to read and empty count columns. Copy it and fill it in. |
 | `score.py` | Scores a filled worksheet against `model_events.csv`. Pure stdlib. |
-| `cost.md` (optional, gitignored) | The build's cost report: cost per column and track, CourtListener usage, output row counts. Written when you pass `--out model-comparison/cost.md` to `build_provider_stores.py`; the committed cost numbers live in [SCORECARD.md](SCORECARD.md#wall-clock--cost-per-column) instead so they stay in lockstep with the per-docket deviation table. |
+| `cost.md` (optional, gitignored) | The build's cost report: cost per column and track, CourtListener usage, output row counts. Written when you pass `--out model-comparison/cost.md` to `build_provider_stores.py`; the committed cost numbers live in [SCORECARD.md](SCORECARD.md#wall-clock--cost-per-model) instead so they stay in lockstep with the per-docket deviation table. |
 | `ground_truth_worksheet.py` | (Re)generates the blank worksheet from `config.yaml` + the store. |
 | `export_model_events.py` | Dumps the built stores to `model_events.csv`. |
 | `build_provider_stores.py` | Rebuilds every comparison column at once from the same court data — point it at other cases or models (`--extra-variant`, `--variants`) to run your own comparison. Needs API keys; costs money. |
@@ -134,12 +155,15 @@ rows.
 
 ## Cost (one-time backfill of every case)
 
-The measured one-time backfill cost for the three **default** model sets lives in
-the main documentation, so there's a single place to keep it current — see the
-[Cost](../docs/cost.md#llm-cost) page. In short: ≈$2.69 for Gemini, ≈$2.75 for
-OpenAI (nano), ≈$8.86 for Anthropic, for the whole caseload, once. Day-to-day
-cost is a tiny fraction — normal operation only processes new entries, not the
-whole history.
+The measured one-time backfill cost for the three single-provider model sets
+lives in the main documentation, so there's a single place to keep it current —
+see the [Cost](../docs/cost.md#llm-cost) page. In short, building one full column
+end-to-end (that provider for both extraction and summaries) costs ≈$3.12 for
+Gemini, ≈$2.76 for OpenAI (nano), ≈$9.84 for Anthropic, for the whole caseload,
+once. The shipped default routes extraction to Gemini and summaries to Anthropic,
+so its real cost sits between those: the cheap Gemini extraction track plus the
+Anthropic summary track. Day-to-day cost is a tiny fraction — normal operation
+only processes new entries, not the whole history.
 
 This comparison adds one **candidate** column on top of the defaults — the
 OpenAI extraction-model evaluation candidate, varying only the *extraction*
@@ -148,23 +172,16 @@ pricier OpenAI extraction tier earns its keep:
 
 | candidate column | extraction model | vs. its default | one-time backfill |
 | --- | --- | --- | ---: |
-| OpenAI | gpt-5.4-mini | gpt-5.4-nano | $5.70 |
+| OpenAI | gpt-5.4-mini | gpt-5.4-nano | $5.85 |
 
-The bump is steep on the extraction track alone: `gpt-5.4-mini` ≈3.5× the
-`gpt-5.4-nano` cost — and the SCORECARD's blind scoring below shows the
-extra spend is **not** rewarded (mini lands at 435 vs nano's 425 on
-deviation). The mini stays as an evaluation candidate rather than the
-OpenAI default. Full per-track breakdown is in
-[SCORECARD.md](SCORECARD.md#wall-clock--cost-per-column).
+The bump is steep on the extraction track alone: `gpt-5.4-mini` ≈3.4× the
+`gpt-5.4-nano` cost. On the SCORECARD's blind scoring below, mini (343
+deviation) does edge out nano (380), but neither OpenAI column leads the
+table — the Gemini default does. The mini stays as an evaluation candidate
+rather than the OpenAI default. Full per-track breakdown is in
+[SCORECARD.md](SCORECARD.md#wall-clock--cost-per-model).
 
-The Gemini extraction-candidate `gemini-3.5-flash` is **dropped from the
-default set** entirely. Its single-column rebuild rate (~14 LLM calls/min)
-projects to roughly an extra 100 minutes of wall-clock per run, and the
-existing gemini default `gemini-3.1-flash-lite` is the overall comparison
-leader — the throughput cost of carrying it across re-runs isn't justified.
-Pass `--extra-variant gemini:gemini-3.5-flash` to add it back for a one-off.
-
-The build also made 46 CourtListener API calls total, once, shared across all
+The build also made 38 CourtListener API calls total, once, shared across all
 columns (the court data is identical per column, so it's fetched once and
 cached). Figures are estimates from published per-token prices applied to the
 recorded token counts, not a bill.
@@ -196,8 +213,8 @@ python3 model-comparison/export_model_events.py
 uv run python model-comparison/ground_truth_worksheet.py --force
 
 # narrower runs:
-#   one provider's columns only:   --variants gemini
-#   one specific column:           --variants gemini/gemini-3.5-flash
+#   one provider's columns only:   --variants openai
+#   one specific column:           --variants openai/gpt-5.4-mini
 #   an ad-hoc model not in the set: --extra-variant gemini:gemini-3.1-pro-preview
 ```
 

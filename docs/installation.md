@@ -14,11 +14,17 @@ Case Calendar is a Python CLI. You'll need:
 - An **LLM API key** for one of: Anthropic, Google (Gemini), or OpenAI.
   Pick whichever you already use. The extractor pipeline uses the cheap /
   small-model tier of each provider; expect cents per case per day on a
-  busy docket. Anthropic is the recommended default — its training corpus
-  loads enough legal-procedure vocabulary that substantive deadline
-  classes (PSR, Speedy Trial Act exclusions, civil-forfeiture
-  claim/answer, etc.) get classified correctly without an explicit
-  prompt-vocabulary list, which is unmaintainable in practice. See
+  busy docket. The recommended default is a **split**: Gemini
+  (`gemini-3.1-flash-lite`) for extraction and Anthropic
+  (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
+  for you when you provide keys for both. Gemini extraction became the
+  default in 0.13.0: the extraction prompt now names the substantive
+  deadline classes (PSR, Speedy Trial Act exclusions, civil-forfeiture
+  claim/answer, etc.) explicitly for every provider, so all three
+  classify them consistently rather than leaning on each model's own
+  priors. With that change Gemini's deadline accuracy is the best in the
+  comparison and it runs cheaper and faster, while Anthropic stays on
+  summaries for its richer case-distinguishing detail. See
   [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md).
 
 [← Back to docs](index.md)
@@ -48,23 +54,30 @@ Open `.env` and fill in:
 
 ```bash
 COURTLISTENER_TOKEN=your_token_here
-ANTHROPIC_API_KEY=sk-ant-...      # or GEMINI_API_KEY=... / OPENAI_API_KEY=sk-...
+# Provide Gemini + Anthropic for the recommended split (Gemini extraction,
+# Anthropic summaries); one key alone also works for both tracks.
+GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=sk-ant-...
+OPENAI_API_KEY=sk-...             # optional third provider
 CASE_CALENDAR_WEBHOOK_SECRET=...  # only needed for `case-calendar serve`
 ```
 
-You only need one LLM key. The tool auto-detects which provider to use from
-whichever `*_API_KEY` is set, with priority **anthropic > gemini > openai** — a
-fresh operator who provisions multiple keys without setting `LLM_PROVIDER`
-lands on the project's recommended default (see
-[../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). To
-force a specific provider, set `LLM_PROVIDER=anthropic` (or `gemini` /
-`openai`) — this is the global default for BOTH the extraction track
-and the case-summary track.
+You can set keys for one provider or for all three. The tool auto-detects
+which provider to use from whichever `*_API_KEY` is set, and the priority is
+**per track**: the extraction track prefers **gemini > anthropic > openai**,
+and the case-summary track prefers **anthropic > gemini > openai**. So a fresh
+operator who provisions all three keys without setting any `LLM_*` variable
+lands on the project's recommended split — Gemini for extraction, Anthropic
+for summaries (see
+[../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). If you
+provide only one provider's key, both tracks use that provider.
 
-If you want to pin a different provider on each track independently
-(e.g. Gemini for cheap+fast extraction once you've verified it handles
-your caseload's substantive-class profile, Anthropic kept for richer
-case summaries), use the per-track override env vars:
+To force one provider for BOTH tracks, set `LLM_PROVIDER=anthropic` (or
+`gemini` / `openai`) — it's the global default that overrides the per-track
+auto-detect on both sides.
+
+To pin each track independently — keeping the default split, or building a
+different one — use the per-track override env vars:
 
 - `LLM_EXTRACTION_PROVIDER` beats `LLM_PROVIDER` for extraction +
   verify + dedupe calls.
@@ -73,7 +86,7 @@ case summaries), use the per-track override env vars:
 
 Either or both can be set with or without `LLM_PROVIDER` — when an
 override is set, that track uses it; otherwise the track falls back to
-`LLM_PROVIDER` or, last, the key auto-detect.
+`LLM_PROVIDER` or, last, the per-track key auto-detect.
 
 > ⚠️ The `.env` file should never be committed to source control — the
 > repository's `.gitignore` already lists it.

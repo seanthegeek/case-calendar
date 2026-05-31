@@ -2,11 +2,17 @@
 #
 # Required env vars when running:
 #   COURTLISTENER_TOKEN  — your CourtListener API key
-#   ANTHROPIC_API_KEY    — for the LLM extractor (default provider). Set
-#                          GEMINI_API_KEY or OPENAI_API_KEY instead if you
-#                          prefer those — auto-detect priority is
-#                          anthropic > gemini > openai per
-#                          model-comparison/SCORECARD.md
+#   ONE LLM API KEY      — set the key for whichever provider(s) you use.
+#                          With all keys present and no LLM_* env var, the
+#                          two tracks auto-detect to DIFFERENT providers,
+#                          because the key priority is per-track: the
+#                          extractor prefers gemini > anthropic > openai
+#                          (-> Gemini) and the summary track prefers
+#                          anthropic > gemini > openai (-> Anthropic). So
+#                          the default is Gemini extraction + Anthropic
+#                          summaries. Set LLM_PROVIDER to force one
+#                          provider for both. See
+#                          model-comparison/SCORECARD.md for the data.
 #
 # Run order:
 #   case-calendar -c config.yaml setup gcal   # one-time OAuth (only if pushing to gcal)
@@ -97,14 +103,15 @@ store_path: data/case-calendar.sqlite
 # Provider defaults: anthropic/claude-sonnet-4-6,
 # gemini/gemini-2.5-pro, openai/gpt-5.4. Override via `provider` /
 # `model` here, or set LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL in
-# .env (config wins if both). The summary track uses the LLM_PROVIDER
-# global default unless explicitly overridden, so by default it
-# follows whatever you set for the extraction track. Splitting the
-# tracks (Gemini extraction + Anthropic summaries, etc.) remains
-# supported via the per-track override env vars but is no longer the
-# documented default — see model-comparison/SCORECARD.md for the
-# legal-priors / maintenance-treadmill reasoning behind the 0.10.0
-# reversion to Anthropic-for-both.
+# .env (config wins if both). With no LLM_* env var set, the summary
+# track auto-detects to Anthropic (key priority anthropic > gemini >
+# openai), while the extraction track auto-detects to Gemini — so the
+# DEFAULT is a split: Gemini extraction + Anthropic summaries. Anthropic
+# holds the summary track because it pulls more case-distinguishing
+# detail (statute citations, count numbers, sentence breakdowns, custody
+# status, cancelled-schedule notes); Gemini leads the extraction-track
+# comparison on deviation while staying cheaper and faster. See
+# model-comparison/SCORECARD.md for the measured numbers.
 # case_summaries:
 #   enabled: true
 #   # provider: anthropic
