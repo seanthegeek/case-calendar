@@ -8,6 +8,84 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.13.2] - 2026-05-31
+
+Headline: case-summary accuracy fixes for appellate criminal dockets, plus
+three deterministic summary backstops. An appellate docket re-files neither
+the charging document nor the trial-court judgment, so the summary pipeline
+borrows the indictment from a sibling docket — but it had been discarding the
+sibling's **dispositions**, leaving an appeal summary that could only say the
+defendant "was charged" and never the conviction and sentence actually under
+review. The borrow now pulls the trial-court judgment / plea too, and the
+summary prompt leads with the appeal ("X is appealing his conviction for … after
+being sentenced to …"), covering both the trial-verdict and guilty-plea routes.
+Two prompt rules and two deterministic guards close the regressions that surfaced
+while validating the change against the full caseload.
+
+### Fixed
+
+- **Appellate criminal summaries now state the conviction and sentence ON
+  APPEAL, not just the charges** (`case_calendar/summary.py`,
+  `SUMMARY_SYSTEM_PROMPT`). `summary._borrow_primary_from_siblings` borrows the
+  trial-court sibling's DISPOSITION documents (judgment / plea / verdict /
+  dismissal) alongside the charging document it already borrowed, so the
+  conviction and sentence the appeal is about reach the summary. The matching
+  prompt rule makes the criminal-appeal summary LEAD with the appeal, weave in
+  the conviction + sentence, and pick the right terminology for how guilt was
+  established (trial verdict vs guilty plea). The us-v-knoot 26-5455 (6th Cir.)
+  summary was the regression — it stated only that the defendant "was charged".
+- **Preliminary-injunction grants are described as ONE ruling.** A new
+  `SUMMARY_SYSTEM_PROMPT` rule ("one ruling is one statement, even when it is
+  recorded across more than one filing") stops the model splitting a single
+  decision documented across an opinion + the order implementing it into two
+  parallel clauses just to attach a second inline document link. The
+  anthropic-v-dow 3:26-cv-01996 (N.D. Cal.) summary was the regression
+  ("granted a preliminary injunction … and the accompanying preliminary
+  injunction order enjoins …" read as two rulings).
+- **Operator-note provenance no longer leaks into subscriber prose.** The
+  `aggregation_note` and `extra_documents` NOTE are context FOR the model, not
+  material to attribute to subscribers; the model occasionally wrote "the
+  operator notes that he has appealed his conviction" (us-v-knoot district
+  summary). A `SUMMARY_SYSTEM_PROMPT` rule forbids referencing the operator /
+  note / "provided context" as a source, backed by a deterministic cleanup (see
+  Added).
+
+### Added
+
+- **Deterministic redundant-forfeiture guard** (tier 4;
+  `summary._audit_summary_forfeiture` + `_strip_redundant_forfeiture`, wired
+  into `_generate_guarded_summary`). When the prose states a forfeiture MONEY
+  JUDGMENT whose amount equals a restitution amount it also states — which a lay
+  reader sums into a fictional larger total (us-v-knoot: "$15,100 in
+  restitution" + "forfeiture money judgment of $15,100" → reads as $30,200) —
+  the guard retries generation once asking the model to omit the forfeiture per
+  the omission rule, and if it still states the doubled figure, deterministically
+  excises the forfeiture clause (surgically when joined to other content,
+  keeping that content). Scoped to "forfeiture money judgment" wording so
+  identified-property forfeiture is untouched; amount-equality detection means a
+  rare two-co-defendant same-amount case could trip it, so a WARNING always logs
+  for review. Necessary because the appellate-summary disposition borrow now
+  feeds the trial-court judgment (carrying the forfeiture order) into appellate
+  summaries, widening where the soft omission rule had to hold.
+- **Deterministic operator-note attribution cleanup**
+  (`summary._audit_summary_attribution` + `_strip_operator_attribution`, applied
+  unconditionally at the end of `_generate_guarded_summary`). Removes only the
+  attribution lead-in ("the operator notes that …", "according to the
+  operator", "per the operator's note") and keeps the clause it introduced
+  (capitalized if it opened a sentence), since the note is trusted context and
+  the fact stands on its own. Scoped to the operator-AS-SOURCE sense so an
+  unrelated "operator" in the prose (a "laptop-farm operator") is untouched.
+
+### Changed
+
+- **`summary._borrow_primary_from_siblings` returns `(primary, dispositions)`**
+  instead of just the borrowed primary documents, and `summarize_docket` merges
+  the borrowed dispositions (de-duped by entry id) into the appellate docket's
+  disposition set.
+- **`docs/llm-prompts.md` regenerated** from the updated `SUMMARY_SYSTEM_PROMPT`
+  (+\~1,470 tokens on the Sonnet summary track; still well above the cache floor,
+  so the cost impact is the cache-read rate after the first call).
+
 ## [0.13.1] - 2026-05-31
 
 Headline: a quiet `sync` is now a cheap `sync`. The end-of-case verify /

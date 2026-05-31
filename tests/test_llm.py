@@ -3148,6 +3148,85 @@ class TestSummaryPromptDocketScope:
         # A bare "has appealed" after the sentence is the district summary's cap.
         assert 'the defendant "has appealed"' in norm
 
+    def test_appellate_summary_states_conviction_and_sentence(self):
+        # The 26-5455 / Knoot regression: the appellate summary said only the
+        # defendant "was charged", never the conviction + sentence being
+        # appealed (the trial-court disposition is now borrowed into the
+        # appellate docket's inputs). The prompt must tell the model to state
+        # that outcome rather than frame the case as mere allegations.
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "For a CRIMINAL appeal specifically" in norm
+        assert "underlying CONVICTION and SENTENCE that are on appeal" in norm
+        # The borrowed-disposition label the model will see is named so it
+        # knows where the trial-court outcome came from.
+        assert "[from sibling <docket> <court>]" in norm
+        # The criminal-appeal framing REPLACES the generic "who is charged"
+        # Sentence-1 structure — the appeal must LEAD, not trail (the knoot
+        # 26-5455 shortfall, where the model kept the trial-court narrative and
+        # tacked "has appealed" on at the end).
+        assert "the appeal IS the story" in norm
+        assert "the appeal must LEAD, not trail" in norm
+        # Hard first-sentence directive (the knoot 26-5455 case kept reverting
+        # to a "was charged" lead) + the forward-reference exception at the
+        # generic Sentence-1 rule so the model doesn't anchor on "who is charged".
+        assert (
+            "FIRST\nsentence MUST open with the defendant appealing".replace("\n", " ")
+            in norm
+        )
+        assert "a CRIMINAL APPEAL\ndocket overrides this".replace("\n", " ") in norm
+        # Lead with the appeal, defendant as active appellant (the operator's
+        # preferred framing): "X is appealing his conviction ...".
+        assert "is appealing his conviction for wire fraud" in norm
+        # BOTH conviction routes are covered with their own framing — a trial
+        # verdict as well as a guilty plea (the operator's "someone could be
+        # convicted rather than just pleading guilty" point), tied to the
+        # trial-vs-plea invariant so "convicted at trial" needs a verdict.
+        assert "after being convicted at trial and sentenced to" in norm
+        assert "to which he pled guilty, after being sentenced to" in norm
+        assert "claim a trial only when" in norm
+        # Empty-appellate-scaffold case still leads with the appeal (knoot).
+        assert "no appellate activity recorded on this docket yet" in norm
+        # Grammar guard against the "after pled guilty" slip seen in gholinejad.
+        assert 'NEVER the\nungrammatical "after pled guilty"'.replace("\n", " ") in norm
+
+
+class TestSummaryPromptSingleRuling:
+    """One ruling recorded across an opinion + the order implementing it must
+    be described once, not split into two clauses to fit a second inline link
+    (the 3:26-cv-01996 / Anthropic v. DOW preliminary-injunction regression)."""
+
+    def test_one_ruling_one_statement_rule(self):
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "one ruling is one statement" in norm
+        # The link mechanism must not drive a second restating clause.
+        assert "NEVER justifies restating a ruling" in norm
+        # The exact BAD/GOOD shapes for the PI-split failure mode.
+        assert "the accompanying preliminary injunction order enjoins" in norm
+        assert "and enjoining defendants from implementing the directive" in norm
+
+
+class TestSummaryPromptOperatorContext:
+    """The operator's AGGREGATION NOTE / NOTE FROM OPERATOR is context for the
+    model, never material to attribute to subscribers (the us-v-knoot "the
+    operator notes that he has appealed his conviction" leak)."""
+
+    def test_operator_context_not_attributed(self):
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "operator-supplied context is BACKGROUND FOR YOU" in norm
+        # The exact leak phrasing is called out as forbidden.
+        assert '"the operator notes that he has appealed his conviction"' in norm
+        # The provenance words must not appear in the output.
+        assert (
+            'The words "operator", "aggregation note", "the note", and "provided '
+            'context" must NOT appear in your output' in norm
+        )
+
 
 class TestSummaryPromptVerdictContent:
     """A blank verdict form's text is the template, not the result — the model
