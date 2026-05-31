@@ -25,12 +25,16 @@ significance — so they default to the cheap small/fast tier and run whether or
 not summaries are enabled. **Summaries** are the opt-in synthesis track on a
 higher tier.
 
-| Track | Runs when | Default models (Anthropic / Gemini / OpenAI) |
+| Track | Runs when | Per-provider model (Anthropic / Gemini / OpenAI) |
 | --- | --- | --- |
-| Extraction + verify | Always | Claude Haiku 4.5 / Gemini 3.1 Flash Lite / GPT-5.4-nano |
-| Summaries | Opt-in (`case_summaries.enabled`) | Claude Sonnet 4.6 / Gemini 2.5 Pro / GPT-5.4 |
+| Extraction + verify | Always | Claude Haiku 4.5 / **Gemini 3.1 Flash Lite** / GPT-5.4-nano |
+| Summaries | Opt-in (`case_summaries.enabled`) | **Claude Sonnet 4.6** / Gemini 2.5 Pro / GPT-5.4 |
 
-As of 0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and **Claude Sonnet 4.6 for summaries** (see [the SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md) for why). Zero-config auto-detection (you set the API keys, no `LLM_*` env vars) wires up exactly this assignment — the numbers below let you decide whether a different provider fits your caseload.
+The **bold** model in each row is the zero-config default for that track —
+Gemini for extraction, Anthropic for summaries (the rest are what you get if
+you pin that provider). See [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
+
+As of 0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and **Claude Sonnet 4.6 for summaries** (see [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries) for why). Zero-config auto-detection (you set the API keys, no `LLM_*` env vars) wires up exactly this assignment — the numbers below let you decide whether a different provider fits your caseload.
 
 Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
@@ -42,10 +46,16 @@ one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.72 | $0.83 | $2.30 | **$9.84** |
-| Gemini (3.1 Flash Lite / 2.5 Pro) — **extraction default** | $1.82 | $0.19 | $1.11 | **$3.12** |
 | OpenAI (GPT-5.4-nano / GPT-5.4) | $1.10 | $0.13 | $1.52 | **$2.76** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.82 | $0.19 | $1.11 | **$3.12** |
+| **Default** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.82 | $0.19 | $2.30 | **$4.30** |
 | OpenAI (GPT-5.4-mini / GPT-5.4) | $3.73 | $0.45 | $1.67 | **$5.85** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.72 | $0.83 | $2.30 | **$9.84** |
+
+The **Default** row is what zero-config gives you — it pairs the two tracks'
+own defaults, Gemini extraction with Anthropic summaries; the single-provider
+rows run one provider on both tracks for comparison. Rows are ordered cheapest
+to priciest backfill.
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. Extraction runs roughly
@@ -60,125 +70,32 @@ $1.00 across the whole caseload on the priciest provider.
 
 If you run the extraction track on Anthropic, its verify pass stays
 uncached on Haiku 4.5 (estimated at $0.83 across the whole caseload in this
-0.13.0 build). The merged `VERIFY_SYSTEM_PROMPT` (\~2000
-`count_tokens`-measured tokens) sits just under Anthropic Haiku 4.5's
-documented 2048-token prompt-cache floor, so it isn't cached (`cached=0`,
-`cache_write=0` on every verify call). A deliberate experiment that bumped
-it to 2941 tokens — well over the documented floor — *also* didn't cache,
-so the empirical conclusion is that Haiku 4.5's real floor is higher than
-the documented 2048 (likely 4096); the bump was reverted since it cost more
-without buying a cache discount. Bringing the verify track into cache would
-require either substantially more substantive content (a stretch given the
-rule space is enumerated) or routing the verify track to Sonnet (which
-caches at 1024 per the docs but bills at the higher Sonnet rate). See the AGENTS.md "Anthropic prompt caching" design
-note for the full empirical write-up.
+0.13.0 build): the merged `VERIFY_SYSTEM_PROMPT` falls under Haiku 4.5's
+prompt-cache size floor, so every verify call pays the full input rate.
+Routing the verify track to Sonnet would cache it but bill at the higher
+Sonnet rate. The empirical write-up — including why the documented 2048-token
+floor turned out to be wrong — is the "Anthropic prompt caching" design note
+in AGENTS.md.
 
 These are **estimates from the price table** (below), not a bill, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.
 
-### Why extraction defaults to Gemini and summaries to Anthropic
+### Why this split?
 
-0.13.0 splits the default: **Gemini for extraction, Anthropic for summaries.**
-The two tracks are chosen on different grounds, so the reasoning is split too.
+The *reasoning* behind the default split — which substantive deadline classes
+drive the extraction-track choice, and the case-distinguishing detail the
+summary track buys — lives in the architecture overview, so it stays in one
+place rather than drifting across pages:
 
-#### Extraction → Gemini
+> [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
 
-Gemini wins on every axis that matters for the extraction track. On cost,
-Anthropic runs **\~3.75× more** than Gemini on the constant-load extract +
-verify pair (summaries off): **$7.55 vs $2.01** across this caseload. On speed,
-Gemini averages **1.7 s/call vs Anthropic's 3.2 s/call** — roughly **\~1.9×
-faster per call**. And on accuracy, Gemini now posts the **best aggregate
-deviation in the comparison (305 vs Anthropic 349)**, including the best
-deadline axes (D met/pass deviation 125 vs Anthropic 155; D cancelled 9 vs
-Anthropic 28). The full per-axis breakdown is in
-[the SCORECARD](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison/SCORECARD.md).
+This page covers the *cost* side; the configuration env vars that pin each track
+are on the [Installation](installation.md) page.
 
-That's a change from 0.10.0 / 0.11.0, which kept Anthropic as the extraction
-default precisely because Gemini, relying on its intrinsic training priors,
-silently classified a long tail of substantive federal-procedure deadline
-classes as `procedural-minor` — which then dropped out at the render-time
-significance gate, off subscriber calendars. The classes that were getting
-dropped:
-
-- **PSR** (Presentence Investigation Report) interview, first disclosure,
-  objection windows
-- **Speedy Trial Act** § 3161(h) exclusion orders
-- **Surrender for service of sentence** (the date a defendant must
-  self-report to BOP custody)
-- **Civil forfeiture** Supp. R. G claim + answer deadlines
-- **Substantive sealing motion practice** (briefing on a motion to
-  seal/unseal, not the routine "filed under seal" stamps)
-- **Exhibit-filing deadlines** under a final pretrial order
-- **Certified administrative record** / certified index of the
-  administrative record (the deadline that starts the APA cross-motion
-  briefing clock)
-
-What changed is the **prompt**, not the model. 0.13.0 adds a structured
-`DEADLINE_SIGNIFICANCE_RULES` block (ordered RULE 1-5) to the unified
-extraction `SYSTEM_PROMPT` that enumerates those substantive classes
-explicitly and biases the default toward `major`. Because the classes are now
-**named in the prompt for every provider** — apples-to-apples — Gemini
-classifies them as `major` instead of leaning on intrinsic priors it didn't
-have. The prompt now carries the priors; Gemini's training didn't change. That
-closes the deadline-bucketing gap that had kept Anthropic the default, and the
-measured deviation numbers above are the result.
-
-The honest caveat: the ruleset enumerates the substantive classes the project
-currently knows about. An operator whose caseload includes substantive classes
-the ruleset does **not** name should still verify Gemini's output against their
-own docket set — the per-track override env vars remain available for exactly
-that. But the risk is materially **reduced**, not merely shifted onto a
-different provider, because the enumeration is in-prompt for both providers now
-rather than left to whichever model happens to have the prior.
-
-#### Summaries → Anthropic
-
-The summary track stays Anthropic because Sonnet pulls more
-case-distinguishing detail than Gemini: statute citations, count numbers,
-sentence breakdowns, forfeiture amounts split out by money judgment vs
-identified-property, custody status, cancelled-schedule notes, full briefing
-schedules, cross-docket framing. The bucket-confusion problem — multiple cases
-of the same kind blurring into nearly interchangeable Gemini summaries — is
-documented with side-by-side examples in the SCORECARD's **Summary track**
-section. Summaries are low-volume (one call per docket, rarely re-run), so the
-higher Sonnet rate buys distinguishing prose cheaply: summaries added **$2.30**
-on Anthropic across the whole caseload in this build.
-
-#### Configuration
-
-Zero-config gets you the split automatically: set both API keys, leave the
-`LLM_*` env vars unset, and auto-detection wires extraction → Gemini,
-summaries → Anthropic.
-
-```bash
-ANTHROPIC_API_KEY=sk-ant-...
-GEMINI_API_KEY=...
-```
-
-The per-track override env vars are still wired up. `LLM_PROVIDER` (global)
-overrides both tracks; `LLM_EXTRACTION_PROVIDER` and `LLM_SUMMARY_PROVIDER`
-override their track. To pin a single provider on both tracks — e.g. if you
-only hold an Anthropic key, or you've measured a different provider against
-your own caseload:
-
-```bash
-LLM_PROVIDER=anthropic               # both tracks on Anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-Or to keep the default split but pin specific providers explicitly:
-
-```bash
-LLM_EXTRACTION_PROVIDER=gemini       # extraction track
-LLM_SUMMARY_PROVIDER=anthropic       # summary track
-ANTHROPIC_API_KEY=sk-ant-...
-GEMINI_API_KEY=...
-```
-
-Want a head-to-head cost **and accuracy** comparison across providers and model tiers — including the per-docket deviation breakdown, the
-wall-clock and mean-call-latency numbers, and the bucket-confusion
-examples behind the summary-track recommendation? See
+Want a head-to-head cost **and accuracy** comparison across providers and model
+tiers — the per-docket deviation breakdown, the wall-clock and mean-call-latency
+numbers, and the side-by-side summary-detail examples? See
 [`model-comparison/`](https://github.com/seanthegeek/case-calendar/tree/main/model-comparison)
 in the repository.
 

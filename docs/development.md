@@ -158,7 +158,7 @@ type-check against the latest pyright, as CI does.
 ## Iterating on prompts and models cheaply
 
 The extractor and summary prompts live in
-[`case_calendar/llm.py`](../case_calendar/llm.py); the per-prompt rules are
+[`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py); the per-prompt rules are
 reproduced in [LLM prompts](llm-prompts.md). The unit tests pin prompt
 *structure*, but they can't tell you whether a wording change actually
 improves what the model extracts — for that you have to run the real model
@@ -173,7 +173,7 @@ those failure modes can be checked against exactly the cases that surfaced it.
 
 ### 2. The provider-comparison harness
 
-[`model-comparison/build_provider_stores.py`](../model-comparison/build_provider_stores.py)
+[`model-comparison/build_provider_stores.py`](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/build_provider_stores.py)
 builds a complete store + rendered output per LLM provider from the *same*
 cached CourtListener data, so you can compare cost and output side by side
 before changing a default. Point it at the fixture config to keep it cheap:
@@ -189,7 +189,7 @@ uv run python model-comparison/build_provider_stores.py --config config.dev.yaml
 It copies the store and never mutates the live file, replays the real
 pipeline (extractor + verify/dedupe sweeps + summaries), and prints a per-
 provider, per-track cost report. See
-[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md) for the
+[`model-comparison/SCORECARD.md`](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md) for the
 analysis behind the current default-provider choice.
 
 ### 3. The persistent LLM-response cache
@@ -286,7 +286,7 @@ The scripts, all run from the repo root:
 ## Conventions for changes
 
 The project's rules for human and AI contributors alike live in
-[`AGENTS.md`](../AGENTS.md) — read it before your first pull request. The ones
+[`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md) — read it before your first pull request. The ones
 that catch newcomers most often:
 
 - **Every behavior change ships with its test.** Adding a branch adds a test;

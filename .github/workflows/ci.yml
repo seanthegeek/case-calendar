@@ -37,6 +37,13 @@ jobs:
       - name: Ruff format check
         run: uv run ruff format --check case_calendar tests
 
+      - name: Docs in sync with runtime prompts
+        # docs/llm-prompts.md reproduces the system prompts verbatim; this
+        # fails the build if a prompt edit in case_calendar/llm.py didn't
+        # re-run the generator. Fix locally with:
+        #   python scripts/sync_llm_prompts_doc.py
+        run: uv run python scripts/sync_llm_prompts_doc.py --check
+
       - name: Pyright
         # PYRIGHT_PYTHON_FORCE_VERSION=latest pulls the newest pyright
         # release rather than whatever the pyright-python wrapper is
