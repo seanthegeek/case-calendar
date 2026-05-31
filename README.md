@@ -52,9 +52,10 @@ It was built for the cases where docket-watching by hand is too much:
 - **Push to Google Calendar and Microsoft 365 / Outlook**, opt-in, with
   one-time OAuth. Events are deduplicated server-side so reschedules
   update existing events rather than creating new ones.
-- **Filing-deadline tracking** auto-detected per docket — on for civil
-  and appellate, off for routine criminal, force-on per-case for
-  motion-heavy litigation.
+- **Filing-deadline tracking** on every docket, uniformly — the LLM tags
+  each deadline major or minor, and only major ones (dispositive briefing,
+  sentencing memos, PSR objections, surrender dates, and the like) reach
+  subscriber calendars; procedural filings stay in the audit trail.
 - **AI case summaries** (opt-in) generate a 2-4 sentence prose
   description of each case from its primary document plus any
   dispositions, with each summary's action phrases linked to the

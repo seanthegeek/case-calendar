@@ -70,18 +70,12 @@ $1.00 across the whole caseload on the priciest provider.
 
 If you run the extraction track on Anthropic, its verify pass stays
 uncached on Haiku 4.5 (estimated at $0.83 across the whole caseload in this
-0.13.0 build). The merged `VERIFY_SYSTEM_PROMPT` (\~2000
-`count_tokens`-measured tokens) sits just under Anthropic Haiku 4.5's
-documented 2048-token prompt-cache floor, so it isn't cached (`cached=0`,
-`cache_write=0` on every verify call). A deliberate experiment that bumped
-it to 2941 tokens — well over the documented floor — *also* didn't cache,
-so the empirical conclusion is that Haiku 4.5's real floor is higher than
-the documented 2048 (likely 4096); the bump was reverted since it cost more
-without buying a cache discount. Bringing the verify track into cache would
-require either substantially more substantive content (a stretch given the
-rule space is enumerated) or routing the verify track to Sonnet (which
-caches at 1024 per the docs but bills at the higher Sonnet rate). See the AGENTS.md "Anthropic prompt caching" design
-note for the full empirical write-up.
+0.13.0 build): the merged `VERIFY_SYSTEM_PROMPT` falls under Haiku 4.5's
+prompt-cache size floor, so every verify call pays the full input rate.
+Routing the verify track to Sonnet would cache it but bill at the higher
+Sonnet rate. The empirical write-up — including why the documented 2048-token
+floor turned out to be wrong — is the "Anthropic prompt caching" design note
+in AGENTS.md.
 
 These are **estimates from the price table** (below), not a bill, and they
 reflect one specific caseload on one date — don't take them on faith; measure

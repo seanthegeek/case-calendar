@@ -158,7 +158,7 @@ type-check against the latest pyright, as CI does.
 ## Iterating on prompts and models cheaply
 
 The extractor and summary prompts live in
-[`case_calendar/llm.py`](../case_calendar/llm.py); the per-prompt rules are
+[`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py); the per-prompt rules are
 reproduced in [LLM prompts](llm-prompts.md). The unit tests pin prompt
 *structure*, but they can't tell you whether a wording change actually
 improves what the model extracts — for that you have to run the real model
@@ -286,7 +286,7 @@ The scripts, all run from the repo root:
 ## Conventions for changes
 
 The project's rules for human and AI contributors alike live in
-[`AGENTS.md`](../AGENTS.md) — read it before your first pull request. The ones
+[`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md) — read it before your first pull request. The ones
 that catch newcomers most often:
 
 - **Every behavior change ships with its test.** Adding a branch adds a test;

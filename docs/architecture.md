@@ -488,10 +488,10 @@ and each one is reproduced **verbatim** on the
 is told without opening the source:
 
 - [`HEARING_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L27) and [`DEADLINE_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L87) — the two major-vs-minor classification rubrics (one per event family), each interpolated into the main extractor prompt.
-- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
-- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L910) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
-- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.
-- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1451) — the higher-tier case-summary prompt.
+- [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L155) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
+- [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L979) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
+- [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1392) — same-docket same-slot duplicate resolver.
+- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1624) — the higher-tier case-summary prompt.
 
 Reading any of those alongside the corresponding entry in
 [`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)
