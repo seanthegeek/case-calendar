@@ -132,13 +132,20 @@ exhibit-filing deadlines, certified administrative record — as
 gate, off subscriber calendars.
 
 0.13.0 closes that gap in the prompt, not the model. The unified extraction
-`SYSTEM_PROMPT` now carries a structured `DEADLINE_SIGNIFICANCE_RULES` block
-(ordered `RULE 1`-`RULE 5`) that enumerates those substantive classes
-explicitly and biases the default toward `major`. Because the classes are now
-named in the prompt for *every* provider — apples-to-apples, rather than left
-to each model's intrinsic priors — Gemini now classifies them as `major` too.
-The important framing: the prompt carries the priors for every provider; this
-is not a claim that Gemini's training improved.
+`SYSTEM_PROMPT` now carries a structured
+[`DEADLINE_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L87)
+block (ordered `RULE 1`-`RULE 5`) that closes the gap two ways. **RULE 2 names
+most of the dropped classes outright** — PSR objections, surrender for service
+of sentence, civil-forfeiture claim/answer, the certified administrative
+record, CIPA / sealing filings, exhibit and witness lists — and classifies them
+`major`. The classes RULE 2 does *not* name — a Speedy Trial Act § 3161(h)
+exclusion, for instance — fall to **RULE 5, which tells the model to default any
+substantive litigation deadline to `major`** unless it is clearly procedural
+housekeeping. Because both the named classes and the default-major bias live in
+the prompt for *every* provider — apples-to-apples, rather than left to each
+model's intrinsic priors — Gemini now classifies them as `major` too. The
+important framing: the prompt carries the priors for every provider; this is
+not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
 extraction. On the full caseload (see the
@@ -151,13 +158,17 @@ track stays Anthropic because Sonnet still adds a few categories of detail the
 higher-tier Gemini summary model drops — statutory citations, count numbers,
 cross-docket statutory distinctions, and cancelled-schedule notes.
 
-One honest caveat survives the change: `DEADLINE_SIGNIFICANCE_RULES` enumerates
-the substantive classes the project currently knows about. An operator whose
-caseload includes substantive classes the ruleset does *not* enumerate should
-still verify Gemini's output against their own docket set, and the per-track
-override env vars remain available for that. But the risk is materially
-*reduced* — not merely shifted — because the enumeration is now in the prompt
-for both providers rather than left to a single model's training corpus.
+One honest caveat survives the change: RULE 2 enumerates the substantive classes
+the project currently knows about, and RULE 5 is the safety net for the rest. An
+operator whose caseload includes substantive classes the ruleset does *not*
+enumerate should still verify Gemini's output against their own docket set, and
+switch to a different LLM model for extraction if needed. The per-track override
+env vars remain available for that. But the risk is materially *reduced* — not
+merely shifted — because an unnamed substantive deadline isn't left to whichever
+model holds the right training prior: RULE 5 instructs *every* provider, Gemini
+included, to lean toward `major` unless the deadline is clearly procedural, so
+the bias is toward keeping the rare substantive deadline rather than silently
+dropping it.
 
 | | Extraction track | Summary track |
 | --- | --- | --- |
@@ -166,7 +177,7 @@ for both providers rather than left to a single model's training corpus.
 | Anthropic cost (full backfill) | \~$6.72 | \~$2.30 |
 | Gemini cost (full backfill) | \~$1.82 | \~$1.11 |
 | Aggregate deviation (lower is better) | Gemini **305** (best in table) vs Anthropic 349 | — |
-| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best `D met/pass` in the table and far fewer spurious cancellations than Anthropic, \~3.75× cheaper, \~1.9× faster per call | richer case-distinguishing prose (statutory citations, count numbers, cross-docket statutory distinctions, cancelled-schedule notes — all of which Gemini's terser summaries still drop) |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best `D met/pass` in the table and far fewer spurious cancellations than Anthropic, \~3.75× cheaper, \~1.9× faster per call | a few extra detail categories over Gemini 2.5 Pro's already-detailed summaries — statutory citations, count numbers, cross-docket statutory distinctions, cancelled-schedule notes — plus \~62% more length |
 
 The full deviation breakdown — measured against a human-scored ground-truth
 worksheet over the whole caseload — is in the
@@ -180,16 +191,17 @@ single provider can still set `LLM_PROVIDER`, or pin either track with
 `LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
 
 The [SCORECARD's Summary track section](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)
-documents the bucket-confusion problem with side-by-side examples — three
-NK-IT-worker cases that Gemini summarizes into nearly interchangeable prose
-vs Anthropic's case-distinguishing versions of the same three; three
-ransomware cases ditto; the DOW litigation group where Gemini collapses
-the statutory distinction that drives why the three proceedings are
-separate.
+walks the comparison with side-by-side examples. Gemini 2.5 Pro is *not* the
+weak link the cheap extraction tier was — it names the defendants, the imposed
+sentences, the dollar figures, the aliases, and the custody status. Anthropic's
+edge is the narrower detail above plus length, clearest on the DOW litigation
+group: Anthropic names the distinct statutory authority each of the three
+proceedings targets (the § 4713 challenge in the D.C. Circuit, the § 3252
+challenge in the Northern District of California), while Gemini collapses all
+three to "supply-chain risk under different statutes" — losing the axis that
+explains why they are separate proceedings.
 
-For measured per-provider backfill costs across a real caseload, see
-[Case summaries → Cost](case-summaries.md#cost) and the
-[Cost page](cost.md).
+Visit the [Cost page](cost.md) for more cost details.
 
 ## Why LLM-driven extraction, not regex?
 

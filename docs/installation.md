@@ -17,16 +17,9 @@ Case Calendar is a Python CLI. You'll need:
   busy docket. The recommended default is a **split**: Gemini
   (`gemini-3.1-flash-lite`) for extraction and Anthropic
   (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
-  for you when you provide keys for both. Gemini extraction became the
-  default in 0.13.0: the extraction prompt now names the substantive
-  deadline classes (PSR objections, civil-forfeiture claim/answer,
-  sentencing memos, etc.) for every provider and defaults anything it
-  doesn't name to `major`, so all three classify them consistently
-  rather than leaning on each model's own priors. With that change
-  Gemini's deadline accuracy is the best in the
-  comparison and it runs cheaper and faster, while Anthropic stays on
-  summaries for its richer case-distinguishing detail. See
-  [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md).
+  for you when you provide keys for both. For *why* the default splits the
+  two tracks across providers, see
+  [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
 
 [← Back to docs](index.md)
 
@@ -70,8 +63,8 @@ and the case-summary track prefers **anthropic > gemini > openai**. So a fresh
 operator who provisions all three keys without setting any `LLM_*` variable
 lands on the project's recommended split — Gemini for extraction, Anthropic
 for summaries (see
-[../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md)). If you
-provide only one provider's key, both tracks use that provider.
+[Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)).
+If you provide only one provider's key, both tracks use that provider.
 
 To force one provider for BOTH tracks, set `LLM_PROVIDER=anthropic` (or
 `gemini` / `openai`) — it's the global default that overrides the per-track
