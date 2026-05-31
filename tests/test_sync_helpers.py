@@ -240,6 +240,20 @@ class TestLocalToUtc:
     def test_empty_date_returns_none(self):
         assert _local_to_utc("", None, "America/New_York") is None
 
+    def test_literal_null_string_date_treated_as_missing(self):
+        # Date-side twin of the ``local_time: "null"`` case below. The
+        # 0.13.0 unified-prompt validation build hit a conditional
+        # ADD_DEADLINE where the model wrote ``"local_date": "null"``
+        # (the literal string) instead of JSON null, crashing the column
+        # with ``ValueError: Invalid isoformat string: 'nullT16:00'``.
+        # The literal "null" / "None" date (any casing / whitespace) must
+        # be treated as a missing date (return None) so the row is stored
+        # date-less, the same end state as a conditional deadline.
+        assert _local_to_utc("null", "16:00", "America/New_York") is None
+        assert _local_to_utc("None", None, "America/New_York") is None
+        assert _local_to_utc(" NULL ", "16:00", "America/New_York") is None
+        assert _local_to_utc(None, "16:00", "America/New_York") is None
+
     def test_literal_null_string_time_treated_as_missing(self):
         # gpt-5.4-mini regression — the verify-pass response emitted
         # ``local_time: "null"`` (string) on a REINSTATE action and the
@@ -584,6 +598,16 @@ class TestDeadlineLocalToUtc:
 
     def test_empty_date_returns_none(self):
         assert _deadline_local_to_utc("", None, "America/New_York") is None
+
+    def test_literal_null_string_date_returns_none(self):
+        # The 0.13.0 validation-build crash: a conditional ADD_DEADLINE
+        # with ``"local_date": "null"`` (string) reached this function and
+        # crashed with ``Invalid isoformat string: 'nullT16:00'``. A literal
+        # "null"/"None" date must return None (date-less / conditional row),
+        # NOT fall through to the 16:00 default with a bogus "null" date.
+        assert _deadline_local_to_utc("null", "16:00", "America/New_York") is None
+        assert _deadline_local_to_utc("None", None, "America/New_York") is None
+        assert _deadline_local_to_utc(" NULL ", None, "America/New_York") is None
 
     def test_literal_null_string_falls_back_to_default_4pm(self):
         # Same gpt-5.4-mini failure mode as on _local_to_utc, but for

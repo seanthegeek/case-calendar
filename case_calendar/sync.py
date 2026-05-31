@@ -301,7 +301,14 @@ def _normalize_action_category(action: dict[str, Any]) -> dict[str, Any]:
 def _local_to_utc(
     date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
-    if not date_str:
+    # Some LLMs emit the literal string ``"null"`` / ``"None"`` for a missing
+    # date instead of JSON null — observed on a conditional ADD_DEADLINE where
+    # the model wrote ``"local_date": "null"`` and crashed the column with
+    # ``ValueError: Invalid isoformat string: 'nullT16:00'`` (the date-side
+    # twin of the ``local_time`` "null" case handled just below). Treat those
+    # as a missing date so the row is stored date-less — the same end state as
+    # a conditional deadline — rather than letting them reach ``fromisoformat``.
+    if not date_str or date_str.strip().lower() in ("null", "none"):
         return None
     # The schema says ``local_time`` is ``"HH:MM" | null`` but some LLMs
     # occasionally emit the literal string ``"null"`` (or ``"None"``) when

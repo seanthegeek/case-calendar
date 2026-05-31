@@ -21,7 +21,7 @@ import sys
 
 from dotenv import load_dotenv
 
-from case_calendar.llm import SIGNIFICANCE_RULES
+from case_calendar.llm import HEARING_SIGNIFICANCE_RULES
 from case_calendar.llmkit.providers import _DEFAULT_MODELS, _detect_provider
 from case_calendar.store import Store
 
@@ -44,7 +44,7 @@ CLASSIFY_SYSTEM = (
     "calendar-sync tool. Output ONLY a JSON object: "
     '{"significance": "major"|"minor", "reason": "..."}. '
     "No prose, no markdown.\n\n"
-) + SIGNIFICANCE_RULES
+) + HEARING_SIGNIFICANCE_RULES
 
 
 def classify(case_id: str, hearing: dict, source_descriptions: list[str]) -> dict:

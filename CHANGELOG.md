@@ -8,6 +8,53 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.13.0] - 2026-05-30
+
+Headline: the extractor `SYSTEM_PROMPT` is now a **single unified
+court-calendar prompt** that treats hearings and filing deadlines as
+co-equal, rather than a hearing prompt with deadlines bolted on as an
+"additional task". The prompt grew the way the project did — it began as
+a hearing extractor and gained deadline support later — leaving two
+prompts stapled together with duplicated scaffolding (the cross-docket
+rule, the "no dates in keys" rule, the significance default + render
+gate, the court-local date/time rules, the title rules, the JSON-safety
+rules, and the ADD-requires-a-date logic were each stated twice) and two
+separate JSON output schemas. The rewrite states each shared rule once in
+a PART 1 ("rules shared by hearings and deadlines"), keeps the
+hearing-specific actions in PART 2 and the deadline-specific actions in
+PART 3, and emits a single JSON schema covering both. Every behavioral
+protection that was pinned by a regression (anti-inference grounding, the
+transcript trio + sealed carve-out, amicus major/minor, minute-entry
+MARK_HELD triggers, multi-defendant key divergence, same-slot,
+conditional deadlines, stipulation-vs-so-ordered) is preserved — the
+change is structural, not a re-tuning of what the rules say. Validated by
+a full four-column provider-store rebuild against the prior run: hearing
+and deadline output stays within normal run-to-run variance, and
+multi-day-trial handling is if anything cleaner (the model consolidates
+trial phases instead of spawning a separate held row per trial day).
+
+### Changed
+
+- **`SYSTEM_PROMPT` restructured into PART 1 (shared) / PART 2 (hearings)
+  / PART 3 (deadlines) with one JSON schema** (`case_calendar/llm.py`).
+  Framing is now "court-calendar events … two equally-important kinds:
+  HEARINGS and FILING DEADLINES" rather than hearing-first. No
+  behavioral rule was dropped or weakened; `SIGNIFICANCE_RULES` stays a
+  separate constant (still reused by `scripts/classify_significance.py`).
+  The module docstring is updated to name both event families.
+
+### Fixed
+
+- **A conditional `ADD_DEADLINE` whose `local_date` came back as the
+  literal string `"null"` (instead of JSON null) no longer crashes the
+  sync** (`case_calendar/sync.py`). `_local_to_utc` now treats a
+  `"null"` / `"None"` *date* string as a missing date and returns `None`
+  (storing the row date-less, the same end state as a conditional
+  deadline) — the date-side twin of the existing `local_time` "null"
+  guard. Previously this reached `datetime.fromisoformat("nullT16:00")`
+  and raised `ValueError`, dropping that entry's deadline. Surfaced by
+  the 0.13.0 validation build.
+
 ## [0.12.0] - 2026-05-30
 
 Headline: timeless filing deadlines now anchor at **4 PM court-local**
