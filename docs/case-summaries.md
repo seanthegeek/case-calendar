@@ -32,7 +32,7 @@ The summary pipeline pulls three sets of source documents for each docket:
    [`extra_documents`](#extra_documents) below) — anything you've manually
    pointed the pipeline at to fill a CourtListener data gap.
 4. **Operator-provided aggregation notes** (optional, see
-   [`aggregation_note`](#Multi-docket aggregation) below) — Additional text provided for clarification.
+   [`aggregation_note`](#multi-docket-aggregation) below) — Additional text provided for clarification.
 
 Those documents — plus a structured scaffold of the hearings and deadlines
 the extractor already recorded — go into a single LLM call. The model returns
