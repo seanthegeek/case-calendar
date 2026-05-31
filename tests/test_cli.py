@@ -1063,7 +1063,7 @@ class TestCmdSync:
         # the auto-emit. Patch llm.provider_info to avoid the env detection.
         monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
 
-        def _fake_sync_case(self, case):
+        def _fake_sync_case(self, case, **_):
             return {
                 "dockets_skipped": 0,
                 "entries_seen": 1,
@@ -1108,7 +1108,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: {
+            lambda self, case, **_: {
                 "dockets_skipped": 1,
                 "entries_seen": 0,
                 "entries_processed": 0,
@@ -1147,7 +1147,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: {
+            lambda self, case, **_: {
                 "dockets_skipped": 1,
                 "entries_seen": 0,
                 "entries_processed": 0,
@@ -1171,7 +1171,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: {
+            lambda self, case, **_: {
                 "dockets_skipped": 0,
                 "entries_seen": 1,
                 "entries_processed": 1,
@@ -1205,7 +1205,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: {
+            lambda self, case, **_: {
                 "dockets_skipped": 0,
                 "entries_seen": 0,
                 "entries_processed": 0,
@@ -1261,7 +1261,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: {
+            lambda self, case, **_: {
                 "dockets_skipped": 0,
                 "entries_seen": 0,
                 "entries_processed": 0,
@@ -1288,6 +1288,42 @@ class TestCmdSync:
         )
         assert cmd_sync(args) == 0
         assert refresh_calls[0]["force"] is True
+
+    def test_reverify_flag_propagates(
+        self,
+        cfg_file,
+        fake_cl_ctx,
+        monkeypatch,
+    ):
+        # `sync --reverify` forces the verify / dedupe sweeps even on cases
+        # whose dockets all short-circuited; cmd_sync threads it into sync_case.
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        seen: list[Any] = []
+        monkeypatch.setattr(
+            cli.CaseSyncer,
+            "sync_case",
+            lambda self, case, **kw: (
+                seen.append(kw.get("reverify")),
+                {
+                    "dockets_skipped": 1,
+                    "entries_seen": 0,
+                    "entries_processed": 0,
+                    "actions": 0,
+                    "verified": 0,
+                    "auto_passed": 0,
+                },
+            )[1],
+        )
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+
+        args = Namespace(
+            config=str(cfg_file),
+            case=None,
+            no_emit=False,
+            reverify=True,
+        )
+        assert cmd_sync(args) == 0
+        assert seen and all(v is True for v in seen)
 
     def test_only_new_filters_to_unseen_dockets(
         self,
@@ -1340,7 +1376,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: (
+            lambda self, case, **_: (
                 synced_ids.append(case.case_id)
                 or {
                     "dockets_skipped": 0,
@@ -1406,7 +1442,7 @@ class TestCmdSync:
         monkeypatch.setattr(
             cli.CaseSyncer,
             "sync_case",
-            lambda self, case: sync_calls.append(case.case_id),
+            lambda self, case, **_: sync_calls.append(case.case_id),
         )
         monkeypatch.setattr(
             cli,
@@ -2879,7 +2915,7 @@ class TestCmdSyncCaseFilter:
             def __init__(self, *a, **kw):
                 pass
 
-            def sync_case(self, case):
+            def sync_case(self, case, **_):
                 sync_calls.append(case.case_id)
                 return {
                     "dockets_skipped": 0,

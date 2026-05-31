@@ -8,6 +8,43 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.13.1] - 2026-05-31
+
+Headline: a quiet `sync` is now a cheap `sync`. The end-of-case verify /
+dedupe sweeps used to run on **every** case on **every** sync, even when
+no docket in that case had changed — re-auditing unchanged rows at a real
+per-call cost. Two back-to-back syncs with nothing new on the dockets
+each spent \~$0.14 (107 LLM calls) re-confirming rows that could not have
+changed. Those sweeps read their candidate rows and docket-entry context
+entirely from the local store, and every domain LLM call pins
+`temperature=0`, so when nothing landed the verdicts are byte-identical
+to the prior sync. They are now skipped for any case whose dockets all
+hit the date-modified short-circuit.
+
+### Changed
+
+- **`CaseSyncer.sync_case` skips the LLM-backed verify / dedupe sweeps
+  for a case when no docket advanced past the short-circuit this sync**
+  (`case_calendar/sync.py`). `_verify_scheduled_hearings`,
+  `_verify_pending_deadlines`, `_dedupe_concurrent_hearings`,
+  `_dedupe_concurrent_held_hearings`, and `_dedupe_nearslot_hearings` only
+  run when at least one of the case's dockets landed new entries (or when
+  `--reverify` is passed). The time-driven `_auto_mark_passed_stale`
+  sweep still runs unconditionally — it flips a `pending` deadline to
+  `passed` once its due date elapses and makes no LLM call, so gating it
+  would strand an elapsed deadline at `pending` on a quiet docket. Safe
+  with respect to `serve`: the webhook path never advances a docket's
+  stored `date_modified`, so a webhook-touched docket always fails the
+  short-circuit on the next poll and runs its sweeps then.
+
+### Added
+
+- **`case-calendar sync --reverify`** forces the verify / dedupe sweeps on
+  every case regardless of the short-circuit. Use it after a
+  verify-prompt or model change, or after an out-of-band store edit
+  (`scripts/reprocess_entries.py`, `scripts/classify_significance.py`)
+  that mutated rows without advancing any docket's `date_modified`.
+
 ## [0.13.0] - 2026-05-30
 
 Headline: the extractor `SYSTEM_PROMPT` is now a **single unified

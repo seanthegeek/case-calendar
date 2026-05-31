@@ -587,14 +587,26 @@ class CaseSyncer:
 
     # --- polling entry point ---
 
-    def sync_case(self, case: CaseConfig) -> dict[str, int]:
+    def sync_case(self, case: CaseConfig, *, reverify: bool = False) -> dict[str, int]:
         stats = {
             "dockets_skipped": 0,
             "entries_seen": 0,
             "entries_processed": 0,
             "actions": 0,
             "verified": 0,
+            "deduped": 0,
+            "deduped_held": 0,
+            "deduped_nearslot": 0,
+            "deadlines_verified": 0,
+            "auto_passed": 0,
         }
+        # Did any docket in this case get past the date_modified
+        # short-circuit (i.e. land new entries) this sync? When none did,
+        # the store is unchanged for this case and the LLM-backed verify /
+        # dedupe sweeps would re-read identical rows and — every domain
+        # call pins temperature=0 — return identical verdicts. We skip
+        # them in that case; see the gate below.
+        any_docket_advanced = False
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
             docket = self.cl.get_docket(docket_id)
@@ -617,6 +629,10 @@ class CaseSyncer:
                     )
                 stats["dockets_skipped"] += 1
                 continue
+
+            # This docket cleared the short-circuit: it has new entries to
+            # walk, so the verify / dedupe sweeps must run for this case.
+            any_docket_advanced = True
 
             # Persist meta + court so process_entry has what it needs.
             self.store.upsert_docket_meta(
@@ -675,29 +691,51 @@ class CaseSyncer:
         # than guessing 'held' because the calendar date passed. (Trials
         # get continued or vacated by plea without an explicit cancellation
         # entry; the auto-held heuristic was wrong by default for them.)
-        stats["verified"] = self._verify_scheduled_hearings(case)
-        # Run dedupe AFTER verify so any RESCHEDULE_HEARING / CANCEL_HEARING from verify
-        # gets a chance to clear concurrency before we ask the LLM to
-        # resolve it.
-        stats["deduped"] = self._dedupe_concurrent_hearings(case)
-        # Held-row dedup is a separate sweep: two `held` rows on the
-        # same logical PACER docket at the same UTC slot cannot be
-        # legitimate (the court physically can't have held two hearings
-        # simultaneously), so we merge them deterministically without an
-        # LLM call. The motivating case is cross-CourtListener-sibling drift —
-        # didenko's `sentencing-didenko` (from CourtListener docket A) and
-        # `sentencing-didenko-2` (from CourtListener docket B) at the same UTC slot
-        # were created by the per-entry extractor allocating a fresh
-        # key on the new sibling instead of reusing the existing key.
-        stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
-        # Near-slot dedup runs LAST of the hearing sweeps: the exact-slot
-        # sweeps above have already merged identical-slot dups, so this
-        # only sees the NEAR-slot key-drift the extractor produces (same
-        # court day at a different time; a once-only proceeding at a
-        # slightly different date) — LLM-gated, so a genuine two-distinct-
-        # hearings-same-day pair is kept.
-        stats["deduped_nearslot"] = self._dedupe_nearslot_hearings(case)
-        stats["deadlines_verified"] = self._verify_pending_deadlines(case)
+        #
+        # GATE: skip the LLM-backed sweeps when no docket in this case
+        # advanced past the short-circuit. Their inputs (the candidate
+        # rows + the docket-entry context window) come entirely from the
+        # store, which is unchanged when nothing landed; at temperature=0
+        # the verdicts would be byte-identical to the last sync, so
+        # re-running is pure cost. `serve` (webhooks) never advances a
+        # docket's stored date_modified, so a webhook-touched docket
+        # always fails the short-circuit on the next poll and runs its
+        # sweeps then — the gate cannot strand a webhook-added row. The
+        # `reverify` override forces the sweeps regardless, for the two
+        # cases where store rows changed WITHOUT a docket advancing:
+        # after a verify-prompt / model change, and after an out-of-band
+        # store edit (scripts/reprocess_entries.py,
+        # scripts/classify_significance.py).
+        if reverify or any_docket_advanced:
+            stats["verified"] = self._verify_scheduled_hearings(case)
+            # Run dedupe AFTER verify so any RESCHEDULE_HEARING / CANCEL_HEARING from verify
+            # gets a chance to clear concurrency before we ask the LLM to
+            # resolve it.
+            stats["deduped"] = self._dedupe_concurrent_hearings(case)
+            # Held-row dedup is a separate sweep: two `held` rows on the
+            # same logical PACER docket at the same UTC slot cannot be
+            # legitimate (the court physically can't have held two hearings
+            # simultaneously), so we merge them deterministically without an
+            # LLM call. The motivating case is cross-CourtListener-sibling drift —
+            # didenko's `sentencing-didenko` (from CourtListener docket A) and
+            # `sentencing-didenko-2` (from CourtListener docket B) at the same UTC slot
+            # were created by the per-entry extractor allocating a fresh
+            # key on the new sibling instead of reusing the existing key.
+            stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
+            # Near-slot dedup runs LAST of the hearing sweeps: the exact-slot
+            # sweeps above have already merged identical-slot dups, so this
+            # only sees the NEAR-slot key-drift the extractor produces (same
+            # court day at a different time; a once-only proceeding at a
+            # slightly different date) — LLM-gated, so a genuine two-distinct-
+            # hearings-same-day pair is kept.
+            stats["deduped_nearslot"] = self._dedupe_nearslot_hearings(case)
+            stats["deadlines_verified"] = self._verify_pending_deadlines(case)
+        # _auto_mark_passed_stale runs UNCONDITIONALLY — it is the one
+        # sweep driven by the wall clock rather than by docket changes
+        # (it flips a 'pending' deadline to 'passed' once its due date
+        # elapses) and it makes no LLM call. Gating it would leave a
+        # deadline on a quiet docket stuck at 'pending' forever after its
+        # date passed.
         stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
