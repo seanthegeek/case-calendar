@@ -2477,6 +2477,42 @@ class TestSystemPromptHeldEventRecognition:
         assert "do not also mark_held the sibling key" in prompt.lower()
 
 
+class TestGeminiExtractionWeaknessRules:
+    """The three failure modes documented in the (closed-unmerged) #45 PR,
+    integrated into the unified prompt ahead of switching the default
+    extractor to Gemini: phantom same-day transcript rows, abbreviated
+    locations, and dropped dial-in access labels. Pin each so the rule
+    survives future prompt edits."""
+
+    def test_same_date_transcript_marks_held_existing_key(self):
+        # A transcript of a proceeding held on date X must MARK_HELD the
+        # known hearing on that DATE (any time), not allocate a generic
+        # "proceedings-<date>" row the same-slot dedupe can't catch.
+        p = _norm_prompt()
+        assert "Same-DATE transcript rule" in p
+        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in p
+        assert 'Do NOT allocate a generic "proceedings-<date>" key' in p
+        # The match-on-date-not-time rationale and the phantom-row warning.
+        assert "match on the DATE alone" in p
+        assert "phantom second row the same-slot dedupe can't catch" in p
+
+    def test_location_preserves_every_named_token(self):
+        # Court formal name / state / ZIP / room labels must survive; the
+        # small/fast-tier abbreviation failure is the pinned anti-pattern.
+        p = _norm_prompt()
+        assert "PRESERVE EVERY NAMED TOKEN" in p
+        assert "Northern District of California" in p
+        assert "Do NOT abbreviate the courthouse or drop attributes" in p
+
+    def test_dial_in_carries_access_labels(self):
+        # Access labels ("audio observation only", etc., often citing
+        # Civ. L.R. 77-3(d)) must ride along on dial_in.
+        p = _norm_prompt()
+        assert "ACCESS LABEL" in p
+        assert "audio observation only" in p
+        assert "Civ. L.R. 77-3(d)" in p
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the

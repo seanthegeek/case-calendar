@@ -499,6 +499,20 @@ entry's vocabulary differs from the existing row's title (an order setting a
 "Motion Hearing" for the same date+time as a previously-stipulated "Hearing on
 Motion for Summary Judgment" is the SAME event; preserve the existing key).
 
+Same-DATE transcript rule (companion to same-slot, matched on date not time):
+a TRANSCRIPT entry — text starting with "Transcript of Proceedings", "NOTICE
+OF FILING OF OFFICIAL TRANSCRIPT", "Corrected Transcript", or "Transcript
+filed" — records a proceeding that was HELD. When it cites a proceeding held on
+date X, MARK_HELD the known hearing on the SAME docket whose date is X,
+regardless of time-of-day or hearing type. Do NOT allocate a generic
+"proceedings-<date>" key. Transcripts are usually date-only (they land at
+midnight court-local), so the transcript's time will NOT match the hearing's
+clock time — match on the DATE alone here. Only when NO known hearing falls on
+date X do you ADD a fresh key (implicit-held). Allocating "proceedings-<date>"
+when a real hearing already sits on that date creates a phantom second row the
+same-slot dedupe can't catch — two rows on one date hours apart are not the
+same slot, so nothing merges them.
+
 Duration:
 - If the entry states an explicit length, put it in `duration_minutes`.
 - Oral arguments allocating time per side ("Petitioner - 15 Minutes,
@@ -514,10 +528,27 @@ Location:
   floor, then courtroom. Source "Miami, 11th Floor, Courtroom 11-1, 400 North
   Miami Avenue, Wilkie D. Ferguson Jr. U.S. Courthouse" → "Wilkie D. Ferguson
   Jr. U.S. Courthouse, 400 North Miami Avenue, Miami, 11th Floor, Courtroom
-  11-1". Omit any segment the source doesn't supply; do NOT invent courthouse
-  names, addresses, or floor numbers.
+  11-1".
+- PRESERVE EVERY NAMED TOKEN the source gives: the court's formal name
+  ("Northern District of California", "Eastern District of Virginia"), the
+  state abbreviation, the ZIP code, and any suite / floor / courtroom label all
+  stay. Do NOT abbreviate the courthouse or drop attributes to shorten — a
+  common small/fast-tier failure is collapsing "U.S. District Court, Northern
+  District of California, 450 Golden Gate Avenue, San Francisco, CA 94102, 19th
+  Floor, Courtroom 12" down to "U.S. Courthouse, 450 Golden Gate Avenue, San
+  Francisco, 19th Floor, Courtroom 12". Reorder what's given; omit ONLY what
+  the source omits; never invent names, addresses, or floor numbers.
 - Non-physical hearings: a single descriptor — "Zoom", "Telephonic",
   "Videoconference". The dial-in URL goes in `dial_in`, not here.
+
+Dial-in:
+- Put the phone number or video URL in `dial_in`. Carry any ACCESS LABEL the
+  source states alongside it — "audio observation only", "video for parties
+  only", "open to the public", "sealed proceedings", "media may not record" —
+  after the URL or in parentheses (district hearings often cite a local rule
+  such as Civ. L.R. 77-3(d) as the source of the label). The label tells
+  subscribers whether and how they may attend, so dropping it loses real
+  information.
 
 ================================================================
 PART 3 — DEADLINE ACTIONS

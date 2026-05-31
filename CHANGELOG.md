@@ -67,6 +67,17 @@ trial phases instead of spawning a separate held row per trial day).
   that significance is split into a hearing block and a deadline block;
   it stays a separate constant reused by
   `scripts/classify_significance.py`.
+- **Three Gemini-extractor weakness rules integrated into the unified
+  prompt** ahead of making Gemini the default extractor: (1) a same-DATE
+  transcript rule — a transcript of a proceeding held on date X must
+  `MARK_HELD` the known hearing on that date (matched on date, not
+  time-of-day) instead of allocating a phantom `proceedings-<date>` row
+  the same-slot dedupe can't catch; (2) Location must PRESERVE EVERY NAMED
+  TOKEN (court formal name, state, ZIP, room labels) rather than
+  abbreviating the courthouse; (3) `dial_in` must carry access labels
+  ("audio observation only", etc., often citing Civ. L.R. 77-3(d)). These
+  fold the substance of the closed-unmerged #45 PR into the new PART 2
+  structure.
 
 ### Fixed
 
