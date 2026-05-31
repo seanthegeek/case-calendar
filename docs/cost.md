@@ -48,9 +48,10 @@ one-time cost of onboarding a caseload:
 | OpenAI (GPT-5.4-mini / GPT-5.4) | $3.73 | $0.45 | $1.67 | **$5.85** |
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
-the **Summary** column is the opt-in add-on. That's roughly **$0.03–0.23 per
-case for extraction** (it scales with entry count, so a busy docket costs
-more) and **$0.03–0.07 per docket for summaries**. After the backfill,
+the **Summary** column is the opt-in add-on. Extraction runs roughly
+**$0.04–0.24 per case** (it scales with entry count, so a busy docket costs
+more — the high end is Anthropic's $6.72 over 28 cases), and summaries roughly
+**$0.03–0.07 per docket**. After the backfill,
 existing summaries are reused unless a docket gets a new primary document or
 disposition, so ongoing spend is **pennies a week**; the `verify` track (one
 focused call per non-terminal hearing/deadline + the new source-entry-aware
@@ -219,7 +220,7 @@ Every LLM call — extraction and summaries alike — logs its token counts at
 `llm-tokens`:
 
 ```text
-llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=0 cache_write=0 cost_est=$0.1483
+llm-tokens call purpose=summary provider=anthropic model=claude-sonnet-4-6 docket=12345 in=48210 out=312 cached=7858 cache_write=0 cost_est=$0.1282
 llm-tokens call purpose=extract provider=gemini model=gemini-3.1-flash-lite docket=12345 in=1820 out=64 cached=0 cache_write=0 cost_est=$0.0007
 ```
 

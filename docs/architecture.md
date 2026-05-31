@@ -142,13 +142,14 @@ is not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
 extraction. On the full caseload (see the
-[SCORECARD](../model-comparison/SCORECARD.md)) Gemini's deadline axes are the
-best in the table, and its aggregate deviation (305) is the best overall —
-ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 4×
-cheaper and roughly 2× faster per call on the extraction track. The summary
-track stays Anthropic because Sonnet pulls more case-distinguishing detail
-(statute citations, count numbers, sentence breakdowns, custody status,
-cancelled-schedule notes).
+[SCORECARD](../model-comparison/SCORECARD.md)) Gemini posts the best
+`D met/pass` in the table and far fewer spurious cancellations than Anthropic
+(`D canc` 9 vs 28), and its aggregate deviation (305) is the best overall —
+ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 3.75×
+cheaper and roughly 1.9× faster per call on the extraction track. The summary
+track stays Anthropic because Sonnet still adds a few categories of detail the
+higher-tier Gemini summary model drops — statutory citations, count numbers,
+cross-docket statutory distinctions, and cancelled-schedule notes.
 
 One honest caveat survives the change: `DEADLINE_SIGNIFICANCE_RULES` enumerates
 the substantive classes the project currently knows about. An operator whose
@@ -165,7 +166,7 @@ for both providers rather than left to a single model's training corpus.
 | Anthropic cost (full backfill) | \~$6.72 | \~$2.30 |
 | Gemini cost (full backfill) | \~$1.82 | \~$1.11 |
 | Aggregate deviation (lower is better) | Gemini **305** (best in table) vs Anthropic 349 | — |
-| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best deadline axes, \~4× cheaper, \~2× faster per call | **best** case-distinguishing prose (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes); Gemini is terser and blurs cases that fit the same bucket |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best `D met/pass` in the table and far fewer spurious cancellations than Anthropic, \~3.75× cheaper, \~1.9× faster per call | richer case-distinguishing prose (statutory citations, count numbers, cross-docket statutory distinctions, cancelled-schedule notes — all of which Gemini's terser summaries still drop) |
 
 The full deviation breakdown — measured against a human-scored ground-truth
 worksheet over the whole caseload — is in the
@@ -218,7 +219,7 @@ calendar event across syncs, reschedules, and database restores.
 
 Filing deadlines work the same way, in a parallel `deadlines` table with
 a separate `deadline_key`. Renderers don't care which is which — both are
-projected into the same shape before the ICS / gcal layer ever sees them.
+mapped into the same shape before the ICS / gcal layer ever sees them.
 
 ## Three-tier short-circuit
 
@@ -243,8 +244,8 @@ The third short-circuit is the interesting one. Case Calendar can't trust
 "has this `entry_id` been seen before?" alone, because RECAP entries
 evolve after they first appear — a sealed PDF gets unsealed, or a
 previously-missing PDF finally gets uploaded to RECAP. Those entries
-need *re-processing*, but cosmetic churn that didn't change
-anything meaningful.
+need *re-processing* — but cosmetic churn that didn't change anything
+meaningful must not trigger it.
 
 The fingerprint is a SHA-1 of just the entry state that matters:
 
@@ -305,12 +306,12 @@ leave a concluded hearing stuck at `scheduled` — it never saw the
 evidence. It widens what the model can see without lowering the bar for
 `MARK_HELD`, which still requires a cited record.
 
-There's a parallel verify pass for filing deadlines when those are
-enabled on the case.
+There's a parallel verify pass for filing deadlines, run on every case —
+deadline tracking is uniform, with no per-case opt-in.
 
 ## The data model
 
-The SQLite store has five operational tables:
+The SQLite store has six operational tables:
 
 - **`dockets`** — id, last `date_modified` (the short-circuit cutoff),
   last filing date, cached court metadata.
@@ -470,7 +471,7 @@ and each one is reproduced **verbatim** on the
 [LLM prompts](llm-prompts.md) page so you can read exactly what the model
 is told without opening the source:
 
-- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L26) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
+- [`HEARING_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L27) and [`DEADLINE_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L87) — the two major-vs-minor classification rubrics (one per event family), each interpolated into the main extractor prompt.
 - [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
 - [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L910) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.

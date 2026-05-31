@@ -4,7 +4,7 @@ title: LLM prompts
 
 Case Calendar drives every extraction, verification, and summary decision through an LLM rather than per-court regexes (see the [architecture notes](architecture.md#agentsmd-and-the-runtime-prompts) for why). This page reproduces each runtime prompt **verbatim** so you can read exactly what the model is told without opening the source.
 
-> These prompts are mirrored from [`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py) as of **v0.5.1** (the page is hand-synced on release). `llm.py` is canonical — if a prompt here ever disagrees with the source, trust the source and [open an issue](https://github.com/seanthegeek/case-calendar/issues/new/choose).
+> These prompts are mirrored from [`case_calendar/llm.py`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py) as of **v0.13.0** (the page is hand-synced on release). `llm.py` is canonical — if a prompt here ever disagrees with the source, trust the source and [open an issue](https://github.com/seanthegeek/case-calendar/issues/new/choose).
 
 These prompts are part of Case Calendar and are licensed under the [Apache License 2.0](https://github.com/seanthegeek/case-calendar/blob/main/LICENSE), the same as the rest of the project.
 
@@ -874,7 +874,7 @@ explanation.
 
 [Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1392)
 
-The duplicate-hearing resolver. Receives a cluster of two or more hearings on the same logical docket that are at or near the same slot — either the exact same start time, the same court-local date at different times, or the same once-only proceeding (sentencing, arraignment, etc.) for the same defendant at drifted dates — plus recent entries, and returns `MERGE_INTO` (pick a target; the caller folds the others' source entries onto it and DELETEs them) / `KEEP_BOTH` (genuinely distinct proceedings) / `UNCLEAR`. The same resolver backs all three end-of-sync sweeps: the exact-slot scheduled sweep, the deterministic exact-slot held sweep, and the near-slot sweep added in 0.13.0 to collapse the duplicates the extractor proliferates on messy multi-proceeding dockets.
+The duplicate-hearing resolver. Receives a cluster of two or more hearings on the same logical docket that are at or near the same slot — either the exact same start time, the same court-local date at different times, or the same once-only proceeding (sentencing, arraignment, etc.) for the same defendant at drifted dates — plus recent entries, and returns `MERGE_INTO` (pick a target; the caller folds the others' source entries onto it and DELETEs them) / `KEEP_BOTH` (genuinely distinct proceedings) / `UNCLEAR`. This resolver backs the two LLM-gated end-of-sync sweeps — the exact-slot scheduled sweep and the near-slot sweep added in 0.13.0 to collapse the duplicates the extractor proliferates on messy multi-proceeding dockets. (The third sweep, for exact-slot `held` clusters, is a separate deterministic merge that needs no LLM call — a court cannot have held two hearings at the same instant, so same-slot held rows are unambiguously a key-drift duplicate.)
 
 ````text
 You resolve a cluster of two or more court hearings on the SAME docket that are

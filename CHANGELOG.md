@@ -93,8 +93,8 @@ trial phases instead of spawning a separate held row per trial day).
   the `DEADLINE_SIGNIFICANCE_RULES` change above: with the substantive
   deadline classes named in-prompt for every provider, Gemini no longer
   silently buckets them as procedural-`minor`, and it posts the best
-  aggregate deviation (305) in the comparison while running \~4× cheaper
-  and \~2× faster per call than Anthropic on the constant-load
+  aggregate deviation (305) in the comparison while running \~3.75× cheaper
+  and \~1.9× faster per call than Anthropic on the constant-load
   extract+verify pair. See `model-comparison/SCORECARD.md`.
 - **Two MARK_HELD rules that address the date-mismatch warnings at the
   source** (PART 2), diagnosed from a focused 4-case build where 84/159
@@ -107,7 +107,7 @@ trial phases instead of spawning a separate held row per trial day).
   trial stays unsuffixed. This turns the per-day minute entries from rejected
   actions into real per-day calendar events. (B) **MARK_HELD matches the
   date-closest row or IGNOREs** — for sequential proceedings
-  (`status-conf-<def>-N`) the model targets the sibling within ~2 days of the
+  (`status-conf-<def>-N`) the model targets the sibling within \~2 days of the
   held date rather than an arbitrary one, and emits IGNORE when none qualifies
   (the deterministic 2-day guard still backs this).
 

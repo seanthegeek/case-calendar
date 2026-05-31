@@ -19,10 +19,11 @@ Case Calendar is a Python CLI. You'll need:
   (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
   for you when you provide keys for both. Gemini extraction became the
   default in 0.13.0: the extraction prompt now names the substantive
-  deadline classes (PSR, Speedy Trial Act exclusions, civil-forfeiture
-  claim/answer, etc.) explicitly for every provider, so all three
-  classify them consistently rather than leaning on each model's own
-  priors. With that change Gemini's deadline accuracy is the best in the
+  deadline classes (PSR objections, civil-forfeiture claim/answer,
+  sentencing memos, etc.) for every provider and defaults anything it
+  doesn't name to `major`, so all three classify them consistently
+  rather than leaning on each model's own priors. With that change
+  Gemini's deadline accuracy is the best in the
   comparison and it runs cheaper and faster, while Anthropic stays on
   summaries for its richer case-distinguishing detail. See
   [../model-comparison/SCORECARD.md](../model-comparison/SCORECARD.md).
@@ -145,7 +146,7 @@ uv run case-calendar sync
 A successful first sync prints one line per case, e.g.:
 
 ```text
-[us-v-wang] entries_seen=42 entries_processed=11 actions=8 verified=11
+[us-v-wang] dockets_skipped=0 entries_seen=42 processed=11 actions=8
 [cybercrime] wrote 14 events -> out/cybercrime.ics
 ```
 

@@ -4,7 +4,7 @@ Scored **46** of 46 CourtListener records (those with all six counts filled in).
 
 This release (0.13.0) flips the **extraction-track default to Gemini** (`gemini-3.1-flash-lite`) while keeping the **summary-track default on Anthropic** (`claude-sonnet-4-6`). This split — Gemini reading docket entries into hearings + deadlines, Anthropic writing the per-docket case summaries — is now the zero-config default: an operator who supplies API keys but sets no `LLM_*` env vars auto-detects Gemini for extraction and Anthropic for summaries. It is no longer merely a documented override.
 
-Gemini wins extraction on this build's measurements: aggregate deviation **305** (best in the table), with the best deadline axes too (`D met/pass` 125 vs Anthropic's 155, `D canc` 9 vs Anthropic's 28). It is also \~3.75× cheaper than Anthropic on the constant-load extract+verify pair and \~1.9× faster per call (see the cost + speed tables below).
+Gemini wins extraction on this build's measurements: aggregate deviation **305** (best in the table), with the best `D met/pass` in the table (125 vs Anthropic's 155) and far fewer spurious cancellations than Anthropic (`D canc` 9 vs 28). It is also \~3.75× cheaper than Anthropic on the constant-load extract+verify pair and \~1.9× faster per call (see the cost + speed tables below).
 
 ## Why the extraction default flipped to Gemini in 0.13.0
 
@@ -20,7 +20,7 @@ Earlier releases (0.10.0 / 0.11.0) kept Anthropic as the extraction default for 
 
 The deviation score never surfaced these — they are out-of-fixture failure modes, and aggregate deviation rewards a provider that gets the common cases right at scale. But a docket-watching calendar's value depends on NOT missing the rare substantive deadline, which is exactly why the silent-drop risk kept Anthropic the default through 0.11.0.
 
-0.13.0 closes that gap **in the prompt, for every provider**. The unified extraction `SYSTEM_PROMPT` now carries a structured `DEADLINE_SIGNIFICANCE_RULES` block (ordered `RULE 1-5`: it enumerates the substantive classes explicitly AND biases the default toward `major`), parallel to the existing `HEARING_SIGNIFICANCE_RULES`. Because the substantive classes are now NAMED IN THE PROMPT rather than left to a model's intrinsic priors, every provider sees the same apples-to-apples instructions, and Gemini classifies them as `major`. The correct framing is that **the prompt now carries the priors for every provider** — Gemini's training did not change, the instructions it receives did. The measured result is that Gemini's deadline axes became the best in the table, and the deadline-bucketing gap that kept Anthropic the default is closed.
+0.13.0 closes that gap **in the prompt, for every provider**. The unified extraction `SYSTEM_PROMPT` now carries a structured `DEADLINE_SIGNIFICANCE_RULES` block (ordered `RULE 1-5`: it enumerates the substantive classes explicitly AND biases the default toward `major`), parallel to the existing `HEARING_SIGNIFICANCE_RULES`. Because the substantive classes are now NAMED IN THE PROMPT rather than left to a model's intrinsic priors, every provider sees the same apples-to-apples instructions, and Gemini classifies them as `major`. The correct framing is that **the prompt now carries the priors for every provider** — Gemini's training did not change, the instructions it receives did. The measured result is that Gemini's `D met/pass` became the best in the table (125 vs Anthropic's 155) and its spurious-cancellation rate dropped well below Anthropic's (`D canc` 9 vs 28), and the deadline-bucketing gap that kept Anthropic the default is closed.
 
 The honest caveat survives: the ruleset enumerates the substantive classes the project currently knows about. An operator whose caseload includes substantive classes the ruleset does NOT enumerate should still verify against their own docket set, and the per-track override env vars (`LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER` / the global `LLM_PROVIDER`) remain available. But the risk is materially **reduced**, not merely shifted from one provider to another: the enumeration is now in-prompt for both providers, so neither relies on intrinsic priors for the named classes.
 
@@ -108,53 +108,33 @@ The deviation score doesn't distinguish "missed a substantive event the human co
 | McGonigal classified-info filings + surrender-for-service-of-sentence | Anthropic only | **both** |
 | Akhter jury-process (questionnaire, instructions, final pretrial) | Anthropic only | **both** |
 
-The substantive deadline classes that earlier releases relied on Anthropic's intrinsic priors to catch (PSR, Speedy Trial Act exclusions, surrender for service of sentence, civil-forfeiture claim/answer, sealing motion practice, exhibit-filing deadlines, certified administrative record — see the intro) are now named explicitly in `DEADLINE_SIGNIFICANCE_RULES`, so both providers classify them as `major` from the same instructions rather than depending on what either model learned in training.
+The substantive deadline classes that earlier releases relied on Anthropic's intrinsic priors to catch are now handled by `DEADLINE_SIGNIFICANCE_RULES` for every provider: RULE 2 names most of them explicitly (PSR objections, surrender for service of sentence, civil-forfeiture claim/answer, the certified administrative record, substantive sealing / CIPA filings, exhibit lists), and RULE 5 biases anything it does not name — e.g. a Speedy Trial Act exclusion — toward `major`. So both providers classify them from the same instructions rather than depending on what either model learned in training.
 
 ## Summary track — Gemini vs Anthropic
 
-The summary track tells a different story, and it is why the summary default stays Anthropic. Anthropic's case summaries are **\~55% longer** on average (median 964 chars vs Gemini's 622) — but the difference isn't padding, it's **case-distinguishing detail** that Gemini omits. The shorter Gemini summaries blur cases that fit the same bucket into nearly interchangeable prose, while Anthropic captures the thread that makes each case THIS case.
+The summary track is the one place the comparison still favors Anthropic, though the margin is narrower than the extraction picture and rests on a different basis. Both providers run a higher tier here (Anthropic Sonnet 4.6 vs Gemini 2.5 Pro), and Gemini 2.5 Pro writes detailed, case-distinct summaries — it names the defendants, the imposed sentences, the dollar figures, the aliases. It is not the weak link the cheap extraction tier was. Anthropic's remaining edge is narrower and specific: its summaries run longer (median \~1084 chars vs Gemini's \~670, \~62% longer) and carry a few categories of detail Gemini's still drop.
 
-### The bucket-confusion pattern
+### What Anthropic still adds
 
-Three case groupings in the maintainer's caseload have multiple cases of the same kind, and the difference shows up most sharply there:
+Measured across the full 34-summary comparison (both providers' stores from this build):
 
-**NK-IT-worker / laptop-farm scheme** (Chapman, Ashtor, Didenko, Hwa, Jin). All structurally similar: U.S.-based facilitator hosts company-issued computers, helps NK IT workers fraudulently obtain remote employment, NK government benefits via U.S. sanctions evasion.
+1. **Statutory citations** — Anthropic's summaries carry 7 `U.S.C.` citations (`41 U.S.C. § 4713`, `41 U.S.C. § 3252`, `18 U.S.C. § 371`, `18 U.S.C. § 951`, …); Gemini's carry none at all. The DOW litigation group (`cadc 26-1049`, `ca9 26-2011`, `cand 3:26-cv-01996`) is where this matters most: the three dockets are parts of the same fight, distinguishable by which statutory authority each targets. Anthropic names them — the **§ 4713** supply-chain-risk determination challenged in the D.C. Circuit, the **§ 3252** designation challenged in the Northern District of California — while Gemini collapses all three to "supply-chain risk … under different statutes," losing the axis that explains why they are separate proceedings.
+2. **Count-by-number enumeration** — Anthropic enumerates specific counts (`Count 1`, `Count 7`, …) 11 times across the caseload; Gemini gives the offense type with no count numbers (zero `Count N` references).
+3. **Cancelled / vacated schedules** — Anthropic flags cancelled or vacated proceedings (4 mentions across the caseload); Gemini surfaces none. On a docket-watching calendar this is material — a cancelled trial date is exactly what a watcher needs to see.
+4. **Granular charge lists and procedural history** — on the ransomware group, Anthropic enumerates all six charged offenses and the original-vs-superseding-indictment timeline for Berezhnoy/8Base, and names the related sealed criminal case plus the four victim-claimants for Gallyamov/Qakbot; Gemini's versions are accurate but coarser.
 
-> Gemini for Chapman: *"helping overseas IT workers, allegedly affiliated with North Korea, fraudulently obtain remote employment at hundreds of U.S. companies using stolen identities"*
-> Gemini for Ashtor: *"running a scheme to defraud U.S. companies by using false identities to obtain remote IT work, with proceeds allegedly intended to benefit the North Korean government"*
-> Gemini for Didenko: *"running a scheme to help overseas IT workers, including some from North Korea, fraudulently obtain remote jobs with U.S. companies using stolen identities"*
-
-Read those back-to-back: nearly interchangeable. Anthropic's versions of the same three pin what makes each distinct: Chapman ran a **laptop farm from Arizona, \~hundreds of Fortune 500 companies**; Ashtor was a **5-defendant indictment including two NK IT workers in China and a Mexican citizen in Sweden**; Didenko ran **"UpworkSell" creating nearly 900 fraudulent U.S. identities**. Three operationally distinct shapes of the same scheme — and on a docket-watching calendar, that distinction is what's useful.
-
-**Ransomware-operator scheme** (Berezhnoy, Gallyamov, Gholinejad). Anthropic distinguishes them by target/MO: Berezhnoy/8Base **extorted >$16M in Bitcoin from schools, hospitals, government contractors**; Gholinejad/Robbinhood specifically attacked **the cities of Greenville and Baltimore, healthcare orgs, from Jan 2019 through Mar 2024**; Gallyamov/Qakbot was a **civil-forfeiture-of-$2,061,517.68-and-crypto** posture, distinct from the others' criminal indictments. Gemini's three read as one generic "ransomware conspiracy" story.
-
-**DOW litigation group** (`cadc 26-1049`, `ca9 26-2011`, `cand 3:26-cv-01996`). All three are parts of the SAME fight, but they're distinguishable along a critical axis: which statutory authority each one targets. Anthropic spells it out — cadc challenges the **§ 4713 supply-chain-risk notice**, cand challenges the **§ 3252 supply-chain-risk designation + the Hegseth Directive**, ca9 is the **stayed appeal of the cand case**. Gemini collapses all three to "supply-chain risk" and loses the statutory distinction that drives why they're separate proceedings.
-
-### The categories of detail Anthropic captures and Gemini drops
-
-Patterns observed across the full 34-summary comparison:
-
-1. **Statutory citations**: `41 U.S.C. § 4713`, `10 U.S.C. § 3252`, `18 U.S.C. § 371`, `18 U.S.C. § 951`. Gemini drops these almost universally.
-2. **Count numbers + count-specific outcomes**: Anthropic enumerates by count number (`Count 1`, `Count 7`, `Count 8`, `Count 13`), Gemini gives just the offense type.
-3. **Sentence + forfeiture breakdowns**: Anthropic on Chapman: *concurrent 78-month terms on wire fraud and money laundering counts plus a consecutive 24-month mandatory term on aggravated identity theft*, plus *forfeiture of $284,666.92 in identified funds and a forfeiture money judgment of $176,850*. Gemini: *102 months in prison and ordered to pay restitution and forfeiture*.
-4. **Precise factual figures**: Anthropic includes `approximately 96 federal agency databases`, `more than 1,000 confidential files`, `TPU and GPU chip designs and cluster management software`, `tens of millions of dollars in losses`, `restitution to eighteen victims`. Gemini rounds or omits.
-5. **Aliases / named instruments**: Anthropic includes `Sina Ghaaf`, `Hegseth Directive`, `Supply Chain Designation`. Gemini drops them.
-6. **Background descriptors**: Anthropic includes `Arcadia City Council member`, `U.S. national from Arizona`, `Mexican citizen residing in Sweden`, `former Google software engineer affiliated with two PRC-based AI startups`. Gemini attenuates or drops.
-7. **Procedural posture changes — especially CANCELLED schedules**: Anthropic on Ashtor: *Emanuel Ashtor's jury trial, which had been set for June 15, 2026, was cancelled*. Gemini drops these — material to subscribers since a cancelled trial date is exactly what a calendar exists to surface.
-8. **Cross-docket framing** (multi-docket cases): Anthropic on the cadc DOW: *This docket addresses the § 4713 notice specifically, while Anthropic's separate challenge to the Secretary's concurrent invocation of 41 U.S.C. § 3252 proceeds in the Northern District of California*. Gemini collapses or omits.
-9. **Custody status**: Anthropic includes `in federal custody`. Gemini omits.
-10. **Briefing schedules**: Anthropic gives the full schedule (admin record + plaintiff motion + defendants' opposition + reply). Gemini gives the headline event.
+What Gemini 2.5 Pro does NOT drop — and what earlier, cheaper summary models did — is the case-distinguishing core: distinct defendants, imposed sentences (Chapman's 102-month term, Didenko's 60 months), dollar figures (Didenko's \~$1.4M forfeiture money judgment, Ashtor's $89,000), even custody status. So the summary-track choice is no longer "detail vs blur"; it is the narrower margin above plus length. The summary track is rare (one call per docket, only when a primary document or disposition lands), so keeping the higher-detail provider costs little — see below — and the default stays Anthropic on that margin.
 
 ### Cost / latency delta for the summary track
 
 | Provider | Summary track cost (full backfill, 34 dockets) | Per-docket cost |
 | --- | ---: | ---: |
-| gemini-3.1-flash-lite | $1.1097 | \~$0.03 |
+| gemini gemini-2.5-pro | $1.1097 | \~$0.03 |
 | openai gpt-5.4-nano | $1.5242 | \~$0.04 |
 | openai gpt-5.4-mini | $1.6680 | \~$0.05 |
 | anthropic claude-sonnet-4-6 | $2.2962 | \~$0.07 |
 
-So the Sonnet-over-Gemini summary upgrade is about **$1.19 across a 28-case backfill** and roughly **$0.04 per ongoing summary** (rare — only when a primary document or disposition lands on a docket). For the docket-watching audience this calendar is built for, the case-distinguishing detail Sonnet captures is worth the dollar — which is why the summary default stays Anthropic even as the extraction default moves to Gemini.
+So the Sonnet-over-Gemini summary upgrade is about **$1.19 across the 34-docket backfill** and roughly **$0.04 per ongoing summary** (rare — only when a primary document or disposition lands on a docket). For the docket-watching audience this calendar is built for, the statutory / count / cancelled-schedule detail Sonnet still adds is worth the dollar — which is why the summary default stays Anthropic even as the extraction default moves to Gemini.
 
 ## Configuring the tracks
 

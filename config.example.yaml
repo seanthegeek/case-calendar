@@ -96,7 +96,9 @@ store_path: data/case-calendar.sqlite
 # Cost note: this runs on the higher-tier summary model for your
 # provider (Sonnet / Gemini Pro / GPT-5.4) — the synthesis task
 # warrants the upgrade over the small/fast extractor tier. Budget is
-# roughly $0.10-0.60 per docket for the first run, near-zero on
+# roughly $0.03-0.20 per docket for the first run (measured ~$0.07/docket
+# on the default Sonnet summary tier across the comparison caseload; heavy
+# multi-count dockets cost more), near-zero on
 # subsequent runs (existing summary rows are reused; pass `--force`
 # to overwrite after a prompt or model change).
 #

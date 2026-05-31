@@ -7,7 +7,7 @@ the dockets, or re-running the whole thing on other cases and models.
 
 > **A note on what the score does and does not measure.** The deviation-from-
 > human-truth score this comparison reports is necessary but not sufficient.
-> Three releases have flipped the default along this fault line and the lesson
+> The default has flipped repeatedly along this fault line and the lesson
 > has stayed the same: aggregate deviation alone doesn't decide which provider
 > a public docket-watching calendar should ship with.
 >
@@ -49,8 +49,9 @@ the dockets, or re-running the whole thing on other cases and models.
 > provider — not learned from any one model's training corpus — Gemini now
 > classifies them as major (its training didn't change; the prompt now carries
 > the priors). With the deadline-bucketing gap closed, the head-to-head numbers
-> follow: Gemini's deadline axes are the best in the table and its aggregate
-> deviation (305) is the best overall, while it stays the cheapest and fastest.
+> follow: Gemini posts the best `D met/pass` in the table and far fewer spurious
+> cancellations than Anthropic (`D canc` 9 vs 28), and its aggregate deviation
+> (305) is the best overall, while it stays the cheapest and fastest.
 > The honest caveat is unchanged in kind, only reduced in degree: the ruleset
 > enumerates the classes the project currently knows about, so an operator whose
 > caseload includes substantive classes the ruleset does not name should still
