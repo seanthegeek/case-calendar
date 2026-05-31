@@ -6,11 +6,23 @@
 # .env.example): CC_PROD_HOST, CC_PROD_SSH_USER, CC_PROD_APP_DIR,
 # CC_PROD_SERVICE, CC_PROD_STAGE_DIR. See scripts/_prod-env.sh for what
 # each one is.
+#
+# Pass --force to skip the step-2 pre-flight that refuses to deploy when
+# prod's .env carries keys your local .env is missing.
 
 set -euo pipefail
 
 # shellcheck source=scripts/_prod-env.sh
 source "$(dirname "$0")/_prod-env.sh"
+
+# Args. The only flag is --force (override the step-2 env-key guard).
+FORCE=0
+for arg in "$@"; do
+    case "$arg" in
+        --force) FORCE=1 ;;
+        *) echo "unknown argument: $arg (only --force is accepted)" >&2; exit 1 ;;
+    esac
+done
 
 # 0. Confirm — this overwrites the prod DB, .env, and config.yaml with
 #    the local copies.
@@ -25,10 +37,41 @@ if ! ssh-add -l >/dev/null 2>&1; then
     ssh-add
 fi
 
-# 2. Stop the service so writes can't race the file replacement.
+# 2. Pre-flight: step 6 overwrites prod's .env with the LOCAL one wholesale,
+#    so any key present on prod but missing locally is silently clobbered.
+#    The webhook secret is the classic casualty — dev never runs `serve`, so
+#    a local .env that lost CASE_CALENDAR_WEBHOOK_SECRET (e.g. dropped during
+#    a reformat) would wipe it on prod and crash-loop the service on the next
+#    restart. Compare KEY NAMES only (values never leave prod) and abort if
+#    local is missing any prod key, listing exactly which. Runs BEFORE
+#    `systemctl stop` so a failed guard never leaves prod down. --force to
+#    override when the drop is intentional.
+env_keys() {
+    # Emit sorted-unique KEY names from a .env on stdin. Ignores comments,
+    # blank lines, and an optional `export ` prefix; values are discarded.
+    grep -E '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*=' \
+        | sed -E 's/^[[:space:]]*(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/' \
+        | sort -u
+}
+missing="$(comm -23 \
+    <(ssh "$CC_PROD_SSH" "cat $CC_PROD_APP_DIR/.env 2>/dev/null" | env_keys) \
+    <(env_keys < .env))"
+if [ -n "$missing" ]; then
+    echo "error: prod's .env has keys your local .env is missing;" >&2
+    echo "       step 6 would overwrite prod's .env and lose them:" >&2
+    printf '         %s\n' $missing >&2
+    if [ "$FORCE" = "1" ]; then
+        echo "       (--force given; overwriting prod's .env anyway)" >&2
+    else
+        echo "       add them to your local .env, or re-run with --force." >&2
+        exit 1
+    fi
+fi
+
+# 3. Stop the service so writes can't race the file replacement.
 ssh "$CC_PROD_SSH" "systemctl stop $CC_PROD_SERVICE"
 
-# 3. Stage the DB, .env, and config in the staging dir (writable by the
+# 4. Stage the DB, .env, and config in the staging dir (writable by the
 #    SSH user without needing intermediate sudo). .env goes BEFORE
 #    config.yaml so a provider/key change reaches prod in lockstep with the
 #    matching config — e.g. a Gemini-default switch needs the new
@@ -37,7 +80,7 @@ scp data/case-calendar.sqlite "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
 scp .env                      "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
 scp config.yaml               "$CC_PROD_SSH:$CC_PROD_STAGE_DIR/"
 
-# 4. Remove any stale WAL sidecars from the previous prod DB. If we leave
+# 5. Remove any stale WAL sidecars from the previous prod DB. If we leave
 #    them in place, SQLite will try to replay them against our newly-
 #    copied main file and fail with "database disk image is malformed"
 #    (the WAL's page checksums won't match the new main file). systemctl
@@ -47,7 +90,7 @@ ssh "$CC_PROD_SSH" "rm -f \
     $CC_PROD_APP_DIR/data/case-calendar.sqlite-wal \
     $CC_PROD_APP_DIR/data/case-calendar.sqlite-shm"
 
-# 5. Overwrite in place with cp — preserves the destination file's
+# 6. Overwrite in place with cp — preserves the destination file's
 #    existing ownership and permissions (the service account's user:group /
 #    0640 etc., and .env is 0600 with secrets), which a mv would clobber.
 ssh "$CC_PROD_SSH" "\
@@ -56,21 +99,36 @@ ssh "$CC_PROD_SSH" "\
     cp $CC_PROD_STAGE_DIR/config.yaml          $CC_PROD_APP_DIR/config.yaml \
 "
 
-# 6. Remove the temporary staging copies — .env carries secrets, so don't
+# 7. Remove the temporary staging copies — .env carries secrets, so don't
 #    let it linger in the staging dir after the in-place install.
 ssh "$CC_PROD_SSH" "rm -f $CC_PROD_STAGE_DIR/case-calendar.sqlite $CC_PROD_STAGE_DIR/.env $CC_PROD_STAGE_DIR/config.yaml"
 
-# 7. Pull latest code as the service account (so file ownership stays
+# 8. Pull latest code as the service account (so file ownership stays
 #    correct on any new files git creates).
 ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE git pull"
 
-# 8. Re-emit so out/*.ics + out/index.html reflect the new DB state.
+# 9. Re-emit so out/*.ics + out/index.html reflect the new DB state.
 #    PYTHONUNBUFFERED=1 so emit's stdout streams to this terminal as it
 #    runs (sudo strips env vars by default; wrap with `env` to set it
 #    inside the service account's environment).
 ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar emit"
 
-# 9. Bring the service back up.
+# 10. Bring the service back up.
 ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"
 
-echo "deploy complete: $CC_PROD_HOST"
+# 11. Give the unit a second to crash if it's going to, then report status.
+#     A bad EnvironmentFile makes `serve` exit non-zero almost immediately,
+#     but `systemctl restart` returns success the moment it forks — so a
+#     crash-loop looks like a clean deploy unless we look again. One second
+#     later a crashing unit (RestartSec backoff) reads `activating
+#     (auto-restart)` rather than `active`; surface the journal and exit
+#     non-zero so a broken deploy can't pass silently.
+sleep 1
+state="$(ssh "$CC_PROD_SSH" "systemctl is-active $CC_PROD_SERVICE" || true)"
+if [ "$state" = "active" ]; then
+    echo "deploy complete: $CC_PROD_HOST (service active)"
+else
+    echo "WARNING: $CC_PROD_SERVICE is '$state' after restart — recent log:" >&2
+    ssh "$CC_PROD_SSH" "journalctl -u $CC_PROD_SERVICE -n 20 --no-pager" >&2 || true
+    exit 1
+fi
