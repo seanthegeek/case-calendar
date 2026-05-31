@@ -130,19 +130,13 @@ https://calendars.example.com/
 ## Combining with the webhook receiver
 
 The same Caddy install can also reverse-proxy the webhook receiver on a
-sibling subdomain. Add a second site block to the same `Caddyfile`:
-
-```caddyfile
-webhook.example.com {
-    reverse_proxy 127.0.0.1:8000
-}
-```
-
-That keeps the public calendar feeds and the (sensitive) webhook
-endpoint on separate hostnames — Caddy gets one TLS certificate per
+sibling subdomain, keeping the public calendar feeds and the (sensitive)
+webhook endpoint on separate hostnames — Caddy gets one TLS certificate per
 hostname automatically, and your access logs separate the two surfaces
-cleanly. See [real-time webhooks](webhooks.md) for the rest of the
-webhook setup.
+cleanly. The receiver's own site block (and the rate-limit caveat that goes
+with it) lives in
+[real-time webhooks → Put it behind HTTPS with Caddy](webhooks.md#put-it-behind-https-with-caddy);
+add it to the same `Caddyfile` as the `calendars.example.com` block above.
 
 ## Other static servers
 
