@@ -25,10 +25,14 @@ significance — so they default to the cheap small/fast tier and run whether or
 not summaries are enabled. **Summaries** are the opt-in synthesis track on a
 higher tier.
 
-| Track | Runs when | Default models (Anthropic / Gemini / OpenAI) |
+| Track | Runs when | Per-provider model (Anthropic / Gemini / OpenAI) |
 | --- | --- | --- |
-| Extraction + verify | Always | Claude Haiku 4.5 / Gemini 3.1 Flash Lite / GPT-5.4-nano |
-| Summaries | Opt-in (`case_summaries.enabled`) | Claude Sonnet 4.6 / Gemini 2.5 Pro / GPT-5.4 |
+| Extraction + verify | Always | Claude Haiku 4.5 / **Gemini 3.1 Flash Lite** / GPT-5.4-nano |
+| Summaries | Opt-in (`case_summaries.enabled`) | **Claude Sonnet 4.6** / Gemini 2.5 Pro / GPT-5.4 |
+
+The **bold** model in each row is the zero-config default for that track —
+Gemini for extraction, Anthropic for summaries (the rest are what you get if
+you pin that provider). See [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
 
 As of 0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and **Claude Sonnet 4.6 for summaries** (see [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries) for why). Zero-config auto-detection (you set the API keys, no `LLM_*` env vars) wires up exactly this assignment — the numbers below let you decide whether a different provider fits your caseload.
 

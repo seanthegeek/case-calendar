@@ -99,8 +99,12 @@ to independent provider and model knobs:
 
 | Track | Volume | Default model | Why |
 | --- | --- | --- | --- |
-| **Extraction** | High (one call per relevant entry) | Claude Haiku / Gemini Flash Lite / gpt-5.4-nano | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
-| **Summarization** | Low (one call per docket, rarely re-run) | Claude Sonnet / Gemini Pro / GPT-5.4 | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
+| **Extraction** | High (one call per relevant entry) | Claude Haiku / **Gemini Flash Lite** / gpt-5.4-nano | Structured-output classification — date, key, significance. The cheap tier handles it fine, and the per-case cost stays in the cents-per-day range. |
+| **Summarization** | Low (one call per docket, rarely re-run) | **Claude Sonnet** / Gemini Pro / GPT-5.4 | Synthesis from 30-100k tokens of legal prose. Worth the upgrade; pennies per docket. |
+
+The **bold** model in each row is the zero-config default for that track; the
+others are what you get if you pin that provider. The next section explains why
+the default splits the two tracks across providers.
 
 Each track has its own provider / model env var, with `LLM_PROVIDER` /
 `LLM_MODEL` as the global default that applies to both when no per-track
