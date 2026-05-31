@@ -953,10 +953,14 @@ def _replay_case(syncer: CaseSyncer, store: Store, case: CaseConfig) -> None:
                 )
         store.conn.commit()
 
-    # End-of-case sweeps — same order as CaseSyncer.sync_case.
+    # End-of-case sweeps — same order as CaseSyncer.sync_case. MUST stay in
+    # sync with that method's sweep sequence: a sweep added there but not here
+    # silently doesn't run in the comparison build (the near-slot dedup was
+    # missed exactly this way).
     syncer._verify_scheduled_hearings(case)
     syncer._dedupe_concurrent_hearings(case)
     syncer._dedupe_concurrent_held_hearings(case)
+    syncer._dedupe_nearslot_hearings(case)
     syncer._verify_pending_deadlines(case)
     syncer._auto_mark_passed_stale(case.case_id)
     store.conn.commit()

@@ -1390,36 +1390,51 @@ def verify_deadline(
 
 
 DEDUPE_HEARING_SYSTEM_PROMPT = """\
-You resolve a cluster of two or more scheduled court hearings that share the
-EXACT same date and time (UTC) on the SAME docket. A single court cannot hold
-two hearings on one docket simultaneously, so the cluster falls into one of
-two categories:
+You resolve a cluster of two or more court hearings on the SAME docket that are
+flagged as candidate duplicates. They share either the EXACT same slot
+(date+time, UTC) or a NEAR slot:
+- the same court day at different times (e.g. a date-only midnight row plus a
+  timed row for the same proceeding), or
+- the same ONCE-ONLY proceeding — a sentencing, arraignment, change of plea, or
+  initial appearance, of which a defendant has exactly one — recorded at
+  slightly different dates (one entry scheduled it, another recorded when it was
+  actually held).
 
-1. They are the SAME logical hearing extracted twice. Vocabulary varied
-   between the entries that scheduled it — e.g. a stipulation proposed a
-   "Hearing on Motion for Summary Judgment" and the signed order setting it
-   called it a "Motion Hearing". Same slot, two hearing_keys. This is by far
-   the common case.
+The cluster falls into one of two categories:
 
-2. They are GENUINELY separate matters being heard back-to-back in one
-   stacked block (rare — consolidated cases, multi-defendant calendar calls,
-   etc.). KEEP_BOTH only when the docket text explicitly schedules two
-   distinct proceedings at the same time.
+1. They are the SAME logical hearing recorded more than once. The per-entry
+   extractor allocated different hearing_keys for one event — vocabulary varied
+   between entries (a stipulation proposed a "Hearing on Motion for Summary
+   Judgment", the signed order called it a "Motion Hearing"), or a date-only
+   copy and a timed copy were both created, or a once-only proceeding was stored
+   at both its scheduled date AND the date it was actually held. This is by far
+   the common case for a near-slot cluster.
+
+2. They are GENUINELY separate proceedings. For an EXACT-slot cluster this is
+   rare (back-to-back stacked matters — consolidated cases, multi-defendant
+   calendar calls). For a NEAR-slot cluster it is more plausible: a court CAN
+   hold two DIFFERENT hearings on the same day at different times — a morning
+   motion hearing and an afternoon status conference are NOT duplicates.
+   KEEP_BOTH whenever the rows are different KINDS of proceeding, or the docket
+   text shows two distinct events; do NOT merge merely because two hearings fall
+   on one day.
 
 Return ONE of these action types as JSON:
 
 - {"type": "MERGE_INTO", "target_key": "<hearing_key-to-keep>",
    "reason": "..."}
-  Treat the cluster as one logical hearing. The caller will preserve the
-  target row and cancel the others with an explanatory note, merging their
-  source_entry_ids into the target. Pick the hearing_key with the most
-  descriptive title (e.g. "Hearing on Motion for Summary Judgment" beats
-  a generic "Motion Hearing"); if titles are equally informative, pick the
-  one with more source_entry_ids.
+  Treat the cluster as one logical hearing. The caller preserves the target row
+  (folding the others' source_entry_ids into it) and DELETES the rest. Pick the
+  hearing_key with the most descriptive title (e.g. "Hearing on Motion for
+  Summary Judgment" beats a generic "Motion Hearing"); for a once-only
+  proceeding recorded at two dates, prefer the row whose date a minute entry /
+  verdict / judgment actually confirms (the HELD date over a stale scheduled
+  date). If titles and evidence are equal, pick the one with more
+  source_entry_ids.
 
 - {"type": "KEEP_BOTH", "reason": "..."}
-  Use only when the docket text explicitly schedules two distinct
-  proceedings at the same time. Quote the relevant phrasing in the reason.
+  The rows are distinct proceedings — different kinds, or the docket text shows
+  two separate events at those slots. Quote the relevant phrasing in the reason.
 
 - {"type": "UNCLEAR", "reason": "..."}
   Recent entries don't tell you enough to choose. The caller leaves the
@@ -1445,7 +1460,7 @@ def _build_dedupe_hearing_user_message(
         f"CASE: {case_name}",
         f"COURT: {court_id} (timezone: {court_tz})",
         "",
-        f"CANDIDATE HEARINGS ({len(cluster)} sharing the same slot):",
+        f"CANDIDATE HEARINGS ({len(cluster)} candidate duplicates, same or near slot):",
     ]
     for h in cluster:
         parts.extend(

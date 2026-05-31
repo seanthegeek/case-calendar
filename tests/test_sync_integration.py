@@ -3401,6 +3401,176 @@ class TestDedupeConcurrentHeldHearings:
         assert stats.get("deduped_held", 0) == 0
 
 
+class TestDedupeNearslotHearings:
+    """End-of-sync near-slot sweep: the duplicate-held-events the exact-slot
+    sweeps miss because the rows sit at NEAR (not identical) slots — same court
+    day at different times, or a once-only proceeding at drifted dates (the
+    Gemini key-proliferation that rendered sentencing/CIPA/trial-start twice)."""
+
+    def _seed_same_day_pair(self, store):
+        # Two held CIPA rows on the same court day, different times.
+        for key, slot, src in [
+            ("cipa-mcgonigal", "2023-03-08T05:00:00+00:00", [10]),
+            ("cipa-mcgonigal-3-6", "2023-03-08T18:00:00+00:00", [11]),
+        ]:
+            store.upsert_hearing(
+                {
+                    "case_id": "us-v-x",
+                    "hearing_key": key,
+                    "title": "CIPA Hearing",
+                    "starts_at_utc": slot,
+                    "duration_minutes": 60,
+                    "timezone": "America/New_York",
+                    "status": "held",
+                    "significance": "major",
+                    "docket_id": 100,
+                    "source_entry_ids": src,
+                }
+            )
+
+    def _seed_singular_crossdate_pair(self, store):
+        # Sentencing recorded at its scheduled date (12-18) AND the held date
+        # (12-14) under a drifted key — a once-only proceeding, 4 days apart.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-mcgonigal",
+                "title": "Sentencing",
+                "starts_at_utc": "2023-12-18T05:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [20],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-mcgonigal-2",
+                "title": "Sentencing",
+                "starts_at_utc": "2023-12-14T18:30:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [21],
+            }
+        )
+
+    def test_same_day_merge_deletes_dup_and_tags_audit(self, store, case, monkeypatch):
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        captured = stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "cipa-mcgonigal",
+                "reason": "Same CIPA hearing; date-only + timed copy.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 1
+        assert {h["hearing_key"] for h in captured["cluster"]} == {
+            "cipa-mcgonigal",
+            "cipa-mcgonigal-3-6",
+        }
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "cipa-mcgonigal-3-6" not in rows
+        assert rows["cipa-mcgonigal"]["source_entry_ids"] == [10, 11]
+        notes = rows["cipa-mcgonigal"]["audit_notes"] or ""
+        assert "[dedupe-nearslot]" in notes and "cipa-mcgonigal-3-6" in notes
+
+    def test_singular_crossdate_merge_keeps_held_date(self, store, case, monkeypatch):
+        # The resolver picks the actually-held date (12-14) as the survivor.
+        self._seed_singular_crossdate_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-mcgonigal-2",
+                "reason": "One sentencing; 12-18 was the scheduled date, held 12-14.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-mcgonigal" not in rows
+        assert rows["sentencing-mcgonigal-2"]["starts_at_utc"].startswith("2023-12-14")
+        assert sorted(rows["sentencing-mcgonigal-2"]["source_entry_ids"]) == [20, 21]
+
+    def test_keep_both_leaves_distinct_same_day_hearings(
+        self, store, case, monkeypatch
+    ):
+        # A court CAN hold two different hearings the same day — KEEP_BOTH.
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={"type": "KEEP_BOTH", "reason": "Morning + afternoon, distinct."},
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        keys = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert {"cipa-mcgonigal", "cipa-mcgonigal-3-6"} <= keys
+
+    def test_unclear_leaves_cluster_alone(self, store, case, monkeypatch):
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(monkeypatch, action={"type": "UNCLEAR", "reason": "ambiguous"})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        assert len(store.get_hearings("us-v-x")) == 2
+
+    def test_no_nearslot_clusters_skips_llm(self, store, case, monkeypatch):
+        # One held sentencing + one held motion hearing on different days:
+        # no exact slot, no same-day, no shared singular base -> LLM untouched.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2026-01-05T16:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "motion-hearing-x",
+                "title": "Motion Hearing",
+                "starts_at_utc": "2026-02-09T16:00:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [2],
+            }
+        )
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("resolver called with no near-slot cluster")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+
+
 # --- verify_deadline end-of-case pass (parallel to TestVerifyScheduledHearings) ---
 
 

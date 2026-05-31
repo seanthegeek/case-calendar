@@ -104,6 +104,23 @@ trial phases instead of spawning a separate held row per trial day).
   guard. Previously this reached `datetime.fromisoformat("nullT16:00")`
   and raised `ValueError`, dropping that entry's deadline. Surfaced by
   the 0.13.0 validation build.
+- **Near-slot duplicate hearings are now collapsed** (`_dedupe_nearslot_hearings`
+  in `case_calendar/sync.py` + `Store.find_nearslot_hearing_clusters`). The
+  extractor — Gemini especially — allocates a fresh `hearing_key` for a
+  proceeding it already has at a NEAR (not exactly-equal) slot, which then
+  rendered twice on subscriber calendars: a sentencing held at its scheduled
+  date AND its actual held date, a CIPA hearing as a date-only + a timed row,
+  a trial start under two keys. The two prior dedup sweeps only merged the
+  EXACT same `(docket_number, court_id, starts_at_utc)` slot. The new sweep
+  clusters by same court-local date (within a status) and by same once-only
+  proceeding + defendant (`held`, across dates), and routes each cluster to the
+  LLM resolver (MERGE_INTO / KEEP_BOTH) so genuinely-distinct same-day hearings
+  — a morning motion hearing and an afternoon status conference — are kept. The
+  shared `DEDUPE_HEARING_SYSTEM_PROMPT` was generalized from exact-slot to
+  near-slot framing. Closes the "Known gap" documented in AGENTS.md (a narrower
+  cross-*status* case remains). Verified on the Gemini 4-case build: McGonigal
+  collapses to one sentencing (@12-14) and one CIPA, wei to one trial start +
+  Days 2–6, and ding's clean 13-day per-day trial series is untouched.
 
 ## [0.12.0] - 2026-05-30
 

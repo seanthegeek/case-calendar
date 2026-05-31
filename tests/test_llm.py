@@ -1227,6 +1227,32 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
         assert "[verify-pass]" not in captured["user"]
 
 
+class TestDedupePromptNearSlot:
+    """The shared dedupe resolver prompt now covers NEAR-slot clusters (the
+    near-slot sweep) on top of exact-slot ones. Pin the near-slot framing and
+    the same-day-distinct KEEP_BOTH guard so a future edit can't silently
+    narrow it back to exact-slot-only."""
+
+    def test_prompt_frames_near_slot_clusters(self):
+        p = " ".join(llm.DEDUPE_HEARING_SYSTEM_PROMPT.split())
+        assert "NEAR slot" in p
+        # The two near-slot shapes.
+        assert "same court day at different times" in p
+        assert "ONCE-ONLY proceeding" in p
+        assert "sentencing, arraignment, change of plea, or initial appearance" in p
+
+    def test_prompt_keeps_distinct_same_day_hearings(self):
+        p = " ".join(llm.DEDUPE_HEARING_SYSTEM_PROMPT.split())
+        # A court CAN hold two different hearings the same day — must not merge
+        # on date alone.
+        assert "morning motion hearing and an afternoon status conference" in p
+        assert "do NOT merge merely because two hearings fall on one day" in p
+
+    def test_prompt_keeps_three_verdicts(self):
+        p = llm.DEDUPE_HEARING_SYSTEM_PROMPT
+        assert "MERGE_INTO" in p and "KEEP_BOTH" in p and "UNCLEAR" in p
+
+
 class TestResolveDuplicateHearings:
     """End-of-sync dedupe sweep — same-docket same-slot LLM resolver."""
 

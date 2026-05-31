@@ -26,11 +26,13 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Optional
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger(__name__)
 
@@ -247,6 +249,48 @@ def _split_audit_segments(notes: Optional[str]) -> tuple[str, str]:
     clean_notes = "\n\n".join(kept).strip()
     audit_text = "\n\n".join(moved).strip()
     return clean_notes, audit_text
+
+
+# Hearing types where a defendant has exactly ONE on a docket — so two held
+# rows of the same type for the same defendant, even at different dates, are a
+# key-drift duplicate (the near-slot dedup sweep's singular-type tier). Matched
+# against the leading tokens of the kebab-case ``hearing_key``. NOT included:
+# status_conference / motion_hearing / pretrial_conference (legitimately
+# repeatable — a defendant can have many), so those only dedup on same-date.
+_SINGULAR_HEARING_KEY_PREFIXES = (
+    "sentencing",
+    "arraignment",
+    "initial-appearance",
+    "change-of-plea",
+    "plea",
+)
+
+# A trailing ``-<digits>`` sequence suffix the per-entry extractor appends when
+# it wrongly treats a once-only proceeding as sequential (the
+# ``sentencing-mcgonigal`` vs ``sentencing-mcgonigal-2`` drift).
+_TRAILING_INT_SUFFIX = re.compile(r"-\d+$")
+
+
+def _singular_defendant_base(hearing_key: str) -> Optional[str]:
+    """For a singular-proceeding ``hearing_key``, return ``(type, defendant)``
+    collapsed to a stable cluster key, else None.
+
+    ``sentencing-mcgonigal`` and ``sentencing-mcgonigal-2`` both collapse to
+    ``"sentencing|mcgonigal"`` so the near-slot sweep groups them; a different
+    defendant (``sentencing-wang``) or a non-singular type returns a distinct
+    base / None and is never grouped. Conservative by design — when the
+    defendant tail doesn't clearly match, the rows stay un-clustered (a
+    surviving duplicate beats a wrong delete).
+    """
+    key = (hearing_key or "").strip().lower()
+    for prefix in _SINGULAR_HEARING_KEY_PREFIXES:
+        if key == prefix or key.startswith(prefix + "-"):
+            rest = key[len(prefix) :].lstrip("-")
+            if not rest:
+                rest = "(unnamed)"
+            defendant = _TRAILING_INT_SUFFIX.sub("", rest)
+            return f"{prefix}|{defendant}"
+    return None
 
 
 class Store:
@@ -1126,6 +1170,105 @@ class Store:
                 key = (f"#docket-id={h['docket_id']}", "", h["starts_at_utc"])
             clusters.setdefault(key, []).append(h)
         return [c for c in clusters.values() if len(c) > 1]
+
+    def find_nearslot_hearing_clusters(
+        self, case_id: str
+    ) -> list[list[dict[str, Any]]]:
+        """Candidate near-duplicate clusters the EXACT-slot sweeps miss.
+
+        The exact-slot sweeps (:meth:`find_concurrent_hearing_clusters` /
+        :meth:`find_concurrent_held_hearing_clusters`) only group rows that
+        share the exact ``starts_at_utc``. The per-entry extractor — Gemini
+        especially — also allocates a fresh ``hearing_key`` for a proceeding it
+        already has at a NEAR slot, which renders twice. This finds those
+        candidates (the caller hands each to the LLM resolver, which decides
+        MERGE vs KEEP_BOTH so genuinely-distinct proceedings survive):
+
+        - **Same court-local date, different slot**: rows on the same logical
+          PACER slot ``(docket_number, court_id)`` and the same court-local
+          calendar date but a DIFFERENT ``starts_at_utc`` (a date-only midnight
+          row + a timed row of the same proceeding; two same-day vocab-drift
+          keys). Clustered within a single ``status``.
+        - **Same singular proceeding type + defendant, any date** (held only):
+          two ``status='held'`` rows whose keys are the same once-only
+          proceeding for the same defendant (see ``_singular_defendant_base``),
+          even days apart — the ``sentencing-mcgonigal`` @12-18 vs
+          ``sentencing-mcgonigal-2`` @12-14 shape.
+
+        Clusters are disjoint and exclude exact-slot groups (the caller runs
+        this AFTER the exact-slot sweeps, so those are already merged). Returns
+        only clusters of >= 2 rows.
+        """
+        sql = (
+            "SELECT h.*, d.docket_number AS d_docket_number, "
+            "d.court_id AS d_court_id "
+            "FROM hearings h "
+            "LEFT JOIN dockets d ON d.docket_id = h.docket_id "
+            "WHERE h.case_id=? AND h.status IN ('scheduled','held') "
+            "AND h.starts_at_utc IS NOT NULL AND h.docket_id IS NOT NULL "
+            "ORDER BY h.starts_at_utc, h.hearing_key"
+        )
+        # One pass: build each hearing dict AND record its logical-slot
+        # (docket_number, court_id) keys, which _row_to_hearing drops from the
+        # LEFT-JOIN aliases.
+        rows: list[dict[str, Any]] = []
+        slot_meta: dict[int, tuple[str, str]] = {}
+        for r in self.conn.execute(sql, (case_id,)):
+            h = self._row_to_hearing(r)
+            rows.append(h)
+            dn = r["d_docket_number"]
+            cid = r["d_court_id"]
+            slot_meta[h["docket_id"]] = (
+                dn or f"#docket-id={h['docket_id']}",
+                cid or "",
+            )
+
+        def _logical(h: dict[str, Any]) -> tuple[str, str]:
+            return slot_meta.get(h["docket_id"], (f"#docket-id={h['docket_id']}", ""))
+
+        def _local_date(h: dict[str, Any]) -> str:
+            try:
+                dt = datetime.fromisoformat(h["starts_at_utc"])
+                return (
+                    dt.astimezone(ZoneInfo(h.get("timezone") or "UTC"))
+                    .date()
+                    .isoformat()
+                )
+            except Exception:
+                return (h["starts_at_utc"] or "")[:10]
+
+        assigned: set[str] = set()
+        clusters: list[list[dict[str, Any]]] = []
+
+        # Tier 1 — same court-local date, differing exact slot, within status.
+        date_buckets: dict[tuple[str, str, str, str], list[dict[str, Any]]] = {}
+        for h in rows:
+            dn, cid = _logical(h)
+            date_buckets.setdefault((dn, cid, _local_date(h), h["status"]), []).append(
+                h
+            )
+        for bucket in date_buckets.values():
+            distinct_slots = {h["starts_at_utc"] for h in bucket}
+            if len(bucket) > 1 and len(distinct_slots) > 1:
+                clusters.append(bucket)
+                assigned.update(h["hearing_key"] for h in bucket)
+
+        # Tier 2 — same singular type + defendant, held, any date (rows not
+        # already claimed by a same-date cluster above).
+        singular_buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for h in rows:
+            if h["status"] != "held" or h["hearing_key"] in assigned:
+                continue
+            base = _singular_defendant_base(h["hearing_key"])
+            if base is None:
+                continue
+            dn, cid = _logical(h)
+            singular_buckets.setdefault((dn, cid, base), []).append(h)
+        for bucket in singular_buckets.values():
+            if len(bucket) > 1:
+                clusters.append(bucket)
+
+        return clusters
 
     def get_hearing(self, case_id: str, hearing_key: str) -> Optional[dict[str, Any]]:
         row = self.conn.execute(

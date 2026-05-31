@@ -690,6 +690,13 @@ class CaseSyncer:
         # were created by the per-entry extractor allocating a fresh
         # key on the new sibling instead of reusing the existing key.
         stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
+        # Near-slot dedup runs LAST of the hearing sweeps: the exact-slot
+        # sweeps above have already merged identical-slot dups, so this
+        # only sees the NEAR-slot key-drift the extractor produces (same
+        # court day at a different time; a once-only proceeding at a
+        # slightly different date) — LLM-gated, so a genuine two-distinct-
+        # hearings-same-day pair is kept.
+        stats["deduped_nearslot"] = self._dedupe_nearslot_hearings(case)
         stats["deadlines_verified"] = self._verify_pending_deadlines(case)
         stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
@@ -1069,8 +1076,15 @@ class CaseSyncer:
         case: CaseConfig,
         cluster: list[dict[str, Any]],
         action: dict[str, Any],
+        *,
+        source: str = "dedupe",
     ) -> int:
         """Apply one MERGE_INTO / KEEP_BOTH / UNCLEAR action to a cluster.
+
+        ``source`` is the audit-trail writer tag recorded on the surviving
+        row ("dedupe" for the exact-slot scheduled sweep, "dedupe-nearslot"
+        for the near-slot sweep) so a future reader can tell which sweep
+        absorbed the siblings.
 
         Returns the number of rows that were absorbed (merged into and
         then deleted in favor of the target).
@@ -1078,7 +1092,8 @@ class CaseSyncer:
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype != "MERGE_INTO":
             log.info(
-                "dedupe: keys=%s -> %s reason=%r",
+                "%s: keys=%s -> %s reason=%r",
+                source,
                 [h.get("hearing_key") for h in cluster],
                 atype,
                 (action.get("reason") or "")[:120],
@@ -1119,7 +1134,7 @@ class CaseSyncer:
         reason = action.get("reason") or f"Duplicate of {target_key}"
         target["audit_notes"] = _append_audit_line(
             target.get("audit_notes"),
-            "dedupe",
+            source,
             f"Absorbed sibling key(s) {', '.join(sibling_keys)}: {reason}",
         )
         self.store.upsert_hearing(target)
@@ -1137,7 +1152,8 @@ class CaseSyncer:
             n_deleted += 1
 
         log.info(
-            "dedupe: absorbed %d hearing(s) into %r on docket %s (case=%s)",
+            "%s: absorbed %d hearing(s) into %r on docket %s (case=%s)",
+            source,
             n_deleted,
             target_key,
             target.get("docket_id"),
@@ -1234,6 +1250,63 @@ class CaseSyncer:
         # test smell).
         self.store.conn.commit()
         return n_deleted
+
+    def _dedupe_nearslot_hearings(self, case: CaseConfig) -> int:
+        """Resolve NEAR-slot duplicate hearings the exact-slot sweeps miss.
+
+        The per-entry extractor (Gemini especially) allocates a fresh
+        ``hearing_key`` for a proceeding it already has at a NEAR slot — the
+        same court day at a different time (a date-only midnight row + a timed
+        row of one proceeding), or the same once-only proceeding (sentencing /
+        arraignment / change-of-plea / initial-appearance) recorded at both its
+        scheduled date and the date it was actually held. Those render TWICE on
+        subscriber calendars, and the exact-slot sweeps above — which require an
+        identical ``starts_at_utc`` — don't catch them.
+
+        ``Store.find_nearslot_hearing_clusters`` surfaces the candidates; each
+        goes to the LLM resolver. MERGE_INTO DELETEs the absorbed rows and folds
+        their ``source_entry_ids`` into the target (with a ``[dedupe-nearslot]``
+        audit line); KEEP_BOTH / UNCLEAR are no-ops. This stays LLM-gated rather
+        than deterministic precisely because a court CAN hold two DIFFERENT
+        hearings on one day at different times — only the model (seeing the
+        titles + docket text) should decide. Runs AFTER the exact-slot sweeps.
+        Returns the count of rows deleted by merge.
+        """
+        from . import llm as llm_mod
+
+        clusters = self.store.find_nearslot_hearing_clusters(case.case_id)
+        if not clusters:
+            return 0
+
+        # find_nearslot_hearing_clusters returns DISJOINT clusters (its
+        # singular-type tier skips rows the same-date tier already claimed), so
+        # a row never appears in two clusters — no cross-cluster
+        # already-absorbed bookkeeping is needed here.
+        n_merged = 0
+        for cluster in clusters:
+            docket_id = cluster[0]["docket_id"]
+            meta = self.ensure_docket_cached(docket_id)
+            court_id = meta.get("court_id") or ""
+            tz = tz_for(court_id)
+            recent = self.store.get_recent_relevant_entries(
+                docket_id,
+                "9999-12-31T00:00:00",
+                limit=15,
+            )
+            action = llm_mod.resolve_duplicate_hearings(
+                case_name=case.name,
+                court_id=court_id,
+                court_tz=tz,
+                cluster=cluster,
+                recent_entries=recent,
+            )
+            n_merged += self._apply_dedupe_action(
+                case, cluster, action, source="dedupe-nearslot"
+            )
+
+        if n_merged:
+            self.store.conn.commit()
+        return n_merged
 
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:
         """Audit every future pending deadline against recent docket entries.
