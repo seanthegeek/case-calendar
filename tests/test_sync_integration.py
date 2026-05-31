@@ -409,6 +409,187 @@ class TestShortCircuits:
         assert called[0] == first
 
 
+class TestQuietSyncGatesSweeps:
+    """When no docket in a case advances past the date-modified
+    short-circuit, the LLM-backed verify / dedupe sweeps are skipped — their
+    inputs come entirely from the store, which is unchanged, so at
+    temperature=0 the verdicts can't differ from the prior sync. ``reverify``
+    forces them; the time-driven ``_auto_mark_passed_stale`` always runs.
+    """
+
+    def _seed_quiet_docket(self, store, docket_id=100):
+        """Make ``_docket()``'s date_modified short-circuit on the next sync.
+
+        Caches court metadata too so the verify pass's ``ensure_docket_cached``
+        resolves a timezone without a CourtListener fetch.
+        """
+        store.upsert_docket_meta(
+            docket_id,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-00001-X",
+                "case_name": "United States v. X",
+                "absolute_url": f"/docket/{docket_id}/x/",
+                "date_last_filing": "2026-05-01",
+            },
+        )
+        store.set_docket_last_modified(docket_id, "2026-05-01T00:00:00-07:00")
+
+    def _future_hearing(self, key="sentencing-x"):
+        return {
+            "case_id": "us-v-x",
+            "hearing_key": key,
+            "title": "Sentencing",
+            "starts_at_utc": "2027-01-01T20:00:00+00:00",
+            "timezone": "America/New_York",
+            "status": "scheduled",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [1],
+        }
+
+    def _future_deadline(self, key="reply"):
+        return {
+            "case_id": "us-v-x",
+            "deadline_key": key,
+            "title": "Reply",
+            "due_at_utc": "2027-02-01T21:00:00+00:00",
+            "timezone": "America/New_York",
+            "status": "pending",
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [1],
+        }
+
+    def test_quiet_case_skips_verify_and_dedupe_sweeps(
+        self, store: Store, case, monkeypatch
+    ):
+        self._seed_quiet_docket(store)
+        # Rows that WOULD be verified / deduped if the gate didn't fire.
+        store.upsert_hearing(self._future_hearing())
+        store.upsert_deadline(self._future_deadline())
+
+        def boom(*a, **k):
+            raise AssertionError("sweep LLM called on a fully-quiet sync")
+
+        monkeypatch.setattr(llm_mod, "verify_hearing", boom)
+        monkeypatch.setattr(llm_mod, "verify_deadline", boom)
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+
+        assert stats["dockets_skipped"] == 1
+        # No boom raised => the sweep LLMs were never called. Stats stay 0.
+        assert stats["verified"] == 0
+        assert stats["deadlines_verified"] == 0
+        assert stats["deduped"] == 0
+        assert stats["deduped_held"] == 0
+        assert stats["deduped_nearslot"] == 0
+
+    def test_reverify_forces_sweeps_on_quiet_case(
+        self, store: Store, case, monkeypatch
+    ):
+        self._seed_quiet_docket(store)
+        store.upsert_hearing(self._future_hearing())
+
+        seen = []
+
+        def rec_verify(*, hearing, **_):
+            seen.append(hearing.get("hearing_key"))
+            return {"type": "CONFIRM", "reason": "stub"}
+
+        monkeypatch.setattr(llm_mod, "verify_hearing", rec_verify)
+
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case, reverify=True)
+
+        # Docket still short-circuited, but --reverify forced the sweep.
+        assert stats["dockets_skipped"] == 1
+        assert seen == ["sentencing-x"]
+
+    def test_auto_passed_runs_on_quiet_case(self, store: Store, case, monkeypatch):
+        self._seed_quiet_docket(store)
+
+        def boom(*a, **k):
+            raise AssertionError("verify sweep called on a quiet sync")
+
+        monkeypatch.setattr(llm_mod, "verify_hearing", boom)
+        monkeypatch.setattr(llm_mod, "verify_deadline", boom)
+
+        # A future pending deadline (verify_deadline boom would fire on it if
+        # the gate failed) plus a past-due one the time-driven sweep must flip.
+        store.upsert_deadline(self._future_deadline(key="future-reply"))
+        store.upsert_deadline(
+            {
+                "case_id": "us-v-x",
+                "deadline_key": "stale-reply",
+                "title": "Stale reply",
+                "due_at_utc": "2024-01-01T22:00:00+00:00",
+                "timezone": "America/New_York",
+                "status": "pending",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [99],
+            }
+        )
+
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+
+        assert stats["dockets_skipped"] == 1
+        # _auto_mark_passed_stale runs unconditionally despite the gate.
+        assert stats["auto_passed"] == 1
+        rows = {d["deadline_key"]: d["status"] for d in store.get_deadlines("us-v-x")}
+        assert rows["stale-reply"] == "passed"
+        assert rows["future-reply"] == "pending"
+
+    def test_sibling_docket_advancing_runs_sweeps_for_quiet_docket(
+        self, store: Store, case, monkeypatch
+    ):
+        # Multi-docket case: docket 100 is quiet, docket 200 lands a new
+        # entry. The whole case's sweeps must run, so 100's row IS verified.
+        self._seed_quiet_docket(store, docket_id=100)
+        store.upsert_hearing(self._future_hearing())  # row lives on docket 100
+
+        two_docket_case = CaseConfig(
+            case_id="us-v-x",
+            name="United States v. X",
+            dockets=[100, 200],
+            calendar="cyber",
+        )
+        d200 = {
+            "id": 200,
+            "court_id": "mad",
+            "docket_number": "1:25-cr-00002-Y",
+            "case_name": "United States v. X",
+            "absolute_url": "/docket/200/y/",
+            "date_modified": "2026-05-20T00:00:00-07:00",
+            "date_last_filing": "2026-05-20",
+        }
+
+        seen = []
+
+        def rec_verify(*, hearing, **_):
+            seen.append(hearing.get("hearing_key"))
+            return {"type": "CONFIRM", "reason": "stub"}
+
+        monkeypatch.setattr(llm_mod, "verify_hearing", rec_verify)
+        make_llm_stub(monkeypatch, by_entry={})  # docket 200's entry -> IGNORE
+
+        cl = FakeCourtListener(
+            dockets={100: _docket(), 200: d200},
+            entries={
+                100: [],
+                200: [{**_entry(7, "NOTICE OF ATTORNEY APPEARANCE"), "docket": 200}],
+            },
+        )
+        stats = CaseSyncer(cl, store).sync_case(two_docket_case)
+
+        assert stats["dockets_skipped"] == 1  # only docket 100 short-circuited
+        assert seen == ["sentencing-x"]  # 100's row verified because 200 moved
+
+
 class TestInterruptDoesNotAdvanceCutoff:
     """Mid-sync interrupts must not advance the docket's date_last_modified.
 

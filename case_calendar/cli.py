@@ -421,7 +421,9 @@ def cmd_sync(args: argparse.Namespace) -> int:
         _maybe_ensure_docket_alerts(cfg, cl, cases)
         syncer = CaseSyncer(cl, store)
         for case in cases:
-            stats = syncer.sync_case(case)
+            stats = syncer.sync_case(
+                case, reverify=bool(getattr(args, "reverify", False))
+            )
             print(
                 f"[{case.case_id}] dockets_skipped={stats['dockets_skipped']} "
                 f"entries_seen={stats['entries_seen']} "
@@ -1363,6 +1365,16 @@ def main(argv: list[str] | None = None) -> int:
         help="regenerate every case summary as part of the sync (use after "
         "a model upgrade or prompt change — avoids a separate "
         "`summarize --force` run that would hit CourtListener again)",
+    )
+    p_sync.add_argument(
+        "--reverify",
+        action="store_true",
+        help="run the verify / dedupe sweeps on every case even when no "
+        "docket changed (by default they are skipped for a case whose "
+        "dockets all short-circuited, since the verdicts can't change "
+        "without new entries). Use after a verify-prompt / model change "
+        "or an out-of-band store edit (reprocess_entries.py / "
+        "classify_significance.py).",
     )
     p_sync.set_defaults(func=cmd_sync)
 
