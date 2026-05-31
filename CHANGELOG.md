@@ -39,9 +39,34 @@ trial phases instead of spawning a separate held row per trial day).
   / PART 3 (deadlines) with one JSON schema** (`case_calendar/llm.py`).
   Framing is now "court-calendar events … two equally-important kinds:
   HEARINGS and FILING DEADLINES" rather than hearing-first. No
-  behavioral rule was dropped or weakened; `SIGNIFICANCE_RULES` stays a
-  separate constant (still reused by `scripts/classify_significance.py`).
-  The module docstring is updated to name both event families.
+  behavioral rule was dropped or weakened. The module docstring is
+  updated to name both event families.
+- **Deadline significance now has a structured ruleset**
+  (`DEADLINE_SIGNIFICANCE_RULES`, `case_calendar/llm.py`), giving
+  deadlines the same ordered scaffold hearings already had: RULE 1
+  (classify by what is due, not who files it) → RULE 2 (type wins →
+  major) → RULE 3 (procedural → minor) → RULE 4 (ambiguous → by the
+  stakes of a miss) → RULE 5 (default major). It replaces the loose
+  two-bullet major/minor list and folds the amicus and transcript
+  significance splits into RULE 2 / RULE 3. RULE 2 enumerates the
+  substantive federal classes a model must not bucket away as
+  procedural-minor — dispositive-motion briefing, suppression / in-limine
+  / Daubert briefing, trial-prep filings, sentencing memos and PSR
+  objections, surrender-for-sentence, civil-forfeiture claim/answer,
+  certified administrative record, substantive sealing / CIPA filings,
+  the master amicus window, and transcript public-release — and RULE 5
+  states the bias-toward-major rationale (a wrong "minor" is hidden by
+  the render gate, a wrong "major" only adds a row). This is the
+  structural counter to the deadline-significance bucketing documented in
+  `model-comparison/SCORECARD.md`.
+- **Behavior change — recurring joint status reports and case-management
+  statements are now `major`** (RULE 2), where they were previously
+  treated as procedural-`minor`. Their filing deadlines now appear on
+  subscriber calendars. (An answer to a complaint is likewise `major`.)
+- **`SIGNIFICANCE_RULES` renamed to `HEARING_SIGNIFICANCE_RULES`** now
+  that significance is split into a hearing block and a deadline block;
+  it stays a separate constant reused by
+  `scripts/classify_significance.py`.
 
 ### Fixed
 

@@ -72,13 +72,84 @@ Conference Call", "Chambers Conference", or untyped "Hearing":
     procedures, discovery disputes, motion in limine).
   - major if the proceeding turns into a substantive event (e.g. a
     status conference that became a plea hearing).
+  - major if the proceeding is convened to receive or address a joint
+    status report or a case-management statement — the status report is a
+    tracked checkpoint, not housekeeping (it matches the deadline-side
+    treatment of joint status reports as major).
   - minor if the agenda is only setting next dates, attorney
-    substitutions, case-management housekeeping, joint status reports,
-    initial-pretrial / Rule 16(b) scheduling (or its criminal-case
-    scheduling analogue), or clerk's housekeeping.
+    substitutions, initial-pretrial / Rule 16(b) scheduling (or its
+    criminal-case scheduling analogue), or clerk's housekeeping.
 
 RULE 5 — Default to "major" when uncertain. Only emit "minor" when one
 of rules 1–4 clearly applies."""
+
+
+DEADLINE_SIGNIFICANCE_RULES = """\
+Apply the rules in order; stop at the first one that matches.
+
+RULE 1 — Classify by WHAT IS DUE, not who files it or how it turns out.
+The filing party (government / defense / plaintiff / third party), whether
+the deadline is later met / missed / extended, and the action that produced
+the row (ADD_DEADLINE / RESCHEDULE_DEADLINE) are all CONTEXT — they do not
+affect significance. A response to a dispositive motion is major whether the
+government or the defense files it; an extended deadline keeps the
+significance of the underlying filing.
+
+RULE 2 — Type wins. If the filing clearly matches one of these, emit "major"
+without further reasoning:
+  - briefing on a DISPOSITIVE motion — any response or reply on a motion to
+    dismiss, for summary judgment, for judgment on the pleadings, for
+    judgment of acquittal (Rule 29), or for a new trial (Rule 33)
+  - briefing on a motion to suppress, a motion in limine, or a Daubert motion
+  - trial-preparation filings — witness lists, exhibit lists, proposed jury
+    instructions, voir dire, trial briefs, deposition designations
+  - sentencing filings — sentencing memoranda, objections to the Presentence
+    Report (PSR), departure / variance submissions
+  - a charging-document or merits response — an answer to a complaint, a
+    response to a habeas petition, a response to an order to show cause
+  - appellate MERITS briefs filed BY THE PARTIES (opening / response / reply
+    on the merits), and the MASTER amicus filing window — the court-set date
+    by which any amicus curiae must file its substantive brief. Title cues:
+    "Amicus Briefs in Support of Petitioner/Respondent due ...", "Amicus
+    filing deadline", "Deadline for amici curiae to file briefs".
+  - recurring joint status reports and case-management statements — the
+    periodic reports a court orders the parties to file
+  - a deadline to SURRENDER for service of sentence / self-report to a facility
+  - civil-forfeiture claim or answer deadlines, and the filing of a certified
+    administrative record in an APA / agency-review case
+  - a substantive sealing or CIPA filing (the motion + briefing that decide
+    what stays under seal / how classified information is handled)
+  - a transcript PUBLIC-RELEASE deadline — the date a filed transcript becomes
+    publicly viewable on the docket
+  - any deadline whose miss would forfeit a right, waive an argument, or
+    otherwise change the case posture
+
+RULE 3 — Procedural / housekeeping filings are MINOR:
+  - proposed orders that follow an already-settled disposition
+  - attorney appearance / admission / withdrawal papers, and a party's
+    proposed dates (the proposal itself, not the court's order adopting them)
+  - the leave-to-file-amicus shuffle — a party's response to a Motion for
+    Leave to File Amici Curiae Brief, or the would-be amicus's reply on its
+    leave motion. The substantive brief itself is the MASTER window in
+    RULE 2; this is only the procedural fight over granting leave. Title cues:
+    "Response to Motion for Leave to File Amici Curiae Brief (X)", "Reply ISO
+    Motion for Leave to File Amicus Brief", "Opposition to Motion for Leave (X)".
+  - a transcript-redaction-request deadline — the window to request redactions
+    of a filed transcript before public release ("Notice of Intent to Request
+    Redaction due ...", "redaction request period ends ...")
+
+RULE 4 — Ambiguous filings: classify by the STAKES OF A MISS. For a generic
+"response" / "supplemental brief" / "notice" / "statement" that RULE 2 and
+RULE 3 don't squarely place:
+  - major if missing it would forfeit a right, waive an argument, concede a
+    motion, or move the case toward disposition.
+  - minor if it is administrative / informational with no substantive
+    consequence to missing it.
+
+RULE 5 — Default to "major" when uncertain. Only emit "minor" when one of
+rules 1–4 clearly applies. The render gate HIDES minor deadlines from
+subscriber calendars, so a wrong "minor" silently drops a deadline a watcher
+needed, while a wrong "major" only adds one extra row. Bias toward major."""
 
 
 SYSTEM_PROMPT = """\
@@ -266,41 +337,12 @@ Hearing significance:
 
 __HEARING_SIGNIFICANCE_RULES__
 
-Deadline significance:
-- "major" — dispositive briefing (MTD/MSJ response/reply), trial-related
-  filings (witness lists, exhibit lists, indexes, motions in limine, Daubert),
-  sentencing memoranda, plea cutoffs, suppression briefing, appellate briefing
-  by the parties, the MASTER amicus filing window, and any deadline whose miss
-  would meaningfully change the case posture.
-- "minor" — purely housekeeping: routine joint status reports / case-management
-  statements that are just procedural updates, proposed orders following a
-  settled disposition, attorney-appearance papers, scheduling proposals, AND
-  the leave-to-file-amicus shuffle.
+Deadline significance — classify by the same ordered approach as hearings.
+(The transcript ORDER and sealed/restricted entries are handled in PART 3 —
+those are not deadlines at all; the redaction-request vs public-release
+SIGNIFICANCE split lives in the rules below.)
 
-Amicus filings are CRITICAL and NOT a judgment call:
-- The MASTER amicus filing window (court-set deadline by which any amicus
-  curiae must submit its brief) → MAJOR. Watchers want to know when substantive
-  third-party content will land in the docket. Title cues for the major flavor:
-  "Amicus Briefs in Support of Petitioner/Respondent due ...", "Amicus filing
-  deadline", "Deadline for amici curiae to file briefs".
-- A deadline for the PARTIES to respond to a specific Motion for Leave to File
-  Amici Curiae Brief, OR the would-be amicus's reply on its leave motion →
-  MINOR. These are the procedural shuffle around granting leave for a specific
-  amicus; the brief itself is the substantive content, not the leave motion.
-  Title cues for the minor flavor: "Response to Motion for Leave to File Amici
-  Curiae Brief (X)", "Reply ISO Motion for Leave to File Amicus Brief",
-  "Opposition to Motion for Leave (X)".
-
-Transcript deadlines (the transcript ORDER and sealed/restricted entries are
-handled in PART 3 — they are not deadlines at all):
-- A transcript-redaction-request deadline ("Notice of Intent to Request
-  Redaction due ...", "redaction request period ends ...") IS a deadline but
-  procedural → ADD_DEADLINE with significance="minor", so it stays in the audit
-  trail without appearing on subscriber calendars.
-- CRITICAL — a transcript public-release deadline (the date a filed transcript
-  becomes publicly viewable on the docket) IS a deadline AND substantive →
-  ADD_DEADLINE with significance="major". Subscribers want to know when a trial
-  transcript enters the public record.
+__DEADLINE_SIGNIFICANCE_RULES__
 
 --- Titles ---
 
@@ -599,7 +641,7 @@ entries.
 
 SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
     "__HEARING_SIGNIFICANCE_RULES__", HEARING_SIGNIFICANCE_RULES
-)
+).replace("__DEADLINE_SIGNIFICANCE_RULES__", DEADLINE_SIGNIFICANCE_RULES)
 
 
 def build_user_message(

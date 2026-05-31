@@ -2229,31 +2229,114 @@ class TestSystemPromptAntiInferenceGuards:
 
 
 class TestSystemPromptAmicusRules:
-    """Regression guards for the amicus deadline rules. The rule body
-    itself predates this PR; what's pinned here is the new direct-
-    statement header wording ("Amicus filings are CRITICAL ...") that
-    replaced the meta-reference phrasing ("The amicus distinction is
-    critical ..."). The plain wording is intentional so a future
-    stylistic revert doesn't silently change the prompt cue.
+    """Regression guards for the amicus deadline-significance split. The
+    0.13.0 deadline-significance ruleset folded amicus in: the MASTER
+    amicus filing window is a RULE 2 (type-wins → major) class, and the
+    leave-to-file-amicus shuffle is a RULE 3 (procedural → minor) class.
+    Pin both poles so a future edit can't flip them, and keep the title
+    cues that give the small/fast tier a concrete handle.
     """
 
-    def test_amicus_section_header_is_plain_statement(self):
-        # The new wording reads as a directive ("Amicus filings are
-        # CRITICAL ..."), at the same emphasis level as the surrounding
-        # CRITICAL blocks elsewhere in the prompt.
-        assert "Amicus filings are CRITICAL and NOT a judgment call:" in _norm_prompt()
-        # Negative: the old meta-reference phrasing must NOT come back.
-        assert "amicus distinction is critical" not in llm.SYSTEM_PROMPT
-
     def test_amicus_master_window_marked_major(self):
-        # The rule body — the master amicus filing window is major
-        # (subscribers want to know when third-party briefs land),
-        # while the leave-to-file shuffle is minor. Pin both poles so
-        # a future edit can't flip them.
+        # The master amicus filing window is a RULE 2 major class — it must
+        # NOT be downgradeable to procedural-minor (the canonical Gemini
+        # bucketing failure the structured ruleset exists to prevent).
         prompt = _norm_prompt()
         assert "MASTER amicus filing window" in prompt
-        assert "MAJOR. Watchers want to know" in prompt
+        # Title cues for the major flavor survive as model handles.
+        assert "Amicus Briefs in Support of Petitioner/Respondent due" in prompt
+
+    def test_amicus_leave_shuffle_marked_minor(self):
+        # The procedural fight over GRANTING leave is the RULE 3 minor
+        # class; the substantive brief itself is the RULE 2 master window.
+        prompt = _norm_prompt()
+        assert "leave-to-file-amicus shuffle" in prompt
         assert "Motion for Leave to File Amici Curiae Brief" in prompt
+        # The split must be explicit — leave-motion practice is NOT the brief.
+        assert "The substantive brief itself is the MASTER window" in prompt
+
+
+class TestDeadlineSignificanceRules:
+    """Guards for the 0.13.0 structured deadline-significance ruleset
+    (``DEADLINE_SIGNIFICANCE_RULES``), which gives deadlines the same
+    ordered scaffold hearings already had (RULE 1 classify-the-thing →
+    RULE 2 type-wins-major → RULE 3 procedural-minor → RULE 4
+    ambiguous-by-stakes → RULE 5 default-major). It exists to stop the
+    substantive-deadline-as-minor bucketing the SCORECARD documented.
+    """
+
+    def test_ruleset_constant_substituted_into_prompt(self):
+        assert hasattr(llm, "DEADLINE_SIGNIFICANCE_RULES")
+        assert "__DEADLINE_SIGNIFICANCE_RULES__" not in llm.SYSTEM_PROMPT
+        assert llm.DEADLINE_SIGNIFICANCE_RULES.strip() in llm.SYSTEM_PROMPT
+
+    def test_ordered_five_rule_structure(self):
+        p = _norm_prompt()
+        for marker in (
+            "RULE 1 — Classify by WHAT IS DUE",
+            "RULE 2 — Type wins",
+            "RULE 3 — Procedural / housekeeping filings are MINOR",
+            "RULE 4 — Ambiguous filings: classify by the STAKES OF A MISS",
+            'RULE 5 — Default to "major" when uncertain',
+        ):
+            assert marker in p, f"missing deadline-significance {marker!r}"
+
+    def test_substantive_classes_are_type_wins_major(self):
+        # The SCORECARD classes Gemini downgraded to procedural-minor must
+        # be enumerated as RULE 2 (type-wins → major) so no model can bucket
+        # them away. Assert against the deadline ruleset constant directly —
+        # the hearing ruleset shares the "RULE 2 — Type wins" header, so
+        # slicing the whole prompt would be ambiguous.
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        for cls in (
+            "objections to the Presentence",  # PSR objections
+            "SURRENDER for service of sentence",
+            "civil-forfeiture claim or answer",
+            "certified administrative record",
+            "substantive sealing or CIPA filing",
+            "judgment of acquittal (Rule 29)",  # dispositive briefing
+            "an answer to a complaint",  # operator decision: major
+        ):
+            assert cls in rule2, f"{cls!r} must be a RULE 2 major class"
+
+    def test_joint_status_reports_are_major(self):
+        # Operator decision (0.13.0): recurring joint status reports and
+        # case-management statements are MAJOR — a deliberate departure from
+        # the earlier procedural-minor treatment. Pin it in RULE 2 and pin
+        # that it is NOT sitting in the RULE 3 minor block.
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        rule3 = d.split("RULE 3 — Procedural")[1].split("RULE 4 —")[0]
+        assert "recurring joint status reports and case-management statements" in rule2
+        assert "joint status report" not in rule3.lower()
+
+    def test_default_major_with_invisible_minor_rationale(self):
+        # RULE 5 must keep the bias-toward-major rationale: a wrong "minor"
+        # is invisible (render gate hides it) while a wrong "major" only
+        # adds a row. This is the structural counter to under-classification.
+        p = _norm_prompt()
+        assert 'Default to "major" when uncertain' in p
+        assert "HIDES minor deadlines from subscriber calendars" in p
+        assert "Bias toward major" in p
+
+
+class TestHearingSignificanceJSRAlignment:
+    """0.13.0 operator decision: joint status reports are major on the
+    HEARING side too, matching the deadline side. A status conference
+    convened to receive / address a JSR or case-management statement is
+    major, and JSRs were removed from the HEARING_SIGNIFICANCE_RULES
+    RULE 4 minor-agenda list."""
+
+    def test_jsr_conference_is_major_not_minor(self):
+        h = " ".join(llm.HEARING_SIGNIFICANCE_RULES.split())
+        # New RULE 4 major bullet for JSR / case-management-statement
+        # conferences.
+        assert "convened to receive or address a joint status report" in h
+        # JSRs are gone from the RULE 4 minor-agenda sub-bullet.
+        rule4 = h.split("RULE 4 — Ambiguous types")[1].split("RULE 5 —")[0]
+        minor = rule4.split("minor if the agenda is only")[1]
+        assert "joint status report" not in minor
 
 
 class TestSystemPromptTranscriptRules:
@@ -2300,12 +2383,18 @@ class TestSystemPromptTranscriptRules:
         assert "transcript public-release deadline" in prompt
         assert 'significance="major"' in prompt
 
-    def test_public_release_bullet_carries_critical_marker(self):
-        # The public-release transcript bullet stands out at the same
-        # emphasis level as the must-not-drop rules elsewhere in the
-        # prompt. A future edit must not strip the "CRITICAL —" prefix
-        # without consciously deciding to demote the rule.
-        assert "CRITICAL — a transcript public-release deadline" in _norm_prompt()
+    def test_public_release_is_a_type_wins_major_class(self):
+        # Pre-0.13.0 the public-release bullet carried a "CRITICAL —" prefix
+        # in the loose deadline-significance block. The structured ruleset
+        # replaced that with the strongest emphasis the ruleset has: a
+        # RULE 2 "type wins → major" class. Pin it there so a future edit
+        # can't quietly demote it (the on-calendar protection is also held
+        # by test_public_release_deadline_marked_major via PART 3).
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        assert "transcript PUBLIC-RELEASE deadline" in d
+        # And it sits inside the RULE 2 (type-wins) block, not RULE 3.
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        assert "transcript PUBLIC-RELEASE deadline" in rule2
 
     def test_transcripts_section_header_is_plain_statement(self):
         # The PART 3 transcript section opens with a direct statement
