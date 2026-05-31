@@ -236,16 +236,16 @@ def _validate_action_dial_in(action: dict[str, Any]) -> None:
 # judge, courtroom, dial-in to update), so a RESCHEDULE_DEADLINE with the
 # same date covers the same intent.
 _HEARING_TO_DEADLINE_TYPE: dict[str, str] = {
-    "ADD": "ADD_DEADLINE",
-    "RESCHEDULE": "RESCHEDULE_DEADLINE",
+    "ADD_HEARING": "ADD_DEADLINE",
+    "RESCHEDULE_HEARING": "RESCHEDULE_DEADLINE",
     "UPDATE_DETAILS": "RESCHEDULE_DEADLINE",
-    "CANCEL": "CANCEL_DEADLINE",
+    "CANCEL_HEARING": "CANCEL_DEADLINE",
     "MARK_HELD": "MARK_FILED",
 }
 _DEADLINE_TO_HEARING_TYPE: dict[str, str] = {
-    "ADD_DEADLINE": "ADD",
-    "RESCHEDULE_DEADLINE": "RESCHEDULE",
-    "CANCEL_DEADLINE": "CANCEL",
+    "ADD_DEADLINE": "ADD_HEARING",
+    "RESCHEDULE_DEADLINE": "RESCHEDULE_HEARING",
+    "CANCEL_DEADLINE": "CANCEL_HEARING",
     "MARK_FILED": "MARK_HELD",
 }
 
@@ -301,7 +301,14 @@ def _normalize_action_category(action: dict[str, Any]) -> dict[str, Any]:
 def _local_to_utc(
     date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
-    if not date_str:
+    # Some LLMs emit the literal string ``"null"`` / ``"None"`` for a missing
+    # date instead of JSON null — observed on a conditional ADD_DEADLINE where
+    # the model wrote ``"local_date": "null"`` and crashed the column with
+    # ``ValueError: Invalid isoformat string: 'nullT16:00'`` (the date-side
+    # twin of the ``local_time`` "null" case handled just below). Treat those
+    # as a missing date so the row is stored date-less — the same end state as
+    # a conditional deadline — rather than letting them reach ``fromisoformat``.
+    if not date_str or date_str.strip().lower() in ("null", "none"):
         return None
     # The schema says ``local_time`` is ``"HH:MM" | null`` but some LLMs
     # occasionally emit the literal string ``"null"`` (or ``"None"``) when
@@ -669,7 +676,7 @@ class CaseSyncer:
         # get continued or vacated by plea without an explicit cancellation
         # entry; the auto-held heuristic was wrong by default for them.)
         stats["verified"] = self._verify_scheduled_hearings(case)
-        # Run dedupe AFTER verify so any RESCHEDULE / CANCEL from verify
+        # Run dedupe AFTER verify so any RESCHEDULE_HEARING / CANCEL_HEARING from verify
         # gets a chance to clear concurrency before we ask the LLM to
         # resolve it.
         stats["deduped"] = self._dedupe_concurrent_hearings(case)
@@ -683,6 +690,13 @@ class CaseSyncer:
         # were created by the per-entry extractor allocating a fresh
         # key on the new sibling instead of reusing the existing key.
         stats["deduped_held"] = self._dedupe_concurrent_held_hearings(case)
+        # Near-slot dedup runs LAST of the hearing sweeps: the exact-slot
+        # sweeps above have already merged identical-slot dups, so this
+        # only sees the NEAR-slot key-drift the extractor produces (same
+        # court day at a different time; a once-only proceeding at a
+        # slightly different date) — LLM-gated, so a genuine two-distinct-
+        # hearings-same-day pair is kept.
+        stats["deduped_nearslot"] = self._dedupe_nearslot_hearings(case)
         stats["deadlines_verified"] = self._verify_pending_deadlines(case)
         stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
@@ -774,7 +788,7 @@ class CaseSyncer:
         ``cancelled`` row. The action grid:
 
         - For ``scheduled`` rows the LLM returns CONFIRM (no-op),
-          RESCHEDULE, CANCEL, MARK_HELD, DELETE_HALLUCINATION, or
+          RESCHEDULE_HEARING, CANCEL_HEARING, MARK_HELD, DELETE_HALLUCINATION, or
           UNCLEAR. Past-dated rows require explicit evidence
           (minute entry / verdict / transcript / judgment-after) for
           MARK_HELD — date-passed alone is not enough. Trials and other
@@ -927,7 +941,7 @@ class CaseSyncer:
         sources = list(hearing.get("source_entry_ids") or [])
         audit_note: Optional[str] = None
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "Cancelled per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
@@ -959,12 +973,12 @@ class CaseSyncer:
             audit_note = action.get("reason") or (
                 "Cancellation not supported by docket; reinstated to scheduled"
             )
-        elif atype == "RESCHEDULE":
+        elif atype == "RESCHEDULE_HEARING":
             local_date = action.get("local_date")
             local_time = action.get("local_time")
             if not local_date:
                 log.warning(
-                    "verify RESCHEDULE without local_date: case=%s key=%r",
+                    "verify RESCHEDULE_HEARING without local_date: case=%s key=%r",
                     case.case_id,
                     hearing.get("hearing_key"),
                 )
@@ -1062,8 +1076,15 @@ class CaseSyncer:
         case: CaseConfig,
         cluster: list[dict[str, Any]],
         action: dict[str, Any],
+        *,
+        source: str = "dedupe",
     ) -> int:
         """Apply one MERGE_INTO / KEEP_BOTH / UNCLEAR action to a cluster.
+
+        ``source`` is the audit-trail writer tag recorded on the surviving
+        row ("dedupe" for the exact-slot scheduled sweep, "dedupe-nearslot"
+        for the near-slot sweep) so a future reader can tell which sweep
+        absorbed the siblings.
 
         Returns the number of rows that were absorbed (merged into and
         then deleted in favor of the target).
@@ -1071,7 +1092,8 @@ class CaseSyncer:
         atype = (action.get("type") or "UNCLEAR").upper()
         if atype != "MERGE_INTO":
             log.info(
-                "dedupe: keys=%s -> %s reason=%r",
+                "%s: keys=%s -> %s reason=%r",
+                source,
                 [h.get("hearing_key") for h in cluster],
                 atype,
                 (action.get("reason") or "")[:120],
@@ -1112,7 +1134,7 @@ class CaseSyncer:
         reason = action.get("reason") or f"Duplicate of {target_key}"
         target["audit_notes"] = _append_audit_line(
             target.get("audit_notes"),
-            "dedupe",
+            source,
             f"Absorbed sibling key(s) {', '.join(sibling_keys)}: {reason}",
         )
         self.store.upsert_hearing(target)
@@ -1130,7 +1152,8 @@ class CaseSyncer:
             n_deleted += 1
 
         log.info(
-            "dedupe: absorbed %d hearing(s) into %r on docket %s (case=%s)",
+            "%s: absorbed %d hearing(s) into %r on docket %s (case=%s)",
+            source,
             n_deleted,
             target_key,
             target.get("docket_id"),
@@ -1228,6 +1251,63 @@ class CaseSyncer:
         self.store.conn.commit()
         return n_deleted
 
+    def _dedupe_nearslot_hearings(self, case: CaseConfig) -> int:
+        """Resolve NEAR-slot duplicate hearings the exact-slot sweeps miss.
+
+        The per-entry extractor (Gemini especially) allocates a fresh
+        ``hearing_key`` for a proceeding it already has at a NEAR slot — the
+        same court day at a different time (a date-only midnight row + a timed
+        row of one proceeding), or the same once-only proceeding (sentencing /
+        arraignment / change-of-plea / initial-appearance) recorded at both its
+        scheduled date and the date it was actually held. Those render TWICE on
+        subscriber calendars, and the exact-slot sweeps above — which require an
+        identical ``starts_at_utc`` — don't catch them.
+
+        ``Store.find_nearslot_hearing_clusters`` surfaces the candidates; each
+        goes to the LLM resolver. MERGE_INTO DELETEs the absorbed rows and folds
+        their ``source_entry_ids`` into the target (with a ``[dedupe-nearslot]``
+        audit line); KEEP_BOTH / UNCLEAR are no-ops. This stays LLM-gated rather
+        than deterministic precisely because a court CAN hold two DIFFERENT
+        hearings on one day at different times — only the model (seeing the
+        titles + docket text) should decide. Runs AFTER the exact-slot sweeps.
+        Returns the count of rows deleted by merge.
+        """
+        from . import llm as llm_mod
+
+        clusters = self.store.find_nearslot_hearing_clusters(case.case_id)
+        if not clusters:
+            return 0
+
+        # find_nearslot_hearing_clusters returns DISJOINT clusters (its
+        # singular-type tier skips rows the same-date tier already claimed), so
+        # a row never appears in two clusters — no cross-cluster
+        # already-absorbed bookkeeping is needed here.
+        n_merged = 0
+        for cluster in clusters:
+            docket_id = cluster[0]["docket_id"]
+            meta = self.ensure_docket_cached(docket_id)
+            court_id = meta.get("court_id") or ""
+            tz = tz_for(court_id)
+            recent = self.store.get_recent_relevant_entries(
+                docket_id,
+                "9999-12-31T00:00:00",
+                limit=15,
+            )
+            action = llm_mod.resolve_duplicate_hearings(
+                case_name=case.name,
+                court_id=court_id,
+                court_tz=tz,
+                cluster=cluster,
+                recent_entries=recent,
+            )
+            n_merged += self._apply_dedupe_action(
+                case, cluster, action, source="dedupe-nearslot"
+            )
+
+        if n_merged:
+            self.store.conn.commit()
+        return n_merged
+
     def _verify_pending_deadlines(self, case: CaseConfig) -> int:
         """Audit every future pending deadline against recent docket entries.
 
@@ -1295,7 +1375,7 @@ class CaseSyncer:
         sources = list(deadline.get("source_entry_ids") or [])
         audit_note: Optional[str] = None
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             merged["status"] = "cancelled"
             audit_note = action.get("reason") or "Vacated per recent docket entries"
         elif atype == "DELETE_HALLUCINATION":
@@ -1313,11 +1393,11 @@ class CaseSyncer:
             )
         elif atype == "MARK_FILED":
             merged["status"] = "met"
-        elif atype == "RESCHEDULE":
+        elif atype == "RESCHEDULE_HEARING":
             local_date = action.get("local_date")
             if not local_date:
                 log.warning(
-                    "verify_deadline RESCHEDULE without local_date: case=%s key=%r",
+                    "verify_deadline RESCHEDULE_HEARING without local_date: case=%s key=%r",
                     case.case_id,
                     deadline.get("deadline_key"),
                 )
@@ -1400,12 +1480,12 @@ class CaseSyncer:
     ) -> None:
         """Insert a brand-new hearing directly into a terminal status.
 
-        Used when CANCEL or MARK_HELD targets a hearing_key that isn't in
+        Used when CANCEL_HEARING or MARK_HELD targets a hearing_key that isn't in
         the store — typically because its original scheduling entry was
         filtered out by the prefilter, but a later memo/minute entry
         explicitly tells us a hearing existed and is now adjourned/held.
         Preserves the audit trail without depending on the LLM emitting
-        an ADD-then-CANCEL pair.
+        an ADD_HEARING-then-CANCEL_HEARING pair.
         """
         local_date = action.get("local_date")
         local_time = action.get("local_time")
@@ -1485,7 +1565,7 @@ class CaseSyncer:
         # Restrict known-events context to siblings in the same court.
         # Parallel proceedings in different venues must not feed each other's
         # context — a "stay appellate proceedings" order in court B would
-        # otherwise contaminate court A's events with bogus CANCEL actions.
+        # otherwise contaminate court A's events with bogus CANCEL_HEARING actions.
         # Co-defendant dockets in the same court (multi-defendant criminal
         # cases) still aggregate correctly.
         known = self.store.get_hearings_in_court(case.case_id, court_id)
@@ -1622,14 +1702,14 @@ class CaseSyncer:
             log.warning("action without hearing_key: %s", action)
             return
 
-        # ADD requires a date. Date-less ADDs come from entries that anticipate
-        # a hearing without scheduling it (motion-for-hearing, plea agreement,
-        # etc.) — they create ghost rows that never get a starts_at_utc and
-        # never appear on the calendar. Drop them; the actual scheduling order
-        # will come through later as its own entry.
-        if atype == "ADD" and not action.get("local_date"):
+        # ADD_HEARING requires a date. Date-less ADD_HEARINGs come from entries
+        # that anticipate a hearing without scheduling it (motion-for-hearing,
+        # plea agreement, etc.) — they create ghost rows that never get a
+        # starts_at_utc and never appear on the calendar. Drop them; the actual
+        # scheduling order will come through later as its own entry.
+        if atype == "ADD_HEARING" and not action.get("local_date"):
             log.warning(
-                "skipping date-less ADD: case=%s key=%r entry=%s "
+                "skipping date-less ADD_HEARING: case=%s key=%r entry=%s "
                 "(LLM should have IGNOREd; treating as such)",
                 case.case_id,
                 key,
@@ -1667,13 +1747,13 @@ class CaseSyncer:
         if eid not in prev_sources:
             prev_sources.append(eid)
 
-        # docket_id is sticky after first ADD — sibling-docket entries can
-        # touch a hearing (CANCEL, MARK_HELD, etc.) but the hearing's
+        # docket_id is sticky after first ADD_HEARING — sibling-docket entries can
+        # touch a hearing (CANCEL_HEARING, MARK_HELD, etc.) but the hearing's
         # canonical home docket (which feeds the description's case citation
         # and CourtListener link) shouldn't drift to whichever docket touched it last.
         sticky_docket_id = existing.get("docket_id") if existing else docket_id
 
-        if atype == "CANCEL":
+        if atype == "CANCEL_HEARING":
             if existing:
                 merged = dict(existing)
                 merged.update(
@@ -1699,7 +1779,7 @@ class CaseSyncer:
                 )
             else:
                 log.warning(
-                    "CANCEL on unknown key with no local_date: "
+                    "CANCEL_HEARING on unknown key with no local_date: "
                     "case=%s key=%r entry=%s — dropping",
                     case.case_id,
                     key,
@@ -1732,7 +1812,7 @@ class CaseSyncer:
                 )
                 self.store.upsert_hearing(merged)
             elif action.get("local_date"):
-                # Same as CANCEL-on-unknown: a minute entry for a hearing
+                # Same as CANCEL_HEARING-on-unknown: a minute entry for a hearing
                 # we never saw scheduled. Insert directly into 'held'.
                 self._insert_terminal_hearing(
                     case,
@@ -1753,7 +1833,7 @@ class CaseSyncer:
                 )
             return
 
-        # ADD / RESCHEDULE / UPDATE_DETAILS — figure out the new field set.
+        # ADD_HEARING / RESCHEDULE_HEARING / UPDATE_DETAILS — figure out the new field set.
         local_date = action.get("local_date")
         local_time = action.get("local_time")
 
@@ -1768,13 +1848,13 @@ class CaseSyncer:
         # to the default keeps zero-length blips out of subscribers' calendars.
         # We also treat an EXISTING duration of 0 as "unknown" so a follow-up
         # UPDATE_DETAILS can repair a hearing that was first inserted by an
-        # entry that didn't know the duration (e.g. an ADD whose entry didn't
+        # entry that didn't know the duration (e.g. an ADD_HEARING whose entry didn't
         # specify length, then a later UPDATE_DETAILS that also doesn't —
         # without this, the row stays pinned at 0 forever). For date-only
         # all-day events, _default_duration with time_set=False returns 0,
         # so we still land on 0 in that case — no regression.
         duration = action.get("duration_minutes") or None
-        if duration is None and existing and atype != "RESCHEDULE":
+        if duration is None and existing and atype != "RESCHEDULE_HEARING":
             duration = existing.get("duration_minutes") or None
         if duration is None:
             duration = _default_duration(action.get("hearing_type"), bool(local_time))
@@ -1787,7 +1867,7 @@ class CaseSyncer:
         sticky_tz = existing.get("timezone") if existing else tz
 
         # Significance: stickier than other fields because the LLM rarely sets
-        # it on UPDATE_DETAILS / RESCHEDULE. If the new action has it, prefer
+        # it on UPDATE_DETAILS / RESCHEDULE_HEARING. If the new action has it, prefer
         # that; otherwise keep what we already had.
         significance = action.get("significance") or (
             existing.get("significance") if existing else None

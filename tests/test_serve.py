@@ -82,7 +82,7 @@ def base_url(
         "extract_actions",
         lambda **kw: [
             {
-                "type": "ADD",
+                "type": "ADD_HEARING",
                 "hearing_key": "sentencing-x",
                 "hearing_type": "sentencing",
                 "title": "Sentencing",
@@ -339,7 +339,7 @@ class TestAutoEmit:
             "extract_actions",
             lambda **kw: [
                 {
-                    "type": "ADD",
+                    "type": "ADD_HEARING",
                     "hearing_key": "sentencing-x",
                     "hearing_type": "sentencing",
                     "title": "Sentencing",
@@ -423,7 +423,7 @@ class TestAutoEmit:
             "extract_actions",
             lambda **kw: [
                 {
-                    "type": "ADD",
+                    "type": "ADD_HEARING",
                     "hearing_key": "sentencing-x",
                     "hearing_type": "sentencing",
                     "title": "Sentencing",

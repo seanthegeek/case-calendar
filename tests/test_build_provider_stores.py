@@ -52,13 +52,13 @@ def test_action_brief_type_only():
 def test_action_brief_full():
     b = mod._action_brief(
         {
-            "type": "add",
+            "type": "add_hearing",
             "hearing_key": "sentencing-wang",
             "significance": "major",
             "local_date": "2026-06-03",
         }
     )
-    assert b.startswith("ADD(")
+    assert b.startswith("ADD_HEARING(")
     assert "sentencing-wang" in b and "major" in b and "2026-06-03" in b
 
 
@@ -87,11 +87,17 @@ def test_format_decision_extract():
             "docket_id": 99,
             "entry": {"id": 7, "short_description": "Order setting Jury Trial"},
         },
-        [{"type": "add", "hearing_key": "jury-trial-wang", "significance": "major"}],
+        [
+            {
+                "type": "add_hearing",
+                "hearing_key": "jury-trial-wang",
+                "significance": "major",
+            }
+        ],
     )
     assert "extract docket=99 entry=7" in out
     assert "Order setting Jury Trial" in out
-    assert "jury-trial-wang" in out and "ADD" in out
+    assert "jury-trial-wang" in out and "ADD_HEARING" in out
 
 
 def test_format_decision_extract_no_actions():
@@ -210,14 +216,14 @@ def test_drop_decisions_filter():
 
 
 def test_wrap_llm_logs_decision_and_returns(monkeypatch, caplog):
-    sentinel = [{"type": "add", "hearing_key": "k1", "significance": "major"}]
+    sentinel = [{"type": "add_hearing", "hearing_key": "k1", "significance": "major"}]
     monkeypatch.setattr(mod.llm, "extract_actions", lambda **k: sentinel)
     wrapped = mod._wrap_llm("extract_actions", "extract")
     mod._TL.provider = "openai"
     with caplog.at_level(logging.INFO, logger=mod._DLOG.name):
         result = wrapped(entry={"id": 5, "short_description": "Order"}, docket_id=9)
     assert result is sentinel  # real result passed through unchanged
-    assert any("k1" in r.message and "ADD" in r.message for r in caplog.records)
+    assert any("k1" in r.message and "ADD_HEARING" in r.message for r in caplog.records)
 
 
 def test_wrap_llm_silent_without_provider(monkeypatch, caplog):
@@ -722,3 +728,45 @@ def test_llm_cache_none_arg_equals_explicit_resolved_model(tmp_path, monkeypatch
     assert len(calls) == 1  # second served from cache
     assert sum(cache.hits.values()) == 1
     cache.close()
+
+
+# --------------------------------------------------------------------------- #
+# Per-track provider env overrides are neutralized for the run
+# --------------------------------------------------------------------------- #
+
+
+def test_neutralized_run_env_includes_provider_overrides():
+    # The run pins each column's (provider, model) itself, so it must clear
+    # the operator's per-track provider overrides too — not just the model
+    # overrides. Regression guard: the recommended split
+    # (LLM_EXTRACTION_PROVIDER=gemini, LLM_SUMMARY_PROVIDER=anthropic) in .env
+    # forced every column onto one provider and 404'd until these were popped.
+    for var in (
+        "LLM_MODEL",
+        "LLM_SUMMARY_MODEL",
+        "LLM_PROVIDER",
+        "LLM_EXTRACTION_PROVIDER",
+        "LLM_SUMMARY_PROVIDER",
+    ):
+        assert var in mod._NEUTRALIZED_RUN_ENV
+
+
+def test_extraction_provider_env_short_circuits_threadlocal_until_popped(monkeypatch):
+    """The mechanism the fix depends on: the build patches
+    ``providers._detect_provider`` to read the per-column thread-local, but
+    ``_detect_extraction_provider`` checks ``LLM_EXTRACTION_PROVIDER`` FIRST —
+    so an operator env override wins over the column's pinned provider until
+    the run pops it (it's in ``_NEUTRALIZED_RUN_ENV``)."""
+    from case_calendar.llmkit import providers
+
+    monkeypatch.setattr(providers, "_detect_provider", mod._tl_detect)
+    mod._TL.provider = "anthropic"  # this column is the anthropic column
+
+    # With the split-config env var present, extraction routes to gemini —
+    # the bug (gemini provider + anthropic model -> 404).
+    monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "gemini")
+    assert providers._detect_extraction_provider() == "gemini"
+
+    # Once the run neutralizes it, the column's thread-local provider wins.
+    monkeypatch.delenv("LLM_EXTRACTION_PROVIDER", raising=False)
+    assert providers._detect_extraction_provider() == "anthropic"

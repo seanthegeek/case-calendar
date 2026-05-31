@@ -26,7 +26,7 @@ CourtListener docket
           ▼
 ┌───────────────────┐
 │ LLM extractor     │  small/fast tier (Claude Haiku, Gemini Flash Lite, gpt-5.4-nano);
-│ per docket entry  │  returns ADD / RESCHEDULE / CANCEL / MARK_HELD / ...
+│ per docket entry  │  returns ADD_HEARING / RESCHEDULE_HEARING / CANCEL_HEARING / MARK_HELD / ...
 └─────────┬─────────┘
           │
           ▼
@@ -111,39 +111,73 @@ override is set:
 - **Summarization**: `LLM_SUMMARY_PROVIDER` (override) > `LLM_PROVIDER`
   (global) > API-key auto-detect, and `LLM_SUMMARY_MODEL` for the model.
 
-### Why the two-track split exists — and why Anthropic is the 0.10.0 default for both
+### Why the default is a split — Gemini for extraction, Anthropic for summaries
 
-The two-track split is a configuration capability, not a recommendation: the
-project ships with `LLM_PROVIDER=anthropic` as the default for BOTH tracks,
-because the structural failure mode that drove 0.10.0 — Gemini systematically
-misclassifying substantive federal-procedure deadline classes as
-`procedural-minor` and silently dropping them from subscriber calendars at the
-render-time significance gate — applies to extraction regardless of what
-provider runs summaries. See the
-[SCORECARD intro](../model-comparison/SCORECARD.md) for the full list of
-substantive classes Gemini missed in production after the brief 0.9.0
-Gemini-default flip (PSR, Speedy Trial Act exclusions, surrender for service
-of sentence, civil-forfeiture claim/answer, sealing motion practice,
-exhibit-filing deadlines, certified administrative record).
+As of 0.13.0 the default is no longer a single provider for both tracks. With
+API keys set but no `LLM_*` env vars, Case Calendar auto-detects **Gemini
+(`gemini-3.1-flash-lite`) for extraction** and **Anthropic
+(`claude-sonnet-4-6`) for summaries**. The auto-detect key priority is
+per-track: extraction prefers `gemini > anthropic > openai`, while the
+summary / base resolution prefers `anthropic > gemini > openai`. `LLM_PROVIDER`
+(global) still overrides both tracks, and `LLM_EXTRACTION_PROVIDER` /
+`LLM_SUMMARY_PROVIDER` override their own track.
+
+Earlier releases (0.10.0 / 0.11.0) kept Anthropic as the extraction default for
+a specific reason: relying on its intrinsic training priors, Gemini silently
+classified a long tail of substantive federal-procedure deadline classes —
+PSR, Speedy Trial Act exclusions, surrender for service of sentence,
+civil-forfeiture claim/answer, substantive sealing motion practice,
+exhibit-filing deadlines, certified administrative record — as
+`procedural-minor`, and those then dropped out at the render-time significance
+gate, off subscriber calendars.
+
+0.13.0 closes that gap in the prompt, not the model. The unified extraction
+`SYSTEM_PROMPT` now carries a structured `DEADLINE_SIGNIFICANCE_RULES` block
+(ordered `RULE 1`-`RULE 5`) that enumerates those substantive classes
+explicitly and biases the default toward `major`. Because the classes are now
+named in the prompt for *every* provider — apples-to-apples, rather than left
+to each model's intrinsic priors — Gemini now classifies them as `major` too.
+The important framing: the prompt carries the priors for every provider; this
+is not a claim that Gemini's training improved.
+
+With the bucketing gap closed, the measured comparison favors Gemini for
+extraction. On the full caseload (see the
+[SCORECARD](../model-comparison/SCORECARD.md)) Gemini posts the best
+`D met/pass` in the table and far fewer spurious cancellations than Anthropic
+(`D canc` 9 vs 28), and its aggregate deviation (305) is the best overall —
+ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 3.75×
+cheaper and roughly 1.9× faster per call on the extraction track. The summary
+track stays Anthropic because Sonnet still adds a few categories of detail the
+higher-tier Gemini summary model drops — statutory citations, count numbers,
+cross-docket statutory distinctions, and cancelled-schedule notes.
+
+One honest caveat survives the change: `DEADLINE_SIGNIFICANCE_RULES` enumerates
+the substantive classes the project currently knows about. An operator whose
+caseload includes substantive classes the ruleset does *not* enumerate should
+still verify Gemini's output against their own docket set, and the per-track
+override env vars remain available for that. But the risk is materially
+*reduced* — not merely shifted — because the enumeration is now in the prompt
+for both providers rather than left to a single model's training corpus.
 
 | | Extraction track | Summary track |
 | --- | --- | --- |
-| Call volume per backfill | ~1,230 | ~34 |
+| Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-4-6`) |
 | Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
-| Anthropic cost (full backfill) | $6.62 | $2.24 |
-| Gemini cost (full backfill) | $1.60 | $1.09 |
-| Anthropic accuracy on substantive classes | Loads legal priors implicitly — substantive classes (PSR, STA exclusions, certified administrative record, etc.) classify as `major` without prompt enumeration | **best** (statute citations, count numbers, sentence breakdowns, custody status, cancelled-schedule notes, full briefing schedules) |
-| Gemini accuracy | Best aggregate deviation on the in-fixture set (328 vs 381), but misses out-of-fixture substantive classes that aren't explicitly enumerated in the prompt | terser; blurs cases that fit the same bucket |
+| Anthropic cost (full backfill) | \~$6.72 | \~$2.30 |
+| Gemini cost (full backfill) | \~$1.82 | \~$1.11 |
+| Aggregate deviation (lower is better) | Gemini **305** (best in table) vs Anthropic 349 | — |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best `D met/pass` in the table and far fewer spurious cancellations than Anthropic, \~3.75× cheaper, \~1.9× faster per call | richer case-distinguishing prose (statutory citations, count numbers, cross-docket statutory distinctions, cancelled-schedule notes — all of which Gemini's terser summaries still drop) |
 
-The reason the split capability still exists, even though the default no
-longer uses it: a federal procedural deadline vocabulary list is decades deep
-and unbounded. The maintainer isn't a lawyer, and there's no practical way to
-audit a Gemini extraction stream for silent drops after the fact. Anthropic's
-training corpus covers these classes for free, which is what makes it the safe
-default. An operator who has confirmed Gemini's class profile against their
-own caseload — and accepts the audit burden — can still pin
-`LLM_EXTRACTION_PROVIDER=gemini` for the cost win without losing the
-case-distinguishing Anthropic summaries.
+The full deviation breakdown — measured against a human-scored ground-truth
+worksheet over the whole caseload — is in the
+[SCORECARD](../model-comparison/SCORECARD.md). The split exists because the two
+tracks optimize for different things: extraction is high-volume classification
+where cost and latency multiply over thousands of calls, and the substantive
+deadline classes are now enumerated in the prompt so Gemini handles them as
+well as Anthropic; summaries are low-volume synthesis where Sonnet's
+case-distinguishing detail earns the higher tier. An operator who prefers a
+single provider can still set `LLM_PROVIDER`, or pin either track with
+`LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
 
 The [SCORECARD's Summary track section](../model-comparison/SCORECARD.md)
 documents the bucket-confusion problem with side-by-side examples — three
@@ -169,8 +203,8 @@ Courts describe hearings inconsistently. The same event can show up as:
 
 Maintaining regexes per court is a treadmill — and a new clerk's habits
 break them silently. Instead, the LLM sees the entry plus the case's
-known-hearings list, and decides `ADD` vs `RESCHEDULE` vs `UPDATE` vs
-`CANCEL` in one call. A cheap regex pre-filter still runs before the LLM
+known-hearings list, and decides `ADD_HEARING` vs `RESCHEDULE_HEARING` vs `UPDATE` vs
+`CANCEL_HEARING` in one call. A cheap regex pre-filter still runs before the LLM
 to drop the obvious non-hearings (briefs, attorney appearances, sealed
 placeholders) for free.
 
@@ -185,7 +219,7 @@ calendar event across syncs, reschedules, and database restores.
 
 Filing deadlines work the same way, in a parallel `deadlines` table with
 a separate `deadline_key`. Renderers don't care which is which — both are
-projected into the same shape before the ICS / gcal layer ever sees them.
+mapped into the same shape before the ICS / gcal layer ever sees them.
 
 ## Three-tier short-circuit
 
@@ -210,8 +244,8 @@ The third short-circuit is the interesting one. Case Calendar can't trust
 "has this `entry_id` been seen before?" alone, because RECAP entries
 evolve after they first appear — a sealed PDF gets unsealed, or a
 previously-missing PDF finally gets uploaded to RECAP. Those entries
-need *re-processing*, but cosmetic churn that didn't change
-anything meaningful.
+need *re-processing* — but cosmetic churn that didn't change anything
+meaningful must not trigger it.
 
 The fingerprint is a SHA-1 of just the entry state that matters:
 
@@ -239,8 +273,8 @@ filed around the row's own date, *and* the row's source entries (the
 docket entries that originally allocated it) — and returns one of:
 
 - `CONFIRM` — no-op.
-- `RESCHEDULE` — the docket says the row moved; update.
-- `CANCEL` — the docket vacated it.
+- `RESCHEDULE_HEARING` — the docket says the row moved; update.
+- `CANCEL_HEARING` — the docket vacated it.
 - `MARK_HELD` *(hearings only)* — there's evidence the hearing happened
   (minute entry, verdict, transcript, judgment).
 - `MARK_FILED` *(deadlines only)* — the required filing was made.
@@ -272,12 +306,12 @@ leave a concluded hearing stuck at `scheduled` — it never saw the
 evidence. It widens what the model can see without lowering the bar for
 `MARK_HELD`, which still requires a cited record.
 
-There's a parallel verify pass for filing deadlines when those are
-enabled on the case.
+There's a parallel verify pass for filing deadlines, run on every case —
+deadline tracking is uniform, with no per-case opt-in.
 
 ## The data model
 
-The SQLite store has five operational tables:
+The SQLite store has six operational tables:
 
 - **`dockets`** — id, last `date_modified` (the short-circuit cutoff),
   last filing date, cached court metadata.
@@ -437,7 +471,7 @@ and each one is reproduced **verbatim** on the
 [LLM prompts](llm-prompts.md) page so you can read exactly what the model
 is told without opening the source:
 
-- [`SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L26) — the major-vs-minor classification rubric, interpolated into the main extractor prompt.
+- [`HEARING_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L27) and [`DEADLINE_SIGNIFICANCE_RULES`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L87) — the two major-vs-minor classification rubrics (one per event family), each interpolated into the main extractor prompt.
 - [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L86) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
 - [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L910) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1234) — same-docket same-slot duplicate resolver.

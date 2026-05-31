@@ -240,6 +240,20 @@ class TestLocalToUtc:
     def test_empty_date_returns_none(self):
         assert _local_to_utc("", None, "America/New_York") is None
 
+    def test_literal_null_string_date_treated_as_missing(self):
+        # Date-side twin of the ``local_time: "null"`` case below. The
+        # 0.13.0 unified-prompt validation build hit a conditional
+        # ADD_DEADLINE where the model wrote ``"local_date": "null"``
+        # (the literal string) instead of JSON null, crashing the column
+        # with ``ValueError: Invalid isoformat string: 'nullT16:00'``.
+        # The literal "null" / "None" date (any casing / whitespace) must
+        # be treated as a missing date (return None) so the row is stored
+        # date-less, the same end state as a conditional deadline.
+        assert _local_to_utc("null", "16:00", "America/New_York") is None
+        assert _local_to_utc("None", None, "America/New_York") is None
+        assert _local_to_utc(" NULL ", "16:00", "America/New_York") is None
+        assert _local_to_utc(None, "16:00", "America/New_York") is None
+
     def test_literal_null_string_time_treated_as_missing(self):
         # gpt-5.4-mini regression — the verify-pass response emitted
         # ``local_time: "null"`` (string) on a REINSTATE action and the
@@ -363,7 +377,7 @@ class TestValidateActionDialIn:
             called.append(url)
 
         monkeypatch.setattr(url_validator, "validate_url", _fake)
-        action = {"type": "ADD"}
+        action = {"type": "ADD_HEARING"}
         _validate_action_dial_in(action)
         assert called == []
         assert "dial_in" not in action
@@ -463,9 +477,9 @@ class TestNormalizeActionCategory:
     def test_hearing_types_with_deadline_key_coerce_to_deadline_types(self):
         # Full coercion grid for the hearing→deadline direction.
         for src, dst in [
-            ("ADD", "ADD_DEADLINE"),
-            ("RESCHEDULE", "RESCHEDULE_DEADLINE"),
-            ("CANCEL", "CANCEL_DEADLINE"),
+            ("ADD_HEARING", "ADD_DEADLINE"),
+            ("RESCHEDULE_HEARING", "RESCHEDULE_DEADLINE"),
+            ("CANCEL_HEARING", "CANCEL_DEADLINE"),
             ("MARK_HELD", "MARK_FILED"),
         ]:
             out = _normalize_action_category({"type": src, "deadline_key": "x"})
@@ -476,9 +490,9 @@ class TestNormalizeActionCategory:
     def test_deadline_types_with_hearing_key_coerce_to_hearing_types(self):
         # Reverse direction — same logic.
         for src, dst in [
-            ("ADD_DEADLINE", "ADD"),
-            ("RESCHEDULE_DEADLINE", "RESCHEDULE"),
-            ("CANCEL_DEADLINE", "CANCEL"),
+            ("ADD_DEADLINE", "ADD_HEARING"),
+            ("RESCHEDULE_DEADLINE", "RESCHEDULE_HEARING"),
+            ("CANCEL_DEADLINE", "CANCEL_HEARING"),
             ("MARK_FILED", "MARK_HELD"),
         ]:
             out = _normalize_action_category({"type": src, "hearing_key": "x"})
@@ -488,7 +502,7 @@ class TestNormalizeActionCategory:
 
     def test_matching_type_and_key_unchanged(self):
         # Hearing-typed action with hearing_key — no coercion needed.
-        action = {"type": "ADD", "hearing_key": "sentencing-knoot"}
+        action = {"type": "ADD_HEARING", "hearing_key": "sentencing-knoot"}
         assert _normalize_action_category(action) is action
 
         action = {"type": "RESCHEDULE_DEADLINE", "deadline_key": "reply-mtd"}
@@ -508,7 +522,9 @@ class TestNormalizeActionCategory:
     def test_action_with_no_keys_does_not_coerce(self):
         # No key means downstream will warn and drop — no information
         # to coerce on. Don't invent a category.
-        assert _normalize_action_category({"type": "ADD"})["type"] == "ADD"
+        assert (
+            _normalize_action_category({"type": "ADD_HEARING"})["type"] == "ADD_HEARING"
+        )
 
     def test_unknown_type_passes_through(self):
         # IGNORE / UNCLEAR / typos / etc. — anything not in the
@@ -584,6 +600,16 @@ class TestDeadlineLocalToUtc:
 
     def test_empty_date_returns_none(self):
         assert _deadline_local_to_utc("", None, "America/New_York") is None
+
+    def test_literal_null_string_date_returns_none(self):
+        # The 0.13.0 validation-build crash: a conditional ADD_DEADLINE
+        # with ``"local_date": "null"`` (string) reached this function and
+        # crashed with ``Invalid isoformat string: 'nullT16:00'``. A literal
+        # "null"/"None" date must return None (date-less / conditional row),
+        # NOT fall through to the 16:00 default with a bogus "null" date.
+        assert _deadline_local_to_utc("null", "16:00", "America/New_York") is None
+        assert _deadline_local_to_utc("None", None, "America/New_York") is None
+        assert _deadline_local_to_utc(" NULL ", None, "America/New_York") is None
 
     def test_literal_null_string_falls_back_to_default_4pm(self):
         # Same gpt-5.4-mini failure mode as on _local_to_utc, but for

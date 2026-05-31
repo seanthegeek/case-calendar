@@ -53,52 +53,49 @@ _DEFAULT_MODELS = {
 }
 
 
-def _detect_provider() -> Optional[str]:
-    """The base/global provider selection used by both tracks.
+# Default API-key auto-detection priority. The two tracks differ on purpose
+# (see the SCORECARD): extraction prefers Gemini — it wins the provider
+# comparison on accuracy AND is ~4x cheaper / ~2x faster, and the structured
+# DEADLINE_SIGNIFICANCE_RULES closed the substantive-deadline-bucketing gap
+# that previously held it back — while the case-summary track prefers Anthropic
+# for case-distinguishing prose (statute cites, count numbers, sentence
+# breakdowns). Either is overridable per-track via LLM_EXTRACTION_PROVIDER /
+# LLM_SUMMARY_PROVIDER, or globally via LLM_PROVIDER.
+_EXTRACTION_KEY_PRIORITY = ("gemini", "anthropic", "openai")
+_SUMMARY_KEY_PRIORITY = ("anthropic", "gemini", "openai")
 
-    Reads ``LLM_PROVIDER`` (the global default that applies to both
-    extraction and summaries) and falls back to API-key auto-detection
-    in priority order ``anthropic > gemini > openai``. Anthropic sits
-    first because real-world use after the 0.9.0 Gemini-default flip
-    surfaced a maintenance treadmill (see
-    ``model-comparison/SCORECARD.md``): Gemini systematically
-    classifies substantive deadline classes — PSR interview + first
-    disclosure, Speedy Trial Act exclusions, surrender for service of
-    sentence, civil-forfeiture claim / answer, substantive sealing
-    motion practice, exhibit-filing deadlines — as procedural-minor
-    and silently drops them from subscriber calendars, because its
-    training corpus didn't include enough legal text to load those
-    priors. Each missed class is addressable with a targeted prompt-
-    vocabulary addition, but the maintainer is not a lawyer and the
-    list of federally-named procedural classes is decades deep, so the
-    vocabulary list is an unbounded treadmill. Anthropic's models
-    handle this for free because the training data covered it.
 
-    Gemini sits second because it remains an excellent choice for the
-    classes it does cover: the published comparison ranks it best on
-    deviation and substantially faster / cheaper, and operators who
-    know their caseload's substantive-class profile and want to pin
-    Gemini can do so via ``LLM_EXTRACTION_PROVIDER=gemini`` without
-    touching the global default. OpenAI sits third (slowest of the
-    three, worst deviation on the comparison fixture).
+def _detect_provider(
+    key_priority: tuple[str, ...] = _SUMMARY_KEY_PRIORITY,
+) -> Optional[str]:
+    """The base/global provider selection.
 
-    The per-track override env vars layer on top of this:
-      * ``LLM_EXTRACTION_PROVIDER`` overrides for extraction +
-        verify-pass + dedupe calls — checked by
+    Reads ``LLM_PROVIDER`` (the global default applying to both tracks) and
+    otherwise falls back to API-key auto-detection in ``key_priority`` order.
+    The default order is the SUMMARY-track order (``anthropic > gemini >
+    openai``) — Anthropic for case-distinguishing summary prose — because the
+    summary track and most direct callers want it; the extraction track passes
+    the Gemini-first order via :func:`_detect_extraction_provider`.
+
+    The per-track override env vars layer on top:
+      * ``LLM_EXTRACTION_PROVIDER`` — extraction + verify-pass + dedupe, via
         :func:`_detect_extraction_provider`.
-      * ``LLM_SUMMARY_PROVIDER`` overrides for case summaries —
-        checked by ``llm.summary_provider_info`` /
-        ``llm.generate_docket_summary``.
+      * ``LLM_SUMMARY_PROVIDER`` — case summaries, via
+        ``llm.summary_provider_info`` / ``llm.generate_docket_summary``.
     """
     provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
     if provider in ("anthropic", "openai", "gemini"):
         return provider
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return "anthropic"
-    if os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY"):
-        return "gemini"
-    if os.environ.get("OPENAI_API_KEY"):
-        return "openai"
+    have = {
+        "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "gemini": bool(
+            os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        ),
+        "openai": bool(os.environ.get("OPENAI_API_KEY")),
+    }
+    for p in key_priority:
+        if have[p]:
+            return p
     return None
 
 
@@ -107,18 +104,16 @@ def _detect_extraction_provider() -> Optional[str]:
 
     Precedence:
       1. ``LLM_EXTRACTION_PROVIDER`` env var (track-specific override).
-      2. Whatever :func:`_detect_provider` returns — i.e.
-         ``LLM_PROVIDER`` (the global default) or API-key
-         auto-detection.
-
-    This mirrors the summary-track resolution in
-    ``llm.summary_provider_info`` so both tracks can be pinned
-    independently while sharing a global default when one isn't set.
+      2. ``LLM_PROVIDER`` (the global default), then API-key auto-detection in
+         the EXTRACTION priority order ``gemini > anthropic > openai`` — so a
+         zero-config install with multiple keys present extracts with Gemini
+         (best accuracy + cheapest + fastest on the comparison), while the
+         summary track still defaults to Anthropic.
     """
     extract = os.environ.get("LLM_EXTRACTION_PROVIDER", "").lower().strip()
     if extract in ("anthropic", "openai", "gemini"):
         return extract
-    return _detect_provider()
+    return _detect_provider(key_priority=_EXTRACTION_KEY_PRIORITY)
 
 
 def _call_anthropic(

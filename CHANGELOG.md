@@ -8,6 +8,138 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.13.0] - 2026-05-30
+
+Headline: the extractor `SYSTEM_PROMPT` is now a **single unified
+court-calendar prompt** that treats hearings and filing deadlines as
+co-equal, rather than a hearing prompt with deadlines bolted on as an
+"additional task". The prompt grew the way the project did — it began as
+a hearing extractor and gained deadline support later — leaving two
+prompts stapled together with duplicated scaffolding (the cross-docket
+rule, the "no dates in keys" rule, the significance default + render
+gate, the court-local date/time rules, the title rules, the JSON-safety
+rules, and the ADD-requires-a-date logic were each stated twice) and two
+separate JSON output schemas. The rewrite states each shared rule once in
+a PART 1 ("rules shared by hearings and deadlines"), keeps the
+hearing-specific actions in PART 2 and the deadline-specific actions in
+PART 3, and emits a single JSON schema covering both. Every behavioral
+protection that was pinned by a regression (anti-inference grounding, the
+transcript trio + sealed carve-out, amicus major/minor, minute-entry
+MARK_HELD triggers, multi-defendant key divergence, same-slot,
+conditional deadlines, stipulation-vs-so-ordered) is preserved — the
+change is structural, not a re-tuning of what the rules say. Validated by
+a full four-column provider-store rebuild against the prior run: hearing
+and deadline output stays within normal run-to-run variance, and
+multi-day-trial handling is if anything cleaner (the model consolidates
+trial phases instead of spawning a separate held row per trial day).
+
+### Changed
+
+- **`SYSTEM_PROMPT` restructured into PART 1 (shared) / PART 2 (hearings)
+  / PART 3 (deadlines) with one JSON schema** (`case_calendar/llm.py`).
+  Framing is now "court-calendar events … two equally-important kinds:
+  HEARINGS and FILING DEADLINES" rather than hearing-first. No
+  behavioral rule was dropped or weakened. The module docstring is
+  updated to name both event families.
+- **Deadline significance now has a structured ruleset**
+  (`DEADLINE_SIGNIFICANCE_RULES`, `case_calendar/llm.py`), giving
+  deadlines the same ordered scaffold hearings already had: RULE 1
+  (classify by what is due, not who files it) → RULE 2 (type wins →
+  major) → RULE 3 (procedural → minor) → RULE 4 (ambiguous → by the
+  stakes of a miss) → RULE 5 (default major). It replaces the loose
+  two-bullet major/minor list and folds the amicus and transcript
+  significance splits into RULE 2 / RULE 3. RULE 2 enumerates the
+  substantive federal classes a model must not bucket away as
+  procedural-minor — dispositive-motion briefing, suppression / in-limine
+  / Daubert briefing, trial-prep filings, sentencing memos and PSR
+  objections, surrender-for-sentence, civil-forfeiture claim/answer,
+  certified administrative record, substantive sealing / CIPA filings,
+  the master amicus window, and transcript public-release — and RULE 5
+  states the bias-toward-major rationale (a wrong "minor" is hidden by
+  the render gate, a wrong "major" only adds a row). This is the
+  structural counter to the deadline-significance bucketing documented in
+  `model-comparison/SCORECARD.md`.
+- **Behavior change — recurring joint status reports and case-management
+  statements are now `major`** (RULE 2), where they were previously
+  treated as procedural-`minor`. Their filing deadlines now appear on
+  subscriber calendars. (An answer to a complaint is likewise `major`.)
+- **`SIGNIFICANCE_RULES` renamed to `HEARING_SIGNIFICANCE_RULES`** now
+  that significance is split into a hearing block and a deadline block;
+  it stays a separate constant reused by
+  `scripts/classify_significance.py`.
+- **Three Gemini-extractor weakness rules integrated into the unified
+  prompt** ahead of making Gemini the default extractor: (1) a same-DATE
+  transcript rule — a transcript of a proceeding held on date X must
+  `MARK_HELD` the known hearing on that date (matched on date, not
+  time-of-day) instead of allocating a phantom `proceedings-<date>` row
+  the same-slot dedupe can't catch; (2) Location must PRESERVE EVERY NAMED
+  TOKEN (court formal name, state, ZIP, room labels) rather than
+  abbreviating the courthouse; (3) `dial_in` must carry access labels
+  ("audio observation only", etc., often citing Civ. L.R. 77-3(d)). These
+  fold the substance of the closed-unmerged #45 PR into the new PART 2
+  structure.
+- **Default extraction provider flipped to Gemini; summaries stay on
+  Anthropic** (`case_calendar/llmkit/providers.py`). Auto-detection now
+  uses a per-track API-key priority: the extraction track prefers
+  `gemini > anthropic > openai` (`_detect_extraction_provider`,
+  `_EXTRACTION_KEY_PRIORITY`) and the summary/base track prefers
+  `anthropic > gemini > openai` (`_detect_provider`,
+  `_SUMMARY_KEY_PRIORITY`). A fresh operator who provisions all three
+  keys without setting any `LLM_*` var now lands on the split — Gemini
+  reading docket entries into hearings + deadlines, Anthropic writing the
+  per-docket case summaries — instead of Anthropic for both. `LLM_PROVIDER`
+  still forces one provider for both tracks, and `LLM_EXTRACTION_PROVIDER`
+  / `LLM_SUMMARY_PROVIDER` still override per track. The flip is earned by
+  the `DEADLINE_SIGNIFICANCE_RULES` change above: with the substantive
+  deadline classes named in-prompt for every provider, Gemini no longer
+  silently buckets them as procedural-`minor`, and it posts the best
+  aggregate deviation (305) in the comparison while running \~3.75× cheaper
+  and \~1.9× faster per call than Anthropic on the constant-load
+  extract+verify pair. See `model-comparison/SCORECARD.md`.
+- **Two MARK_HELD rules that address the date-mismatch warnings at the
+  source** (PART 2), diagnosed from a focused 4-case build where 84/159
+  warnings were multi-day trials and 42/159 were sequential conferences
+  (the warnings are universal across providers; Gemini had the fewest).
+  (A) **Multi-day trials become one event per day** — each trial-day minute
+  entry `MARK_HELD`s a new `trial-<def>-day-N` key titled `<Trial> — Day N`
+  on that day (the existing insert-as-held path creates the dated row), and
+  the original row is retitled "— Day 1" once a Day 2 appears; a single-day
+  trial stays unsuffixed. This turns the per-day minute entries from rejected
+  actions into real per-day calendar events. (B) **MARK_HELD matches the
+  date-closest row or IGNOREs** — for sequential proceedings
+  (`status-conf-<def>-N`) the model targets the sibling within \~2 days of the
+  held date rather than an arbitrary one, and emits IGNORE when none qualifies
+  (the deterministic 2-day guard still backs this).
+
+### Fixed
+
+- **A conditional `ADD_DEADLINE` whose `local_date` came back as the
+  literal string `"null"` (instead of JSON null) no longer crashes the
+  sync** (`case_calendar/sync.py`). `_local_to_utc` now treats a
+  `"null"` / `"None"` *date* string as a missing date and returns `None`
+  (storing the row date-less, the same end state as a conditional
+  deadline) — the date-side twin of the existing `local_time` "null"
+  guard. Previously this reached `datetime.fromisoformat("nullT16:00")`
+  and raised `ValueError`, dropping that entry's deadline. Surfaced by
+  the 0.13.0 validation build.
+- **Near-slot duplicate hearings are now collapsed** (`_dedupe_nearslot_hearings`
+  in `case_calendar/sync.py` + `Store.find_nearslot_hearing_clusters`). The
+  extractor — Gemini especially — allocates a fresh `hearing_key` for a
+  proceeding it already has at a NEAR (not exactly-equal) slot, which then
+  rendered twice on subscriber calendars: a sentencing held at its scheduled
+  date AND its actual held date, a CIPA hearing as a date-only + a timed row,
+  a trial start under two keys. The two prior dedup sweeps only merged the
+  EXACT same `(docket_number, court_id, starts_at_utc)` slot. The new sweep
+  clusters by same court-local date (within a status) and by same once-only
+  proceeding + defendant (`held`, across dates), and routes each cluster to the
+  LLM resolver (MERGE_INTO / KEEP_BOTH) so genuinely-distinct same-day hearings
+  — a morning motion hearing and an afternoon status conference — are kept. The
+  shared `DEDUPE_HEARING_SYSTEM_PROMPT` was generalized from exact-slot to
+  near-slot framing. Closes the "Known gap" documented in AGENTS.md (a narrower
+  cross-*status* case remains). Verified on the Gemini 4-case build: McGonigal
+  collapses to one sentencing (@12-14) and one CIPA, wei to one trial start +
+  Days 2–6, and ding's clean 13-day per-day trial series is untouched.
+
 ## [0.12.0] - 2026-05-30
 
 Headline: timeless filing deadlines now anchor at **4 PM court-local**

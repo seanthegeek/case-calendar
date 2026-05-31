@@ -1639,7 +1639,7 @@ class TestSummaryStalePostureChange:
         assert store.is_summary_stale("us-v-x", self.DKT, self.COURT) is False
 
     def test_incoming_null_docket_resolves_via_prior_row(self, store: Store):
-        # A sibling-docket CANCEL passes docket_id=None (sticky-docket logic);
+        # A sibling-docket CANCEL_HEARING passes docket_id=None (sticky-docket logic);
         # the flip must still resolve the docket via the prior row.
         self._cache_docket(store, self.HDID)
         store.upsert_hearing(_hearing(docket_id=self.HDID, status="scheduled"))
@@ -1702,7 +1702,7 @@ class TestSummaryStalePostureChange:
         assert store.is_summary_stale("anthropic-v-dow", self.DKT, self.COURT) is False
 
     def test_deadline_incoming_null_docket_resolves_via_prior_row(self, store: Store):
-        # Mirror of the hearing case: a sibling-docket CANCEL passes
+        # Mirror of the hearing case: a sibling-docket CANCEL_HEARING passes
         # docket_id=None; the flip resolves the docket via the prior row.
         self._cache_docket(store, self.DLID)
         store.upsert_deadline(_deadline(docket_id=self.DLID, status="pending"))
@@ -2598,3 +2598,161 @@ class TestPruneHelpers:
         assert deleted["entries"] == 1
         assert deleted["dockets"] == 0
         assert store.list_all_docket_ids() == []
+
+
+class TestSingularDefendantBase:
+    """``_singular_defendant_base`` collapses a once-only-proceeding key to a
+    ``type|defendant`` cluster id (or None for repeatable / non-singular
+    types), so the near-slot sweep groups ``sentencing-mcgonigal`` with
+    ``sentencing-mcgonigal-2`` but never a status conference."""
+
+    def test_singular_with_and_without_sequence_suffix(self):
+        from case_calendar.store import _singular_defendant_base as b
+
+        assert b("sentencing-mcgonigal") == "sentencing|mcgonigal"
+        assert b("sentencing-mcgonigal-2") == "sentencing|mcgonigal"
+        assert b("change-of-plea-mcgonigal-2") == "change-of-plea|mcgonigal"
+        assert b("arraignment-akhter-3") == "arraignment|akhter"
+        # Bare type with no defendant tail collapses to a stable "(unnamed)".
+        assert b("sentencing") == "sentencing|(unnamed)"
+
+    def test_repeatable_and_unknown_types_return_none(self):
+        from case_calendar.store import _singular_defendant_base as b
+
+        assert b("status-conf-mcgonigal-2") is None
+        assert b("motion-hearing-ding-3") is None
+        assert b("trial-wei") is None
+        assert b("oral-arg") is None
+
+    def test_distinct_defendants_get_distinct_bases(self):
+        from case_calendar.store import _singular_defendant_base as b
+
+        assert b("sentencing-wang") != b("sentencing-prince")
+
+
+class TestNearslotClusters:
+    """``find_nearslot_hearing_clusters`` — the candidates the exact-slot
+    sweeps miss: same court-day at different times, and the same once-only
+    proceeding at drifted dates. Genuinely-distinct rows must NOT cluster."""
+
+    def _keys(self, clusters):
+        return sorted(sorted(h["hearing_key"] for h in c) for c in clusters)
+
+    def test_same_day_different_time_clusters(self, store: Store):
+        # Two held CIPA rows on the same court day, different times — the
+        # date-only-vs-timed duplicate shape.
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-mcgonigal",
+                status="held",
+                starts_at_utc="2023-03-08T05:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-mcgonigal-3-6",
+                status="held",
+                starts_at_utc="2023-03-08T18:00:00+00:00",
+            )
+        )
+        clusters = store.find_nearslot_hearing_clusters("us-v-x")
+        assert self._keys(clusters) == [["cipa-mcgonigal", "cipa-mcgonigal-3-6"]]
+
+    def test_exact_same_slot_is_excluded(self, store: Store):
+        # Identical starts_at_utc is the EXACT-slot sweeps' job, not this one:
+        # only one distinct slot in the bucket, so no near-slot cluster.
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-a", status="held", starts_at_utc="2023-03-08T18:00:00+00:00"
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-b", status="held", starts_at_utc="2023-03-08T18:00:00+00:00"
+            )
+        )
+        assert store.find_nearslot_hearing_clusters("us-v-x") == []
+
+    def test_singular_type_clusters_across_dates(self, store: Store):
+        # Sentencing recorded at its scheduled date AND the held date — a
+        # once-only proceeding, so cluster despite the 4-day gap.
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-mcgonigal",
+                status="held",
+                starts_at_utc="2023-12-18T05:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-mcgonigal-2",
+                status="held",
+                starts_at_utc="2023-12-14T18:30:00+00:00",
+            )
+        )
+        clusters = store.find_nearslot_hearing_clusters("us-v-x")
+        assert self._keys(clusters) == [
+            ["sentencing-mcgonigal", "sentencing-mcgonigal-2"]
+        ]
+
+    def test_singular_different_defendants_not_clustered(self, store: Store):
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-wang",
+                status="held",
+                starts_at_utc="2026-01-05T16:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-prince",
+                status="held",
+                starts_at_utc="2026-02-09T16:00:00+00:00",
+            )
+        )
+        assert store.find_nearslot_hearing_clusters("us-v-x") == []
+
+    def test_repeatable_type_across_dates_not_clustered(self, store: Store):
+        # Two motion hearings on different days are NOT a near-slot dup
+        # (repeatable type, different dates) — left alone.
+        store.upsert_hearing(
+            _hearing(
+                key="motion-hearing-x",
+                status="held",
+                starts_at_utc="2026-01-05T16:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="motion-hearing-x-2",
+                status="held",
+                starts_at_utc="2026-02-09T16:00:00+00:00",
+            )
+        )
+        assert store.find_nearslot_hearing_clusters("us-v-x") == []
+
+    def test_bad_timezone_falls_back_to_utc_date_prefix(self, store: Store):
+        # A corrupt timezone makes the court-local-date conversion raise;
+        # _local_date falls back to the UTC date prefix so clustering still
+        # works (two held rows, same UTC day, distinct times -> cluster).
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-a",
+                status="held",
+                timezone="Bogus/Zone",
+                starts_at_utc="2023-03-08T05:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="cipa-b",
+                status="held",
+                timezone="Bogus/Zone",
+                starts_at_utc="2023-03-08T18:00:00+00:00",
+            )
+        )
+        clusters = store.find_nearslot_hearing_clusters("us-v-x")
+        assert sorted(h["hearing_key"] for c in clusters for h in c) == [
+            "cipa-a",
+            "cipa-b",
+        ]

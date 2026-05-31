@@ -18,6 +18,9 @@ out/*
 tokens/*
 !tokens/.gitkeep
 
+# Transient run log from model-comparison/build_provider_stores.py.
+model-comparison/*.log
+
 # Per-build cost report written by `build_provider_stores.py --out
 # model-comparison/cost.md`. The committed cost numbers live in
 # `model-comparison/SCORECARD.md`; this file is just the build's own

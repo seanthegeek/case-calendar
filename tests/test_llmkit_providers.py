@@ -49,29 +49,40 @@ class TestDetectProvider:
         assert providers._detect_provider() is None
 
     def test_anthropic_wins_when_all_three_set(self, monkeypatch):
-        # Priority order is anthropic > gemini > openai per the 0.10.0
-        # default reversion: Gemini systematically misclassifies
-        # substantive deadline classes (PSR, STA, surrender for
-        # service of sentence, civil-forfeiture claim/answer, sealing
-        # motion practice, exhibit-filing) as procedural-minor, and
-        # the project maintainer can't enumerate every federally-named
-        # class to teach Gemini the priors. Anthropic's training corpus
-        # covered them. A fresh operator who provisions every key
-        # without setting LLM_PROVIDER lands on the recommended default.
+        # The DEFAULT _detect_provider() priority is the SUMMARY-track order
+        # (anthropic > gemini > openai): the case-summary track wants
+        # Anthropic's case-distinguishing prose. The EXTRACTION track passes a
+        # Gemini-first order instead (see TestDetectExtractionProvider) — that
+        # split is the 0.13.0 flip, now that the structured
+        # DEADLINE_SIGNIFICANCE_RULES closed Gemini's deadline-bucketing gap.
         monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
         monkeypatch.setenv("GEMINI_API_KEY", "g")
         assert providers._detect_provider() == "anthropic"
 
     def test_gemini_wins_over_openai_when_both_set(self, monkeypatch):
-        # Without an ANTHROPIC key, gemini is next in the priority —
-        # the published comparison ranks it best on deviation and it
-        # remains substantially faster / cheaper than either OpenAI
-        # tier, so an operator with only OpenAI + Gemini keys lands
-        # on the better-performing column.
+        # Default (summary) order with no ANTHROPIC key: gemini is next.
         monkeypatch.setenv("OPENAI_API_KEY", "oai")
         monkeypatch.setenv("GEMINI_API_KEY", "g")
         assert providers._detect_provider() == "gemini"
+
+    def test_explicit_key_priority_argument(self, monkeypatch):
+        # The extraction track passes a Gemini-first key_priority; with all
+        # three keys that selects gemini, vs the anthropic-first default.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+        monkeypatch.setenv("OPENAI_API_KEY", "oai")
+        monkeypatch.setenv("GEMINI_API_KEY", "g")
+        assert providers._detect_provider() == "anthropic"
+        assert (
+            providers._detect_provider(key_priority=providers._EXTRACTION_KEY_PRIORITY)
+            == "gemini"
+        )
+        # LLM_PROVIDER still overrides any key_priority.
+        monkeypatch.setenv("LLM_PROVIDER", "openai")
+        assert (
+            providers._detect_provider(key_priority=providers._EXTRACTION_KEY_PRIORITY)
+            == "openai"
+        )
 
 
 class TestDetectExtractionProvider:
@@ -98,9 +109,26 @@ class TestDetectExtractionProvider:
 
     def test_falls_through_to_key_autodetect(self, monkeypatch):
         # When neither LLM_EXTRACTION_PROVIDER nor LLM_PROVIDER is set,
-        # API-key auto-detect applies in the usual priority.
+        # API-key auto-detect applies in the EXTRACTION (gemini-first) order.
         monkeypatch.setenv("GEMINI_API_KEY", "g")
         assert providers._detect_extraction_provider() == "gemini"
+
+    def test_zero_config_extracts_with_gemini_summary_with_anthropic(self, monkeypatch):
+        # The 0.13.0 flip: with all three keys and NO env overrides, the
+        # extraction track auto-selects Gemini (best accuracy + cheapest +
+        # fastest) while the base/summary default stays Anthropic.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+        monkeypatch.setenv("OPENAI_API_KEY", "oai")
+        monkeypatch.setenv("GEMINI_API_KEY", "g")
+        assert providers._detect_extraction_provider() == "gemini"
+        assert providers._detect_provider() == "anthropic"
+
+    def test_extraction_falls_back_when_no_gemini_key(self, monkeypatch):
+        # Graceful: Gemini-first priority, but with no Gemini key it falls to
+        # the next available (anthropic) rather than failing.
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "ant")
+        monkeypatch.setenv("OPENAI_API_KEY", "oai")
+        assert providers._detect_extraction_provider() == "anthropic"
 
     def test_extraction_override_normalized(self, monkeypatch):
         # Same lower/strip normalization as LLM_PROVIDER.

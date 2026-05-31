@@ -19,8 +19,8 @@ from case_calendar.llmkit import providers
 
 class TestParseActions:
     def test_clean_json(self):
-        text = '{"actions": [{"type": "ADD", "hearing_key": "x"}]}'
-        assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
+        text = '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x"}]}'
+        assert llm._parse_actions(text) == [{"type": "ADD_HEARING", "hearing_key": "x"}]
 
     def test_strips_markdown_fences(self):
         text = '```json\n{"actions": [{"type": "IGNORE"}]}\n```'
@@ -52,19 +52,21 @@ class TestParseActions:
         # `raw_decode` parses just the first object and ignores the
         # rest.
         text = (
-            '{"actions": [{"type": "RESCHEDULE", "hearing_key": "x"}]}\n'
-            '{"actions": [{"type": "CANCEL", "hearing_key": "y"}]}'
+            '{"actions": [{"type": "RESCHEDULE_HEARING", "hearing_key": "x"}]}\n'
+            '{"actions": [{"type": "CANCEL_HEARING", "hearing_key": "y"}]}'
         )
-        assert llm._parse_actions(text) == [{"type": "RESCHEDULE", "hearing_key": "x"}]
+        assert llm._parse_actions(text) == [
+            {"type": "RESCHEDULE_HEARING", "hearing_key": "x"}
+        ]
 
     def test_trailing_prose_after_json_is_ignored(self):
         # Same fix covers the "valid JSON + trailing commentary" case:
         # the LLM emits the object then narrates what it did.
         text = (
-            '{"actions": [{"type": "ADD", "hearing_key": "x"}]}\n\n'
+            '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x"}]}\n\n'
             "I extracted one hearing from the entry above."
         )
-        assert llm._parse_actions(text) == [{"type": "ADD", "hearing_key": "x"}]
+        assert llm._parse_actions(text) == [{"type": "ADD_HEARING", "hearing_key": "x"}]
 
     def test_trailing_brace_in_prose_does_not_corrupt_parse(self):
         # The old `rfind('}')` strategy would have captured a stray `}`
@@ -409,7 +411,9 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     def fake_call(system, user, max_tokens, **kw):
         captured["system"] = system
         captured["user"] = user
-        return '{"actions": [{"type": "ADD", "hearing_key": "x", "title": "T"}]}'
+        return (
+            '{"actions": [{"type": "ADD_HEARING", "hearing_key": "x", "title": "T"}]}'
+        )
 
     monkeypatch.setattr(providers, "_call_anthropic", fake_call)
 
@@ -425,9 +429,9 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
         pdf_texts=[],
         known_hearings=[],
     )
-    assert out == [{"type": "ADD", "hearing_key": "x", "title": "T"}]
+    assert out == [{"type": "ADD_HEARING", "hearing_key": "x", "title": "T"}]
     assert "US v. Z" in captured["user"]
-    assert "Hearing types you care about" in captured["system"]
+    assert "Hearing types: arraignment" in captured["system"]
 
 
 # --- verify_hearing ---
@@ -475,7 +479,7 @@ class TestVerifyHearing:
             providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
-                '{"type": "RESCHEDULE", "local_date": "2099-02-01", '
+                '{"type": "RESCHEDULE_HEARING", "local_date": "2099-02-01", '
                 '"local_time": "10:00", "reason": "moved"}'
             ),
         )
@@ -486,7 +490,7 @@ class TestVerifyHearing:
             hearing=_hearing(),
             recent_entries=[],
         )
-        assert out["type"] == "RESCHEDULE"
+        assert out["type"] == "RESCHEDULE_HEARING"
         assert out["local_date"] == "2099-02-01"
 
     def test_strips_markdown_fences(self, monkeypatch):
@@ -495,7 +499,7 @@ class TestVerifyHearing:
             providers,
             "_call_anthropic",
             lambda system, user, max_tokens, **kw: (
-                '```json\n{"type": "CANCEL", "reason": "vacated"}\n```'
+                '```json\n{"type": "CANCEL_HEARING", "reason": "vacated"}\n```'
             ),
         )
         out = llm.verify_hearing(
@@ -505,7 +509,7 @@ class TestVerifyHearing:
             hearing=_hearing(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_unwraps_actions_array(self, monkeypatch):
         # Defensive: model might emit {"actions": [...]} despite the prompt.
@@ -984,7 +988,9 @@ class TestVerifyDeadline:
         monkeypatch.setattr(
             providers,
             "_call_gemini",
-            lambda *a, **kw: '{"type": "RESCHEDULE", "local_date": "2026-06-15"}',
+            lambda *a, **kw: (
+                '{"type": "RESCHEDULE_HEARING", "local_date": "2026-06-15"}'
+            ),
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -993,14 +999,14 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "RESCHEDULE"
+        assert out["type"] == "RESCHEDULE_HEARING"
 
     def test_strips_fences(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
             providers,
             "_call_anthropic",
-            lambda *a, **kw: '```json\n{"type": "CANCEL"}\n```',
+            lambda *a, **kw: '```json\n{"type": "CANCEL_HEARING"}\n```',
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -1009,14 +1015,14 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_unwraps_actions_array(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setattr(
             providers,
             "_call_anthropic",
-            lambda *a, **kw: '{"actions": [{"type": "CANCEL"}]}',
+            lambda *a, **kw: '{"actions": [{"type": "CANCEL_HEARING"}]}',
         )
         out = llm.verify_deadline(
             case_name="x",
@@ -1025,7 +1031,7 @@ class TestVerifyDeadline:
             deadline=_deadline(),
             recent_entries=[],
         )
-        assert out["type"] == "CANCEL"
+        assert out["type"] == "CANCEL_HEARING"
 
     def test_empty_actions_array_returns_unclear(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
@@ -1219,6 +1225,32 @@ class TestVerifyUserMessageNeverShowsAuditNotes:
         assert "Reply due 2/1/2026." in captured["user"]
         assert "DO NOT LEAK THIS" not in captured["user"]
         assert "[verify-pass]" not in captured["user"]
+
+
+class TestDedupePromptNearSlot:
+    """The shared dedupe resolver prompt now covers NEAR-slot clusters (the
+    near-slot sweep) on top of exact-slot ones. Pin the near-slot framing and
+    the same-day-distinct KEEP_BOTH guard so a future edit can't silently
+    narrow it back to exact-slot-only."""
+
+    def test_prompt_frames_near_slot_clusters(self):
+        p = " ".join(llm.DEDUPE_HEARING_SYSTEM_PROMPT.split())
+        assert "NEAR slot" in p
+        # The two near-slot shapes.
+        assert "same court day at different times" in p
+        assert "ONCE-ONLY proceeding" in p
+        assert "sentencing, arraignment, change of plea, or initial appearance" in p
+
+    def test_prompt_keeps_distinct_same_day_hearings(self):
+        p = " ".join(llm.DEDUPE_HEARING_SYSTEM_PROMPT.split())
+        # A court CAN hold two different hearings the same day — must not merge
+        # on date alone.
+        assert "morning motion hearing and an afternoon status conference" in p
+        assert "do NOT merge merely because two hearings fall on one day" in p
+
+    def test_prompt_keeps_three_verdicts(self):
+        p = llm.DEDUPE_HEARING_SYSTEM_PROMPT
+        assert "MERGE_INTO" in p and "KEEP_BOTH" in p and "UNCLEAR" in p
 
 
 class TestResolveDuplicateHearings:
@@ -2153,9 +2185,20 @@ class TestGenerateDocketSummary:
         assert ident == "anthropic/" + llm._DEFAULT_SUMMARY_MODELS["anthropic"]
 
 
+def _norm_prompt() -> str:
+    """Whitespace-collapsed copy of ``SYSTEM_PROMPT`` so the prompt-pinning
+    assertions below are insensitive to line wrapping. The 0.13.0 rewrite
+    unified the hearing + deadline prompts into one structure (PART 1 shared
+    rules / PART 2 hearings / PART 3 deadlines), which re-wrapped many of the
+    pinned phrases across line boundaries. The protections are unchanged —
+    each phrase still has to appear — so the tests assert against the
+    normalized text rather than the raw (wrap-fragile) string."""
+    return " ".join(llm.SYSTEM_PROMPT.split())
+
+
 class TestSystemPromptAntiInferenceGuards:
     """Regression guards for the prompt sections added after the McGonigal
-    hallucination — a CANCEL emitted by the LLM purely from co-defendant
+    hallucination — a CANCEL_HEARING emitted by the LLM purely from co-defendant
     inference (held plea on one defendant → inferred "trial vacated" for
     another). These tests aren't behavioral (no real LLM call), they
     just assert the key instruction phrases survive future prompt edits.
@@ -2164,95 +2207,187 @@ class TestSystemPromptAntiInferenceGuards:
     """
 
     def test_cancel_requires_explicit_grounding(self):
-        # The header is the essential phrase: a future edit should
-        # not drop the explicit-grounding rule without replacing it.
-        assert "CANCEL / MARK_HELD need EXPLICIT GROUNDING" in llm.SYSTEM_PROMPT
+        # The header is the essential phrase: a future edit should not drop
+        # the explicit-grounding rule without replacing it. The 0.13.0 rewrite
+        # generalized it from "CANCEL_HEARING / MARK_HELD" to all terminal/negative
+        # transitions (now also covering deadline MARK_FILED), but the
+        # explicit-grounding-not-inference bar is what must survive.
+        prompt = _norm_prompt()
+        assert "need EXPLICIT GROUNDING, never inference" in prompt
+        assert "require EXPLICIT docket text" in prompt
 
     def test_co_defendant_inference_explicitly_forbidden(self):
         # The McGonigal-shape: a held plea for one defendant must NOT
         # cancel a trial for another.
-        assert "co-defendant cases" in llm.SYSTEM_PROMPT
-        assert "Multi-defendant" in llm.SYSTEM_PROMPT
-        # Calls out the actual failure mode — `known_hearings` is for
+        prompt = _norm_prompt()
+        assert "co-defendant cases" in prompt
+        assert "Multi-defendant" in prompt
+        # Calls out the actual failure mode — the known lists are for
         # key reuse, not status inference.
-        assert "KEY REUSE and same-slot detection" in llm.SYSTEM_PROMPT
+        assert "KEY REUSE and same-slot detection" in prompt
 
     def test_absence_of_activity_explicitly_not_grounds(self):
         # Status-conf-mcgonigal-2 shape: a "no minute entry" inference
         # writing "[appears to have been vacated]" into notes.
-        assert "Absence of docket activity" in llm.SYSTEM_PROMPT
+        assert "Absence of docket activity" in _norm_prompt()
 
     def test_notes_forbids_inferred_brackets(self):
         # The circular-reasoning trap the column split also addresses
         # structurally — but the prompt rule catches it at write time,
         # so audit_notes only collects audit-pass writes, not extractor
         # inferences.
-        assert "NO inferred commentary" in llm.SYSTEM_PROMPT
-        assert "circular-reasoning trap" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "NO inferred commentary" in prompt
+        assert "circular-reasoning trap" in prompt
 
     def test_pretrial_transcript_filing_not_grounds_for_trial_cancel(self):
         # Wei (3:23-cr-01471, casd) regression — a NOTICE OF FILING OF
-        # OFFICIAL TRANSCRIPT of an MIL hearing triggered CANCEL on the
+        # OFFICIAL TRANSCRIPT of an MIL hearing triggered CANCEL_HEARING on the
         # trial key by inference. The rule must forbid this class.
-        assert "A transcript filing for a PRETRIAL event" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "A transcript filing for a PRETRIAL event" in prompt
         # The "what counts as actual trial-status evidence" list must
         # stay explicit so the model has a concrete substitute for the
         # forbidden inference.
-        assert "verdict form" in llm.SYSTEM_PROMPT
-        assert "judgment-after-trial" in llm.SYSTEM_PROMPT
+        assert "verdict form" in prompt
+        assert "judgment-after-trial" in prompt
         # And the worked example must stay — without it the rule reads
         # as abstract advice the small/fast tier can talk itself out of.
         # The specific case citation was dropped (per the prompt-slim
         # pass that removes regression citations from prompt text), but
         # the worked example must still describe the MIL-transcript class.
-        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in llm.SYSTEM_PROMPT
-        assert "Motion In Limine Hearing" in llm.SYSTEM_PROMPT
+        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in prompt
+        assert "Motion In Limine Hearing" in prompt
 
 
 class TestSystemPromptAmicusRules:
-    """Regression guards for the amicus deadline rules. The rule body
-    itself predates this PR; what's pinned here is the new direct-
-    statement header wording ("Amicus filings are CRITICAL ...") that
-    replaced the meta-reference phrasing ("The amicus distinction is
-    critical ..."). The plain wording is intentional so a future
-    stylistic revert doesn't silently change the prompt cue.
+    """Regression guards for the amicus deadline-significance split. The
+    0.13.0 deadline-significance ruleset folded amicus in: the MASTER
+    amicus filing window is a RULE 2 (type-wins → major) class, and the
+    leave-to-file-amicus shuffle is a RULE 3 (procedural → minor) class.
+    Pin both poles so a future edit can't flip them, and keep the title
+    cues that give the small/fast tier a concrete handle.
     """
 
-    def test_amicus_section_header_is_plain_statement(self):
-        # The new wording reads as a directive ("Amicus filings are
-        # CRITICAL ..."), at the same emphasis level as the surrounding
-        # CRITICAL blocks elsewhere in the prompt.
-        assert "Amicus filings are CRITICAL and NOT a judgment call:" in (
-            llm.SYSTEM_PROMPT
-        )
-        # Negative: the old meta-reference phrasing must NOT come back.
-        assert "amicus distinction is critical" not in llm.SYSTEM_PROMPT
-
     def test_amicus_master_window_marked_major(self):
-        # The rule body — the master amicus filing window is major
-        # (subscribers want to know when third-party briefs land),
-        # while the leave-to-file shuffle is minor. Pin both poles so
-        # a future edit can't flip them.
-        assert "MASTER amicus filing window" in llm.SYSTEM_PROMPT
-        assert "MAJOR. Watchers want to know" in llm.SYSTEM_PROMPT
-        assert "Motion for Leave to File Amici Curiae Brief" in llm.SYSTEM_PROMPT
+        # The master amicus filing window is a RULE 2 major class — it must
+        # NOT be downgradeable to procedural-minor (the canonical Gemini
+        # bucketing failure the structured ruleset exists to prevent).
+        prompt = _norm_prompt()
+        assert "MASTER amicus filing window" in prompt
+        # Title cues for the major flavor survive as model handles.
+        assert "Amicus Briefs in Support of Petitioner/Respondent due" in prompt
+
+    def test_amicus_leave_shuffle_marked_minor(self):
+        # The procedural fight over GRANTING leave is the RULE 3 minor
+        # class; the substantive brief itself is the RULE 2 master window.
+        prompt = _norm_prompt()
+        assert "leave-to-file-amicus shuffle" in prompt
+        assert "Motion for Leave to File Amici Curiae Brief" in prompt
+        # The split must be explicit — leave-motion practice is NOT the brief.
+        assert "The substantive brief itself is the MASTER window" in prompt
+
+
+class TestDeadlineSignificanceRules:
+    """Guards for the 0.13.0 structured deadline-significance ruleset
+    (``DEADLINE_SIGNIFICANCE_RULES``), which gives deadlines the same
+    ordered scaffold hearings already had (RULE 1 classify-the-thing →
+    RULE 2 type-wins-major → RULE 3 procedural-minor → RULE 4
+    ambiguous-by-stakes → RULE 5 default-major). It exists to stop the
+    substantive-deadline-as-minor bucketing the SCORECARD documented.
+    """
+
+    def test_ruleset_constant_substituted_into_prompt(self):
+        assert hasattr(llm, "DEADLINE_SIGNIFICANCE_RULES")
+        assert "__DEADLINE_SIGNIFICANCE_RULES__" not in llm.SYSTEM_PROMPT
+        assert llm.DEADLINE_SIGNIFICANCE_RULES.strip() in llm.SYSTEM_PROMPT
+
+    def test_ordered_five_rule_structure(self):
+        p = _norm_prompt()
+        for marker in (
+            "RULE 1 — Classify by WHAT IS DUE",
+            "RULE 2 — Type wins",
+            "RULE 3 — Procedural / housekeeping filings are MINOR",
+            "RULE 4 — Ambiguous filings: classify by the STAKES OF A MISS",
+            'RULE 5 — Default to "major" when uncertain',
+        ):
+            assert marker in p, f"missing deadline-significance {marker!r}"
+
+    def test_substantive_classes_are_type_wins_major(self):
+        # The SCORECARD classes Gemini downgraded to procedural-minor must
+        # be enumerated as RULE 2 (type-wins → major) so no model can bucket
+        # them away. Assert against the deadline ruleset constant directly —
+        # the hearing ruleset shares the "RULE 2 — Type wins" header, so
+        # slicing the whole prompt would be ambiguous.
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        for cls in (
+            "objections to the Presentence",  # PSR objections
+            "SURRENDER for service of sentence",
+            "civil-forfeiture claim or answer",
+            "certified administrative record",
+            "substantive sealing or CIPA filing",
+            "judgment of acquittal (Rule 29)",  # dispositive briefing
+            "an answer to a complaint",  # operator decision: major
+        ):
+            assert cls in rule2, f"{cls!r} must be a RULE 2 major class"
+
+    def test_joint_status_reports_are_major(self):
+        # Operator decision (0.13.0): recurring joint status reports and
+        # case-management statements are MAJOR — a deliberate departure from
+        # the earlier procedural-minor treatment. Pin it in RULE 2 and pin
+        # that it is NOT sitting in the RULE 3 minor block.
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        rule3 = d.split("RULE 3 — Procedural")[1].split("RULE 4 —")[0]
+        assert "recurring joint status reports and case-management statements" in rule2
+        assert "joint status report" not in rule3.lower()
+
+    def test_default_major_with_invisible_minor_rationale(self):
+        # RULE 5 must keep the bias-toward-major rationale: a wrong "minor"
+        # is invisible (render gate hides it) while a wrong "major" only
+        # adds a row. This is the structural counter to under-classification.
+        p = _norm_prompt()
+        assert 'Default to "major" when uncertain' in p
+        assert "HIDES minor deadlines from subscriber calendars" in p
+        assert "Bias toward major" in p
+
+
+class TestHearingSignificanceJSRAlignment:
+    """0.13.0 operator decision: joint status reports are major on the
+    HEARING side too, matching the deadline side. A status conference
+    convened to receive / address a JSR or case-management statement is
+    major, and JSRs were removed from the HEARING_SIGNIFICANCE_RULES
+    RULE 4 minor-agenda list."""
+
+    def test_jsr_conference_is_major_not_minor(self):
+        h = " ".join(llm.HEARING_SIGNIFICANCE_RULES.split())
+        # New RULE 4 major bullet for JSR / case-management-statement
+        # conferences.
+        assert "convened to receive or address a joint status report" in h
+        # JSRs are gone from the RULE 4 minor-agenda sub-bullet.
+        rule4 = h.split("RULE 4 — Ambiguous types")[1].split("RULE 5 —")[0]
+        minor = rule4.split("minor if the agenda is only")[1]
+        assert "joint status report" not in minor
 
 
 class TestSystemPromptTranscriptRules:
     """Regression guards for the three transcript-handling rules added
-    when deadline tracking went uniform across all dockets. They live in
-    the deadline portion of ``SYSTEM_PROMPT`` and tell the LLM how to
-    distinguish transcript orders (private requests, NOT deadlines) from
-    transcript-redaction deadlines (procedural → minor) from transcript
-    public-release deadlines (substantive → major). Delete one of these
-    rules and the next provider rebuild silently regresses.
+    when deadline tracking went uniform across all dockets. After the
+    0.13.0 unification the significance classifications (redaction →
+    minor, public-release → major) live in PART 1's significance block
+    and the action-level handling (transcript ORDER = IGNORE, sealed copy
+    = IGNORE) lives in PART 3, but the LLM must still distinguish all
+    three. Delete one of these rules and the next provider rebuild
+    silently regresses.
     """
 
     def test_transcript_orders_marked_as_not_deadlines(self):
         # "ORDER for Transcript" entries are private purchase requests,
         # not court orders — must IGNORE, not extract as a deadline.
-        assert "ORDER for Transcript" in llm.SYSTEM_PROMPT
-        assert "PRIVATE REQUESTS" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "ORDER for Transcript" in prompt
+        assert "PRIVATE REQUESTS" in prompt
 
     def test_transcript_order_ignore_covers_mark_held_too(self):
         # Ding 01/23/2026 regression: a TRANSCRIPT ORDER triggered a
@@ -2260,37 +2395,46 @@ class TestSystemPromptTranscriptRules:
         # Daubert sub-day. The IGNORE rule must cover hearing actions
         # too, not just deadline-extraction — even when the order text
         # contains "proceedings held on <date>".
-        assert "no MARK_HELD even when the order references" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "no MARK_HELD even when the order references" in prompt
         # The follow-on rationale must explain WHY: the real TRANSCRIPT
         # entry is filed shortly after and carries the specific
         # proceeding identifier, so the right MARK_HELD lands there.
-        assert "actual TRANSCRIPT entry filed\n  shortly after" in llm.SYSTEM_PROMPT
+        assert "actual TRANSCRIPT entry filed shortly after" in prompt
 
     def test_redaction_deadline_marked_minor(self):
         # The redaction-request window: procedural, off-calendar.
-        assert "transcript-redaction-request deadline" in llm.SYSTEM_PROMPT
-        assert 'significance="minor"' in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "transcript-redaction-request deadline" in prompt
+        assert 'significance="minor"' in prompt
 
     def test_public_release_deadline_marked_major(self):
         # When a filed transcript becomes publicly viewable — substantive,
         # on-calendar.
-        assert "transcript public-release deadline" in llm.SYSTEM_PROMPT
-        assert 'significance="major"' in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "transcript public-release deadline" in prompt
+        assert 'significance="major"' in prompt
 
-    def test_public_release_bullet_carries_critical_marker(self):
-        # The public-release transcript bullet stands out at the same
-        # emphasis level as the must-not-drop rules elsewhere in the
-        # prompt. A future edit must not strip the "CRITICAL —" prefix
-        # without consciously deciding to demote the rule.
-        assert "CRITICAL — a transcript public-release deadline" in llm.SYSTEM_PROMPT
+    def test_public_release_is_a_type_wins_major_class(self):
+        # Pre-0.13.0 the public-release bullet carried a "CRITICAL —" prefix
+        # in the loose deadline-significance block. The structured ruleset
+        # replaced that with the strongest emphasis the ruleset has: a
+        # RULE 2 "type wins → major" class. Pin it there so a future edit
+        # can't quietly demote it (the on-calendar protection is also held
+        # by test_public_release_deadline_marked_major via PART 3).
+        d = " ".join(llm.DEADLINE_SIGNIFICANCE_RULES.split())
+        assert "transcript PUBLIC-RELEASE deadline" in d
+        # And it sits inside the RULE 2 (type-wins) block, not RULE 3.
+        rule2 = d.split("RULE 2 — Type wins")[1].split("RULE 3 —")[0]
+        assert "transcript PUBLIC-RELEASE deadline" in rule2
 
     def test_transcripts_section_header_is_plain_statement(self):
-        # The header reads "Transcripts are similar:" — a direct
-        # statement, not the meta-reference phrasing it replaced
-        # ("The transcript distinction is similar and is NOT a judgment
-        # call"). The plain wording is intentional and tests pin it
-        # so a stylistic revert doesn't silently change the cue.
-        assert "Transcripts are similar:" in llm.SYSTEM_PROMPT
+        # The PART 3 transcript section opens with a direct statement
+        # ("Transcripts — three entry shapes ..."), not the meta-reference
+        # phrasing it replaced ("The transcript distinction is similar and
+        # is NOT a judgment call"). The plain wording is intentional and
+        # tests pin it so a stylistic revert doesn't silently change the cue.
+        assert "Transcripts — three entry shapes that look alike" in _norm_prompt()
         # Negative: the old meta-reference phrasing must NOT come back.
         assert "transcript distinction is similar" not in llm.SYSTEM_PROMPT
 
@@ -2302,14 +2446,13 @@ class TestSystemPromptTranscriptRules:
         # per-proceeding suffix, AND must explicitly distinguish a
         # PROCEEDING date (stable, OK in the key) from a DEADLINE date
         # (changeable, forbidden in the key).
-        assert "Transcript-deadline keys MUST carry a per-proceeding suffix" in (
-            llm.SYSTEM_PROMPT
-        )
-        assert "COLLIDE WITH AND OVERWRITE" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "Transcript-deadline keys MUST carry a per-proceeding suffix" in prompt
+        assert "COLLIDE WITH AND OVERWRITE" in prompt
         # The proceeding-date carve-out from the broader "no dates in
         # keys" rule must be explicit; without it the Knoot
         # `redaction-request-knoot-7-30` form looks like a violation.
-        assert "proceeding date is a STABLE identifier" in llm.SYSTEM_PROMPT
+        assert "proceeding date is a STABLE identifier" in prompt
 
     def test_sealed_or_restricted_transcript_ignored(self):
         # Sealed / restricted transcripts are filed alongside the public
@@ -2318,14 +2461,15 @@ class TestSystemPromptTranscriptRules:
         # IGNORE outcome so a future prompt edit can't silently drop the
         # carve-out (which would re-introduce the Ding Vol 7-10 flip-flop
         # and the spurious public-release deadline on sealed entries).
-        assert "Sealed / restricted transcript entries" in llm.SYSTEM_PROMPT
-        assert '"Sealed Transcript"' in llm.SYSTEM_PROMPT
-        assert '"***SEALED***"' in llm.SYSTEM_PROMPT
-        assert '"***RESTRICTED***"' in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "Sealed / restricted transcript entries" in prompt
+        assert '"Sealed Transcript"' in prompt
+        assert '"***SEALED***"' in prompt
+        assert '"***RESTRICTED***"' in prompt
         # The outcome — must say IGNORE for the sealed entry — and the
         # reason — sealed transcripts have no public release.
-        assert "Emit IGNORE for the\n  sealed / restricted entry" in llm.SYSTEM_PROMPT
-        assert "will not become" in llm.SYSTEM_PROMPT
+        assert "Emit IGNORE for the sealed / restricted entry" in prompt
+        assert "will not become" in prompt
 
 
 class TestSystemPromptHeldEventRecognition:
@@ -2340,29 +2484,98 @@ class TestSystemPromptHeldEventRecognition:
 
     def test_vacated_and_reset_is_reschedule_not_cancel(self):
         # "vacate" alone is not enough — the absence of a new date is
-        # what distinguishes CANCEL from RESCHEDULE.
-        assert '"vacated and reset to <date>"' in llm.SYSTEM_PROMPT
-        assert "RESCHEDULE, NOT CANCEL" in llm.SYSTEM_PROMPT
-        assert "ABSENCE of a new date" in llm.SYSTEM_PROMPT
+        # what distinguishes CANCEL_HEARING from RESCHEDULE_HEARING.
+        prompt = _norm_prompt()
+        assert '"vacated and reset to <date>"' in prompt
+        assert "RESCHEDULE_HEARING, NOT CANCEL_HEARING" in prompt
+        assert "ABSENCE of a new date" in prompt
 
     def test_mark_held_trigger_phrases_enumerated(self):
         # The small/fast tier needs explicit trigger phrases, not just
         # "minute entry, etc.".
-        assert "Electronic Clerk's Notes for proceedings held" in llm.SYSTEM_PROMPT
-        assert "Minute Entry for proceedings held" in llm.SYSTEM_PROMPT
-        assert "held as to <Defendant>" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "Electronic Clerk's Notes for proceedings held" in prompt
+        assert "Minute Entry for proceedings held" in prompt
+        assert "held as to <Defendant>" in prompt
 
     def test_multi_defendant_mark_held_worked_example(self):
         # Per-defendant keys must diverge: a minute entry naming one
         # defendant MARK_HELDs only that key, not the sibling.
-        assert "Multi-defendant MARK_HELD" in llm.SYSTEM_PROMPT
-        assert "initial-appearance-muneeb" in llm.SYSTEM_PROMPT
-        assert "initial-appearance-sohaib" in llm.SYSTEM_PROMPT
+        prompt = _norm_prompt()
+        assert "Multi-defendant MARK_HELD" in prompt
+        assert "initial-appearance-muneeb" in prompt
+        assert "initial-appearance-sohaib" in prompt
         # Whitespace-normalized check so a future wrap doesn't break the test.
-        assert (
-            "do not also mark_held the sibling key"
-            in " ".join(llm.SYSTEM_PROMPT.split()).lower()
-        )
+        assert "do not also mark_held the sibling key" in prompt.lower()
+
+
+class TestGeminiExtractionWeaknessRules:
+    """The three failure modes documented in the (closed-unmerged) #45 PR,
+    integrated into the unified prompt ahead of switching the default
+    extractor to Gemini: phantom same-day transcript rows, abbreviated
+    locations, and dropped dial-in access labels. Pin each so the rule
+    survives future prompt edits."""
+
+    def test_same_date_transcript_marks_held_existing_key(self):
+        # A transcript of a proceeding held on date X must MARK_HELD the
+        # known hearing on that DATE (any time), not allocate a generic
+        # "proceedings-<date>" row the same-slot dedupe can't catch.
+        p = _norm_prompt()
+        assert "Same-DATE transcript rule" in p
+        assert "NOTICE OF FILING OF OFFICIAL TRANSCRIPT" in p
+        assert 'Do NOT allocate a generic "proceedings-<date>" key' in p
+        # The match-on-date-not-time rationale and the phantom-row warning.
+        assert "match on the DATE alone" in p
+        assert "phantom second row the same-slot dedupe can't catch" in p
+
+    def test_location_preserves_every_named_token(self):
+        # Court formal name / state / ZIP / room labels must survive; the
+        # small/fast-tier abbreviation failure is the pinned anti-pattern.
+        p = _norm_prompt()
+        assert "PRESERVE EVERY NAMED TOKEN" in p
+        assert "Northern District of California" in p
+        assert "Do NOT abbreviate the courthouse or drop attributes" in p
+
+    def test_dial_in_carries_access_labels(self):
+        # Access labels ("audio observation only", etc., often citing
+        # Civ. L.R. 77-3(d)) must ride along on dial_in.
+        p = _norm_prompt()
+        assert "ACCESS LABEL" in p
+        assert "audio observation only" in p
+        assert "Civ. L.R. 77-3(d)" in p
+
+
+class TestMarkHeldDateMatchingRules:
+    """The two prompt rules that address the MARK_HELD date-mismatch warnings
+    at the source (diagnosed from a 4-case build: 84/159 multi-day-trial,
+    42/159 sequential-conference). Rule A turns each trial day into its own
+    held event; Rule B makes MARK_HELD pick the date-matching sibling or
+    IGNORE. Both are pure-prompt — the per-day key relies on the existing
+    'MARK_HELD on an unknown key + local_date inserts a held row' path."""
+
+    def test_multi_day_trial_is_one_event_per_day(self):
+        p = _norm_prompt()
+        assert "Multi-day trials become one event PER DAY" in p
+        # Per-day key + day-numbered title via MARK_HELD on a new key.
+        assert "trial-<defendant>-day-N" in p
+        assert '"<Trial name> — Day N"' in p
+        # Day numbering: explicit number, else count known trial-day rows.
+        assert "use the explicit number when the entry states one" in p
+
+    def test_day_one_retitled_only_once_multi_day(self):
+        # Day 1 only gains a "— Day 1" suffix once a follow-on day appears;
+        # a single-day trial stays plain "<Trial name>".
+        p = _norm_prompt()
+        assert "retitle it" in p
+        assert "stays titled" in p and "no day suffix" in p
+
+    def test_mark_held_matches_right_row_by_date_or_ignores(self):
+        p = _norm_prompt()
+        assert "MARK_HELD must match the RIGHT row by date" in p
+        # Sequential proceedings: pick the closest-dated sibling.
+        assert "status-conf-<def>-2" in p
+        # No within-2-day match -> IGNORE, not a forced mismatch.
+        assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
 class TestSummaryPromptDatedReferenceGuards:
@@ -3027,13 +3240,13 @@ class TestVerifyPromptConsolidation:
         assert "CANDIDATE DEADLINE" in p
 
     def test_action_types_common_to_both(self):
-        # CONFIRM / RESCHEDULE / CANCEL / DELETE_HALLUCINATION /
+        # CONFIRM / RESCHEDULE_HEARING / CANCEL_HEARING / DELETE_HALLUCINATION /
         # UNCLEAR apply to both hearings and deadlines.
         p = llm.VERIFY_SYSTEM_PROMPT
         for action in (
             "CONFIRM",
-            "RESCHEDULE",
-            "CANCEL",
+            "RESCHEDULE_HEARING",
+            "CANCEL_HEARING",
             "DELETE_HALLUCINATION",
             "UNCLEAR",
         ):

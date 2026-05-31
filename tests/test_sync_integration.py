@@ -107,7 +107,7 @@ class TestDateLessAddIsDropped:
         case,
         monkeypatch,
     ):
-        # Defensive guard: if the LLM returns ADD with no date (e.g. on a
+        # Defensive guard: if the LLM returns ADD_HEARING with no date (e.g. on a
         # motion-for-hearing or plea agreement), drop it. Otherwise we'd
         # store a date-less ghost row that never reaches the calendar.
         cl = FakeCourtListener(
@@ -119,7 +119,7 @@ class TestDateLessAddIsDropped:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "status-conf-x",
                         "hearing_type": "status_conference",
                         "title": "Status Conference",
@@ -146,7 +146,7 @@ class TestScheduleRescheduleFlow:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -178,7 +178,7 @@ class TestScheduleRescheduleFlow:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -190,7 +190,7 @@ class TestScheduleRescheduleFlow:
                 ],
                 2: [
                     {
-                        "type": "RESCHEDULE",
+                        "type": "RESCHEDULE_HEARING",
                         "hearing_key": "sentencing-x",
                         "title": "Sentencing",
                         "local_date": "2026-04-14",
@@ -214,7 +214,9 @@ class TestScheduleRescheduleFlow:
             ),
         )
         rows = store.get_hearings("us-v-x")
-        assert len(rows) == 1, "RESCHEDULE should update in place, not duplicate"
+        assert len(rows) == 1, (
+            "RESCHEDULE_HEARING should update in place, not duplicate"
+        )
         # 11:00 EDT → 15:00 UTC.
         assert rows[0]["starts_at_utc"] == "2026-04-14T15:00:00+00:00"
         assert set(rows[0]["source_entry_ids"]) == {1, 2}
@@ -225,7 +227,7 @@ class TestScheduleRescheduleFlow:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -254,7 +256,7 @@ class TestScheduleRescheduleFlow:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -264,7 +266,7 @@ class TestScheduleRescheduleFlow:
                 ],
                 2: [
                     {
-                        "type": "CANCEL",
+                        "type": "CANCEL_HEARING",
                         "hearing_key": "sentencing-x",
                         "notes": "vacated",
                     }
@@ -289,7 +291,7 @@ class TestScheduleRescheduleFlow:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "status-conf-x",
                         "hearing_type": "status_conference",
                         "title": "Status Conference",
@@ -361,7 +363,7 @@ class TestShortCircuits:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -781,7 +783,7 @@ class TestStickyTimezone:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "oral-arg",
                         "hearing_type": "oral_argument",
                         "title": "Oral Argument",
@@ -821,7 +823,7 @@ class TestCrossCourtContextFilter:
     """The per-entry extractor receives known_hearings/known_deadlines context
     scoped to the current docket's COURT, not the whole case. Without this
     filter, a "stay appellate proceedings" order in one venue would propagate
-    CANCEL actions onto a parallel proceeding's events in another venue.
+    CANCEL_HEARING actions onto a parallel proceeding's events in another venue.
     """
 
     def test_cross_court_siblings_are_filtered_from_llm_context(
@@ -904,7 +906,7 @@ class TestCrossCourtContextFilter:
 
         syncer = CaseSyncer(cl, store)
         # 9th Cir. entry that mentions a stay — the bug being guarded against
-        # is the LLM seeing the D.C. Cir. events and emitting CANCEL actions
+        # is the LLM seeing the D.C. Cir. events and emitting CANCEL_HEARING actions
         # against them. The fix is upstream of the LLM: don't feed them in.
         syncer.process_entry(
             case_multi,
@@ -1270,7 +1272,7 @@ class TestProcessEntryDirect:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -1294,7 +1296,7 @@ class TestProcessEntryDirect:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "x",
                         "title": "T",
                         "local_date": "2026-04-14",
@@ -1330,7 +1332,7 @@ class TestProcessEntryDirect:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "title": "Sentencing",
                         "hearing_type": "sentencing",
                         "local_date": "2026-04-14",
@@ -1381,7 +1383,7 @@ class TestRecapDocumentsPersisted:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -1496,7 +1498,7 @@ class TestCancelOnUnknownKey:
             by_entry={
                 1: [
                     {
-                        "type": "CANCEL",
+                        "type": "CANCEL_HEARING",
                         "hearing_key": "status-conf-x-7",
                         "title": "Status Conference",
                         "local_date": "2023-07-18",
@@ -1533,7 +1535,7 @@ class TestCancelOnUnknownKey:
         make_llm_stub(
             monkeypatch,
             by_entry={
-                1: [{"type": "CANCEL", "hearing_key": "status-conf-x-7"}],
+                1: [{"type": "CANCEL_HEARING", "hearing_key": "status-conf-x-7"}],
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()})
@@ -1541,14 +1543,14 @@ class TestCancelOnUnknownKey:
         syncer.process_entry(case, 100, _entry(1, "ENDORSEMENT: hearing adjourned"))
         assert store.get_hearings("us-v-x") == []
         assert any(
-            "CANCEL on unknown key with no local_date" in r.message
+            "CANCEL_HEARING on unknown key with no local_date" in r.message
             for r in caplog.records
         )
 
 
 class TestMarkHeldOnUnknownKey:
     """Held minute entry for a hearing whose scheduling never reached the
-    store should ADD a new row in 'held' status."""
+    store should ADD_HEARING a new row in 'held' status."""
 
     def test_mark_held_with_local_date_inserts_held_row(
         self,
@@ -1600,7 +1602,7 @@ class TestMarkHeldDateValidation:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "status-conf-x",
                         "hearing_type": "status_conference",
                         "title": "Status Conf",
@@ -1645,7 +1647,7 @@ class TestMarkHeldDateValidation:
             by_entry={
                 1: [
                     {
-                        "type": "ADD",
+                        "type": "ADD_HEARING",
                         "hearing_key": "sentencing-x",
                         "hearing_type": "sentencing",
                         "title": "Sentencing",
@@ -1758,13 +1760,13 @@ class TestPastScheduledHearings:
         case,
         monkeypatch,
     ):
-        # LLM sees a plea agreement / order vacating trial → CANCEL.
+        # LLM sees a plea agreement / order vacating trial → CANCEL_HEARING.
         self._seed_past_scheduled(store, key="trial-x", title="Jury Trial")
         stub_verify(
             monkeypatch,
             by_key={
                 "trial-x": {
-                    "type": "CANCEL",
+                    "type": "CANCEL_HEARING",
                     "reason": "trial vacated by plea agreement",
                 },
             },
@@ -2040,7 +2042,10 @@ class TestVerifyScheduledHearings:
         stub_verify(
             monkeypatch,
             by_key={
-                "future-trial": {"type": "CANCEL", "reason": "trial vacated by plea"},
+                "future-trial": {
+                    "type": "CANCEL_HEARING",
+                    "reason": "trial vacated by plea",
+                },
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
@@ -2147,7 +2152,7 @@ class TestVerifyScheduledHearings:
             monkeypatch,
             by_key={
                 "future-trial": {
-                    "type": "RESCHEDULE",
+                    "type": "RESCHEDULE_HEARING",
                     "local_date": "2099-01-15",
                     "local_time": "09:00",
                     "reason": "rescheduled per latest order",
@@ -2451,7 +2456,7 @@ class TestDeadlineExtraction:
         case,
         monkeypatch,
     ):
-        # ADD then CANCEL on the same key — the existing row is merged
+        # ADD_HEARING then CANCEL_HEARING on the same key — the existing row is merged
         # in place rather than inserted fresh. Covers the `if existing:`
         # branch of the CANCEL_DEADLINE handler.
         make_llm_stub(
@@ -2530,7 +2535,7 @@ class TestDeadlineExtraction:
         monkeypatch,
         caplog,
     ):
-        # MARK_FILED on a key we never saw an ADD for is a benign log —
+        # MARK_FILED on a key we never saw an ADD_HEARING for is a benign log —
         # the deadline was filtered out or predates our store. Don't
         # create a fictional "met" row.
         import logging
@@ -2593,7 +2598,7 @@ class TestDeadlineExtraction:
         syncer.process_entry(case, 100, _entry(2, "STIPULATION AND ORDER on briefing"))
         rows = store.get_deadlines("us-v-x")
         assert len(rows) == 1
-        # Date is unchanged from the ADD.
+        # Date is unchanged from the ADD_HEARING.
         assert rows[0]["due_at_utc"] == "2026-05-31T20:00:00+00:00"
         # Notes did get updated.
         assert rows[0]["notes"] == "extension administratively docketed"
@@ -3396,6 +3401,176 @@ class TestDedupeConcurrentHeldHearings:
         assert stats.get("deduped_held", 0) == 0
 
 
+class TestDedupeNearslotHearings:
+    """End-of-sync near-slot sweep: the duplicate-held-events the exact-slot
+    sweeps miss because the rows sit at NEAR (not identical) slots — same court
+    day at different times, or a once-only proceeding at drifted dates (the
+    Gemini key-proliferation that rendered sentencing/CIPA/trial-start twice)."""
+
+    def _seed_same_day_pair(self, store):
+        # Two held CIPA rows on the same court day, different times.
+        for key, slot, src in [
+            ("cipa-mcgonigal", "2023-03-08T05:00:00+00:00", [10]),
+            ("cipa-mcgonigal-3-6", "2023-03-08T18:00:00+00:00", [11]),
+        ]:
+            store.upsert_hearing(
+                {
+                    "case_id": "us-v-x",
+                    "hearing_key": key,
+                    "title": "CIPA Hearing",
+                    "starts_at_utc": slot,
+                    "duration_minutes": 60,
+                    "timezone": "America/New_York",
+                    "status": "held",
+                    "significance": "major",
+                    "docket_id": 100,
+                    "source_entry_ids": src,
+                }
+            )
+
+    def _seed_singular_crossdate_pair(self, store):
+        # Sentencing recorded at its scheduled date (12-18) AND the held date
+        # (12-14) under a drifted key — a once-only proceeding, 4 days apart.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-mcgonigal",
+                "title": "Sentencing",
+                "starts_at_utc": "2023-12-18T05:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [20],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-mcgonigal-2",
+                "title": "Sentencing",
+                "starts_at_utc": "2023-12-14T18:30:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [21],
+            }
+        )
+
+    def test_same_day_merge_deletes_dup_and_tags_audit(self, store, case, monkeypatch):
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        captured = stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "cipa-mcgonigal",
+                "reason": "Same CIPA hearing; date-only + timed copy.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 1
+        assert {h["hearing_key"] for h in captured["cluster"]} == {
+            "cipa-mcgonigal",
+            "cipa-mcgonigal-3-6",
+        }
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "cipa-mcgonigal-3-6" not in rows
+        assert rows["cipa-mcgonigal"]["source_entry_ids"] == [10, 11]
+        notes = rows["cipa-mcgonigal"]["audit_notes"] or ""
+        assert "[dedupe-nearslot]" in notes and "cipa-mcgonigal-3-6" in notes
+
+    def test_singular_crossdate_merge_keeps_held_date(self, store, case, monkeypatch):
+        # The resolver picks the actually-held date (12-14) as the survivor.
+        self._seed_singular_crossdate_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-mcgonigal-2",
+                "reason": "One sentencing; 12-18 was the scheduled date, held 12-14.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-mcgonigal" not in rows
+        assert rows["sentencing-mcgonigal-2"]["starts_at_utc"].startswith("2023-12-14")
+        assert sorted(rows["sentencing-mcgonigal-2"]["source_entry_ids"]) == [20, 21]
+
+    def test_keep_both_leaves_distinct_same_day_hearings(
+        self, store, case, monkeypatch
+    ):
+        # A court CAN hold two different hearings the same day — KEEP_BOTH.
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={"type": "KEEP_BOTH", "reason": "Morning + afternoon, distinct."},
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        keys = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert {"cipa-mcgonigal", "cipa-mcgonigal-3-6"} <= keys
+
+    def test_unclear_leaves_cluster_alone(self, store, case, monkeypatch):
+        self._seed_same_day_pair(store)
+        stub_verify(monkeypatch)
+        stub_dedupe(monkeypatch, action={"type": "UNCLEAR", "reason": "ambiguous"})
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        assert len(store.get_hearings("us-v-x")) == 2
+
+    def test_no_nearslot_clusters_skips_llm(self, store, case, monkeypatch):
+        # One held sentencing + one held motion hearing on different days:
+        # no exact slot, no same-day, no shared singular base -> LLM untouched.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": "2026-01-05T16:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "motion-hearing-x",
+                "title": "Motion Hearing",
+                "starts_at_utc": "2026-02-09T16:00:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [2],
+            }
+        )
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("resolver called with no near-slot cluster")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+
+
 # --- verify_deadline end-of-case pass (parallel to TestVerifyScheduledHearings) ---
 
 
@@ -3517,7 +3692,7 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(
             monkeypatch,
             by_key={
-                "reply-mtd": {"type": "CANCEL", "reason": "case dismissed"},
+                "reply-mtd": {"type": "CANCEL_HEARING", "reason": "case dismissed"},
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
@@ -3620,7 +3795,7 @@ class TestVerifyPendingDeadlines:
             monkeypatch,
             by_key={
                 "reply-mtd": {
-                    "type": "RESCHEDULE",
+                    "type": "RESCHEDULE_HEARING",
                     "local_date": "2099-01-15",
                     "reason": "extension granted",
                 },
@@ -3644,7 +3819,10 @@ class TestVerifyPendingDeadlines:
         stub_verify_deadline(
             monkeypatch,
             by_key={
-                "reply-mtd": {"type": "RESCHEDULE", "reason": "no date provided"},
+                "reply-mtd": {
+                    "type": "RESCHEDULE_HEARING",
+                    "reason": "no date provided",
+                },
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
@@ -3702,7 +3880,7 @@ class TestVerifyEdgeCases:
         stub_verify(
             monkeypatch,
             by_key={
-                "future-trial": {"type": "RESCHEDULE", "reason": "no date"},
+                "future-trial": {"type": "RESCHEDULE_HEARING", "reason": "no date"},
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
@@ -3750,7 +3928,7 @@ class TestEnsureCourtErrorPath:
 
 
 class TestApplyHearingActionEdgeCases:
-    """Coverage for the CANCEL / MARK_HELD with-no-local_date drop paths
+    """Coverage for the CANCEL_HEARING / MARK_HELD with-no-local_date drop paths
     and the deadline-action error paths."""
 
     def test_cancel_on_unknown_key_without_local_date_drops(
@@ -3759,12 +3937,12 @@ class TestApplyHearingActionEdgeCases:
         case,
         monkeypatch,
     ):
-        # CANCEL targeting a hearing_key the store doesn't have AND no
+        # CANCEL_HEARING targeting a hearing_key the store doesn't have AND no
         # local_date to seed a new row → action is dropped with a warning.
         make_llm_stub(
             monkeypatch,
             by_entry={
-                1: [{"type": "CANCEL", "hearing_key": "never-seen"}],
+                1: [{"type": "CANCEL_HEARING", "hearing_key": "never-seen"}],
             },
         )
         cl = FakeCourtListener(dockets={100: _docket()})
