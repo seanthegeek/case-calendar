@@ -722,3 +722,45 @@ def test_llm_cache_none_arg_equals_explicit_resolved_model(tmp_path, monkeypatch
     assert len(calls) == 1  # second served from cache
     assert sum(cache.hits.values()) == 1
     cache.close()
+
+
+# --------------------------------------------------------------------------- #
+# Per-track provider env overrides are neutralized for the run
+# --------------------------------------------------------------------------- #
+
+
+def test_neutralized_run_env_includes_provider_overrides():
+    # The run pins each column's (provider, model) itself, so it must clear
+    # the operator's per-track provider overrides too — not just the model
+    # overrides. Regression guard: the recommended split
+    # (LLM_EXTRACTION_PROVIDER=gemini, LLM_SUMMARY_PROVIDER=anthropic) in .env
+    # forced every column onto one provider and 404'd until these were popped.
+    for var in (
+        "LLM_MODEL",
+        "LLM_SUMMARY_MODEL",
+        "LLM_PROVIDER",
+        "LLM_EXTRACTION_PROVIDER",
+        "LLM_SUMMARY_PROVIDER",
+    ):
+        assert var in mod._NEUTRALIZED_RUN_ENV
+
+
+def test_extraction_provider_env_short_circuits_threadlocal_until_popped(monkeypatch):
+    """The mechanism the fix depends on: the build patches
+    ``providers._detect_provider`` to read the per-column thread-local, but
+    ``_detect_extraction_provider`` checks ``LLM_EXTRACTION_PROVIDER`` FIRST —
+    so an operator env override wins over the column's pinned provider until
+    the run pops it (it's in ``_NEUTRALIZED_RUN_ENV``)."""
+    from case_calendar.llmkit import providers
+
+    monkeypatch.setattr(providers, "_detect_provider", mod._tl_detect)
+    mod._TL.provider = "anthropic"  # this column is the anthropic column
+
+    # With the split-config env var present, extraction routes to gemini —
+    # the bug (gemini provider + anthropic model -> 404).
+    monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "gemini")
+    assert providers._detect_extraction_provider() == "gemini"
+
+    # Once the run neutralizes it, the column's thread-local provider wins.
+    monkeypatch.delenv("LLM_EXTRACTION_PROVIDER", raising=False)
+    assert providers._detect_extraction_provider() == "anthropic"

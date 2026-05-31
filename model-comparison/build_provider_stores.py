@@ -251,6 +251,25 @@ def _tl_detect() -> Optional[str]:
     return getattr(_TL, "provider", None) or _REAL_DETECT()
 
 
+# Operator env vars the comparison run must neutralize so each column's
+# (provider, model) pinning is authoritative. The MODEL overrides would force
+# every column onto one model; the PROVIDER overrides short-circuit the
+# thread-local ``_detect_provider`` patch above — the extraction track checks
+# ``LLM_EXTRACTION_PROVIDER`` first and the summary track ``LLM_SUMMARY_PROVIDER``
+# first, so leaving them set routes every column to one provider while still
+# sending that column's own model. An operator running the recommended split
+# (``LLM_EXTRACTION_PROVIDER=gemini`` in ``.env``, which ``uv run`` loads) then
+# 404s every non-Gemini column on its own model. Popped at run start, restored
+# in the finally block.
+_NEUTRALIZED_RUN_ENV = (
+    "LLM_MODEL",
+    "LLM_SUMMARY_MODEL",
+    "LLM_PROVIDER",
+    "LLM_EXTRACTION_PROVIDER",
+    "LLM_SUMMARY_PROVIDER",
+)
+
+
 def _tl_label() -> Optional[str]:
     """The current thread's comparison-column label (``provider/extract-model``),
     falling back to the SDK provider when only that is set (keeps the log handler
@@ -1419,10 +1438,11 @@ def main(argv: Optional[list[str]] = None) -> int:
             saved_llm[_name] = getattr(llm, _name)
             setattr(llm, _name, _wrap_llm(_name, _kind))
     _install_pdf_cache()
-    # Pin to provider defaults: clear any model overrides for the run.
-    saved_models = {
-        k: os.environ.pop(k, None) for k in ("LLM_MODEL", "LLM_SUMMARY_MODEL")
-    }
+    # Pin each column to its own (provider, model): neutralize the operator's
+    # model AND per-track provider env overrides for the run (see
+    # ``_NEUTRALIZED_RUN_ENV`` for why the provider overrides matter). Restored
+    # in the finally block below.
+    saved_models = {k: os.environ.pop(k, None) for k in _NEUTRALIZED_RUN_ENV}
 
     # One CourtListener client, response-cached and shared across every build.
     cl = CourtListener()
