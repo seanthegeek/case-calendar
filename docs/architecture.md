@@ -142,7 +142,7 @@ is not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
 extraction. On the full caseload (see the
-[SCORECARD](../model-comparison/SCORECARD.md)) Gemini posts the best
+[SCORECARD](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
 `D met/pass` in the table and far fewer spurious cancellations than Anthropic
 (`D canc` 9 vs 28), and its aggregate deviation (305) is the best overall —
 ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 3.75×
@@ -170,7 +170,7 @@ for both providers rather than left to a single model's training corpus.
 
 The full deviation breakdown — measured against a human-scored ground-truth
 worksheet over the whole caseload — is in the
-[SCORECARD](../model-comparison/SCORECARD.md). The split exists because the two
+[SCORECARD](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). The split exists because the two
 tracks optimize for different things: extraction is high-volume classification
 where cost and latency multiply over thousands of calls, and the substantive
 deadline classes are now enumerated in the prompt so Gemini handles them as
@@ -179,7 +179,7 @@ case-distinguishing detail earns the higher tier. An operator who prefers a
 single provider can still set `LLM_PROVIDER`, or pin either track with
 `LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
 
-The [SCORECARD's Summary track section](../model-comparison/SCORECARD.md)
+The [SCORECARD's Summary track section](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)
 documents the bucket-confusion problem with side-by-side examples — three
 NK-IT-worker cases that Gemini summarizes into nearly interchangeable prose
 vs Anthropic's case-distinguishing versions of the same three; three
