@@ -15,9 +15,12 @@ from __future__ import annotations
 
 import html
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+from .description import has_no_time, is_calendar_visible, no_time_title_prefix
 
 
 def _esc(value: Any) -> str:
@@ -112,6 +115,213 @@ def _ics_links(
     return {"webcal": None, "https": None, "relative": filename}
 
 
+# The per-case "Upcoming events" preview is a WINDOW onto the exact same event
+# set the ICS feed carries — same filtering, just bounded to recent + near-term
+# so it doesn't reprint a case's whole history. See the matching design note in
+# AGENTS.md.
+_EVENT_GRACE_DAYS = 14  # also show events up to this many days already past
+_EVENT_MAX_RECENT_PAST = 2  # cap on muted recently-past rows shown
+_EVENT_MAX_UPCOMING = 6  # cap on upcoming rows shown (excess -> "+N more")
+
+
+def _event_zone(tz: Optional[str]) -> Any:
+    """ZoneInfo for an IANA name, falling back to UTC on a bogus/missing name
+    (mirrors the ICS renderer's defensive timezone handling)."""
+    if not tz:
+        return timezone.utc
+    try:
+        return ZoneInfo(tz)
+    except ZoneInfoNotFoundError:
+        return timezone.utc
+
+
+def _parse_utc(iso: Optional[str]) -> Optional[datetime]:
+    """Parse a stored ISO timestamp to an aware UTC datetime, or None."""
+    if not iso:
+        return None
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _normalize_event(row: dict[str, Any], kind: str) -> dict[str, Any]:
+    """Project a hearing-shaped row to the minimal event dict the preview uses."""
+    return {
+        "kind": kind,
+        "title": row.get("title") or "",
+        "starts_at_utc": row.get("starts_at_utc"),
+        "timezone": row.get("timezone"),
+        "no_time": has_no_time(row),
+        "docket_id": row.get("docket_id"),
+    }
+
+
+def _visible_events_for_case(store: Any, case_id: str) -> list[dict[str, Any]]:
+    """The case's calendar-visible events, filtered IDENTICALLY to the ICS feed.
+
+    Reuses the exact predicates the ICS renderer applies — ``description.
+    is_calendar_visible`` (drops date-less rows and ``significance='minor'``)
+    plus the ``status == 'cancelled'`` skip — and the canonical deadline→event
+    mapping from ``cli._deadline_to_hearing`` (which folds the deadline status
+    map, so a ``met`` / ``cancelled`` deadline is hidden just as the feed hides
+    it). Running the feed's own code is the point: the preview can never show an
+    event the ICS feed wouldn't. The ``cli`` import is function-local to break
+    the cli→index module import cycle (``cli`` imports this module at top level).
+    Returned events are sorted ascending by ``starts_at_utc``.
+    """
+    from ..cli import _deadline_to_hearing
+
+    events: list[dict[str, Any]] = []
+    for h in store.get_hearings(case_id):
+        if is_calendar_visible(h) and h.get("status") != "cancelled":
+            events.append(_normalize_event(h, "HEARING"))
+    for d in store.get_deadlines(case_id):
+        mapped = _deadline_to_hearing(d)
+        if (
+            mapped
+            and is_calendar_visible(mapped)
+            and mapped.get("status") != "cancelled"
+        ):
+            events.append(_normalize_event(mapped, "DEADLINE"))
+    events.sort(key=lambda e: e["starts_at_utc"])
+    return events
+
+
+def _window_events(
+    events: list[dict[str, Any]], now: datetime
+) -> tuple[
+    list[tuple[datetime, dict[str, Any]]],
+    list[tuple[datetime, dict[str, Any]]],
+]:
+    """Split the full visible set into the rows shown up-front and the overflow.
+
+    The shown list is up to ``_EVENT_MAX_RECENT_PAST`` recently-past rows
+    (within the grace window, for "what just happened" context) followed by up
+    to ``_EVENT_MAX_UPCOMING`` upcoming rows. Past rows are taken last (most
+    recent) so they don't crowd out the future. The overflow list is the
+    remaining upcoming rows beyond the cap — rendered behind the expandable
+    "+N more" disclosure. Each chosen row is paired with its parsed UTC start so
+    the caller doesn't re-parse; rows whose timestamp won't parse are dropped.
+    """
+    grace_cutoff = now - timedelta(days=_EVENT_GRACE_DAYS)
+    recent_past: list[tuple[datetime, dict[str, Any]]] = []
+    upcoming: list[tuple[datetime, dict[str, Any]]] = []
+    for e in events:
+        dt = _parse_utc(e.get("starts_at_utc"))
+        if dt is None:
+            continue
+        if dt >= now:
+            upcoming.append((dt, e))
+        elif dt >= grace_cutoff:
+            recent_past.append((dt, e))
+    recent_past.sort(key=lambda x: x[0])
+    upcoming.sort(key=lambda x: x[0])
+    shown = recent_past[-_EVENT_MAX_RECENT_PAST:] + upcoming[:_EVENT_MAX_UPCOMING]
+    overflow = upcoming[_EVENT_MAX_UPCOMING:]
+    return shown, overflow
+
+
+def _decorate_event(
+    event: dict[str, Any], dt: datetime, now: datetime, court_citation: Optional[str]
+) -> dict[str, Any]:
+    """Compute the court-local display fields for one windowed event.
+
+    ``dt`` is the event's already-parsed UTC start (from :func:`_window_events`),
+    so this never re-parses and always returns a row.
+    """
+    local = dt.astimezone(_event_zone(event.get("timezone")))
+    if event.get("no_time"):
+        # "[time TBD]" (future) / "[time unknown]" (past) — same flag the feed
+        # title carries; strip the brackets for inline display.
+        time_label = no_time_title_prefix(event.get("starts_at_utc"), now=now).strip(
+            "[]"
+        )
+    else:
+        # %Z is non-empty for every real zone (and "UTC" for the fallback); the
+        # trailing strip just guards the theoretical empty-abbreviation case.
+        hour = local.strftime("%I").lstrip("0") or "12"
+        time_label = f"{hour}:{local.strftime('%M %p')} {local.strftime('%Z')}".strip()
+    return {
+        "kind": event["kind"],
+        "title": event["title"],
+        "month": local.strftime("%b").upper(),
+        "day": str(local.day),
+        "time_label": time_label,
+        "is_past": dt < now,
+        "court_citation": court_citation,
+    }
+
+
+def _render_event_row(ev: dict[str, Any]) -> str:
+    """Render one event <li> (date chip + badge + title + court-local time).
+
+    Shared by the up-front list and the expandable overflow so both render
+    identically.
+    """
+    is_deadline = ev["kind"] == "DEADLINE"
+    classes = ["event", "event-deadline" if is_deadline else "event-hearing"]
+    if ev.get("is_past"):
+        classes.append("event-past")
+    badge = "Deadline" if is_deadline else "Hearing"
+    badge_cls = "event-badge-deadline" if is_deadline else "event-badge-hearing"
+    when = _esc(ev["time_label"])
+    court = ev.get("court_citation")
+    if court:
+        when = f'{when} <span class="event-court">· {_esc(court)}</span>'
+    return (
+        f'<li class="{" ".join(classes)}">'
+        f'<span class="event-date">'
+        f'<span class="event-mon">{_esc(ev["month"])}</span>'
+        f'<span class="event-day">{_esc(ev["day"])}</span>'
+        f"</span>"
+        f'<span class="event-body">'
+        f'<span class="event-title">'
+        f'<span class="event-badge {badge_cls}">{badge}</span>'
+        f"{_esc(ev['title'])}</span>"
+        f'<span class="event-when">{when}</span>'
+        f"</span>"
+        f"</li>"
+    )
+
+
+def _render_events(case: dict[str, Any]) -> str:
+    """Render the per-case "Upcoming events" preview block.
+
+    Reads the decorated, already-windowed events attached by
+    :func:`build_calendar_models`. Returns '' when the case has no visible
+    events in the window — a quiet or concluded case shows no block at all.
+    A small text badge (Hearing / Deadline) labels each row so the block is
+    self-describing without a separate legend. Any upcoming events beyond the
+    display cap ride behind an expandable ``<details>`` ("+N more upcoming")
+    that reveals them on click — native HTML, no JavaScript.
+    """
+    events = case.get("events") or []
+    if not events:
+        return ""
+    rows = "".join(_render_event_row(ev) for ev in events)
+    overflow = case.get("events_overflow") or []
+    more_block = ""
+    if overflow:
+        overflow_rows = "".join(_render_event_row(ev) for ev in overflow)
+        more_block = (
+            '<details class="events-more">'
+            f"<summary>+{len(overflow)} more upcoming</summary>"
+            f'<ul class="event-list">{overflow_rows}</ul>'
+            "</details>"
+        )
+    return (
+        '<div class="events">'
+        '<div class="events-head">Upcoming events</div>'
+        f'<ul class="event-list">{rows}</ul>'
+        f"{more_block}"
+        "</div>"
+    )
+
+
 _STYLES = """
 :root {
   color-scheme: light dark;
@@ -122,6 +332,7 @@ _STYLES = """
   --border: #d8d8d2;
   --card-bg: #ffffff;
   --hover-bg: #f0efe9;
+  --deadline: #b35900;
 }
 html[data-theme="dark"] {
   color-scheme: dark;
@@ -132,6 +343,7 @@ html[data-theme="dark"] {
   --border: #2a2d33;
   --card-bg: #1e2127;
   --hover-bg: #262a31;
+  --deadline: #e0a35e;
 }
 @media (prefers-color-scheme: dark) {
   html:not([data-theme="light"]) {
@@ -143,6 +355,7 @@ html[data-theme="dark"] {
     --border: #2a2d33;
     --card-bg: #1e2127;
     --hover-bg: #262a31;
+    --deadline: #e0a35e;
   }
 }
 * { box-sizing: border-box; }
@@ -345,6 +558,90 @@ footer {
   margin-top: 2rem;
 }
 footer p { margin: 0.4rem 0; }
+/* Per-case "Upcoming events" preview — a compact agenda of the same events the
+   ICS feed carries, so a visitor can see what a calendar contains without
+   subscribing. Date chip on the left, badge + title + court-local time on the
+   right. Recently-past rows are muted via .event-past. */
+.events { margin: 0.6rem 0 0.2rem; }
+.events-head {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+ul.event-list { list-style: none; margin: 0; padding: 0; }
+li.event {
+  display: flex;
+  align-items: baseline;
+  gap: 0.7rem;
+  padding: 0.3rem 0;
+  font-size: 0.92rem;
+}
+li.event + li.event { border-top: 1px solid var(--border); }
+.event-date {
+  flex: 0 0 auto;
+  width: 2.6rem;
+  text-align: center;
+  line-height: 1.05;
+}
+.event-mon {
+  display: block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.event-day {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--fg);
+}
+.event-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.event-title { color: var(--fg); }
+.event-when { font-size: 0.82rem; color: var(--muted); }
+.event-court { color: var(--muted); }
+.event-badge {
+  display: inline-block;
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  margin-right: 0.4rem;
+}
+.event-badge-hearing { color: var(--accent); }
+.event-badge-deadline { color: var(--deadline); }
+li.event-past { opacity: 0.62; }
+li.event-past .event-day { color: var(--muted); }
+/* Expandable "+N more upcoming" — native <details>, no JS. The summary reads
+   as a muted link with a rotating disclosure caret; expanding reveals the
+   remaining upcoming events rendered as a second .event-list. */
+details.events-more { margin-top: 0.2rem; }
+details.events-more > summary {
+  list-style: none;
+  cursor: pointer;
+  width: fit-content;
+  font-size: 0.82rem;
+  color: var(--accent);
+  padding: 0.15rem 0;
+}
+details.events-more > summary::-webkit-details-marker { display: none; }
+details.events-more > summary::before {
+  content: "▸ ";
+  color: var(--muted);
+}
+details.events-more[open] > summary::before { content: "▾ "; }
+details.events-more > summary:hover { text-decoration: underline; }
 """
 
 # Pre-paint theme application: read the saved preference and apply it on the
@@ -715,6 +1012,12 @@ def _case_search_text(case: dict[str, Any]) -> str:
     for tag in case.get("tags") or []:
         if tag:
             parts.append(str(tag))
+    # Every calendar-visible event title (the full set, not just the windowed
+    # rows the preview displays) so subscribers can search for a proceeding by
+    # name even when it's beyond the "+N more" cutoff.
+    for title in case.get("event_search_titles") or []:
+        if title:
+            parts.append(str(title))
     return " ".join(parts).lower()
 
 
@@ -879,6 +1182,7 @@ def _render_case(case: dict[str, Any]) -> str:
         _render_cl_records(d, multi_docket=multi_docket) for d in dockets
     )
     summary_block = _render_summaries(case, dockets)
+    events_block = _render_events(case)
     tags_block = _render_tags(list(case.get("tags") or []))
     dates_bits = []
     if date_filed:
@@ -888,7 +1192,8 @@ def _render_case(case: dict[str, Any]) -> str:
     dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
     return (
         f"<li {data}><h3>{name}</h3>"
-        f"{dockets_block}{records_block}{summary_block}{tags_block}{dates_block}</li>"
+        f"{dockets_block}{records_block}{summary_block}{events_block}"
+        f"{tags_block}{dates_block}</li>"
     )
 
 
@@ -1043,13 +1348,20 @@ def build_calendar_models(
     store: Any,
     *,
     public_base_url: Optional[str] = None,
+    now: Optional[datetime] = None,
 ) -> list[dict[str, Any]]:
     """Assemble the calendar/case data the renderer needs from cfg + store.
 
     The result is the shape :func:`render_index` consumes. Calendars appear
     in config-declaration order; within each calendar, cases also follow
     config order — the client-side JS resorts on load.
+
+    ``now`` is the reference instant for the per-case "Upcoming events"
+    preview window (which events count as upcoming vs recently-past); it
+    defaults to the current UTC time and is injectable for deterministic tests.
     """
+    if now is None:
+        now = datetime.now(timezone.utc)
     # Group cases by calendar id, preserving config order within each group.
     cases_by_cal: dict[str, list[dict[str, Any]]] = {}
     for c in cfg.get("cases") or []:
@@ -1068,11 +1380,16 @@ def build_calendar_models(
             # so subscribers / debugging can see them all.
             dockets_meta: list[dict[str, Any]] = []
             group_index: dict[tuple[Any, Any], int] = {}
+            # docket_id -> court citation, so each preview event (which carries
+            # its own docket_id) can be labeled with the right court — the
+            # disambiguator on multi-docket cases that span venues.
+            court_by_docket: dict[Any, Optional[str]] = {}
             for did in docket_ids:
                 meta = store.get_docket_meta(did) or {}
                 court_citation = None
                 if meta.get("court_id"):
                     court_citation = store.get_court_citation(meta["court_id"])
+                court_by_docket[did] = court_citation
                 docket_number = meta.get("docket_number")
                 court_id = meta.get("court_id")
                 # Each CourtListener docket_id in the group is one "record" of
@@ -1127,6 +1444,20 @@ def build_calendar_models(
                     1_000_000,
                 )
             )
+            # Per-case event preview: the full calendar-visible set (for search),
+            # plus the windowed + court-local-decorated rows the renderer shows.
+            visible_events = _visible_events_for_case(store, c["id"])
+            windowed, overflow = _window_events(visible_events, now)
+            # _window_events already parsed + validated each timestamp, so every
+            # row decorates cleanly — no None to filter here.
+            decorated_events = [
+                _decorate_event(ev, dt, now, court_by_docket.get(ev.get("docket_id")))
+                for dt, ev in windowed
+            ]
+            decorated_overflow = [
+                _decorate_event(ev, dt, now, court_by_docket.get(ev.get("docket_id")))
+                for dt, ev in overflow
+            ]
             case_rows.append(
                 {
                     "id": c.get("id"),
@@ -1136,6 +1467,11 @@ def build_calendar_models(
                     "tags": _normalize_tags(c.get("tags")),
                     "date_filed": agg["date_filed"],
                     "last_filing_date": agg["last_filing_date"],
+                    "events": decorated_events,
+                    "events_overflow": decorated_overflow,
+                    "event_search_titles": [
+                        e["title"] for e in visible_events if e.get("title")
+                    ],
                 }
             )
         out.append(
