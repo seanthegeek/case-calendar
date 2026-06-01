@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
@@ -402,27 +402,47 @@ def _mark_held_date_matches(
 
 
 # A docket entry that RECORDS a proceeding that already happened — a minute
-# entry, a clerk's-notes entry, or a transcript "of proceedings held" — is the
-# authoritative account of what occurred at the hearing. A PRE-HEARING
-# administrative notice (clerk's notice of Zoom access / courtroom change /
-# scheduling) sets the hearing up but says nothing about what happened at it.
-# The two regexes below let the notes-selection rules prefer the proceeding
-# record over the setup notice. Without this, MARK_HELD preserved whatever
-# notes were last written (often the setup notice) and a dedupe MERGE_INTO kept
-# the canonical row's notes regardless of which sibling actually described the
-# proceeding — so a calendar description could freeze at "Clerk's notice
-# providing Zoom access information" even after the docket recorded the
-# argument (the anthropic-v-dow pi-motion-hearing regression).
+# entry / minute order / "minutes of", an electronic clerk's-notes entry, or a
+# transcript "of proceedings held" — is the authoritative account of what
+# occurred at the hearing. A PRE-HEARING administrative notice (clerk's notice
+# of Zoom access / courtroom change / scheduling) sets the hearing up but says
+# nothing about what happened at it. The regexes below let the notes-selection
+# rules prefer the proceeding record over the setup notice. Without this,
+# MARK_HELD preserved whatever notes were last written (often the setup notice)
+# and a dedupe MERGE_INTO kept the canonical row's notes regardless of which
+# sibling actually described the proceeding — so a calendar description could
+# freeze at "Clerk's notice providing Zoom access information" even after the
+# docket recorded the argument (the anthropic-v-dow pi-motion-hearing
+# regression).
+#
+# Two false-positive traps the patterns deliberately avoid:
+#   - The standard clerk's-notice Zoom boilerplate ("...access to court
+#     proceedings held BY telephone or videoconference are reminded...") would
+#     match a bare "proceedings held", wrongly tagging a scheduling notice as a
+#     record. So the "proceedings held" alternative requires "held BEFORE" or
+#     "held ON <date>" — a record's phrasing, not the boilerplate's "held by".
+#   - A bare "transcript order" / "order for transcript" is a private purchase
+#     request, not a record, so the transcript alternative requires the
+#     "...proceedings held" tail.
 _PROCEEDING_RECORD_RE = re.compile(
     r"minute entry"
+    r"|minute order"
+    r"|minutes of"
     r"|clerk'?s? notes"
-    # "transcript OF proceedings" is a record; a bare "transcript order" /
-    # "order for transcript" is a private purchase request, not a record.
-    r"|transcript\s+of\s+proceedings?"
-    r"|proceedings?\s+(?:were\s+)?held"
+    r"|transcript\s+of\s+(?:[a-z ]*?\s)?proceedings?\s+held"
+    r"|proceedings?\s+(?:were\s+)?held\s+(?:before|on)\b"
     r"|held\s+before"
     r"|stated\s+appearances"
     r"|under\s+submission",
+    re.IGNORECASE,
+)
+
+# A transcript FILING also records a proceeding, but its text is filing
+# logistics (court reporter, redaction-request and release deadlines), so it
+# ranks BELOW a substantive minute-entry/clerk's-notes record when both are
+# available for the same hearing — see _proceeding_record_rank.
+_TRANSCRIPT_RECORD_RE = re.compile(
+    r"transcript\s+of\s+(?:[a-z ]*?\s)?proceedings?\s+held",
     re.IGNORECASE,
 )
 
@@ -441,6 +461,17 @@ _ADMIN_NOTICE_RE = re.compile(
 def _describes_proceeding(text: Optional[str]) -> bool:
     """True when ``text`` reads like the RECORD of a held proceeding."""
     return bool(text) and bool(_PROCEEDING_RECORD_RE.search(text))
+
+
+def _proceeding_record_rank(text: Optional[str]) -> int:
+    """Selection rank among proceeding records — lower is better.
+
+    0 = a substantive account (minute entry / clerk's notes), 1 = a transcript
+    filing (whose text is filing logistics). When a hearing has both kinds of
+    record among its sources, the substantive one is the better description, so
+    callers sort by ``(rank, -length)``.
+    """
+    return 1 if (text and _TRANSCRIPT_RECORD_RE.search(text)) else 0
 
 
 def _is_admin_notice(text: Optional[str]) -> bool:
@@ -493,10 +524,15 @@ def _best_proceeding_notes(
     ]
     if not candidates:
         return None
-    # Richest description wins; stable tie-break on hearing_key.
-    best = max(
+    # Prefer a substantive record over a transcript filing; then the richest
+    # description; stable tie-break on hearing_key.
+    best = min(
         candidates,
-        key=lambda h: (len(h.get("notes") or ""), h.get("hearing_key") or ""),
+        key=lambda h: (
+            _proceeding_record_rank(h.get("notes")),
+            -len(h.get("notes") or ""),
+            h.get("hearing_key") or "",
+        ),
     )
     return best.get("notes")
 
@@ -533,6 +569,56 @@ def _proceeding_notes_from_entry(entry: dict[str, Any]) -> Optional[str]:
             break
         text = stripped
     return text or None
+
+
+_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def _hearing_date_tokens(hearing: dict[str, Any]) -> list[str]:
+    """Court-local date of a hearing, rendered the ways a docket entry writes it.
+
+    A minute entry for a held proceeding restates the date ("...held on
+    3/24/2026"), so the heal sweep uses these tokens to confirm a candidate
+    record actually describes THIS hearing rather than a sibling proceeding
+    that merely shares the row's source list (a sentencing row must not adopt a
+    status-conference record). Returns numeric (padded / unpadded, 4- and
+    2-digit year) and spelled-month forms; empty when the hearing has no start.
+    """
+    starts = hearing.get("starts_at_utc")
+    if not starts:
+        return []
+    try:
+        dt = datetime.fromisoformat(starts)
+    except (ValueError, TypeError):
+        return []
+    tzname = hearing.get("timezone")
+    if tzname:
+        try:
+            dt = dt.astimezone(ZoneInfo(tzname))
+        except (ZoneInfoNotFoundError, ValueError):
+            pass  # fall back to the UTC date when the tz is unrecognized
+    d = dt.date()
+    m, day, y, yy = d.month, d.day, d.year, d.year % 100
+    return [
+        f"{m}/{day}/{y}",
+        f"{m:02d}/{day:02d}/{y}",
+        f"{m}/{day}/{yy:02d}",
+        f"{m:02d}/{day:02d}/{yy:02d}",
+        f"{_MONTH_NAMES[m - 1]} {day}, {y}",
+    ]
 
 
 def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str, Any]]:
@@ -577,21 +663,32 @@ def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str
             f"WHERE entry_id IN ({placeholders})",
             [int(s) for s in sids],
         ).fetchall()
+        # A record only heals this row if it CORROBORATES the row's own date —
+        # the minute entry restates "...held on <date>". Without this, a row
+        # could adopt a sibling proceeding's record that merely shares its
+        # source list (a sentencing row picking up the status-conference minute
+        # entry that scheduled it). A row whose date no source record restates
+        # is left alone rather than guessed.
+        date_tokens = _hearing_date_tokens(h)
         candidates: list[str] = []
         for er in entry_rows:
             ed = dict(er)
             if not _entry_records_proceeding(ed):
                 continue
             text = _proceeding_notes_from_entry(ed)
-            if text:
-                candidates.append(text)
+            if not text:
+                continue
+            if date_tokens and not any(tok in text for tok in date_tokens):
+                continue
+            candidates.append(text)
         if not candidates:
             continue
-        # Richest record wins (the minute entry over a thin transcript stub).
-        # `best` is always a non-empty record text and `notes` is empty or an
-        # administrative notice here (the gates above), so it can never equal
-        # `notes` — no same-value guard needed.
-        best = max(candidates, key=len)
+        # Prefer a substantive record (minute entry / clerk's notes) over a
+        # transcript filing, then the richest text. `best` is always a
+        # non-empty record text and `notes` is empty or an administrative
+        # notice here (the gates above), so it can never equal `notes` — no
+        # same-value guard needed.
+        best = min(candidates, key=lambda t: (_proceeding_record_rank(t), -len(t)))
         changes.append(
             {
                 "case_id": h.get("case_id"),

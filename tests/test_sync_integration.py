@@ -18,8 +18,10 @@ from case_calendar.sync import (
     _best_proceeding_notes,
     _describes_proceeding,
     _entry_records_proceeding,
+    _hearing_date_tokens,
     _is_admin_notice,
     _proceeding_notes_from_entry,
+    _proceeding_record_rank,
     fingerprint_entry,
     heal_proceeding_notes,
 )
@@ -4716,15 +4718,69 @@ class TestProceedingRecordPredicates:
 
     def test_describes_proceeding(self):
         assert _describes_proceeding("Minute Entry for proceedings held before Judge")
+        assert _describes_proceeding("Minute Order for proceedings held before Judge")
+        assert _describes_proceeding("MINUTES OF Status Conference held before Judge")
         assert _describes_proceeding("Parties stated appearances; under submission")
         assert _describes_proceeding("Transcript of Proceedings held on 03/24/2026")
+        # Transcript with words between "of" and "proceedings".
+        assert _describes_proceeding(
+            "Transcript of Remote Zoom Video Conference Proceedings held on March 10"
+        )
         assert not _describes_proceeding(
             "Clerk's notice providing Zoom access information"
         )
         # A bare transcript ORDER is a private purchase request, not a record.
         assert not _describes_proceeding("ORDER for Transcript")
+        # The standard clerk's-notice Zoom boilerplate says "proceedings held
+        # BY telephone or videoconference" — a scheduling notice, NOT a record.
+        # Requiring "held before/on" keeps it out (the status-conference-1
+        # false positive surfaced by the heal dry-run).
+        assert not _describes_proceeding(
+            "CLERK'S NOTICE SETTING STATUS CONFERENCE HEARING. This proceeding "
+            "will be held on a date. Persons granted access to court proceedings "
+            "held by telephone or videoconference are reminded that recording is "
+            "prohibited."
+        )
         assert not _describes_proceeding(None)
         assert not _describes_proceeding("")
+
+    def test_proceeding_record_rank(self):
+        # Substantive accounts rank above transcript filings.
+        assert (
+            _proceeding_record_rank("Minute Entry for proceedings held before X") == 0
+        )
+        assert (
+            _proceeding_record_rank("Parties stated appearances; under submission") == 0
+        )
+        assert (
+            _proceeding_record_rank("Transcript of Proceedings held on 03/24/2026") == 1
+        )
+        assert _proceeding_record_rank(None) == 0
+
+    def test_hearing_date_tokens(self):
+        # 20:30 UTC on 3/24 is 4:30 PM EDT — same court-local date.
+        toks = _hearing_date_tokens(
+            {
+                "starts_at_utc": "2026-03-24T20:30:00+00:00",
+                "timezone": "America/New_York",
+            }
+        )
+        assert "3/24/2026" in toks
+        assert "03/24/2026" in toks
+        assert "3/24/26" in toks
+        assert "March 24, 2026" in toks
+        # No start -> no tokens (the date filter then doesn't apply).
+        assert _hearing_date_tokens({"starts_at_utc": None}) == []
+        # Unparseable start -> no tokens.
+        assert _hearing_date_tokens({"starts_at_utc": "not-a-date"}) == []
+        # Missing timezone falls back to the UTC date.
+        assert "3/24/2026" in _hearing_date_tokens(
+            {"starts_at_utc": "2026-03-24T12:00:00+00:00"}
+        )
+        # Unrecognized timezone falls back to the UTC date rather than raising.
+        assert "3/24/2026" in _hearing_date_tokens(
+            {"starts_at_utc": "2026-03-24T12:00:00+00:00", "timezone": "Not/AZone"}
+        )
 
     def test_is_admin_notice(self):
         assert _is_admin_notice("Clerk's notice providing Zoom access information")
@@ -5211,6 +5267,15 @@ class TestHealProceedingNotes:
         )
         # A non-record source for the no-record case.
         self._seed_entry(store, 130, "CLERK'S NOTICE OF COURTROOM CHANGE")
+        # A record for a DIFFERENT proceeding (different date) — the
+        # cross-proceeding trap: it's a real minute entry but its date doesn't
+        # match the row's, so it must NOT heal the row.
+        self._seed_entry(
+            store,
+            140,
+            "Minute Entry for proceedings held before Judge: Status Conference "
+            "held on 1/15/2020. Parties appeared.",
+        )
         # Record sources for the good / curated rows (proving they're skipped
         # for reasons other than "no record available").
         self._seed_entry(store, 200, "Minute Entry: proceedings held; argued")
@@ -5218,10 +5283,15 @@ class TestHealProceedingNotes:
         self._seed_entry(store, 203, self._MINUTE)
 
         # Regression: admin notes + a minute-entry source (plus the empty-text
-        # record 124) -> healed from the richest usable record (123).
+        # record 124) -> healed from the richest usable record (123), whose
+        # "held on 3/24/2026" corroborates the row's own date.
         self._seed_hearing(store, "pi-hearing", self._ADMIN, [112, 124, 123])
         # Admin notes but NO source entries at all -> untouched.
         self._seed_hearing(store, "no-sources-hearing", self._ADMIN, [])
+        # Admin notes + a record source whose date (1/15/2020) does NOT match
+        # the row's date (3/24/2026) -> untouched (don't attach the wrong
+        # proceeding's minute entry).
+        self._seed_hearing(store, "wrong-date-hearing", self._ADMIN, [140])
         # Empty notes + a minute-entry source -> healed.
         self._seed_hearing(store, "empty-hearing", None, [203])
         # Already describes the proceeding -> untouched.
