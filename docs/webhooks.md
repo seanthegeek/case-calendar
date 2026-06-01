@@ -266,7 +266,8 @@ line in the log reads
 
 To opt out — say you maintain alerts through some other surface (a
 bulk CSV upload, a separate admin tool) — set
-`ensure_docket_alerts: false` at the top level of `config.yaml`. The
+`ensure_docket_alerts: false` at the top level of `config.yaml` (see the
+[configuration reference](configuration.md#top-level-options)). The
 reconciler then skips the list + create calls entirely on every run.
 
 That's it. New entries on any of those dockets now flow into the ICS

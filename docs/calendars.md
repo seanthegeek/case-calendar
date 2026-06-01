@@ -7,6 +7,9 @@ events to Google Calendar and/or Microsoft 365 / Outlook directly. Both
 push backends auto-enable after a one-time OAuth flow — there's no per-run
 flag.
 
+Every `config.yaml` key referenced on this page is also catalogued in the
+[configuration reference](configuration.md).
+
 [← Back to docs](index.md)
 
 ## ICS — works with everything
@@ -187,7 +190,9 @@ Once the credentials are in place, the daemon runs headless forever.
 
 ## Notifications: attendees and reminders
 
-Configurable per-calendar (with optional per-case override) in `config.yaml`:
+Configurable per-calendar (with optional per-case override) in `config.yaml`.
+The `notify_emails` and `reminders` keys are in the
+[configuration reference](configuration.md#reminders); here's how they behave:
 
 ```yaml
 calendars:
