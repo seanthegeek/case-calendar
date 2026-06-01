@@ -8,6 +8,28 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.14.0] - 2026-05-31
+
+### Added
+
+- **Per-case "Upcoming events" preview on the public index page**
+  (`case_calendar/calendars/index.py`). Each case row now renders a compact
+  agenda of its next hearings and deadlines — a court-local date chip, a
+  Hearing/Deadline badge, and the court-local time (`[time TBD]` /
+  `[time unknown]` on date-only rows), with recently-past rows muted and an
+  expandable `+N more` disclosure (native `<details>`, no JS) past the cap that
+  reveals the rest on click — so a visitor can see what a calendar contains
+  without subscribing to the ICS feed or opening it in a client. The events are
+  collected build-time in `build_calendar_models` from the same `hearings` /
+  `deadlines` store the feed reads (no new backend, no config), and are filtered
+  IDENTICALLY to the ICS feed: `_visible_events_for_case` reuses
+  `description.is_calendar_visible`, the `cancelled` skip, and the canonical
+  `cli._deadline_to_hearing` mapping, so the preview can never show an event the
+  feed wouldn't. Event titles also join the client-side search. The window
+  (recent-past grace + upcoming caps) and court-local rendering are covered by
+  `tests/test_index_events.py`, including a parity test that pins the preview's
+  visible-set count to the ICS `VEVENT` count.
+
 ## [0.13.2] - 2026-05-31
 
 Headline: case-summary accuracy fixes for appellate criminal dockets, plus

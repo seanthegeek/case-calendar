@@ -41,6 +41,16 @@ Features:
   plea agreement, "sentenced him" to the judgment (the charge and sentence
   details stay as plain text). See
   [AI case summaries](case-summaries.md#inline-document-links).
+- **Upcoming-events preview.** Each case row shows a compact agenda of its
+  next hearings and deadlines — a court-local date chip, a Hearing /
+  Deadline badge, and the court-local time (`[time TBD]` / `[time unknown]`
+  on date-only rows). Recently-passed events stay visible (muted) for a
+  short grace window, and anything past the on-screen cap collapses into an
+  expandable "+N more upcoming" disclosure (native `<details>`, no
+  JavaScript) that reveals the rest on click. The events shown are exactly
+  those in the matching ICS feed — same filtering — so the preview never
+  disagrees with what a subscriber gets, and every visible event title also
+  feeds the page search. A quiet or concluded case shows no preview block.
 - **Client-side sort.** Each section has a dropdown (case name, date
   filed, last filing) and an ascending / descending toggle. Default is
   "Last filing" descending so a recent flurry of activity surfaces first.
