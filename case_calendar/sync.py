@@ -501,6 +501,114 @@ def _best_proceeding_notes(
     return best.get("notes")
 
 
+# Trailing clerk / court-staff metadata PACER appends to a docket entry's text
+# — "(afm, COURT STAFF)", "(Date Filed: 3/24/2026)", "(Entered: 03/24/2026)",
+# "(This is a text-only entry ... There is no document associated ...)". Useful
+# to nobody reading a calendar, so we strip it when promoting a record entry's
+# own text into a hearing's notes.
+_DOCKET_TEXT_TRAILER_RE = re.compile(
+    r"\s*\((?:[^()]*\b(?:COURT STAFF|Date Filed|Entered|text-only entry|"
+    r"no document associated)\b[^()]*)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _proceeding_notes_from_entry(entry: dict[str, Any]) -> Optional[str]:
+    """The record entry's own text, lightly trimmed, for use as hearing notes.
+
+    The docket text of a minute entry / transcript / clerk's notes IS the
+    account of the proceeding. This is the fallback the MARK_HELD supersede
+    rule and the heal sweep use when no cleaner LLM-written notes are available
+    — the LLM routinely omits ``notes`` on a MARK_HELD action for an
+    already-held row. Only the trailing clerk/court-staff metadata
+    parentheticals are stripped; the substantive text is left verbatim.
+    """
+    text = (entry.get("description") or entry.get("short_description") or "").strip()
+    # Strip the trailing metadata groups one at a time (there are usually
+    # several stacked: the text-only note, the staff initials, Date Filed,
+    # Entered).
+    while True:
+        stripped = _DOCKET_TEXT_TRAILER_RE.sub("", text).rstrip()
+        if stripped == text:
+            break
+        text = stripped
+    return text or None
+
+
+def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str, Any]]:
+    """Retroactively fix hearing notes that regressed to a setup notice.
+
+    Deterministic, no LLM. For every hearing whose notes are empty or a
+    pre-hearing administrative notice (clerk's notice of Zoom access /
+    courtroom change / scheduling) but whose source entries include the RECORD
+    of the proceeding (minute entry / transcript / clerk's notes of proceedings
+    held), replace the notes with that record's own text — the same preference
+    the MARK_HELD supersede and dedupe-aware notes-selection rules apply at
+    sync time, here applied to rows already collapsed in the store (the
+    sibling that held the good notes may already have been deleted by a dedupe
+    merge, so re-running sync can't recover them).
+
+    Hearings whose notes already describe the proceeding, and hearings that
+    carry a non-empty NON-administrative note (a deliberately curated
+    scheduling note that isn't the regression), are left untouched. Returns one
+    dict per changed row — ``case_id`` / ``hearing_key`` / ``old`` / ``new`` —
+    so a dry run can report what it would do. When ``apply`` is True the
+    changes are written and committed.
+    """
+    rows = store.conn.execute("SELECT * FROM hearings").fetchall()
+    changes: list[dict[str, Any]] = []
+    for row in rows:
+        h = Store._row_to_hearing(row)
+        notes = h.get("notes")
+        # Already describes the proceeding, or carries a curated non-setup note
+        # — neither is the regression class, so leave it alone.
+        if _describes_proceeding(notes):
+            continue
+        if notes and notes.strip() and not _is_admin_notice(notes):
+            continue
+        sids = h.get("source_entry_ids") or []
+        if not sids:
+            continue
+        # Look the source entries up by id directly — a hearing's sources can
+        # live on sibling dockets, so don't constrain by docket_id.
+        placeholders = ",".join("?" * len(sids))
+        entry_rows = store.conn.execute(
+            f"SELECT entry_id, description, short_description FROM entries "
+            f"WHERE entry_id IN ({placeholders})",
+            [int(s) for s in sids],
+        ).fetchall()
+        candidates: list[str] = []
+        for er in entry_rows:
+            ed = dict(er)
+            if not _entry_records_proceeding(ed):
+                continue
+            text = _proceeding_notes_from_entry(ed)
+            if text:
+                candidates.append(text)
+        if not candidates:
+            continue
+        # Richest record wins (the minute entry over a thin transcript stub).
+        # `best` is always a non-empty record text and `notes` is empty or an
+        # administrative notice here (the gates above), so it can never equal
+        # `notes` — no same-value guard needed.
+        best = max(candidates, key=len)
+        changes.append(
+            {
+                "case_id": h.get("case_id"),
+                "hearing_key": h.get("hearing_key"),
+                "old": notes,
+                "new": best,
+            }
+        )
+        if apply:
+            merged = dict(h)
+            merged["notes"] = best
+            store.upsert_hearing(merged)
+    if apply and changes:
+        store.conn.commit()
+    return changes
+
+
 def _default_duration(hearing_type: str | None, time_set: bool) -> int:
     if not time_set:
         return 0  # all-day
@@ -1969,11 +2077,14 @@ class CaseSyncer:
                 # transcript / clerk's notes of proceedings held) and the
                 # existing notes don't already describe the proceeding —
                 # they're empty, or a pre-hearing administrative notice that
-                # merely set the hearing up — adopt the record's notes so the
+                # merely set the hearing up — adopt the record's account so the
                 # calendar shows what happened, not the setup notice (the
                 # anthropic-v-dow pi-motion-hearing regression, where the notes
-                # were stuck on a clerk's Zoom-access notice).
-                new_notes = action.get("notes")
+                # were stuck on a clerk's Zoom-access notice). Prefer the LLM's
+                # own notes when it wrote any; fall back to the record entry's
+                # text, since the LLM routinely omits notes on a MARK_HELD for
+                # an already-held row.
+                new_notes = action.get("notes") or _proceeding_notes_from_entry(entry)
                 if (
                     new_notes
                     and _entry_records_proceeding(entry)

@@ -29,16 +29,32 @@ adheres to [Semantic Versioning][semver].
   (clerk's notice of Zoom access / courtroom change / scheduling):
   - **MARK_HELD supersede:** when the entry marking a hearing held is itself
     the record of the proceeding and the existing notes don't already describe
-    it, `MARK_HELD` now adopts the record's notes instead of preserving the
-    setup notice.
+    it, `MARK_HELD` now adopts the record's account — the LLM's own notes when
+    it wrote any, otherwise the record entry's own docket text (the LLM
+    routinely omits notes on a MARK_HELD for an already-held row), with the
+    trailing clerk/court-staff metadata stripped.
   - **Dedupe-aware notes selection:** when a `MERGE_INTO` (the LLM-gated
     exact-slot / near-slot sweeps) or the deterministic held-row dedupe absorbs
     siblings, the survivor now takes an absorbed sibling's proceeding-record
     notes if its own notes don't describe the proceeding.
 
   New predicates `_describes_proceeding` / `_is_admin_notice` /
-  `_entry_records_proceeding` and the `_best_proceeding_notes` chooser back
-  both rules; covered by `tests/test_sync_integration.py`.
+  `_entry_records_proceeding`, the `_best_proceeding_notes` chooser, and the
+  `_proceeding_notes_from_entry` text extractor back these rules; covered by
+  `tests/test_sync_integration.py`.
+
+### Added
+
+- **`scripts/heal_proceeding_notes.py`** — a one-shot maintenance sweep that
+  retroactively fixes hearings whose notes already regressed to a setup notice
+  before the fix landed. The sync-time rules above only prevent NEW
+  regressions; a row already collapsed in the store stays collapsed (the
+  rich-notes sibling was deleted by the dedupe merge, so re-running sync can't
+  recover it). The sweep (`sync.heal_proceeding_notes`) is deterministic — no
+  LLM, no CourtListener — and rebuilds each affected row's notes from its own
+  record source entries (minute entry / transcript / clerk's notes), touching
+  only rows whose notes are empty or an administrative notice. Dry-run by
+  default; `--apply` writes the changes.
 
 ## [0.14.0] - 2026-05-31
 
