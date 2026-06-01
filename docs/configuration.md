@@ -7,6 +7,9 @@ cases, the calendars they group into, and the optional features you want
 turned on. There's an annotated `config.example.yaml` in the repo root you
 can copy and edit.
 
+Secrets and LLM-provider selection live separately in a `.env` file — see
+[Environment variables](#environment-variables) below.
+
 [← Back to docs](index.md)
 
 ## Top-level options
@@ -26,8 +29,32 @@ store_path: data/case-calendar.sqlite
 | `public_base_url` | no | The URL where the `out/` directory is hosted (e.g. `https://calendars.example.com`). When set, the index uses absolute `https://` + `webcal://` subscribe links. |
 | `site_title` | no | The `<h1>` on the index page. |
 | `site_description` | no | The `<meta name="description">` content for search engines and link previews. Keep under 160 characters. |
-| `case_summaries` | no | Enable AI summaries. See [case summaries](case-summaries.md). |
+| `case_summaries` | no | Enable and configure AI case summaries. Keys in [Case summaries](#case-summaries) below; the feature is described in [AI case summaries](case-summaries.md). |
 | `ensure_docket_alerts` | no (default `true`) | Auto-subscribe each configured docket to CourtListener docket alerts on `sync` / `serve` startup, so the webhook receiver gets real-time pushes. Set `false` if you manage subscriptions another way. See [webhooks](webhooks.md). |
+
+### Case summaries
+
+The `case_summaries` block turns on AI-generated case summaries and selects the
+model that writes them. It's off by default. The feature itself — what gets
+summarized, the truthfulness guardrails, the inline document links — is
+described in [AI case summaries](case-summaries.md).
+
+```yaml
+case_summaries:
+  enabled: true
+  # provider: anthropic
+  # model: claude-sonnet-4-6
+  # allow_ocr: true
+  # debounce_seconds: 300
+```
+
+| Key | Required | Purpose |
+| --- | --- | --- |
+| `enabled` | yes | Master switch. Defaults to `false`. |
+| `provider` | no | Force the summary-track provider (`anthropic` / `openai` / `gemini`). When unset, falls back to `LLM_SUMMARY_PROVIDER`, then `LLM_PROVIDER`, then auto-detection from whichever API keys are set (summary key priority: anthropic > gemini > openai). See [Architecture → why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries). |
+| `model` | no | Override the model. Defaults to Sonnet / GPT-5.4 / Gemini Pro depending on provider. |
+| `allow_ocr` | no (default `true`) | Run local OCR on PDFs that arrived without usable text (CourtListener's `plain_text` was empty or garbled — CourtListener does not OCR documents, so the project OCRs them itself). Set `false` to skip tesseract entirely. |
+| `debounce_seconds` | no (default `300`) | Webhook-only. Seconds of quiet to wait after the last summary-relevant entry before re-running the LLM. Polling syncs ignore it and regenerate immediately. |
 
 ## Calendars
 
@@ -62,6 +89,19 @@ calendars:
 The calendar's `id` (the top-level key, e.g. `cybercrime`) is the value cases
 reference via their `calendar:` field.
 
+### Reminders
+
+`reminders` is a list of `{method, minutes}` entries, settable on a calendar
+and overridable per-case:
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `method` | yes | `popup` (fires in each subscriber's own calendar app — safe on public feeds) or `email` (Google delivers only to the calendar owner; in ICS the addresses are visible on the feed). |
+| `minutes` | yes | Minutes before the event to fire the reminder (e.g. `30`, or `1440` for one day before). |
+
+Which apps honor what, and the public-feed privacy traps, are covered in
+[Calendar backends → notifications](calendars.md#notifications-attendees-and-reminders).
+
 ### Privacy: notify_emails on public calendars
 
 If you're publishing the ICS feed publicly, **don't** set `notify_emails` —
@@ -89,7 +129,7 @@ cases:
 | `aggregation_note` | no | One-sentence framing for multi-docket cases, shown only to the AI summarizer. See below. |
 | `notify_emails` | no | Per-case override of the calendar's `notify_emails`. |
 | `reminders` | no | Per-case override of the calendar's `reminders`. |
-| `extra_documents` | no | Operator-provided document URLs for the AI summary pipeline. See [case summaries](case-summaries.md#extra_documents). |
+| `extra_documents` | no | Operator-provided document URLs for the AI summary pipeline. Fields in [extra_documents](#extra_documents) below; rationale in [case summaries](case-summaries.md#extra_documents). |
 | `tags` | no | Topical labels (e.g. `DPRK`, `PRC`, `Russia`) rendered on calendar event descriptions and as click-to-filter chips on the HTML index. See below. |
 
 ### Multi-docket cases
@@ -198,6 +238,28 @@ Tags are case-insensitive for filter / dedup purposes; the casing you write
 here is how they render. Multi-word tags are supported — write them with
 whitespace and they'll be quoted into the search box on click.
 
+### extra_documents
+
+Point the AI summary pipeline at a document CourtListener doesn't surface
+(a sealed-then-unsealed indictment, a PDF hit by a CourtListener metadata
+bug). The full rationale and failure modes are in
+[AI case summaries → extra_documents](case-summaries.md#extra_documents); the
+per-entry fields are:
+
+```yaml
+extra_documents:
+  - docket: 70789744
+    url: https://www.justice.gov/opa/media/1407196/dl
+    note: >-
+      The unsealed indictment in S.D. Tex. 4:23-cr-00523 (United States v. Xu Zewei).
+```
+
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `docket` | yes | Must be one of this case's `dockets` ids. |
+| `url` | yes | Absolute `https://` URL to a PDF (DoJ press release, archived storage URL, court website). |
+| `note` | yes | One sentence naming the document, fed to the summary LLM as trusted metadata; the document text itself stays untrusted. Keep tooling details (bug numbers, "remove once fixed") in a YAML `#` comment, not here. |
+
 ## Validation
 
 Case Calendar validates the config at startup. Bad values (a missing required
@@ -211,6 +273,37 @@ See [`config.example.yaml`](https://github.com/seanthegeek/case-calendar/blob/ma
 in the repo for a fully annotated example, including realistic
 multi-docket aggregation, deadline-tracking overrides, and `extra_documents`
 workarounds.
+
+## Environment variables
+
+Secrets and LLM-provider selection live in a `.env` file in the project root,
+not in `config.yaml`, so credentials stay out of the file you might publish or
+share. Case Calendar loads `.env` automatically (via `python-dotenv`) before
+anything reads these. There's an annotated `.env.example` to copy; the
+step-by-step walkthrough is in
+[Installation → configure secrets](installation.md#configure-secrets).
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `COURTLISTENER_TOKEN` | yes | CourtListener API token (from your CourtListener user-profile page). Used by `sync`, `serve`, and `summarize`. |
+| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | at least one | API key for each LLM provider you use. Extraction always needs one; summaries need one when enabled. `GOOGLE_API_KEY` is accepted as an alias for `GEMINI_API_KEY`. |
+| `CASE_CALENDAR_WEBHOOK_SECRET` | only for `serve` | Long URL-safe random string that gates the webhook receiver path. See [webhooks](webhooks.md#1-choose-a-secret). |
+| `M365_CLIENT_ID` | only if pushing to Microsoft 365 | Entra app (client) ID — an alternative to the `m365_client_id` YAML key. |
+| `LLM_PROVIDER` | no | Pin ONE provider (`anthropic` / `openai` / `gemini`) for BOTH the extraction and summary tracks. Overridden per-track by the two variables below. |
+| `LLM_EXTRACTION_PROVIDER` | no | Pin the extraction track's provider only (beats `LLM_PROVIDER` for that track). |
+| `LLM_SUMMARY_PROVIDER` | no | Pin the summary track's provider only. The `case_summaries.provider` YAML key takes precedence over this. |
+| `LLM_MODEL` | no | Override the extraction track's model (default: the per-provider small/fast tier). |
+| `LLM_SUMMARY_MODEL` | no | Override the summary track's model. The `case_summaries.model` YAML key takes precedence over this. |
+| `LOG_LEVEL` | no (default `INFO`) | Python logging level — `DEBUG`, `INFO`, `WARNING`, etc. |
+
+When no provider is pinned, each track auto-detects from whichever API keys are
+set, in its own priority order: extraction prefers **gemini > anthropic >
+openai**, summaries prefer **anthropic > gemini > openai**. With all three keys
+present that lands a zero-config operator on the recommended split — Gemini for
+extraction, Anthropic for summaries. The reasoning is in
+[Architecture → why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries);
+the full precedence walkthrough is in
+[Installation](installation.md#configure-secrets).
 
 ## Next steps
 

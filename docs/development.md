@@ -52,9 +52,9 @@ cp .env.example .env
 ```
 
 ```bash
-# .env
 COURTLISTENER_TOKEN=...        # from your CourtListener profile page
-ANTHROPIC_API_KEY=...          # or GEMINI_API_KEY / OPENAI_API_KEY
+GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=...
 ```
 
 The CLI loads `.env` automatically before any module reads an environment
@@ -73,7 +73,7 @@ You have two starting points:
   cp config.example.yaml config.yaml
   ```
 
-- **`config.dev.yaml`** — a checked-in fixture covering only the cases that
+- **`config.dev.yaml`** — a checked-in dev config covering only the cases that
   have driven a documented regression in one of the LLM-driven layers
   (extractor, verify pass, dedupe sweeps, summary pipeline). Each case is
   annotated with the failure mode it exercises. This is the fast inner loop
@@ -83,7 +83,7 @@ You have two starting points:
 
 `config.yaml` is gitignored (it's your personal caseload). `config.dev.yaml`
 is tracked, because the dockets in it are public CourtListener records and the
-fixture is useful to everyone working on the project.
+dev config is useful to everyone working on the project.
 
 ## First run, from scratch
 
@@ -165,7 +165,7 @@ improves what the model extracts — for that you have to run the real model
 against real dockets. Doing that against your whole caseload on every tweak is
 expensive, so the project gives you three levers, cheapest first.
 
-### 1. The fixture config
+### 1. The dev config
 
 Run any command with `-c config.dev.yaml` to exercise only the ~18 regression
 cases instead of a full caseload. A prompt change that's meant to fix one of
@@ -176,13 +176,13 @@ those failure modes can be checked against exactly the cases that surfaced it.
 [`model-comparison/build_provider_stores.py`](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/build_provider_stores.py)
 builds a complete store + rendered output per LLM provider from the *same*
 cached CourtListener data, so you can compare cost and output side by side
-before changing a default. Point it at the fixture config to keep it cheap:
+before changing a default. Point it at the dev config to keep it cheap:
 
 ```bash
 # Plumbing check with synthetic tokens — no API calls, no spend:
 uv run python model-comparison/build_provider_stores.py --config config.dev.yaml --fake
 
-# Real build of one provider column against the fixture:
+# Real build of one provider column against the dev config:
 uv run python model-comparison/build_provider_stores.py --config config.dev.yaml --variants anthropic
 ```
 
@@ -208,7 +208,7 @@ per-column hit/miss counts so you can see it working. Pass `--no-llm-cache`
 for a guaranteed-fresh build, or delete the sidecar file to invalidate every
 entry.
 
-Reserve a full-caseload build (`-c config.yaml`, no fixture) for the final
+Reserve a full-caseload build (`-c config.yaml`, no dev config) for the final
 check before you commit a prompt or model change.
 
 ## Where things live

@@ -89,13 +89,9 @@ case_summaries:
   # debounce_seconds: 300
 ```
 
-| Key | Required | Purpose |
-| --- | --- | --- |
-| `enabled` | yes | Master switch. Defaults to `false`. |
-| `provider` | no | Force a specific provider (`anthropic` / `openai` / `gemini`) for the summary track. When unset, falls back to `LLM_SUMMARY_PROVIDER`, then `LLM_PROVIDER`, then auto-detects from whichever API keys are set in summary key-priority order (anthropic > gemini > openai). With keys for all three present, the summary track defaults to Anthropic (Sonnet 4.6) — see [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries). |
-| `model` | no | Override the model. Defaults to Sonnet / GPT-5.4 / Gemini Pro depending on provider. |
-| `allow_ocr` | no | Run local OCR fallback on PDFs that arrived without usable text (CourtListener's `plain_text` was empty or garbled — CourtListener does not OCR documents, so the project OCRs them itself). Defaults to `true`. Set to `false` to skip tesseract entirely. |
-| `debounce_seconds` | no | Webhook-only. How many seconds of quiet to wait after the last summary-relevant entry before re-running the LLM. Defaults to 300. Polling syncs ignore this — they regenerate immediately. |
+The example above shows every key. The field-by-field reference — defaults and
+the provider-precedence cascade — lives in
+[Configuration → Case summaries](configuration.md#case-summaries).
 
 When `enabled: true`, summaries auto-refresh as part of `sync` and `serve`:
 whenever the syncer sees a new primary document or disposition — or whenever
@@ -216,11 +212,10 @@ needs three fields:
         4:23-cr-00523 (United States v. Xu Zewei).
 ```
 
-| Field | Purpose |
-| --- | --- |
-| `docket` | Must be one of this case's `dockets` ids. |
-| `url` | Absolute `https://` URL to a PDF. Anywhere — DoJ press releases, archived storage URLs, court websites. |
-| `note` | Required. Tells the summary LLM what the document is and why it was added. The note rides into the prompt as trusted operator metadata; the document text itself is still treated as untrusted (the same way CourtListener / PACER text is). |
+The three fields — `docket`, `url`, and the required `note` — are documented in
+[Configuration → extra_documents](configuration.md#extra_documents). The `note`
+rides into the prompt as trusted operator metadata; the document text itself is
+still treated as untrusted (the same way CourtListener / PACER text is).
 
 Case Calendar fetches the bytes through the same pypdf → OCR fallback chain
 as it does for CourtListener documents, then feeds them to the LLM as their
