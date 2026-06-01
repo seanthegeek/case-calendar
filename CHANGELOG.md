@@ -22,8 +22,10 @@ adheres to [Semantic Versioning][semver].
   uses — so the sort key can never disagree with what the preview shows. Cases
   with nothing upcoming emit an empty value and fall to the bottom regardless of
   direction, matching the existing empty-sorts-last behavior of the other keys.
-  Sorting stays client-side and direction remains an orthogonal control (set it
-  to ascending for soonest-first); no JavaScript changes were needed. Covered by
+  "Next event" is a soonest-first key: its direction is inverted relative to the
+  date/name keys so the default **Descending** surfaces the cases with the
+  soonest upcoming events at the top — mirroring how "Last filing" descending
+  surfaces the newest activity. Sorting stays client-side. Covered by
   `tests/test_index.py` and `tests/test_index_events.py`.
 
 ## [0.14.1] - 2026-06-01

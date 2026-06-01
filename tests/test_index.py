@@ -782,6 +782,15 @@ class TestRenderIndex:
         # since these hand-built cases carry no next_event (empty sorts last).
         assert 'data-next-event=""' in html
 
+    def test_next_event_sort_is_soonest_first_on_descending(self, calendars):
+        # "Next event" is a soonest-first key: the comparator inverts its
+        # direction so the default Descending surfaces the soonest upcoming
+        # cases at the top (mirroring "Last filing" descending = newest). The
+        # behavior lives in the client-side comparator, so pin the inversion
+        # line the same way the other JS handlers are guarded.
+        html = render_index(calendars=calendars)
+        assert "if (key === 'next-event') asc = !asc;" in html
+
     def test_xss_in_case_name_is_escaped(self, calendars):
         html = render_index(calendars=calendars)
         assert "<evil>" not in html

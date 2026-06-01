@@ -715,6 +715,13 @@ _RUNTIME_JS = r"""
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
     var key = sel.value;
+    // "Next event" is a soonest-first key: an earlier timestamp is the more
+    // salient row, so its direction is inverted relative to the date/name
+    // keys. This makes the default "Descending" surface the cases with the
+    // soonest upcoming events at the top — mirroring how "Last filing"
+    // descending surfaces the newest activity. Cases with no upcoming event
+    // (empty value) still sort last regardless, via the empty-checks below.
+    if (key === 'next-event') asc = !asc;
     var list = section.querySelector('ol.cases');
     var items = Array.prototype.slice.call(list.children);
     items.sort(function(a, b) {
