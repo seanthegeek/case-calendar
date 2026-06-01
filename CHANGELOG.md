@@ -8,6 +8,24 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.15.0] - 2026-06-01
+
+### Added
+
+- **"Next event" sort option on the public index page**
+  (`case_calendar/calendars/index.py`). Each calendar's **Sort by** dropdown now
+  offers "Next event" alongside Last filing / Date filed / Case name, so a
+  visitor can order cases by their soonest upcoming hearing or deadline. The
+  sort is backed by a new per-case `data-next-event` attribute carrying the ISO
+  start of the case's soonest upcoming event, computed in `build_calendar_models`
+  from the SAME windowed event set the per-case "Upcoming events" preview already
+  uses — so the sort key can never disagree with what the preview shows. Cases
+  with nothing upcoming emit an empty value and fall to the bottom regardless of
+  direction, matching the existing empty-sorts-last behavior of the other keys.
+  Sorting stays client-side and direction remains an orthogonal control (set it
+  to ascending for soonest-first); no JavaScript changes were needed. Covered by
+  `tests/test_index.py` and `tests/test_index_events.py`.
+
 ## [0.14.1] - 2026-06-01
 
 ### Fixed

@@ -772,6 +772,16 @@ class TestRenderIndex:
         # this change fixes.
         assert "Last activity" not in html
 
+    def test_sort_dropdown_offers_next_event(self, calendars):
+        # "Next event" sorts by data-next-event (the soonest upcoming event's
+        # ISO start). The option value must match the attribute the renderer
+        # emits, since the JS reads 'data-' + option.value.
+        html = render_index(calendars=calendars)
+        assert '<option value="next-event">Next event</option>' in html
+        # The backing attribute is emitted on every case row — empty here,
+        # since these hand-built cases carry no next_event (empty sorts last).
+        assert 'data-next-event=""' in html
+
     def test_xss_in_case_name_is_escaped(self, calendars):
         html = render_index(calendars=calendars)
         assert "<evil>" not in html

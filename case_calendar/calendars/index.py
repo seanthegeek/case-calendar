@@ -1148,11 +1148,15 @@ def _render_case(case: dict[str, Any]) -> str:
     date_filed = _format_date(case.get("date_filed"))
     last_filing = _format_date(case.get("last_filing_date"))
     # Sort keys are case-insensitive (name) and ISO (dates), so direct
-    # string compare on data-* attributes Just Works in the JS.
+    # string compare on data-* attributes Just Works in the JS. data-next-event
+    # is the ISO start of the case's soonest upcoming event (empty when none),
+    # backing the "Next event" sort option; empty values sort last in the JS
+    # comparator, so cases with nothing scheduled fall to the bottom.
     data = (
         f'data-name="{_esc((case.get("name") or "").lower())}" '
         f'data-filed="{_esc(date_filed)}" '
         f'data-last-filing="{_esc(last_filing)}" '
+        f'data-next-event="{_esc(case.get("next_event"))}" '
         f'data-search="{_esc(_case_search_text(case))}"'
     )
     dockets_html = []
@@ -1237,6 +1241,7 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f"<label>Sort by "
         f'<select class="sort">'
         f'<option value="last-filing" selected>Last filing</option>'
+        f'<option value="next-event">Next event</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'
         f"</select>"
@@ -1448,6 +1453,12 @@ def build_calendar_models(
             # plus the windowed + court-local-decorated rows the renderer shows.
             visible_events = _visible_events_for_case(store, c["id"])
             windowed, overflow = _window_events(visible_events, now)
+            # The soonest upcoming event's start, backing the "Next event" sort.
+            # _window_events keeps recently-past rows first (dt < now) then
+            # upcoming, and always retains the soonest upcoming (the upcoming
+            # cap slices from the front), so the first dt >= now is it. Empty
+            # string when the case has nothing upcoming -> sorts last in the JS.
+            next_event = next((dt.isoformat() for dt, _ev in windowed if dt >= now), "")
             # _window_events already parsed + validated each timestamp, so every
             # row decorates cleanly — no None to filter here.
             decorated_events = [
@@ -1467,6 +1478,7 @@ def build_calendar_models(
                     "tags": _normalize_tags(c.get("tags")),
                     "date_filed": agg["date_filed"],
                     "last_filing_date": agg["last_filing_date"],
+                    "next_event": next_event,
                     "events": decorated_events,
                     "events_overflow": decorated_overflow,
                     "event_search_titles": [
