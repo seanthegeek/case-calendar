@@ -1,7 +1,7 @@
 # Case Calendar
 
-[![CI](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml/badge.svg)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/seanthegeek/case-calendar/branch/main/graph/badge.svg)](https://codecov.io/gh/seanthegeek/case-calendar)
+[![CI](https://img.shields.io/github/actions/workflow/status/seanthegeek/case-calendar/ci.yml?branch=main&label=CI)](https://github.com/seanthegeek/case-calendar/actions/workflows/ci.yml)
+[![codecov](https://img.shields.io/codecov/c/github/seanthegeek/case-calendar/main)](https://codecov.io/gh/seanthegeek/case-calendar)
 [![License](https://img.shields.io/github/license/seanthegeek/case-calendar)](LICENSE)
 
 Subscribable calendar feeds for federal court hearings and filing
