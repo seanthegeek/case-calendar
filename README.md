@@ -67,7 +67,11 @@ It was built for the cases where docket-watching by hand is too much:
 - **Real-time webhook receiver** — register a public HTTPS URL with
   CourtListener and bypass the daily polling quota entirely.
 - **Static landing page** with one-click subscribe buttons, client-side
-  sort, and dark mode, generated alongside the ICS files.
+  sort, and dark mode, generated alongside the ICS files. Each case row
+  carries an **upcoming-events preview** — a compact agenda of its next
+  hearings and deadlines in court-local time, with an expandable "+N more"
+  — so visitors can see what a calendar holds without subscribing; the
+  preview shows exactly the events in the matching ICS feed.
 - **Court-local timezones** preserved on every event so a 3 PM Pacific
   hearing stays "3 PM Pacific" through DST and travel.
 - **Multi-docket cases** collapse into one logical case — district +
