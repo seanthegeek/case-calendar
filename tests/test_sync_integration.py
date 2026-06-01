@@ -12,7 +12,21 @@ import pytest
 
 from case_calendar import llm as llm_mod
 from case_calendar.store import Store
-from case_calendar.sync import CaseConfig, CaseSyncer, fingerprint_entry
+from case_calendar.sync import (
+    CaseConfig,
+    CaseSyncer,
+    _best_proceeding_notes,
+    _describes_proceeding,
+    _entry_records_proceeding,
+    _hearing_date_tokens,
+    _is_admin_notice,
+    _proceeding_notes_from_entry,
+    _proceeding_record_rank,
+    _proceeding_types,
+    _record_proceeding_name,
+    fingerprint_entry,
+    heal_proceeding_notes,
+)
 
 from .conftest import FakeCourtListener, must
 
@@ -4694,3 +4708,718 @@ class TestDeleteHallucinationGuard:
             and "reply-mtd" in r.message
             for r in caplog.records
         )
+
+
+# --- proceeding-record notes selection (anthropic-v-dow pi-motion-hearing) ---
+
+
+class TestProceedingRecordPredicates:
+    """Unit coverage for the helpers that distinguish the RECORD of a held
+    proceeding (minute entry / transcript / clerk's notes) from a pre-hearing
+    administrative notice (clerk's notice of Zoom access / courtroom change)."""
+
+    def test_describes_proceeding(self):
+        assert _describes_proceeding("Minute Entry for proceedings held before Judge")
+        assert _describes_proceeding("Minute Order for proceedings held before Judge")
+        assert _describes_proceeding("MINUTES OF Status Conference held before Judge")
+        assert _describes_proceeding("Parties stated appearances; under submission")
+        assert _describes_proceeding("Transcript of Proceedings held on 03/24/2026")
+        # Transcript with words between "of" and "proceedings".
+        assert _describes_proceeding(
+            "Transcript of Remote Zoom Video Conference Proceedings held on March 10"
+        )
+        assert not _describes_proceeding(
+            "Clerk's notice providing Zoom access information"
+        )
+        # A bare transcript ORDER is a private purchase request, not a record.
+        assert not _describes_proceeding("ORDER for Transcript")
+        # The standard clerk's-notice Zoom boilerplate says "proceedings held
+        # BY telephone or videoconference" — a scheduling notice, NOT a record.
+        # Requiring "held before/on" keeps it out (the status-conference-1
+        # false positive surfaced by the heal dry-run).
+        assert not _describes_proceeding(
+            "CLERK'S NOTICE SETTING STATUS CONFERENCE HEARING. This proceeding "
+            "will be held on a date. Persons granted access to court proceedings "
+            "held by telephone or videoconference are reminded that recording is "
+            "prohibited."
+        )
+        assert not _describes_proceeding(None)
+        assert not _describes_proceeding("")
+
+    def test_proceeding_record_rank(self):
+        # Substantive accounts rank above transcript filings.
+        assert (
+            _proceeding_record_rank("Minute Entry for proceedings held before X") == 0
+        )
+        assert (
+            _proceeding_record_rank("Parties stated appearances; under submission") == 0
+        )
+        assert (
+            _proceeding_record_rank("Transcript of Proceedings held on 03/24/2026") == 1
+        )
+        assert _proceeding_record_rank(None) == 0
+
+    def test_hearing_date_tokens(self):
+        # 20:30 UTC on 3/24 is 4:30 PM EDT — same court-local date.
+        toks = _hearing_date_tokens(
+            {
+                "starts_at_utc": "2026-03-24T20:30:00+00:00",
+                "timezone": "America/New_York",
+            }
+        )
+        assert "3/24/2026" in toks
+        assert "03/24/2026" in toks
+        assert "3/24/26" in toks
+        assert "March 24, 2026" in toks
+        # No start -> no tokens (the date filter then doesn't apply).
+        assert _hearing_date_tokens({"starts_at_utc": None}) == []
+        # Unparseable start -> no tokens.
+        assert _hearing_date_tokens({"starts_at_utc": "not-a-date"}) == []
+        # Missing timezone falls back to the UTC date.
+        assert "3/24/2026" in _hearing_date_tokens(
+            {"starts_at_utc": "2026-03-24T12:00:00+00:00"}
+        )
+        # Unrecognized timezone falls back to the UTC date rather than raising.
+        assert "3/24/2026" in _hearing_date_tokens(
+            {"starts_at_utc": "2026-03-24T12:00:00+00:00", "timezone": "Not/AZone"}
+        )
+
+    def test_proceeding_types(self):
+        assert _proceeding_types("Sentencing as to X") == {"sentencing"}
+        assert _proceeding_types("status-conf-ding-2") == {"status conference"}
+        assert _proceeding_types("Initial Appearance") == {"initial appearance"}
+        assert _proceeding_types("Arraignment held") == {"arraignment"}
+        assert _proceeding_types("Change of Plea Hearing") == {"plea"}
+        assert _proceeding_types("Motion in Limine Hearing") == {"motion"}
+        assert _proceeding_types("Order to Show Cause Hearing") == {"show cause"}
+        assert _proceeding_types("Charging Conference") == {"charging conference"}
+        # A bare "trial" tags trial; "pretrial" tags only pretrial (it contains
+        # "trial" as a substring but is a distinct proceeding).
+        assert _proceeding_types("Jury Trial day 2") == {"trial"}
+        assert _proceeding_types("Pretrial Conference") == {"pretrial"}
+        assert _proceeding_types("pre-trial conference") == {"pretrial"}
+        # A row keyed for both (e.g. "Final Pretrial / Jury Trial") keeps both.
+        assert _proceeding_types("Jury Trial and Final Pretrial Conference") == {
+            "trial",
+            "pretrial",
+        }
+        # A "motion-hearing-pretrial" key carries motion + pretrial, not trial.
+        assert _proceeding_types("motion-hearing-pretrial-akhter-3") == {
+            "motion",
+            "pretrial",
+        }
+        assert _proceeding_types(None) == set()
+        assert _proceeding_types("Notice of courtroom change") == set()
+
+    def test_record_proceeding_name(self):
+        # Dominant format: name sits after "Judge <name>:" and before "as to".
+        assert (
+            _record_proceeding_name(
+                "Minute Entry for proceedings held before Judge Vince Chhabria: "
+                "Status Conference as to Linwei Ding held on 5/26/2026. "
+                "Sentencing set for 6/1/2026."
+            )
+            == "Status Conference"
+        )
+        # "MINUTES OF <name>" format: name sits after "minutes of".
+        assert (
+            _record_proceeding_name(
+                "MINUTES OF Status Conference held before Judge Blumenfeld: "
+                "The Court heard from the parties."
+            )
+            == "Status Conference"
+        )
+        # A body that mentions a future Sentencing does NOT change the name.
+        assert "Sentencing" not in _record_proceeding_name(
+            "Minute Entry before Judge X: Change of Plea Hearing held on 1/2/2026. "
+            "Sentencing set for 3/3/2026."
+        )
+        # No recognizable preamble -> full text (fallback).
+        assert _record_proceeding_name("Some freeform note") == "Some freeform note"
+
+    def test_is_admin_notice(self):
+        assert _is_admin_notice("Clerk's notice providing Zoom access information")
+        assert _is_admin_notice("NOTICE OF COURTROOM CHANGE")
+        # A record that mentions clerk's NOTES is not a mere setup notice —
+        # the proceeding-record check wins.
+        assert not _is_admin_notice("Electronic Clerk's Notes for proceedings held")
+        assert not _is_admin_notice("Motion Hearing held; under submission")
+        assert not _is_admin_notice(None)
+
+    def test_entry_records_proceeding(self):
+        assert _entry_records_proceeding(
+            {"description": "Minute Entry for proceedings held before Judge X"}
+        )
+        assert _entry_records_proceeding(
+            {"description": "", "short_description": "Transcript of Proceedings held"}
+        )
+        # recap-document description path
+        assert _entry_records_proceeding(
+            {"recap_documents": [{"description": "Minute Entry: hearing held before"}]}
+        )
+        assert not _entry_records_proceeding(
+            {"description": "CLERK'S NOTICE RE: ZOOM ACCESS"}
+        )
+        assert not _entry_records_proceeding({"description": ""})
+
+    def test_best_proceeding_notes(self):
+        # Target is an admin notice; a sibling records the proceeding.
+        target = {"hearing_key": "a", "notes": "Clerk's notice re Zoom access"}
+        sibling = {"hearing_key": "b", "notes": "Motion hearing held; under submission"}
+        assert _best_proceeding_notes(target, [target, sibling]) == sibling["notes"]
+
+        # Target already records the proceeding — leave it alone.
+        rec_target = {"hearing_key": "a", "notes": "Hearing held; under submission"}
+        assert (
+            _best_proceeding_notes(
+                rec_target,
+                [
+                    rec_target,
+                    {"hearing_key": "b", "notes": "Transcript of Proceedings"},
+                ],
+            )
+            is None
+        )
+
+        # No sibling describes the proceeding — leave the target alone.
+        admin_only = {"hearing_key": "a", "notes": "Clerk's notice"}
+        assert (
+            _best_proceeding_notes(
+                admin_only,
+                [admin_only, {"hearing_key": "b", "notes": "Another clerk's notice"}],
+            )
+            is None
+        )
+
+        # Among multiple record siblings, the richest description wins.
+        t = {"hearing_key": "a", "notes": "Zoom access notice"}
+        short = {"hearing_key": "b", "notes": "held before judge"}
+        longest = {
+            "hearing_key": "c",
+            "notes": (
+                "Minute entry for proceedings held before Judge; parties stated "
+                "appearances and argued at length"
+            ),
+        }
+        assert _best_proceeding_notes(t, [t, short, longest]) == longest["notes"]
+
+    def test_proceeding_notes_from_entry_strips_trailing_metadata(self):
+        # The stacked trailing clerk/court-staff parentheticals are stripped;
+        # the substantive minute-entry text is kept verbatim.
+        entry = {
+            "description": (
+                "Minute Entry for proceedings held before Judge Lin: Motion "
+                "Hearing held on 3/24/2026. Court took the matter under "
+                "submission. (This is a text-only entry generated by the court. "
+                "There is no document associated with this entry.) (afm, COURT "
+                "STAFF) (Date Filed: 3/24/2026) (Entered: 03/24/2026)"
+            ),
+            "short_description": "",
+        }
+        out = _proceeding_notes_from_entry(entry)
+        assert out is not None
+        assert out.endswith("Court took the matter under submission.")
+        assert "COURT STAFF" not in out
+        assert "Date Filed" not in out
+        assert "Entered" not in out
+        assert "text-only entry" not in out
+        # short_description fallback when description is empty
+        assert (
+            _proceeding_notes_from_entry(
+                {"description": "", "short_description": "Transcript of Proceedings"}
+            )
+            == "Transcript of Proceedings"
+        )
+        # nothing usable -> None
+        assert (
+            _proceeding_notes_from_entry({"description": "", "short_description": ""})
+            is None
+        )
+
+
+class TestMarkHeldSupersedesAdminNotes:
+    """MARK_HELD adopts the proceeding record's notes when the existing notes
+    are a pre-hearing administrative notice — the anthropic-v-dow
+    pi-motion-hearing regression, where a minute entry marked the PI hearing
+    held but the description stayed frozen on a clerk's Zoom-access notice."""
+
+    _ADMIN = "Clerk's notice providing Zoom access information for the PI hearing."
+    _RECORD = "Motion Hearing on Preliminary Injunction held; parties argued; under submission."
+
+    def test_mark_held_supersedes_admin_notice(self, store, case, monkeypatch):
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                1: [
+                    {
+                        "type": "ADD_HEARING",
+                        "hearing_key": "pi-hearing",
+                        "hearing_type": "motion_hearing",
+                        "title": "PI Motion Hearing",
+                        "local_date": "2026-03-24",
+                        "local_time": "13:30",
+                        "notes": self._ADMIN,
+                    }
+                ],
+                2: [
+                    {
+                        "type": "MARK_HELD",
+                        "hearing_key": "pi-hearing",
+                        "notes": self._RECORD,
+                    }
+                ],
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "CLERK'S NOTICE RE: ZOOM ACCESS for PI hearing 3/24")
+        )
+        syncer.process_entry(
+            case,
+            100,
+            _entry(
+                2,
+                "Minute Entry for proceedings held before Judge: Motion Hearing re "
+                "Preliminary Injunction. Parties stated appearances.",
+            ),
+        )
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+        # The minute entry's account replaced the clerk's-notice paraphrase.
+        assert h["notes"] == self._RECORD
+
+    def test_mark_held_keeps_existing_proceeding_notes(self, store, case, monkeypatch):
+        # When the existing notes already describe the proceeding, a later
+        # MARK_HELD does NOT clobber them with a thinner record's notes.
+        existing_record = "Motion Hearing held; matter taken under submission."
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                1: [
+                    {
+                        "type": "ADD_HEARING",
+                        "hearing_key": "pi-hearing",
+                        "hearing_type": "motion_hearing",
+                        "title": "PI Motion Hearing",
+                        "local_date": "2026-03-24",
+                        "local_time": "13:30",
+                        "notes": existing_record,
+                    }
+                ],
+                2: [
+                    {
+                        "type": "MARK_HELD",
+                        "hearing_key": "pi-hearing",
+                        "notes": "transcript of proceedings held",
+                    }
+                ],
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "Minute Entry: Motion Hearing held; under submission")
+        )
+        syncer.process_entry(
+            case, 100, _entry(2, "Transcript of Proceedings held on 03/24/2026")
+        )
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+        assert h["notes"] == existing_record
+
+    def test_mark_held_does_not_supersede_from_non_record_entry(
+        self, store, case, monkeypatch
+    ):
+        # The held-trigger entry is a judgment, not a record of the proceeding
+        # itself — the admin notes are left in place (the supersede gate is on
+        # the ENTRY being a proceeding record).
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                1: [
+                    {
+                        "type": "ADD_HEARING",
+                        "hearing_key": "pi-hearing",
+                        "hearing_type": "motion_hearing",
+                        "title": "PI Motion Hearing",
+                        "local_date": "2026-03-24",
+                        "local_time": "13:30",
+                        "notes": self._ADMIN,
+                    }
+                ],
+                2: [
+                    {
+                        "type": "MARK_HELD",
+                        "hearing_key": "pi-hearing",
+                        "notes": "marked held from a non-record entry",
+                    }
+                ],
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "CLERK'S NOTICE RE: ZOOM ACCESS for PI hearing 3/24")
+        )
+        # Passes the hearing pre-filter (so the stubbed MARK_HELD applies) but
+        # is NOT itself the record of a held proceeding, so it must not
+        # supersede the existing notes.
+        syncer.process_entry(
+            case,
+            100,
+            _entry(2, "NOTICE OF HEARING: PI motion hearing set for 3/24/2026"),
+        )
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+        assert h["notes"] == self._ADMIN
+
+    def test_mark_held_falls_back_to_entry_text_when_action_has_no_notes(
+        self, store, case, monkeypatch
+    ):
+        # The LLM routinely omits `notes` on a MARK_HELD for an already-held
+        # row — the live anthropic-v-dow case. The supersede must then fall
+        # back to the record entry's own text (trailing metadata stripped).
+        minute = (
+            "Minute Entry for proceedings held before Judge: Motion Hearing re "
+            "Preliminary Injunction held on 3/24/2026. Parties stated "
+            "appearances. Court took the matter under submission. (afm, COURT "
+            "STAFF) (Date Filed: 3/24/2026)"
+        )
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                1: [
+                    {
+                        "type": "ADD_HEARING",
+                        "hearing_key": "pi-hearing",
+                        "hearing_type": "motion_hearing",
+                        "title": "PI Motion Hearing",
+                        "local_date": "2026-03-24",
+                        "local_time": "13:30",
+                        "notes": self._ADMIN,
+                    }
+                ],
+                # MARK_HELD carries NO notes of its own.
+                2: [{"type": "MARK_HELD", "hearing_key": "pi-hearing"}],
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()})
+        syncer = CaseSyncer(cl, store)
+        syncer.process_entry(
+            case, 100, _entry(1, "CLERK'S NOTICE RE: ZOOM ACCESS for PI hearing 3/24")
+        )
+        syncer.process_entry(case, 100, _entry(2, minute))
+        h = store.get_hearings("us-v-x")[0]
+        assert h["status"] == "held"
+        assert h["notes"].endswith("Court took the matter under submission.")
+        assert "COURT STAFF" not in h["notes"]
+        assert "Clerk's notice" not in h["notes"]
+
+
+class TestDedupeAdoptsProceedingNotes:
+    """A dedupe MERGE_INTO (and the deterministic held merge) gives the
+    survivor an absorbed sibling's proceeding-record notes when the target's
+    own notes are a pre-hearing administrative notice — the second half of the
+    anthropic-v-dow regression, where the near-slot merge kept the canonical
+    row's clerk's-notice description and discarded the sibling's minute-entry
+    account."""
+
+    _ADMIN = "Clerk's notice providing Zoom access information."
+    _RECORD = "Motion Hearing held; parties stated appearances; under submission."
+
+    def _seed_pair(self, store, *, target_notes, sibling_notes, status, when):
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "pi-hearing",
+                "title": "PI Motion Hearing",
+                "starts_at_utc": when,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": status,
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1, 2, 3],
+                "notes": target_notes,
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "proceedings-2",
+                "title": "Proceedings",
+                "starts_at_utc": when,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": status,
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [9],
+                "notes": sibling_notes,
+            }
+        )
+
+    def test_merge_into_adopts_sibling_proceeding_notes(self, store, case, monkeypatch):
+        self._seed_pair(
+            store,
+            target_notes=self._ADMIN,
+            sibling_notes=self._RECORD,
+            status="scheduled",
+            when="2099-04-14T15:00:00+00:00",
+        )
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "pi-hearing",
+                "reason": "Same slot — clerk-notice key vs transcript key.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "proceedings-2" not in rows
+        # The survivor took the absorbed sibling's proceeding-record notes.
+        assert rows["pi-hearing"]["notes"] == self._RECORD
+
+    def test_merge_into_keeps_target_proceeding_notes(self, store, case, monkeypatch):
+        # Target already records the proceeding — don't churn its notes.
+        target_record = "Motion Hearing held; under submission (canonical)."
+        self._seed_pair(
+            store,
+            target_notes=target_record,
+            sibling_notes="Transcript of Proceedings held",
+            status="scheduled",
+            when="2099-04-14T15:00:00+00:00",
+        )
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "pi-hearing",
+                "reason": "Same slot.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["pi-hearing"]["notes"] == target_record
+
+    def test_held_dedupe_adopts_sibling_proceeding_notes(
+        self, store, case, monkeypatch
+    ):
+        # The deterministic held-row merge gets the same treatment.
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "mad",
+                    "docket_number": "1:25-cr-00001-X",
+                    "case_name": "United States v. X",
+                    "absolute_url": f"/docket/{did}/x/",
+                },
+            )
+        slot = "2026-02-19T16:00:00+00:00"
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10, 11, 12],
+                "notes": self._ADMIN,
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x-2",
+                "title": "Sentencing",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 101,
+                "source_entry_ids": [99],
+                "notes": self._RECORD,
+            }
+        )
+        stub_verify(monkeypatch)
+
+        def boom(*a, **k):
+            raise AssertionError("held dedupe should be deterministic")
+
+        monkeypatch.setattr(llm_mod, "resolve_duplicate_hearings", boom)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_held"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-x-2" not in rows
+        # Canonical (more sources) survived but adopted the sibling's record.
+        assert rows["sentencing-x"]["notes"] == self._RECORD
+
+
+class TestHealProceedingNotes:
+    """Deterministic backfill that fixes hearings whose notes regressed to a
+    pre-hearing administrative notice, using each row's own record source
+    entries — the cross-database heal for rows already collapsed in the store
+    (where the rich-notes sibling was deleted by a dedupe merge and re-running
+    sync can't recover them)."""
+
+    _ADMIN = "Clerk's notice providing Zoom access information."
+    _MINUTE = (
+        "Minute Entry for proceedings held before Judge: Motion Hearing held "
+        "on 3/24/2026. Parties stated appearances. Court took the matter under "
+        "submission. (afm, COURT STAFF) (Date Filed: 3/24/2026)"
+    )
+    _MINUTE_CLEAN = (
+        "Minute Entry for proceedings held before Judge: Motion Hearing held "
+        "on 3/24/2026. Parties stated appearances. Court took the matter under "
+        "submission."
+    )
+
+    def _seed_hearing(self, store, key, notes, sources, status="held"):
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": key,
+                "title": key.replace("-", " ").title(),
+                "starts_at_utc": "2026-03-24T20:30:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": status,
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": sources,
+                "notes": notes,
+            }
+        )
+
+    def _seed_entry(self, store, eid, desc):
+        store.mark_entry(
+            100, eid, "2026-03-24T00:00:00-07:00", f"fp-{eid}", description=desc
+        )
+
+    def _seed_world(self, store):
+        # A clerk's notice (not a record) and the minute entry that records the
+        # Motion Hearing proceeding on 3/24/2026.
+        self._seed_entry(store, 112, "CLERK'S NOTICE RE: ZOOM ACCESS for PI hearing")
+        self._seed_entry(store, 123, self._MINUTE)
+        # A record-shaped source whose text is ENTIRELY trailing metadata, so
+        # the cleaner returns nothing — exercises the "record entry but no
+        # usable text" guard (must not feed None into the richest-record pick).
+        self._seed_entry(
+            store, 124, "(Minute Entry generated by the court, afm, COURT STAFF)"
+        )
+        # A non-record source for the no-record case.
+        self._seed_entry(store, 130, "CLERK'S NOTICE OF COURTROOM CHANGE")
+        # A record for a DIFFERENT proceeding on a DIFFERENT date — the
+        # cross-proceeding date trap: a real minute entry whose date doesn't
+        # match the row's, so it must NOT heal the row.
+        self._seed_entry(
+            store,
+            140,
+            "Minute Entry for proceedings held before Judge: Status Conference "
+            "held on 1/15/2020. Parties appeared.",
+        )
+        # A Status Conference record on the SAME date as the row (3/24/2026) —
+        # the cross-proceeding TYPE trap: date matches but the proceeding kind
+        # doesn't, so a sentencing-keyed row must not adopt it. Its BODY even
+        # mentions a future "Sentencing", which must NOT make it look like a
+        # sentencing record (the type match runs on the head, before the date).
+        self._seed_entry(
+            store,
+            150,
+            "Minute Entry for proceedings held before Judge: Status Conference "
+            "held on 3/24/2026. Sentencing set for 6/1/2026.",
+        )
+        # Record sources for the good / curated rows (proving they're skipped
+        # for reasons other than "no record available").
+        self._seed_entry(store, 200, "Minute Entry: proceedings held; argued")
+        self._seed_entry(store, 201, "Minute Entry: proceedings held; argued")
+        self._seed_entry(store, 203, self._MINUTE)
+
+        # Regression, UNTYPED key: admin notes + a Motion-Hearing minute-entry
+        # source (plus the empty-text record 124). The key has no recognizable
+        # proceeding type, so the type guard is bypassed and the date match
+        # alone heals it from record 123.
+        self._seed_hearing(store, "pi-hearing", self._ADMIN, [112, 124, 123])
+        # Regression, TYPED key that MATCHES the record's type (motion) and
+        # date -> healed.
+        self._seed_hearing(store, "motion-hearing-typed", self._ADMIN, [123])
+        # Regression, TYPED key (sentencing) whose only same-date record is a
+        # STATUS CONFERENCE -> untouched (type guard), even though the date
+        # matches. This is the sentencing-ding-class mismatch.
+        self._seed_hearing(store, "sentencing-typed", self._ADMIN, [150])
+        # Admin notes but NO source entries at all -> untouched.
+        self._seed_hearing(store, "no-sources-hearing", self._ADMIN, [])
+        # Admin notes + a record source whose date (1/15/2020) does NOT match
+        # the row's date (3/24/2026) -> untouched.
+        self._seed_hearing(store, "wrong-date-hearing", self._ADMIN, [140])
+        # Empty notes + a minute-entry source -> healed.
+        self._seed_hearing(store, "empty-hearing", None, [203])
+        # Already describes the proceeding -> untouched.
+        self._seed_hearing(
+            store, "good-hearing", "Motion Hearing held; under submission", [200]
+        )
+        # Curated non-administrative note -> untouched.
+        self._seed_hearing(
+            store,
+            "curated-hearing",
+            "Oral argument on cross-motions; 30 min/side",
+            [201],
+        )
+        # Admin notes but no record among the sources -> untouched.
+        self._seed_hearing(store, "no-record-hearing", self._ADMIN, [130])
+
+    _HEALED = {"pi-hearing", "motion-hearing-typed", "empty-hearing"}
+
+    def test_dry_run_reports_without_mutating(self, store):
+        self._seed_world(store)
+        changes = heal_proceeding_notes(store, apply=False)
+        healed = {c["hearing_key"] for c in changes}
+        assert healed == self._HEALED
+        # Nothing written.
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["pi-hearing"]["notes"] == self._ADMIN
+        assert rows["empty-hearing"]["notes"] is None
+
+    def test_apply_heals_regressed_rows_only(self, store):
+        self._seed_world(store)
+        changes = heal_proceeding_notes(store, apply=True)
+        healed = {c["hearing_key"] for c in changes}
+        assert healed == self._HEALED
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # Healed rows now carry the cleaned minute-entry text.
+        assert rows["pi-hearing"]["notes"] == self._MINUTE_CLEAN
+        assert rows["motion-hearing-typed"]["notes"] == self._MINUTE_CLEAN
+        assert rows["empty-hearing"]["notes"] == self._MINUTE_CLEAN
+        # Untouched rows keep their notes — including the same-date but
+        # wrong-TYPE sentencing row.
+        assert rows["sentencing-typed"]["notes"] == self._ADMIN
+        assert rows["wrong-date-hearing"]["notes"] == self._ADMIN
+        assert rows["good-hearing"]["notes"] == "Motion Hearing held; under submission"
+        assert (
+            rows["curated-hearing"]["notes"]
+            == "Oral argument on cross-motions; 30 min/side"
+        )
+        assert rows["no-record-hearing"]["notes"] == self._ADMIN
+        # Idempotent: a second pass finds nothing.
+        assert heal_proceeding_notes(store, apply=True) == []
+
+    def test_no_regressions_returns_empty(self, store):
+        self._seed_entry(store, 200, "Minute Entry: proceedings held")
+        self._seed_hearing(
+            store, "good-hearing", "Motion Hearing held; under submission", [200]
+        )
+        assert heal_proceeding_notes(store, apply=True) == []

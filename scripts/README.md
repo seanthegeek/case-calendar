@@ -61,6 +61,45 @@ uv run python scripts/classify_significance.py --apply
 Flags: `--db <path>` (default `data/case-calendar.sqlite`), `--all` (every row,
 not just NULL), `--apply` (persist; omit for a dry run).
 
+### `heal_proceeding_notes.py`
+
+Backfill hearings whose calendar description (`notes`) regressed to a
+pre-hearing administrative notice — a clerk's notice of Zoom access / courtroom
+change / scheduling — instead of the record of what actually happened. The
+sweep (`sync.heal_proceeding_notes`) is **deterministic**: no LLM, no
+CourtListener. For every hearing whose notes are empty or an administrative
+notice but whose source entries include the *record* of the proceeding (a
+minute entry / transcript / clerk's notes of proceedings held), it rebuilds the
+notes from that record's own docket text. Hearings that already describe the
+proceeding, and hearings carrying a curated non-administrative note, are left
+untouched. Because a row's source list legitimately pools related proceedings
+(the status conference that *scheduled* a hearing is one of its sources), the
+chosen record must both restate the row's own date AND name the same kind of
+proceeding the row is keyed for — so a `Sentencing` row won't adopt a same-date
+`Status Conference` minute entry, and a row nothing in its sources clearly
+matches is left alone.
+
+Why: the sync-time fix (the MARK_HELD supersede + dedupe-aware notes selection
+in `sync.py`) only prevents *new* regressions. A row already collapsed in the
+store stays collapsed — the sibling that held the good notes was deleted by the
+dedupe merge, so re-running `sync` can't recover it. This sweep is how you fix
+the rows already in the store, in one pass.
+
+```bash
+# Dry run: list the hearings it would heal (old -> new), change nothing.
+uv run python scripts/heal_proceeding_notes.py
+
+# Write the healed notes back to the store.
+uv run python scripts/heal_proceeding_notes.py --apply
+```
+
+Flags: `--db <path>` (default `data/case-calendar.sqlite`), `--apply` (persist;
+omit for a dry run). It only rewrites the `notes` column — never schema,
+status, dates, or source lists — but back up the store before `--apply` if you
+care about the DB (see [AGENTS.md](../AGENTS.md)). Re-emit (or let the next
+sync's auto-emit) afterward so the ICS feeds and index page pick up the new
+text.
+
 ## Webhook testing
 
 ### `test_webhook.py`

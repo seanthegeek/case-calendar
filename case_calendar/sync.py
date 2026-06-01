@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
@@ -399,6 +399,404 @@ def _mark_held_date_matches(
     except (ValueError, TypeError):
         return True
     return abs((existing_date - action_date).days) <= tolerance_days
+
+
+# A docket entry that RECORDS a proceeding that already happened — a minute
+# entry / minute order / "minutes of", an electronic clerk's-notes entry, or a
+# transcript "of proceedings held" — is the authoritative account of what
+# occurred at the hearing. A PRE-HEARING administrative notice (clerk's notice
+# of Zoom access / courtroom change / scheduling) sets the hearing up but says
+# nothing about what happened at it. The regexes below let the notes-selection
+# rules prefer the proceeding record over the setup notice. Without this,
+# MARK_HELD preserved whatever notes were last written (often the setup notice)
+# and a dedupe MERGE_INTO kept the canonical row's notes regardless of which
+# sibling actually described the proceeding — so a calendar description could
+# freeze at "Clerk's notice providing Zoom access information" even after the
+# docket recorded the argument (the anthropic-v-dow pi-motion-hearing
+# regression).
+#
+# Two false-positive traps the patterns deliberately avoid:
+#   - The standard clerk's-notice Zoom boilerplate ("...access to court
+#     proceedings held BY telephone or videoconference are reminded...") would
+#     match a bare "proceedings held", wrongly tagging a scheduling notice as a
+#     record. So the "proceedings held" alternative requires "held BEFORE" or
+#     "held ON <date>" — a record's phrasing, not the boilerplate's "held by".
+#   - A bare "transcript order" / "order for transcript" is a private purchase
+#     request, not a record, so the transcript alternative requires the
+#     "...proceedings held" tail.
+_PROCEEDING_RECORD_RE = re.compile(
+    r"minute entry"
+    r"|minute order"
+    r"|minutes of"
+    r"|clerk'?s? notes"
+    r"|transcript\s+of\s+(?:[a-z ]*?\s)?proceedings?\s+held"
+    r"|proceedings?\s+(?:were\s+)?held\s+(?:before|on)\b"
+    r"|held\s+before"
+    r"|stated\s+appearances"
+    r"|under\s+submission",
+    re.IGNORECASE,
+)
+
+# A transcript FILING also records a proceeding, but its text is filing
+# logistics (court reporter, redaction-request and release deadlines), so it
+# ranks BELOW a substantive minute-entry/clerk's-notes record when both are
+# available for the same hearing — see _proceeding_record_rank.
+_TRANSCRIPT_RECORD_RE = re.compile(
+    r"transcript\s+of\s+(?:[a-z ]*?\s)?proceedings?\s+held",
+    re.IGNORECASE,
+)
+
+_ADMIN_NOTICE_RE = re.compile(
+    r"clerk'?s? notice"
+    r"|notice\s+(?:re|of)\b"
+    r"|zoom\s+(?:access|webinar|information|link)"
+    r"|providing\s+zoom"
+    r"|courtroom\s+change"
+    r"|audio\s+observation"
+    r"|access\s+information",
+    re.IGNORECASE,
+)
+
+
+def _describes_proceeding(text: Optional[str]) -> bool:
+    """True when ``text`` reads like the RECORD of a held proceeding."""
+    return bool(text) and bool(_PROCEEDING_RECORD_RE.search(text))
+
+
+def _proceeding_record_rank(text: Optional[str]) -> int:
+    """Selection rank among proceeding records — lower is better.
+
+    0 = a substantive account (minute entry / clerk's notes), 1 = a transcript
+    filing (whose text is filing logistics). When a hearing has both kinds of
+    record among its sources, the substantive one is the better description, so
+    callers sort by ``(rank, -length)``.
+    """
+    return 1 if (text and _TRANSCRIPT_RECORD_RE.search(text)) else 0
+
+
+def _is_admin_notice(text: Optional[str]) -> bool:
+    """True when ``text`` reads like a pre-hearing administrative notice.
+
+    A proceeding record can itself mention "clerk's notes", so the record
+    check wins — text that describes what happened is never treated as a mere
+    setup notice.
+    """
+    return (
+        bool(text)
+        and bool(_ADMIN_NOTICE_RE.search(text))
+        and not _describes_proceeding(text)
+    )
+
+
+def _entry_records_proceeding(entry: dict[str, Any]) -> bool:
+    """True when the docket ENTRY is the record of a held proceeding.
+
+    Covers minute entries, electronic clerk's notes, and transcripts of
+    proceedings held — the entries whose own text describes what happened at a
+    hearing, as opposed to a notice that merely scheduled or set it up.
+    """
+    parts = [entry.get("description"), entry.get("short_description")]
+    parts.extend(rd.get("description") for rd in (entry.get("recap_documents") or []))
+    text = " | ".join(p for p in parts if p)
+    return _describes_proceeding(text)
+
+
+def _best_proceeding_notes(
+    target: dict[str, Any], cluster: list[dict[str, Any]]
+) -> Optional[str]:
+    """Choose the most informative notes for a dedupe survivor.
+
+    The dedupe MERGE_INTO target is chosen by key descriptiveness / source
+    count, which is unrelated to which row actually describes the proceeding.
+    When the target's notes do NOT record the proceeding but an absorbed
+    sibling's do, return that sibling's notes so the surviving row carries the
+    account of what happened rather than the survivor's setup notice. Returns
+    ``None`` to leave the target's notes unchanged — either the target already
+    records the proceeding, or no sibling describes it any better.
+    """
+    if _describes_proceeding(target.get("notes")):
+        return None
+    target_key = target.get("hearing_key")
+    candidates = [
+        h
+        for h in cluster
+        if h.get("hearing_key") != target_key and _describes_proceeding(h.get("notes"))
+    ]
+    if not candidates:
+        return None
+    # Prefer a substantive record over a transcript filing; then the richest
+    # description; stable tie-break on hearing_key.
+    best = min(
+        candidates,
+        key=lambda h: (
+            _proceeding_record_rank(h.get("notes")),
+            -len(h.get("notes") or ""),
+            h.get("hearing_key") or "",
+        ),
+    )
+    return best.get("notes")
+
+
+# Trailing clerk / court-staff metadata PACER appends to a docket entry's text
+# — "(afm, COURT STAFF)", "(Date Filed: 3/24/2026)", "(Entered: 03/24/2026)",
+# "(This is a text-only entry ... There is no document associated ...)". Useful
+# to nobody reading a calendar, so we strip it when promoting a record entry's
+# own text into a hearing's notes.
+_DOCKET_TEXT_TRAILER_RE = re.compile(
+    r"\s*\((?:[^()]*\b(?:COURT STAFF|Date Filed|Entered|text-only entry|"
+    r"no document associated)\b[^()]*)\)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _proceeding_notes_from_entry(entry: dict[str, Any]) -> Optional[str]:
+    """The record entry's own text, lightly trimmed, for use as hearing notes.
+
+    The docket text of a minute entry / transcript / clerk's notes IS the
+    account of the proceeding. This is the fallback the MARK_HELD supersede
+    rule and the heal sweep use when no cleaner LLM-written notes are available
+    — the LLM routinely omits ``notes`` on a MARK_HELD action for an
+    already-held row. Only the trailing clerk/court-staff metadata
+    parentheticals are stripped; the substantive text is left verbatim.
+    """
+    text = (entry.get("description") or entry.get("short_description") or "").strip()
+    # Strip the trailing metadata groups one at a time (there are usually
+    # several stacked: the text-only note, the staff initials, Date Filed,
+    # Entered).
+    while True:
+        stripped = _DOCKET_TEXT_TRAILER_RE.sub("", text).rstrip()
+        if stripped == text:
+            break
+        text = stripped
+    return text or None
+
+
+_MONTH_NAMES = (
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+)
+
+
+def _hearing_date_tokens(hearing: dict[str, Any]) -> list[str]:
+    """Court-local date of a hearing, rendered the ways a docket entry writes it.
+
+    A minute entry for a held proceeding restates the date ("...held on
+    3/24/2026"), so the heal sweep uses these tokens to confirm a candidate
+    record actually describes THIS hearing rather than a sibling proceeding
+    that merely shares the row's source list (a sentencing row must not adopt a
+    status-conference record). Returns numeric (padded / unpadded, 4- and
+    2-digit year) and spelled-month forms; empty when the hearing has no start.
+    """
+    starts = hearing.get("starts_at_utc")
+    if not starts:
+        return []
+    try:
+        dt = datetime.fromisoformat(starts)
+    except (ValueError, TypeError):
+        return []
+    tzname = hearing.get("timezone")
+    if tzname:
+        try:
+            dt = dt.astimezone(ZoneInfo(tzname))
+        except (ZoneInfoNotFoundError, ValueError):
+            pass  # fall back to the UTC date when the tz is unrecognized
+    d = dt.date()
+    m, day, y, yy = d.month, d.day, d.year, d.year % 100
+    return [
+        f"{m}/{day}/{y}",
+        f"{m:02d}/{day:02d}/{y}",
+        f"{m}/{day}/{yy:02d}",
+        f"{m:02d}/{day:02d}/{yy:02d}",
+        f"{_MONTH_NAMES[m - 1]} {day}, {y}",
+    ]
+
+
+# Proceeding-type vocabulary: each canonical tag plus the pattern that signals
+# it in a lowercased, hyphen-normalized blob. The heal sweep reduces both the
+# hearing (key + title) and a candidate record to type tags and requires them
+# to overlap, so a "sentencing" row can't adopt a "status conference" record
+# that merely fell on the same date (date-matching alone can't tell them
+# apart). An untyped row imposes no type constraint.
+_PROCEEDING_TYPE_SIGNALS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("sentencing", re.compile(r"sentenc")),
+    ("status conference", re.compile(r"status conf")),
+    ("initial appearance", re.compile(r"initial appearance")),
+    ("arraignment", re.compile(r"arraign")),
+    ("plea", re.compile(r"\bplea")),
+    ("pretrial", re.compile(r"pre ?trial")),
+    ("trial", re.compile(r"\btrial")),
+    ("motion", re.compile(r"motion|in limine|daubert|suppress")),
+    ("show cause", re.compile(r"show cause|\bosc\b")),
+    ("charging conference", re.compile(r"charging conf")),
+    ("oral argument", re.compile(r"oral arg")),
+    ("evidentiary", re.compile(r"evidentiary")),
+    ("detention", re.compile(r"detention")),
+)
+
+
+def _proceeding_types(text: Optional[str]) -> set[str]:
+    """The proceeding-type tags a hearing key/title or a record text signals.
+
+    Used by the heal sweep to require a candidate record to describe the SAME
+    KIND of proceeding the row is keyed for. An untyped row (no recognizable
+    type) returns an empty set, imposing no constraint.
+    """
+    if not text:
+        return set()
+    blob = text.lower().replace("-", " ")
+    tags = {tag for tag, rx in _PROCEEDING_TYPE_SIGNALS if rx.search(blob)}
+    if "trial" in tags and "pretrial" in tags:
+        # "pretrial" contains "trial"; keep the bare "trial" tag only if a
+        # standalone "trial" survives removing the pretrial phrase.
+        if not re.search(r"\btrial", re.sub(r"pre ?trial\w*", " ", blob)):
+            tags.discard("trial")
+    return tags
+
+
+# The proceeding a minute entry RECORDS is named at its head — the phrase right
+# after "...before Judge <name>:" (the dominant format) or right after
+# "MINUTES OF" — and ends at "as to <party>" / "held" / "before" / a period or
+# colon. Matching the proceeding type against ONLY this name (not the whole
+# text) separates "recorded a status conference" from a status conference whose
+# body says "...Sentencing set for <date>"; the latter mention is in the body,
+# never the name. (The sentencing-ding class: a sentencing row whose only
+# same-date source is the status-conference minute entry that SET the
+# sentencing date — that record names "Status Conference", so a
+# sentencing-typed row correctly declines it.)
+_PROCEEDING_NAME_RE = re.compile(
+    r"minutes?\s+of\s+(?P<a>.+?)(?:\s+(?:as to|held|before)\b|[.:]|$)"
+    r"|:\s*(?P<b>.+?)(?:\s+(?:as to|held|before)\b|[.:]|$)",
+    re.IGNORECASE,
+)
+
+
+def _record_proceeding_name(text: str) -> str:
+    """The proceeding a record NAMES (for type matching), or the full text.
+
+    Returns just the named proceeding ("Status Conference", "Change of Plea
+    Hearing") so a body mention of a different, future proceeding can't
+    masquerade as the record's own type. Falls back to the whole text for the
+    rare record that fits neither preamble.
+    """
+    m = _PROCEEDING_NAME_RE.search(text)
+    if not m:
+        return text
+    return m.group("a") or m.group("b") or text
+
+
+def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str, Any]]:
+    """Retroactively fix hearing notes that regressed to a setup notice.
+
+    Deterministic, no LLM. For every hearing whose notes are empty or a
+    pre-hearing administrative notice (clerk's notice of Zoom access /
+    courtroom change / scheduling) but whose source entries include the RECORD
+    of the proceeding (minute entry / transcript / clerk's notes of proceedings
+    held), replace the notes with that record's own text — the same preference
+    the MARK_HELD supersede and dedupe-aware notes-selection rules apply at
+    sync time, here applied to rows already collapsed in the store (the
+    sibling that held the good notes may already have been deleted by a dedupe
+    merge, so re-running sync can't recover them).
+
+    Two safeguards keep the blind source-list scan from attaching the WRONG
+    proceeding's record (a row's ``source_entry_ids`` legitimately pools
+    related proceedings — the status conference that scheduled a hearing is one
+    of its sources): the chosen record must (1) restate the row's own date
+    (``_hearing_date_tokens``) and (2) describe the same KIND of proceeding the
+    row is keyed for (``_proceeding_types``). A row no source record both
+    corroborates by date AND matches by type is left alone rather than guessed.
+
+    Hearings whose notes already describe the proceeding, and hearings that
+    carry a non-empty NON-administrative note (a deliberately curated
+    scheduling note that isn't the regression), are left untouched. Returns one
+    dict per changed row — ``case_id`` / ``hearing_key`` / ``old`` / ``new`` —
+    so a dry run can report what it would do. When ``apply`` is True the
+    changes are written and committed.
+    """
+    rows = store.conn.execute("SELECT * FROM hearings").fetchall()
+    changes: list[dict[str, Any]] = []
+    for row in rows:
+        h = Store._row_to_hearing(row)
+        notes = h.get("notes")
+        # Already describes the proceeding, or carries a curated non-setup note
+        # — neither is the regression class, so leave it alone.
+        if _describes_proceeding(notes):
+            continue
+        if notes and notes.strip() and not _is_admin_notice(notes):
+            continue
+        sids = h.get("source_entry_ids") or []
+        if not sids:
+            continue
+        # Look the source entries up by id directly — a hearing's sources can
+        # live on sibling dockets, so don't constrain by docket_id.
+        placeholders = ",".join("?" * len(sids))
+        entry_rows = store.conn.execute(
+            f"SELECT entry_id, description, short_description FROM entries "
+            f"WHERE entry_id IN ({placeholders})",
+            [int(s) for s in sids],
+        ).fetchall()
+        # A record only heals this row if it CORROBORATES the row's own date —
+        # the minute entry restates "...held on <date>". Without this, a row
+        # could adopt a sibling proceeding's record that merely shares its
+        # source list (a sentencing row picking up the status-conference minute
+        # entry that scheduled it). A row whose date no source record restates
+        # is left alone rather than guessed.
+        date_tokens = _hearing_date_tokens(h)
+        hearing_types = _proceeding_types(
+            f"{h.get('hearing_key') or ''} {h.get('title') or ''}"
+        )
+        candidates: list[str] = []
+        for er in entry_rows:
+            ed = dict(er)
+            if not _entry_records_proceeding(ed):
+                continue
+            text = _proceeding_notes_from_entry(ed)
+            if not text:
+                continue
+            if date_tokens and not any(tok in text for tok in date_tokens):
+                continue
+            # The record must describe the SAME KIND of proceeding the row is
+            # keyed for — a sentencing row must not adopt a status-conference
+            # record that happens to share its date + source list. Match the
+            # type against the proceeding the record NAMES, not its body (which
+            # may schedule a different, future proceeding).
+            if hearing_types and not (
+                hearing_types & _proceeding_types(_record_proceeding_name(text))
+            ):
+                continue
+            candidates.append(text)
+        if not candidates:
+            continue
+        # Prefer a substantive record (minute entry / clerk's notes) over a
+        # transcript filing, then the richest text. `best` is always a
+        # non-empty record text and `notes` is empty or an administrative
+        # notice here (the gates above), so it can never equal `notes` — no
+        # same-value guard needed.
+        best = min(candidates, key=lambda t: (_proceeding_record_rank(t), -len(t)))
+        changes.append(
+            {
+                "case_id": h.get("case_id"),
+                "hearing_key": h.get("hearing_key"),
+                "old": notes,
+                "new": best,
+            }
+        )
+        if apply:
+            merged = dict(h)
+            merged["notes"] = best
+            store.upsert_hearing(merged)
+    if apply and changes:
+        store.conn.commit()
+    return changes
 
 
 def _default_duration(hearing_type: str | None, time_set: bool) -> int:
@@ -1166,6 +1564,15 @@ class CaseSyncer:
                     merged_sources.append(sid)
         target["source_entry_ids"] = merged_sources
 
+        # Notes: the target was chosen for key descriptiveness / source count,
+        # which says nothing about which row actually describes the proceeding.
+        # If an absorbed sibling's notes record what happened and the target's
+        # don't, adopt the sibling's so the survivor carries the account of the
+        # proceeding rather than a pre-hearing setup notice.
+        better_notes = _best_proceeding_notes(target, cluster)
+        if better_notes is not None:
+            target["notes"] = better_notes
+
         # Record absorbed sibling keys + the LLM's reason on the
         # canonical's audit_notes so the audit trail of WHICH keys were
         # absorbed (and why) survives the sibling deletions.
@@ -1257,6 +1664,13 @@ class CaseSyncer:
                         seen.add(sid)
                         merged_sources.append(sid)
             target["source_entry_ids"] = merged_sources
+            # Adopt an absorbed sibling's proceeding-record notes when the
+            # canonical's notes don't describe the proceeding — same reasoning
+            # as the LLM-gated sweep: the canonical is picked by source count /
+            # recency, not by which row records what happened.
+            better_notes = _best_proceeding_notes(target, cluster)
+            if better_notes is not None:
+                target["notes"] = better_notes
             # Record the absorbed sibling keys on the canonical's
             # audit_notes so the audit trail of WHICH keys were absorbed
             # stays attached to the surviving row after the siblings are
@@ -1848,6 +2262,25 @@ class CaseSyncer:
                     source_entry_ids=prev_sources,
                     docket_id=sticky_docket_id,
                 )
+                # MARK_HELD normally preserves notes. But when the triggering
+                # entry is the RECORD of the proceeding (a minute entry /
+                # transcript / clerk's notes of proceedings held) and the
+                # existing notes don't already describe the proceeding —
+                # they're empty, or a pre-hearing administrative notice that
+                # merely set the hearing up — adopt the record's account so the
+                # calendar shows what happened, not the setup notice (the
+                # anthropic-v-dow pi-motion-hearing regression, where the notes
+                # were stuck on a clerk's Zoom-access notice). Prefer the LLM's
+                # own notes when it wrote any; fall back to the record entry's
+                # text, since the LLM routinely omits notes on a MARK_HELD for
+                # an already-held row.
+                new_notes = action.get("notes") or _proceeding_notes_from_entry(entry)
+                if (
+                    new_notes
+                    and _entry_records_proceeding(entry)
+                    and not _describes_proceeding(existing.get("notes"))
+                ):
+                    merged["notes"] = new_notes
                 self.store.upsert_hearing(merged)
             elif action.get("local_date"):
                 # Same as CANCEL_HEARING-on-unknown: a minute entry for a hearing
