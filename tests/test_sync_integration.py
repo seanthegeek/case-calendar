@@ -4917,6 +4917,7 @@ class TestProceedingRecordPredicates:
             "short_description": "",
         }
         out = _proceeding_notes_from_entry(entry)
+        assert out is not None
         assert out.endswith("Court took the matter under submission.")
         assert "COURT STAFF" not in out
         assert "Date Filed" not in out
