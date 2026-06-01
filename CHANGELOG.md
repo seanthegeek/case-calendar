@@ -53,8 +53,16 @@ adheres to [Semantic Versioning][semver].
   recover it). The sweep (`sync.heal_proceeding_notes`) is deterministic — no
   LLM, no CourtListener — and rebuilds each affected row's notes from its own
   record source entries (minute entry / transcript / clerk's notes), touching
-  only rows whose notes are empty or an administrative notice. Dry-run by
-  default; `--apply` writes the changes.
+  only rows whose notes are empty or an administrative notice. Because a row's
+  `source_entry_ids` legitimately pools related proceedings (the status
+  conference that *scheduled* a hearing is one of its sources), two safeguards
+  keep it from attaching the wrong proceeding's record: the chosen record must
+  (1) restate the row's own date and (2) NAME the same kind of proceeding the
+  row is keyed for (`Sentencing` row vs a same-date `Status Conference` minute
+  entry). A row no source record both corroborates by date and matches by type
+  is left alone rather than guessed. Substantive minute-entry/clerk's-notes
+  records are preferred over transcript filings. Dry-run by default; `--apply`
+  writes the changes.
 
 ## [0.14.0] - 2026-05-31
 

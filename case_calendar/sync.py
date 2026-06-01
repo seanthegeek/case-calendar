@@ -621,6 +621,79 @@ def _hearing_date_tokens(hearing: dict[str, Any]) -> list[str]:
     ]
 
 
+# Proceeding-type vocabulary: each canonical tag plus the pattern that signals
+# it in a lowercased, hyphen-normalized blob. The heal sweep reduces both the
+# hearing (key + title) and a candidate record to type tags and requires them
+# to overlap, so a "sentencing" row can't adopt a "status conference" record
+# that merely fell on the same date (date-matching alone can't tell them
+# apart). An untyped row imposes no type constraint.
+_PROCEEDING_TYPE_SIGNALS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
+    ("sentencing", re.compile(r"sentenc")),
+    ("status conference", re.compile(r"status conf")),
+    ("initial appearance", re.compile(r"initial appearance")),
+    ("arraignment", re.compile(r"arraign")),
+    ("plea", re.compile(r"\bplea")),
+    ("pretrial", re.compile(r"pre ?trial")),
+    ("trial", re.compile(r"\btrial")),
+    ("motion", re.compile(r"motion|in limine|daubert|suppress")),
+    ("show cause", re.compile(r"show cause|\bosc\b")),
+    ("charging conference", re.compile(r"charging conf")),
+    ("oral argument", re.compile(r"oral arg")),
+    ("evidentiary", re.compile(r"evidentiary")),
+    ("detention", re.compile(r"detention")),
+)
+
+
+def _proceeding_types(text: Optional[str]) -> set[str]:
+    """The proceeding-type tags a hearing key/title or a record text signals.
+
+    Used by the heal sweep to require a candidate record to describe the SAME
+    KIND of proceeding the row is keyed for. An untyped row (no recognizable
+    type) returns an empty set, imposing no constraint.
+    """
+    if not text:
+        return set()
+    blob = text.lower().replace("-", " ")
+    tags = {tag for tag, rx in _PROCEEDING_TYPE_SIGNALS if rx.search(blob)}
+    if "trial" in tags and "pretrial" in tags:
+        # "pretrial" contains "trial"; keep the bare "trial" tag only if a
+        # standalone "trial" survives removing the pretrial phrase.
+        if not re.search(r"\btrial", re.sub(r"pre ?trial\w*", " ", blob)):
+            tags.discard("trial")
+    return tags
+
+
+# The proceeding a minute entry RECORDS is named at its head — the phrase right
+# after "...before Judge <name>:" (the dominant format) or right after
+# "MINUTES OF" — and ends at "as to <party>" / "held" / "before" / a period or
+# colon. Matching the proceeding type against ONLY this name (not the whole
+# text) separates "recorded a status conference" from a status conference whose
+# body says "...Sentencing set for <date>"; the latter mention is in the body,
+# never the name. (The sentencing-ding class: a sentencing row whose only
+# same-date source is the status-conference minute entry that SET the
+# sentencing date — that record names "Status Conference", so a
+# sentencing-typed row correctly declines it.)
+_PROCEEDING_NAME_RE = re.compile(
+    r"minutes?\s+of\s+(?P<a>.+?)(?:\s+(?:as to|held|before)\b|[.:]|$)"
+    r"|:\s*(?P<b>.+?)(?:\s+(?:as to|held|before)\b|[.:]|$)",
+    re.IGNORECASE,
+)
+
+
+def _record_proceeding_name(text: str) -> str:
+    """The proceeding a record NAMES (for type matching), or the full text.
+
+    Returns just the named proceeding ("Status Conference", "Change of Plea
+    Hearing") so a body mention of a different, future proceeding can't
+    masquerade as the record's own type. Falls back to the whole text for the
+    rare record that fits neither preamble.
+    """
+    m = _PROCEEDING_NAME_RE.search(text)
+    if not m:
+        return text
+    return m.group("a") or m.group("b") or text
+
+
 def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str, Any]]:
     """Retroactively fix hearing notes that regressed to a setup notice.
 
@@ -633,6 +706,14 @@ def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str
     sync time, here applied to rows already collapsed in the store (the
     sibling that held the good notes may already have been deleted by a dedupe
     merge, so re-running sync can't recover them).
+
+    Two safeguards keep the blind source-list scan from attaching the WRONG
+    proceeding's record (a row's ``source_entry_ids`` legitimately pools
+    related proceedings — the status conference that scheduled a hearing is one
+    of its sources): the chosen record must (1) restate the row's own date
+    (``_hearing_date_tokens``) and (2) describe the same KIND of proceeding the
+    row is keyed for (``_proceeding_types``). A row no source record both
+    corroborates by date AND matches by type is left alone rather than guessed.
 
     Hearings whose notes already describe the proceeding, and hearings that
     carry a non-empty NON-administrative note (a deliberately curated
@@ -670,6 +751,9 @@ def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str
         # entry that scheduled it). A row whose date no source record restates
         # is left alone rather than guessed.
         date_tokens = _hearing_date_tokens(h)
+        hearing_types = _proceeding_types(
+            f"{h.get('hearing_key') or ''} {h.get('title') or ''}"
+        )
         candidates: list[str] = []
         for er in entry_rows:
             ed = dict(er)
@@ -679,6 +763,15 @@ def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str
             if not text:
                 continue
             if date_tokens and not any(tok in text for tok in date_tokens):
+                continue
+            # The record must describe the SAME KIND of proceeding the row is
+            # keyed for — a sentencing row must not adopt a status-conference
+            # record that happens to share its date + source list. Match the
+            # type against the proceeding the record NAMES, not its body (which
+            # may schedule a different, future proceeding).
+            if hearing_types and not (
+                hearing_types & _proceeding_types(_record_proceeding_name(text))
+            ):
                 continue
             candidates.append(text)
         if not candidates:

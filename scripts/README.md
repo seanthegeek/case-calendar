@@ -72,7 +72,12 @@ notice but whose source entries include the *record* of the proceeding (a
 minute entry / transcript / clerk's notes of proceedings held), it rebuilds the
 notes from that record's own docket text. Hearings that already describe the
 proceeding, and hearings carrying a curated non-administrative note, are left
-untouched.
+untouched. Because a row's source list legitimately pools related proceedings
+(the status conference that *scheduled* a hearing is one of its sources), the
+chosen record must both restate the row's own date AND name the same kind of
+proceeding the row is keyed for — so a `Sentencing` row won't adopt a same-date
+`Status Conference` minute entry, and a row nothing in its sources clearly
+matches is left alone.
 
 Why: the sync-time fix (the MARK_HELD supersede + dedupe-aware notes selection
 in `sync.py`) only prevents *new* regressions. A row already collapsed in the

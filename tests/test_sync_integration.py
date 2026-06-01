@@ -22,6 +22,8 @@ from case_calendar.sync import (
     _is_admin_notice,
     _proceeding_notes_from_entry,
     _proceeding_record_rank,
+    _proceeding_types,
+    _record_proceeding_name,
     fingerprint_entry,
     heal_proceeding_notes,
 )
@@ -4782,6 +4784,59 @@ class TestProceedingRecordPredicates:
             {"starts_at_utc": "2026-03-24T12:00:00+00:00", "timezone": "Not/AZone"}
         )
 
+    def test_proceeding_types(self):
+        assert _proceeding_types("Sentencing as to X") == {"sentencing"}
+        assert _proceeding_types("status-conf-ding-2") == {"status conference"}
+        assert _proceeding_types("Initial Appearance") == {"initial appearance"}
+        assert _proceeding_types("Arraignment held") == {"arraignment"}
+        assert _proceeding_types("Change of Plea Hearing") == {"plea"}
+        assert _proceeding_types("Motion in Limine Hearing") == {"motion"}
+        assert _proceeding_types("Order to Show Cause Hearing") == {"show cause"}
+        assert _proceeding_types("Charging Conference") == {"charging conference"}
+        # A bare "trial" tags trial; "pretrial" tags only pretrial (it contains
+        # "trial" as a substring but is a distinct proceeding).
+        assert _proceeding_types("Jury Trial day 2") == {"trial"}
+        assert _proceeding_types("Pretrial Conference") == {"pretrial"}
+        assert _proceeding_types("pre-trial conference") == {"pretrial"}
+        # A row keyed for both (e.g. "Final Pretrial / Jury Trial") keeps both.
+        assert _proceeding_types("Jury Trial and Final Pretrial Conference") == {
+            "trial",
+            "pretrial",
+        }
+        # A "motion-hearing-pretrial" key carries motion + pretrial, not trial.
+        assert _proceeding_types("motion-hearing-pretrial-akhter-3") == {
+            "motion",
+            "pretrial",
+        }
+        assert _proceeding_types(None) == set()
+        assert _proceeding_types("Notice of courtroom change") == set()
+
+    def test_record_proceeding_name(self):
+        # Dominant format: name sits after "Judge <name>:" and before "as to".
+        assert (
+            _record_proceeding_name(
+                "Minute Entry for proceedings held before Judge Vince Chhabria: "
+                "Status Conference as to Linwei Ding held on 5/26/2026. "
+                "Sentencing set for 6/1/2026."
+            )
+            == "Status Conference"
+        )
+        # "MINUTES OF <name>" format: name sits after "minutes of".
+        assert (
+            _record_proceeding_name(
+                "MINUTES OF Status Conference held before Judge Blumenfeld: "
+                "The Court heard from the parties."
+            )
+            == "Status Conference"
+        )
+        # A body that mentions a future Sentencing does NOT change the name.
+        assert "Sentencing" not in _record_proceeding_name(
+            "Minute Entry before Judge X: Change of Plea Hearing held on 1/2/2026. "
+            "Sentencing set for 3/3/2026."
+        )
+        # No recognizable preamble -> full text (fallback).
+        assert _record_proceeding_name("Some freeform note") == "Some freeform note"
+
     def test_is_admin_notice(self):
         assert _is_admin_notice("Clerk's notice providing Zoom access information")
         assert _is_admin_notice("NOTICE OF COURTROOM CHANGE")
@@ -5255,8 +5310,8 @@ class TestHealProceedingNotes:
         )
 
     def _seed_world(self, store):
-        # Two source entries: a clerk's notice (not a record) and the minute
-        # entry that records the proceeding.
+        # A clerk's notice (not a record) and the minute entry that records the
+        # Motion Hearing proceeding on 3/24/2026.
         self._seed_entry(store, 112, "CLERK'S NOTICE RE: ZOOM ACCESS for PI hearing")
         self._seed_entry(store, 123, self._MINUTE)
         # A record-shaped source whose text is ENTIRELY trailing metadata, so
@@ -5267,8 +5322,8 @@ class TestHealProceedingNotes:
         )
         # A non-record source for the no-record case.
         self._seed_entry(store, 130, "CLERK'S NOTICE OF COURTROOM CHANGE")
-        # A record for a DIFFERENT proceeding (different date) — the
-        # cross-proceeding trap: it's a real minute entry but its date doesn't
+        # A record for a DIFFERENT proceeding on a DIFFERENT date — the
+        # cross-proceeding date trap: a real minute entry whose date doesn't
         # match the row's, so it must NOT heal the row.
         self._seed_entry(
             store,
@@ -5276,21 +5331,39 @@ class TestHealProceedingNotes:
             "Minute Entry for proceedings held before Judge: Status Conference "
             "held on 1/15/2020. Parties appeared.",
         )
+        # A Status Conference record on the SAME date as the row (3/24/2026) —
+        # the cross-proceeding TYPE trap: date matches but the proceeding kind
+        # doesn't, so a sentencing-keyed row must not adopt it. Its BODY even
+        # mentions a future "Sentencing", which must NOT make it look like a
+        # sentencing record (the type match runs on the head, before the date).
+        self._seed_entry(
+            store,
+            150,
+            "Minute Entry for proceedings held before Judge: Status Conference "
+            "held on 3/24/2026. Sentencing set for 6/1/2026.",
+        )
         # Record sources for the good / curated rows (proving they're skipped
         # for reasons other than "no record available").
         self._seed_entry(store, 200, "Minute Entry: proceedings held; argued")
         self._seed_entry(store, 201, "Minute Entry: proceedings held; argued")
         self._seed_entry(store, 203, self._MINUTE)
 
-        # Regression: admin notes + a minute-entry source (plus the empty-text
-        # record 124) -> healed from the richest usable record (123), whose
-        # "held on 3/24/2026" corroborates the row's own date.
+        # Regression, UNTYPED key: admin notes + a Motion-Hearing minute-entry
+        # source (plus the empty-text record 124). The key has no recognizable
+        # proceeding type, so the type guard is bypassed and the date match
+        # alone heals it from record 123.
         self._seed_hearing(store, "pi-hearing", self._ADMIN, [112, 124, 123])
+        # Regression, TYPED key that MATCHES the record's type (motion) and
+        # date -> healed.
+        self._seed_hearing(store, "motion-hearing-typed", self._ADMIN, [123])
+        # Regression, TYPED key (sentencing) whose only same-date record is a
+        # STATUS CONFERENCE -> untouched (type guard), even though the date
+        # matches. This is the sentencing-ding-class mismatch.
+        self._seed_hearing(store, "sentencing-typed", self._ADMIN, [150])
         # Admin notes but NO source entries at all -> untouched.
         self._seed_hearing(store, "no-sources-hearing", self._ADMIN, [])
         # Admin notes + a record source whose date (1/15/2020) does NOT match
-        # the row's date (3/24/2026) -> untouched (don't attach the wrong
-        # proceeding's minute entry).
+        # the row's date (3/24/2026) -> untouched.
         self._seed_hearing(store, "wrong-date-hearing", self._ADMIN, [140])
         # Empty notes + a minute-entry source -> healed.
         self._seed_hearing(store, "empty-hearing", None, [203])
@@ -5308,11 +5381,13 @@ class TestHealProceedingNotes:
         # Admin notes but no record among the sources -> untouched.
         self._seed_hearing(store, "no-record-hearing", self._ADMIN, [130])
 
+    _HEALED = {"pi-hearing", "motion-hearing-typed", "empty-hearing"}
+
     def test_dry_run_reports_without_mutating(self, store):
         self._seed_world(store)
         changes = heal_proceeding_notes(store, apply=False)
         healed = {c["hearing_key"] for c in changes}
-        assert healed == {"pi-hearing", "empty-hearing"}
+        assert healed == self._HEALED
         # Nothing written.
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
         assert rows["pi-hearing"]["notes"] == self._ADMIN
@@ -5322,12 +5397,16 @@ class TestHealProceedingNotes:
         self._seed_world(store)
         changes = heal_proceeding_notes(store, apply=True)
         healed = {c["hearing_key"] for c in changes}
-        assert healed == {"pi-hearing", "empty-hearing"}
+        assert healed == self._HEALED
         rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
-        # Regressed rows now carry the cleaned minute-entry text.
+        # Healed rows now carry the cleaned minute-entry text.
         assert rows["pi-hearing"]["notes"] == self._MINUTE_CLEAN
+        assert rows["motion-hearing-typed"]["notes"] == self._MINUTE_CLEAN
         assert rows["empty-hearing"]["notes"] == self._MINUTE_CLEAN
-        # Untouched rows keep their notes.
+        # Untouched rows keep their notes — including the same-date but
+        # wrong-TYPE sentencing row.
+        assert rows["sentencing-typed"]["notes"] == self._ADMIN
+        assert rows["wrong-date-hearing"]["notes"] == self._ADMIN
         assert rows["good-hearing"]["notes"] == "Motion Hearing held; under submission"
         assert (
             rows["curated-hearing"]["notes"]
