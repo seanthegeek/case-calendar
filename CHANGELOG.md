@@ -8,6 +8,38 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.14.1] - 2026-06-01
+
+### Fixed
+
+- **A hearing's calendar description no longer freezes on a pre-hearing setup
+  notice after the proceeding is recorded** (`case_calendar/sync.py`). The
+  description body (`notes`) is set by scheduling/notice-type actions, but
+  `MARK_HELD` — which is what a post-hearing minute entry / transcript produces
+  — preserved whatever notes were last written, and a dedupe `MERGE_INTO` kept
+  the canonical row's notes regardless of which sibling actually described the
+  proceeding. Together these pinned a hearing's description to the last
+  administrative notice that touched it. The canonical case is the
+  anthropic-v-dow Preliminary Injunction motion hearing, whose description
+  regressed from the minute entry's account of the argument to "Clerk's notice
+  providing Zoom access information…" (entry #112) after a near-slot dedupe
+  merge absorbed the rich-notes sibling. Two coordinated rules fix it, both
+  preferring the RECORD of a held proceeding (minute entry / transcript /
+  clerk's notes of proceedings held) over a pre-hearing administrative notice
+  (clerk's notice of Zoom access / courtroom change / scheduling):
+  - **MARK_HELD supersede:** when the entry marking a hearing held is itself
+    the record of the proceeding and the existing notes don't already describe
+    it, `MARK_HELD` now adopts the record's notes instead of preserving the
+    setup notice.
+  - **Dedupe-aware notes selection:** when a `MERGE_INTO` (the LLM-gated
+    exact-slot / near-slot sweeps) or the deterministic held-row dedupe absorbs
+    siblings, the survivor now takes an absorbed sibling's proceeding-record
+    notes if its own notes don't describe the proceeding.
+
+  New predicates `_describes_proceeding` / `_is_admin_notice` /
+  `_entry_records_proceeding` and the `_best_proceeding_notes` chooser back
+  both rules; covered by `tests/test_sync_integration.py`.
+
 ## [0.14.0] - 2026-05-31
 
 ### Added

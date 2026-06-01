@@ -401,6 +401,106 @@ def _mark_held_date_matches(
     return abs((existing_date - action_date).days) <= tolerance_days
 
 
+# A docket entry that RECORDS a proceeding that already happened — a minute
+# entry, a clerk's-notes entry, or a transcript "of proceedings held" — is the
+# authoritative account of what occurred at the hearing. A PRE-HEARING
+# administrative notice (clerk's notice of Zoom access / courtroom change /
+# scheduling) sets the hearing up but says nothing about what happened at it.
+# The two regexes below let the notes-selection rules prefer the proceeding
+# record over the setup notice. Without this, MARK_HELD preserved whatever
+# notes were last written (often the setup notice) and a dedupe MERGE_INTO kept
+# the canonical row's notes regardless of which sibling actually described the
+# proceeding — so a calendar description could freeze at "Clerk's notice
+# providing Zoom access information" even after the docket recorded the
+# argument (the anthropic-v-dow pi-motion-hearing regression).
+_PROCEEDING_RECORD_RE = re.compile(
+    r"minute entry"
+    r"|clerk'?s? notes"
+    # "transcript OF proceedings" is a record; a bare "transcript order" /
+    # "order for transcript" is a private purchase request, not a record.
+    r"|transcript\s+of\s+proceedings?"
+    r"|proceedings?\s+(?:were\s+)?held"
+    r"|held\s+before"
+    r"|stated\s+appearances"
+    r"|under\s+submission",
+    re.IGNORECASE,
+)
+
+_ADMIN_NOTICE_RE = re.compile(
+    r"clerk'?s? notice"
+    r"|notice\s+(?:re|of)\b"
+    r"|zoom\s+(?:access|webinar|information|link)"
+    r"|providing\s+zoom"
+    r"|courtroom\s+change"
+    r"|audio\s+observation"
+    r"|access\s+information",
+    re.IGNORECASE,
+)
+
+
+def _describes_proceeding(text: Optional[str]) -> bool:
+    """True when ``text`` reads like the RECORD of a held proceeding."""
+    return bool(text) and bool(_PROCEEDING_RECORD_RE.search(text))
+
+
+def _is_admin_notice(text: Optional[str]) -> bool:
+    """True when ``text`` reads like a pre-hearing administrative notice.
+
+    A proceeding record can itself mention "clerk's notes", so the record
+    check wins — text that describes what happened is never treated as a mere
+    setup notice.
+    """
+    return (
+        bool(text)
+        and bool(_ADMIN_NOTICE_RE.search(text))
+        and not _describes_proceeding(text)
+    )
+
+
+def _entry_records_proceeding(entry: dict[str, Any]) -> bool:
+    """True when the docket ENTRY is the record of a held proceeding.
+
+    Covers minute entries, electronic clerk's notes, and transcripts of
+    proceedings held — the entries whose own text describes what happened at a
+    hearing, as opposed to a notice that merely scheduled or set it up.
+    """
+    parts = [entry.get("description"), entry.get("short_description")]
+    parts.extend(rd.get("description") for rd in (entry.get("recap_documents") or []))
+    text = " | ".join(p for p in parts if p)
+    return _describes_proceeding(text)
+
+
+def _best_proceeding_notes(
+    target: dict[str, Any], cluster: list[dict[str, Any]]
+) -> Optional[str]:
+    """Choose the most informative notes for a dedupe survivor.
+
+    The dedupe MERGE_INTO target is chosen by key descriptiveness / source
+    count, which is unrelated to which row actually describes the proceeding.
+    When the target's notes do NOT record the proceeding but an absorbed
+    sibling's do, return that sibling's notes so the surviving row carries the
+    account of what happened rather than the survivor's setup notice. Returns
+    ``None`` to leave the target's notes unchanged — either the target already
+    records the proceeding, or no sibling describes it any better.
+    """
+    if _describes_proceeding(target.get("notes")):
+        return None
+    target_key = target.get("hearing_key")
+    candidates = [
+        h
+        for h in cluster
+        if h.get("hearing_key") != target_key and _describes_proceeding(h.get("notes"))
+    ]
+    if not candidates:
+        return None
+    # Richest description wins; stable tie-break on hearing_key.
+    best = max(
+        candidates,
+        key=lambda h: (len(h.get("notes") or ""), h.get("hearing_key") or ""),
+    )
+    return best.get("notes")
+
+
 def _default_duration(hearing_type: str | None, time_set: bool) -> int:
     if not time_set:
         return 0  # all-day
@@ -1166,6 +1266,15 @@ class CaseSyncer:
                     merged_sources.append(sid)
         target["source_entry_ids"] = merged_sources
 
+        # Notes: the target was chosen for key descriptiveness / source count,
+        # which says nothing about which row actually describes the proceeding.
+        # If an absorbed sibling's notes record what happened and the target's
+        # don't, adopt the sibling's so the survivor carries the account of the
+        # proceeding rather than a pre-hearing setup notice.
+        better_notes = _best_proceeding_notes(target, cluster)
+        if better_notes is not None:
+            target["notes"] = better_notes
+
         # Record absorbed sibling keys + the LLM's reason on the
         # canonical's audit_notes so the audit trail of WHICH keys were
         # absorbed (and why) survives the sibling deletions.
@@ -1257,6 +1366,13 @@ class CaseSyncer:
                         seen.add(sid)
                         merged_sources.append(sid)
             target["source_entry_ids"] = merged_sources
+            # Adopt an absorbed sibling's proceeding-record notes when the
+            # canonical's notes don't describe the proceeding — same reasoning
+            # as the LLM-gated sweep: the canonical is picked by source count /
+            # recency, not by which row records what happened.
+            better_notes = _best_proceeding_notes(target, cluster)
+            if better_notes is not None:
+                target["notes"] = better_notes
             # Record the absorbed sibling keys on the canonical's
             # audit_notes so the audit trail of WHICH keys were absorbed
             # stays attached to the surviving row after the siblings are
@@ -1848,6 +1964,22 @@ class CaseSyncer:
                     source_entry_ids=prev_sources,
                     docket_id=sticky_docket_id,
                 )
+                # MARK_HELD normally preserves notes. But when the triggering
+                # entry is the RECORD of the proceeding (a minute entry /
+                # transcript / clerk's notes of proceedings held) and the
+                # existing notes don't already describe the proceeding —
+                # they're empty, or a pre-hearing administrative notice that
+                # merely set the hearing up — adopt the record's notes so the
+                # calendar shows what happened, not the setup notice (the
+                # anthropic-v-dow pi-motion-hearing regression, where the notes
+                # were stuck on a clerk's Zoom-access notice).
+                new_notes = action.get("notes")
+                if (
+                    new_notes
+                    and _entry_records_proceeding(entry)
+                    and not _describes_proceeding(existing.get("notes"))
+                ):
+                    merged["notes"] = new_notes
                 self.store.upsert_hearing(merged)
             elif action.get("local_date"):
                 # Same as CANCEL_HEARING-on-unknown: a minute entry for a hearing
