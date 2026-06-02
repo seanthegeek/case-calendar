@@ -338,6 +338,19 @@ _GET_CACHE: dict[str, Any] = {}
 _PDF_CACHE: dict[Any, Any] = {}
 _ORIG_PDF_EXTRACT = pdf.extract_text
 
+# Frozen-snapshot mode (set by --frozen). When on, any cache MISS that would
+# otherwise reach the network — a CourtListener request or a PDF download —
+# raises instead, so a benchmark run provably uses ONLY the frozen snapshot's
+# data and can't silently drift by pulling live data the snapshot predates. A
+# fully-warm snapshot never trips these (every entry's text is already cached),
+# so the guard is a loud tripwire for "this snapshot is missing something," not a
+# normal code path.
+_FROZEN = False
+
+
+class FrozenSnapshotError(RuntimeError):
+    """A frozen build tried to reach live data not present in the snapshot."""
+
 
 def _track_for(purpose: str) -> str:
     if purpose == "summary":
@@ -645,6 +658,12 @@ def _install_cl_cache(cl: CourtListener) -> None:
                 with _CACHE_LOCK:
                     if key in _GET_CACHE:
                         return _GET_CACHE[key]
+                    if _FROZEN:
+                        raise FrozenSnapshotError(
+                            f"frozen build needs a live CourtListener {verb} not "
+                            f"in the snapshot: {a!r} {k!r}. Re-snapshot from a "
+                            "fully-synced store (snapshot_benchmark_store.py)."
+                        )
                     CAP.cl_calls += 1  # genuine network call
                     resp = orig(*a, **k)
                     _GET_CACHE[key] = resp
@@ -653,6 +672,49 @@ def _install_cl_cache(cl: CourtListener) -> None:
             return wrapped
 
         setattr(cl, name, make(orig, name))
+
+
+def _install_frozen_pdf_guard() -> None:
+    """In frozen mode, forbid PDF downloads. ``pdf.extract_text`` reads cached
+    ``plain_text`` for a warm entry without touching the network; only a cold or
+    garbled entry falls through to ``fetch_pdf_bytes`` (an HTTP download).
+    Replacing that with a raise turns 'the snapshot is missing this PDF's text'
+    into a loud error instead of a silent live fetch that would drift the
+    inputs out from under the comparison."""
+
+    def _no_fetch(rd: dict[str, Any], *a: Any, **k: Any) -> Any:
+        raise FrozenSnapshotError(
+            "frozen build needs to download a PDF not cached in the snapshot "
+            f"(recap_document id={rd.get('id')}). Re-snapshot from a "
+            "fully-synced store (snapshot_benchmark_store.py)."
+        )
+
+    pdf.fetch_pdf_bytes = _no_fetch  # type: ignore[assignment]
+
+
+def _log_snapshot_manifest(src_path: str) -> None:
+    """If the --source store has a sibling snapshot manifest, log its date +
+    checksums so the run report records exactly which frozen snapshot it used."""
+    manifest = Path(src_path).with_suffix(".manifest.json")
+    if not manifest.exists():
+        logger.warning(
+            "frozen build: no manifest beside %s — provenance unknown "
+            "(was it made by snapshot_benchmark_store.py?)",
+            src_path,
+        )
+        return
+    try:
+        m = json.loads(manifest.read_text())
+    except (OSError, ValueError):
+        logger.warning("frozen build: could not read manifest %s", manifest)
+        return
+    logger.info(
+        "frozen snapshot: %s snapshot_utc=%s entries=%s ground_truth_sha256=%s",
+        Path(src_path).name,
+        m.get("snapshot_utc"),
+        (m.get("row_counts") or {}).get("entries"),
+        (m.get("ground_truth_sha256") or "none")[:12],
+    )
 
 
 def _install_pdf_cache() -> None:
@@ -1291,6 +1353,22 @@ def main(argv: Optional[list[str]] = None) -> int:
     )
     ap.add_argument("--config", default="config.yaml")
     ap.add_argument(
+        "--source",
+        default=None,
+        help="override the source store to copy + replay from (default: "
+        "store_path from --config). Point this at a frozen snapshot from "
+        "snapshot_benchmark_store.py for a benchmark that's reproducible as the "
+        "live cases move.",
+    )
+    ap.add_argument(
+        "--frozen",
+        action="store_true",
+        help="forbid ALL live data access (CourtListener requests AND PDF "
+        "downloads): any cache miss raises instead of fetching, so the run "
+        "provably uses only the --source snapshot's data. Use with a snapshot "
+        "from snapshot_benchmark_store.py. Ignored under --fake.",
+    )
+    ap.add_argument(
         "--variants",
         default=None,
         help="comma-separated subset to build; match a column by its full label "
@@ -1420,6 +1498,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not cases:
             raise SystemExit(f"no case with id {args.case!r}")
     src_path = cfg.get("store_path", "data/case-calendar.sqlite")
+    if args.source:
+        src_path = args.source
+    frozen = bool(args.frozen) and not args.fake
+    if frozen:
+        global _FROZEN
+        _FROZEN = True
+        _log_snapshot_manifest(src_path)
+        # The CourtListener client requires a token at construction, but a
+        # frozen build never issues a request (every cache miss raises), so a
+        # placeholder is enough to construct the shared client below.
+        os.environ.setdefault("COURTLISTENER_TOKEN", "frozen-snapshot-no-network")
 
     # Patch telemetry + provider detection. Always wrap dispatch with
     # _variant_dispatch so each column runs its own extraction model (the
@@ -1452,6 +1541,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             saved_llm[_name] = getattr(llm, _name)
             setattr(llm, _name, _wrap_llm(_name, _kind))
     _install_pdf_cache()
+    if frozen:
+        _install_frozen_pdf_guard()
     # Pin each column to its own (provider, model): neutralize the operator's
     # model AND per-track provider env overrides for the run (see
     # ``_NEUTRALIZED_RUN_ENV`` for why the provider overrides matter). Restored

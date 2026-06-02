@@ -8,6 +8,7 @@ handler, the decision-line formatters, and the LLM-wrapping factory."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
 import sys
 from pathlib import Path
@@ -792,3 +793,83 @@ def test_extraction_provider_env_short_circuits_threadlocal_until_popped(monkeyp
     # Once the run neutralizes it, the column's thread-local provider wins.
     monkeypatch.delenv("LLM_EXTRACTION_PROVIDER", raising=False)
     assert providers._detect_extraction_provider() == "anthropic"
+
+
+# --------------------------------------------------------------------------- #
+# Frozen-snapshot mode (--frozen): the benchmark can't silently reach live data
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCL:
+    """Stands in for the CourtListener client: counts any call that reaches it
+    (i.e. that the frozen guard failed to block)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def _get(self, *a, **k):
+        self.calls += 1
+        return {"live": True}
+
+    def _post(self, *a, **k):
+        self.calls += 1
+        return {"live": True}
+
+
+def test_frozen_cl_cache_miss_raises_without_network(monkeypatch):
+    # In frozen mode a cache MISS must raise rather than hit the network, so a
+    # benchmark run can't drift by pulling data the snapshot predates.
+    monkeypatch.setattr(mod, "_GET_CACHE", {})
+    monkeypatch.setattr(mod, "_FROZEN", True)
+    cl = _FakeCL()
+    mod._install_cl_cache(cl)
+    with pytest.raises(mod.FrozenSnapshotError, match="not in the snapshot"):
+        cl._get("dockets/1/")
+    assert cl.calls == 0  # never reached the (fake) network
+
+
+def test_frozen_cl_cache_hit_is_served(monkeypatch):
+    # A request already in the shared cache is served even when frozen — only
+    # genuinely-absent data trips the guard.
+    monkeypatch.setattr(mod, "_GET_CACHE", {})
+    monkeypatch.setattr(mod, "_FROZEN", False)
+    cl = _FakeCL()
+    mod._install_cl_cache(cl)
+    assert cl._get("dockets/1/") == {"live": True}  # miss while warm -> caches
+    assert cl.calls == 1
+    monkeypatch.setattr(mod, "_FROZEN", True)
+    assert cl._get("dockets/1/") == {"live": True}  # same request -> cache hit
+    assert cl.calls == 1  # no second live call
+
+
+def test_frozen_pdf_guard_blocks_download(monkeypatch):
+    # Register the current fetch_pdf_bytes for restore, then install the guard
+    # (which reassigns it). monkeypatch restores the original at teardown.
+    monkeypatch.setattr(mod.pdf, "fetch_pdf_bytes", mod.pdf.fetch_pdf_bytes)
+    mod._install_frozen_pdf_guard()
+    with pytest.raises(mod.FrozenSnapshotError, match="download a PDF"):
+        mod.pdf.fetch_pdf_bytes({"id": 42})
+
+
+def test_log_snapshot_manifest_present(tmp_path, caplog):
+    store = tmp_path / "benchmark-store.sqlite"
+    store.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "snapshot_utc": "2026-06-02T00:00:00+00:00",
+                "row_counts": {"entries": 123},
+                "ground_truth_sha256": "abcdef1234567890",
+            }
+        )
+    )
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        mod._log_snapshot_manifest(str(store))
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "frozen snapshot" in msgs and "2026-06-02" in msgs and "entries=123" in msgs
+
+
+def test_log_snapshot_manifest_absent_warns(tmp_path, caplog):
+    store = tmp_path / "no-manifest.sqlite"
+    with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+        mod._log_snapshot_manifest(str(store))
+    assert any("no manifest beside" in r.getMessage() for r in caplog.records)

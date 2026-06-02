@@ -17,12 +17,12 @@ the dockets, or re-running the whole thing on other cases and models.
 > Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines,
 > surrender-for-service-of-sentence) that the score didn't penalize hard
 > enough. The 0.9.0 release tried again with matching prompt edits and the
-> dedupe-sweep delete-rather-than-flip change closing the in-fixture gap —
+> dedupe-sweep delete-rather-than-flip change closing the gap on the scored cases —
 > Gemini retook the deviation lead AND looked clean on every substantive
 > class in the SCORECARD.
 >
 > 0.10.0 reverts to Anthropic again because the same failure pattern resurfaced
-> on out-of-fixture classes: PSR interview / first disclosure / objection
+> on classes outside the scored set: PSR interview / first disclosure / objection
 > windows, Speedy Trial Act § 3161(h) exclusions, surrender-for-service-of-
 > sentence, civil-forfeiture Supp. R. G claim/answer, substantive sealing
 > motion practice, exhibit-filing deadlines under a final pretrial order, and
@@ -222,6 +222,43 @@ uv run python model-comparison/ground_truth_worksheet.py --force
 The large stores, their `build.log`s (with the per-entry extraction DECISION
 trace), and the rendered calendars live under the gitignored
 `data/provider-stores/`; the committed artifact is `model_events.csv`.
+
+## Reproducible benchmarking: freeze a snapshot
+
+By default the build reads the **live** prod store (`store_path`), which
+`case-calendar sync` keeps mutating as the cases move. That's fine for a
+one-off, but it means a comparison run today isn't comparable to one last week,
+and the human `ground_truth.csv` (filled by reading the dockets at one point in
+time) slowly drifts away from the data the models actually saw. To test new
+models or prompts against an **unchanging baseline** — the whole point when
+you're tuning — freeze the input store into a snapshot and pin the build to it.
+
+```bash
+# 1. Freeze the current store into a read-only, dated snapshot (once).
+uv run python model-comparison/snapshot_benchmark_store.py
+#    -> model-comparison/snapshots/benchmark-store.sqlite        (gitignored)
+#       model-comparison/snapshots/benchmark-store.manifest.json (committed:
+#       date, row counts, the snapshot's sha256, and the paired
+#       ground_truth.csv sha256)
+
+# 2. Run any comparison against the snapshot, frozen. --frozen makes ANY live
+#    CourtListener request or PDF download a hard error, so the run provably
+#    uses only the snapshot's data — it can't silently drift.
+uv run python model-comparison/build_provider_stores.py \
+    --source model-comparison/snapshots/benchmark-store.sqlite --frozen \
+    --extra-variant ollama:gemma4:31b --out model-comparison/cost.md
+python3 model-comparison/export_model_events.py
+python3 model-comparison/score.py
+```
+
+The snapshot + `ground_truth.csv` are a matched pair: both halves of the
+benchmark are now frozen, so the only thing that changes between runs is the
+model or prompt under test. Re-snapshot **deliberately** (with `--force`) when
+you intend to refresh the baseline — and re-score the worksheet against the new
+dockets at the same time, so truth and inputs stay captured from one point in
+time. A fully-synced source means a frozen run reports **0 CourtListener calls**;
+if it errors with a `FrozenSnapshotError`, the snapshot was missing an entry's
+text — re-snapshot from a freshly-synced store.
 
 ## `model_events.csv` columns
 

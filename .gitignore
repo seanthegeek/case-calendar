@@ -30,6 +30,14 @@ model-comparison/*.log
 model-comparison/cost.md
 model-comparison/cost.*.md
 
+# Frozen benchmark-input snapshots from model-comparison/snapshot_benchmark_store.py
+# — large copies of the store (a few MB+), so the SQLite file + any -wal/-shm
+# sidecars are gitignored. The committed sibling *.manifest.json records each
+# snapshot's date, row counts, and checksums (incl. the paired ground_truth.csv
+# sha256), so its provenance lives in git even though the blob doesn't.
+model-comparison/snapshots/*.sqlite
+model-comparison/snapshots/*.sqlite-*
+
 # Local user config
 .local/
 .config/
