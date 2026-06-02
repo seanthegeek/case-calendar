@@ -33,11 +33,15 @@ from typing import Any, Callable, Optional
 
 logger = logging.getLogger(__name__)
 
-# A price estimator maps (model, usage) -> estimated USD for one call, or None
-# when the model isn't in the caller's price table. llmkit ships no prices: the
-# consumer supplies this so the library stays domain- and pricing-free. When
-# set, the ledger logs a `cost_est=` field alongside the token counts.
-PriceFn = Callable[[str, "TokenUsage"], Optional[float]]
+# A price estimator maps (model, usage, provider) -> estimated USD for one
+# call, or None when the model isn't in the caller's price table. llmkit ships
+# no prices: the consumer supplies this so the library stays domain- and
+# pricing-free. When set, the ledger logs a `cost_est=` field alongside the
+# token counts. ``provider`` is included because price is a function of BOTH
+# provider and model — e.g. a local provider (Ollama) bills nothing regardless
+# of the model name, which can't be distinguished from a hosted model by the
+# model string alone.
+PriceFn = Callable[[str, "TokenUsage", str], Optional[float]]
 
 
 def _fmt_cost(cost: Optional[float]) -> str:
@@ -199,7 +203,7 @@ class TokenLedger:
         field and the cost is accumulated for the summary."""
         key = "?" if docket is None else str(docket)
         price_fn = self._price_fn
-        cost = price_fn(model, tokens) if price_fn is not None else None
+        cost = price_fn(model, tokens, provider) if price_fn is not None else None
         cost_field = f" cost_est={_fmt_cost(cost)}" if price_fn is not None else ""
         logger.info(
             "llm-tokens call purpose=%s provider=%s model=%s docket=%s %s%s",

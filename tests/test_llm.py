@@ -399,6 +399,14 @@ class TestSummaryProviderInfo:
         assert "anthropic" in info
         assert "sonnet" in info.lower()
 
+    def test_ollama_summary_provider_default_model(self, monkeypatch):
+        # The summary track can run locally too; the per-provider default
+        # model resolves to the ollama summary default (no API key needed).
+        monkeypatch.setenv("LLM_SUMMARY_PROVIDER", "ollama")
+        info = llm.summary_provider_info()
+        assert "provider=ollama" in info
+        assert llm._DEFAULT_SUMMARY_MODELS["ollama"] in info
+
 
 # --- end-to-end: stub provider call, verify wiring ---
 
@@ -717,6 +725,25 @@ class TestExtractActionsDispatch:
         monkeypatch.setattr(
             providers,
             "_call_gemini",
+            lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
+        )
+        out = llm.extract_actions(
+            case_name="x",
+            court_id="x",
+            court_tz="x",
+            entry={"id": 1, "description": "", "recap_documents": []},
+            pdf_texts=[],
+            known_hearings=[],
+        )
+        assert out == [{"type": "IGNORE"}]
+
+    def test_dispatches_to_ollama(self, monkeypatch):
+        # The extraction track resolves the local provider via
+        # LLM_EXTRACTION_PROVIDER (no API key to auto-detect from).
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "ollama")
+        monkeypatch.setattr(
+            providers,
+            "_call_ollama",
             lambda system, user, max_tokens, **kw: '{"actions": [{"type": "IGNORE"}]}',
         )
         out = llm.extract_actions(
@@ -1971,6 +1998,31 @@ class TestGenerateDocketSummary:
         # so thinking + the 2-4 sentence answer both fit. (Regression: every
         # Gemini summary returned "No content" with the 800-token budget.)
         assert called["max_tokens"] >= 8192
+
+    def test_ollama_dispatch_local_summaries(self, monkeypatch):
+        # Summaries can run on a local model: provider="ollama" routes through
+        # the same dispatch with json_mode off (prose), no API key needed.
+        called: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
+            called["model"] = model
+            called["json_mode"] = json_mode
+            return "A local summary."
+
+        monkeypatch.setattr(providers, "_call_ollama", fake)
+        text, ident = llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="ollama",
+        )
+        assert text == "A local summary."
+        assert ident == "ollama/" + llm._DEFAULT_SUMMARY_MODELS["ollama"]
+        assert called["json_mode"] is False
 
     def test_anthropic_keeps_requested_max_tokens(self, monkeypatch):
         # The Gemini headroom bump is provider-specific: anthropic / openai are
