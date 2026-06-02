@@ -1271,7 +1271,7 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'<div class="controls">'
         f"<label>Sort by "
         f'<select class="sort">'
-        f'<option value="last-filing" selected>Filing</option>'
+        f'<option value="last-filing" selected>Last filing date</option>'
         f'<option value="next-event">Next event</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'

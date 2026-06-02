@@ -762,13 +762,12 @@ class TestRenderIndex:
         # (empty strings sort last in the JS comparator).
         assert 'data-filed=""' in html
 
-    def test_sort_dropdown_default_is_filing(self, calendars):
-        # The default sort option (selected on page load) is the filing key —
-        # labeled "Filing" (the value stays "last-filing", backing
-        # data-last-filing; the JS reads 'data-' + option.value). "Filing" reads
-        # cleaner than "Last filing" next to the "Newest first" direction label.
+    def test_sort_dropdown_default_is_last_filing_date(self, calendars):
+        # The default sort option (selected on page load) is the filing key,
+        # labeled "Last filing date" (the value stays "last-filing", backing
+        # data-last-filing; the JS reads 'data-' + option.value).
         html = render_index(calendars=calendars)
-        assert '<option value="last-filing" selected>Filing</option>' in html
+        assert '<option value="last-filing" selected>Last filing date</option>' in html
         # The old "Last activity" wording is gone — that label was the bug
         # this change fixes.
         assert "Last activity" not in html

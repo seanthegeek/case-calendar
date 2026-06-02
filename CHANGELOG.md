@@ -14,8 +14,9 @@ adheres to [Semantic Versioning][semver].
 
 - **"Next event" sort option on the public index page**
   (`case_calendar/calendars/index.py`). Each calendar's **Sort by** dropdown now
-  offers "Next event" alongside Filing / Date filed / Case name, so a visitor can
-  order cases by their soonest upcoming hearing or deadline. The sort is backed
+  offers "Next event" alongside Last filing date / Date filed / Case name, so a
+  visitor can order cases by their soonest upcoming hearing or deadline. The sort
+  is backed
   by a new per-case `data-next-event` attribute carrying the ISO start of the
   case's soonest upcoming event, computed in `build_calendar_models` from the
   SAME windowed event set the per-case "Upcoming events" preview already uses —
@@ -34,11 +35,10 @@ adheres to [Semantic Versioning][semver].
   direction to that key's natural default (newest-first for the dates,
   soonest-first for Next event, A–Z for Case name). So selecting "Case name"
   lands alphabetical and "Next event" lands soonest-first without a second click.
-  The default "Last filing" sort key was also relabeled **"Filing"**, which reads
-  cleaner next to "Newest first" than the redundant "Last filing, newest first".
-  Sorting stays client-side; the server-rendered Direction options are a no-JS
-  fallback matching the default key. Covered by `tests/test_index.py` and
-  `tests/test_index_events.py`.
+  The default sort key's label was also clarified from "Last filing" to **"Last
+  filing date"**. Sorting stays client-side; the server-rendered Direction
+  options are a no-JS fallback matching the default key. Covered by
+  `tests/test_index.py` and `tests/test_index_events.py`.
 
 ## [0.14.1] - 2026-06-01
 
