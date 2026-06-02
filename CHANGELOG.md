@@ -8,6 +8,40 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.15.0] - 2026-06-01
+
+### Added
+
+- **"Next event" sort option on the public index page**
+  (`case_calendar/calendars/index.py`). Each calendar's **Sort by** dropdown now
+  offers "Next event" alongside Last filing date / Date filed / Case name, so a
+  visitor can order cases by their soonest upcoming hearing or deadline. The sort
+  is backed
+  by a new per-case `data-next-event` attribute carrying the ISO start of the
+  case's soonest upcoming event, computed in `build_calendar_models` from the
+  SAME windowed event set the per-case "Upcoming events" preview already uses —
+  so the sort key can never disagree with what the preview shows. Cases with
+  nothing upcoming emit an empty value and fall to the bottom regardless of
+  direction, matching the existing empty-sorts-last behavior of the other keys.
+
+### Changed
+
+- **The index page's sort Direction control now adapts its labels and default to
+  the selected sort key** (`case_calendar/calendars/index.py`). Instead of a
+  generic "Descending / Ascending", the Direction dropdown is rebuilt client-side
+  per key with labels that describe that key's ordering — **Newest first /
+  Oldest first** for the date keys, **Soonest first / Latest first** for Next
+  event, **A-Z / Z-A** for Case name — and picking a sort key resets the
+  direction to that key's natural default (newest-first for the dates,
+  soonest-first for Next event, A-Z for Case name). So selecting "Case name"
+  lands alphabetical and "Next event" lands soonest-first without a second click.
+  The default sort key's label was also clarified from "Last filing" to **"Last
+  filing date"**, and the per-case metadata date labels were aligned to match the
+  sort options ("Filed" → "Date filed", "Last filing" → "Last filing date").
+  Sorting stays client-side; the server-rendered Direction options are a no-JS
+  fallback matching the default key. Covered by `tests/test_index.py` and
+  `tests/test_index_events.py`.
+
 ## [0.14.1] - 2026-06-01
 
 ### Fixed

@@ -711,6 +711,34 @@ _RUNTIME_JS = r"""
       return /\s/.test(t) ? '"' + t + '"' : t;
     }).join(' ');
   }
+  // Direction options per sort key. The labels describe each key's ordering
+  // in its own words (a date sorts newest/oldest, a name A-Z, the next event
+  // soonest/latest) and the FIRST entry is that key's default direction, so
+  // picking a sort key resets the direction to the one a reader expects:
+  // alphabetical for Case name, soonest-first for Next event, newest-first
+  // for the date keys. The 'value' is the physical sort direction the
+  // comparator uses (asc = ascending by the raw data-* value).
+  var DIR_OPTIONS = {
+    'last-filing': [['desc', 'Newest first'], ['asc', 'Oldest first']],
+    'filed':       [['desc', 'Newest first'], ['asc', 'Oldest first']],
+    'next-event':  [['asc', 'Soonest first'], ['desc', 'Latest first']],
+    'name':        [['asc', 'A-Z'], ['desc', 'Z-A']]
+  };
+  function populateDir(section, key) {
+    // Rebuild the Direction <select> for the given sort key and select that
+    // key's default (the first option). Called on load and whenever the sort
+    // key changes, so the direction labels + default always match the key.
+    var dir = section.querySelector('select.dir');
+    var opts = DIR_OPTIONS[key] || [['desc', 'Descending'], ['asc', 'Ascending']];
+    dir.innerHTML = '';
+    opts.forEach(function(pair, i) {
+      var opt = document.createElement('option');
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      if (i === 0) opt.selected = true;
+      dir.appendChild(opt);
+    });
+  }
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
@@ -815,7 +843,10 @@ _RUNTIME_JS = r"""
     }
   }
   document.querySelectorAll('section.calendar').forEach(function(section) {
-    section.querySelector('select.sort').addEventListener('change', function() {
+    var sortSel = section.querySelector('select.sort');
+    populateDir(section, sortSel.value);  // direction labels for the initial key
+    sortSel.addEventListener('change', function() {
+      populateDir(section, this.value);  // reset direction to the key's default
       sortCases(section);
     });
     section.querySelector('select.dir').addEventListener('change', function() {
@@ -1148,11 +1179,15 @@ def _render_case(case: dict[str, Any]) -> str:
     date_filed = _format_date(case.get("date_filed"))
     last_filing = _format_date(case.get("last_filing_date"))
     # Sort keys are case-insensitive (name) and ISO (dates), so direct
-    # string compare on data-* attributes Just Works in the JS.
+    # string compare on data-* attributes Just Works in the JS. data-next-event
+    # is the ISO start of the case's soonest upcoming event (empty when none),
+    # backing the "Next event" sort option; empty values sort last in the JS
+    # comparator, so cases with nothing scheduled fall to the bottom.
     data = (
         f'data-name="{_esc((case.get("name") or "").lower())}" '
         f'data-filed="{_esc(date_filed)}" '
         f'data-last-filing="{_esc(last_filing)}" '
+        f'data-next-event="{_esc(case.get("next_event"))}" '
         f'data-search="{_esc(_case_search_text(case))}"'
     )
     dockets_html = []
@@ -1186,9 +1221,9 @@ def _render_case(case: dict[str, Any]) -> str:
     tags_block = _render_tags(list(case.get("tags") or []))
     dates_bits = []
     if date_filed:
-        dates_bits.append(f"<span><b>Filed</b> {_esc(date_filed)}</span>")
+        dates_bits.append(f"<span><b>Date filed</b> {_esc(date_filed)}</span>")
     if last_filing:
-        dates_bits.append(f"<span><b>Last filing</b> {_esc(last_filing)}</span>")
+        dates_bits.append(f"<span><b>Last filing date</b> {_esc(last_filing)}</span>")
     dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
     return (
         f"<li {data}><h3>{name}</h3>"
@@ -1236,15 +1271,20 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'<div class="controls">'
         f"<label>Sort by "
         f'<select class="sort">'
-        f'<option value="last-filing" selected>Last filing</option>'
+        f'<option value="last-filing" selected>Last filing date</option>'
+        f'<option value="next-event">Next event</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'
         f"</select>"
         f"</label>"
+        # Direction labels are rebuilt client-side per sort key (see
+        # DIR_OPTIONS in the runtime JS). These server-rendered options match
+        # the default "Last filing" key so a no-JS reader still sees sensible
+        # labels; JS repopulates them on load and on every sort-key change.
         f"<label>Direction "
         f'<select class="dir">'
-        f'<option value="desc" selected>Descending</option>'
-        f'<option value="asc">Ascending</option>'
+        f'<option value="desc" selected>Newest first</option>'
+        f'<option value="asc">Oldest first</option>'
         f"</select>"
         f"</label>"
         f"</div>"
@@ -1448,6 +1488,12 @@ def build_calendar_models(
             # plus the windowed + court-local-decorated rows the renderer shows.
             visible_events = _visible_events_for_case(store, c["id"])
             windowed, overflow = _window_events(visible_events, now)
+            # The soonest upcoming event's start, backing the "Next event" sort.
+            # _window_events keeps recently-past rows first (dt < now) then
+            # upcoming, and always retains the soonest upcoming (the upcoming
+            # cap slices from the front), so the first dt >= now is it. Empty
+            # string when the case has nothing upcoming -> sorts last in the JS.
+            next_event = next((dt.isoformat() for dt, _ev in windowed if dt >= now), "")
             # _window_events already parsed + validated each timestamp, so every
             # row decorates cleanly — no None to filter here.
             decorated_events = [
@@ -1467,6 +1513,7 @@ def build_calendar_models(
                     "tags": _normalize_tags(c.get("tags")),
                     "date_filed": agg["date_filed"],
                     "last_filing_date": agg["last_filing_date"],
+                    "next_event": next_event,
                     "events": decorated_events,
                     "events_overflow": decorated_overflow,
                     "event_search_titles": [

@@ -422,7 +422,8 @@ class TestRenderCaseEdges:
         # The visible label was historically "Last activity" and sourced
         # from docket.date_modified, which conflates filings with OCR /
         # metadata churn. The renderer now reads ``last_filing_date`` and
-        # labels it "Last filing".
+        # labels it "Last filing date" (matching the sort-dropdown wording);
+        # the case-open date is labeled "Date filed".
         html = _render_case(
             {
                 "name": "US v. X",
@@ -431,7 +432,8 @@ class TestRenderCaseEdges:
                 "last_filing_date": "2026-05-10",
             }
         )
-        assert "<b>Last filing</b> 2026-05-10" in html
+        assert "<b>Last filing date</b> 2026-05-10" in html
+        assert "<b>Date filed</b> 2025-01-15" in html
         assert "Last activity" not in html
         assert 'data-last-filing="2026-05-10"' in html
 
@@ -762,15 +764,61 @@ class TestRenderIndex:
         # (empty strings sort last in the JS comparator).
         assert 'data-filed=""' in html
 
-    def test_sort_dropdown_default_is_last_filing(self, calendars):
-        # The default sort option (selected on page load) is "Last filing",
-        # backed by data-last-filing. The JS reads 'data-' + option.value,
-        # so the value here must match the attribute the renderer emits.
+    def test_sort_dropdown_default_is_last_filing_date(self, calendars):
+        # The default sort option (selected on page load) is the filing key,
+        # labeled "Last filing date" (the value stays "last-filing", backing
+        # data-last-filing; the JS reads 'data-' + option.value).
         html = render_index(calendars=calendars)
-        assert '<option value="last-filing" selected>Last filing</option>' in html
+        assert '<option value="last-filing" selected>Last filing date</option>' in html
         # The old "Last activity" wording is gone — that label was the bug
         # this change fixes.
         assert "Last activity" not in html
+
+    def test_sort_dropdown_offers_next_event(self, calendars):
+        # "Next event" sorts by data-next-event (the soonest upcoming event's
+        # ISO start). The option value must match the attribute the renderer
+        # emits, since the JS reads 'data-' + option.value.
+        html = render_index(calendars=calendars)
+        assert '<option value="next-event">Next event</option>' in html
+        # The backing attribute is emitted on every case row — empty here,
+        # since these hand-built cases carry no next_event (empty sorts last).
+        assert 'data-next-event=""' in html
+
+    def test_direction_labels_adapt_per_sort_key(self, calendars):
+        # The Direction dropdown is rebuilt client-side per sort key: each key
+        # carries its own ordered [value, label] pairs in DIR_OPTIONS, with the
+        # FIRST entry being that key's default direction. Pin the metadata the
+        # same way the other JS handlers are guarded so the per-key labels +
+        # defaults can't silently regress.
+        html = render_index(calendars=calendars)
+        # Date keys: newest-first default; name: A-Z (ascending) default;
+        # next-event: soonest-first (ascending) default.
+        assert (
+            "'last-filing': [['desc', 'Newest first'], ['asc', 'Oldest first']]" in html
+        )
+        assert (
+            "'filed':       [['desc', 'Newest first'], ['asc', 'Oldest first']]" in html
+        )
+        assert (
+            "'next-event':  [['asc', 'Soonest first'], ['desc', 'Latest first']]"
+            in html
+        )
+        assert "'name':        [['asc', 'A-Z'], ['desc', 'Z-A']]" in html
+        # Picking a sort key resets the direction to that key's default.
+        assert "populateDir(section, this.value);" in html
+        # The old generic Descending/Ascending wording is gone, and the
+        # next-event direction-inversion hack was replaced by the per-key
+        # default (asc) so the comparator stays a plain string compare.
+        assert ">Descending<" not in html
+        assert "asc = !asc" not in html
+
+    def test_direction_no_js_fallback_matches_default_key(self, calendars):
+        # The server-rendered Direction options are the no-JS fallback and must
+        # match the default sort key ("Last filing" → Newest/Oldest first); JS
+        # repopulates them on load.
+        html = render_index(calendars=calendars)
+        assert '<option value="desc" selected>Newest first</option>' in html
+        assert '<option value="asc">Oldest first</option>' in html
 
     def test_xss_in_case_name_is_escaped(self, calendars):
         html = render_index(calendars=calendars)

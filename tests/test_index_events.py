@@ -504,6 +504,41 @@ class TestBuildCalendarModelsEvents:
         assert case["events"] == []
         assert index._render_events(case) == ""
 
+    def test_next_event_is_soonest_upcoming_start(self, store):
+        _seed_docket(store)
+        # A recently-past row, plus two upcoming rows out of order — next_event
+        # must be the SOONEST future start, not the past one and not the later.
+        store.upsert_hearing(
+            _hearing(
+                "recent", "Recent Conf", "2026-05-25T13:00:00+00:00", status="held"
+            )
+        )
+        store.upsert_hearing(
+            _hearing("late", "Later Trial", "2026-08-01T13:00:00+00:00")
+        )
+        store.upsert_hearing(
+            _hearing("soon", "Soon Hearing", "2026-06-12T13:00:00+00:00")
+        )
+        case = index.build_calendar_models(_cfg(), store, now=NOW)[0]["cases"][0]
+        assert case["next_event"] == "2026-06-12T13:00:00+00:00"
+        # The page emits it as the data-next-event sort attribute.
+        html = index.render_index(
+            calendars=index.build_calendar_models(_cfg(), store, now=NOW)
+        )
+        assert 'data-next-event="2026-06-12T13:00:00+00:00"' in html
+
+    def test_next_event_empty_when_only_past(self, store):
+        _seed_docket(store)
+        # No upcoming events -> empty next_event, so the case sorts last under
+        # the "Next event" option (empty sorts last in the JS comparator).
+        store.upsert_hearing(
+            _hearing(
+                "recent", "Recent Conf", "2026-05-25T13:00:00+00:00", status="held"
+            )
+        )
+        case = index.build_calendar_models(_cfg(), store, now=NOW)[0]["cases"][0]
+        assert case["next_event"] == ""
+
     def test_multi_docket_events_labeled_by_their_own_court(self, store):
         _seed_docket(store, docket_id=101, court_id="mad", citation="D. Mass.")
         _seed_docket(store, docket_id=201, court_id="cand", citation="N.D. Cal.")
