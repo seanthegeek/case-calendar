@@ -36,12 +36,16 @@ def _make_store(path: Path, *, dockets: int = 2, entries: int = 5) -> None:
     conn = sqlite3.connect(path)
     conn.execute("CREATE TABLE dockets (id INTEGER PRIMARY KEY)")
     conn.execute("CREATE TABLE entries (entry_id INTEGER PRIMARY KEY)")
+    # A model-output table that the snapshot must CLEAR (so a shared snapshot
+    # can't be opened to peek at model output, and the blind scoring holds).
+    conn.execute("CREATE TABLE hearings (id INTEGER PRIMARY KEY)")
     conn.executemany(
         "INSERT INTO dockets (id) VALUES (?)", [(i,) for i in range(dockets)]
     )
     conn.executemany(
         "INSERT INTO entries (entry_id) VALUES (?)", [(i,) for i in range(entries)]
     )
+    conn.executemany("INSERT INTO hearings (id) VALUES (?)", [(i,) for i in range(4)])
     conn.commit()
     conn.close()
 
@@ -76,9 +80,19 @@ def test_creates_readonly_snapshot_and_manifest(tmp_path):
     m = json.loads(manifest.read_text())
     assert m["row_counts"]["entries"] == 7
     assert m["row_counts"]["dockets"] == 3
+    # Inputs preserved, model output CLEARED so the shared snapshot isn't
+    # peekable and the blind ground-truth scoring stays honest.
+    assert m["row_counts"]["hearings"] == 0
+    assert m["model_output_tables_cleared"] == ["hearings"]
     assert m["snapshot_sha256"] and m["ground_truth_sha256"]
     assert m["ground_truth"] == str(gt)
     assert "snapshot_utc" in m
+
+    # And the actual snapshot DB has no model-output rows to peek at.
+    conn2 = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
+    assert conn2.execute("SELECT COUNT(*) FROM hearings").fetchone()[0] == 0
+    assert conn2.execute("SELECT COUNT(*) FROM entries").fetchone()[0] == 7
+    conn2.close()
 
 
 def test_refuses_overwrite_without_force(tmp_path):

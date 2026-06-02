@@ -17,11 +17,16 @@ UNCHANGING baseline, even while the real dockets keep moving. ``--frozen`` on th
 build makes any attempt to reach live CourtListener / download a PDF a hard
 error, so a frozen run provably uses only the snapshot's data.
 
-The snapshot's SQLite file is large (a copy of the store) and is gitignored; the
-committed sibling ``<name>.manifest.json`` records the snapshot date, source,
-caseload, row counts, the file's sha256, and the paired ground-truth file's
-sha256 — enough for anyone to verify a local snapshot is the one a SCORECARD was
-produced against.
+The snapshot is INPUT-ONLY: the model-output tables (hearings / deadlines /
+case_summaries — what the harness rebuilds per column) are cleared, so the file
+is smaller AND can't be opened to peek at what a model produced, which keeps the
+blind ground-truth scoring honest. That makes it safe to SHARE — others can
+reproduce the comparison, or test their own models against the IDENTICAL inputs.
+The ``.sqlite`` is committed via Git LFS (see ``.gitattributes``; fetch with
+``git lfs pull``), so it ships with the repo; the sibling ``<name>.manifest.json``
+is a normal committed file recording the snapshot date, source, caseload, row
+counts, the file's sha256, and the paired ground-truth file's sha256, so anyone
+can verify they hold the snapshot a SCORECARD was produced against.
 
 Usage:
     uv run python model-comparison/snapshot_benchmark_store.py \
@@ -52,6 +57,15 @@ load_dotenv()
 _DEFAULT_OUT = "model-comparison/snapshots/benchmark-store.sqlite"
 _DEFAULT_GROUND_TRUTH = "model-comparison/ground_truth.csv"
 _DEFAULT_STORE = "data/case-calendar.sqlite"
+
+# Tables the benchmark REBUILDS per column from the inputs. They're cleared from
+# the shared snapshot for two reasons: size, and — more importantly — leaving
+# the current model's output in a shared file would let anyone open it and SEE
+# what a model produced, defeating the BLIND ground-truth scoring. Mirrors
+# ``build_provider_stores.DERIVED_TABLES``; the snapshot carries only the
+# CourtListener-fetched INPUTS (entries / dockets / courts) the benchmark
+# replays from.
+_MODEL_OUTPUT_TABLES = ("hearings", "deadlines", "case_summaries")
 
 
 def _store_path_from_config(config_path: str) -> str:
@@ -90,6 +104,28 @@ def _backup(src: Path, dst: Path) -> None:
             dest.close()
     finally:
         source.close()
+
+
+def _clear_model_output_tables(path: Path) -> list[str]:
+    """Empty the model-output tables in the snapshot (the benchmark rebuilds
+    them) and VACUUM, so the shared file is input-only — smaller, and it can't
+    be opened to peek at what a model produced. Returns the tables cleared."""
+    conn = sqlite3.connect(str(path))
+    cleared: list[str] = []
+    try:
+        existing = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for t in _MODEL_OUTPUT_TABLES:
+            if t in existing:
+                conn.execute(f'DELETE FROM "{t}"')
+                cleared.append(t)
+        conn.commit()
+        conn.execute("VACUUM")  # reclaim the space the deleted rows held
+    finally:
+        conn.close()
+    return cleared
 
 
 def _table_counts(path: Path) -> dict[str, int]:
@@ -182,6 +218,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
 
     _backup(source, out)
+    cleared = _clear_model_output_tables(out)
 
     counts = _table_counts(out)
     gt = Path(args.ground_truth)
@@ -195,6 +232,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "snapshot_file": out.name,
         "snapshot_bytes": out.stat().st_size,
         "snapshot_sha256": _sha256(out),
+        "model_output_tables_cleared": cleared,
         "row_counts": counts,
         "ground_truth": str(gt) if gt_sha else None,
         "ground_truth_sha256": gt_sha,
@@ -207,10 +245,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     out.chmod(0o444)
 
     mb = out.stat().st_size / 1_000_000
-    print(f"froze {source} -> {out} ({mb:.1f} MB, read-only)")
+    print(f"froze {source} -> {out} ({mb:.1f} MB, read-only, input-only)")
     print(
         f"  dockets={counts.get('dockets', '?')} entries={counts.get('entries', '?')} "
-        f"hearings={counts.get('hearings', '?')} deadlines={counts.get('deadlines', '?')}"
+        f"courts={counts.get('courts', '?')}  (cleared: {', '.join(cleared) or 'none'})"
     )
     print(f"  manifest: {manifest_path}")
     if gt_sha is None:
