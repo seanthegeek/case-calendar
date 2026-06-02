@@ -711,17 +711,38 @@ _RUNTIME_JS = r"""
       return /\s/.test(t) ? '"' + t + '"' : t;
     }).join(' ');
   }
+  // Direction options per sort key. The labels describe each key's ordering
+  // in its own words (a date sorts newest/oldest, a name A–Z, the next event
+  // soonest/latest) and the FIRST entry is that key's default direction, so
+  // picking a sort key resets the direction to the one a reader expects:
+  // alphabetical for Case name, soonest-first for Next event, newest-first
+  // for the date keys. The 'value' is the physical sort direction the
+  // comparator uses (asc = ascending by the raw data-* value).
+  var DIR_OPTIONS = {
+    'last-filing': [['desc', 'Newest first'], ['asc', 'Oldest first']],
+    'filed':       [['desc', 'Newest first'], ['asc', 'Oldest first']],
+    'next-event':  [['asc', 'Soonest first'], ['desc', 'Latest first']],
+    'name':        [['asc', 'A–Z'], ['desc', 'Z–A']]
+  };
+  function populateDir(section, key) {
+    // Rebuild the Direction <select> for the given sort key and select that
+    // key's default (the first option). Called on load and whenever the sort
+    // key changes, so the direction labels + default always match the key.
+    var dir = section.querySelector('select.dir');
+    var opts = DIR_OPTIONS[key] || [['desc', 'Descending'], ['asc', 'Ascending']];
+    dir.innerHTML = '';
+    opts.forEach(function(pair, i) {
+      var opt = document.createElement('option');
+      opt.value = pair[0];
+      opt.textContent = pair[1];
+      if (i === 0) opt.selected = true;
+      dir.appendChild(opt);
+    });
+  }
   function sortCases(section) {
     var sel = section.querySelector('select.sort');
     var asc = section.querySelector('select.dir').value === 'asc';
     var key = sel.value;
-    // "Next event" is a soonest-first key: an earlier timestamp is the more
-    // salient row, so its direction is inverted relative to the date/name
-    // keys. This makes the default "Descending" surface the cases with the
-    // soonest upcoming events at the top — mirroring how "Last filing"
-    // descending surfaces the newest activity. Cases with no upcoming event
-    // (empty value) still sort last regardless, via the empty-checks below.
-    if (key === 'next-event') asc = !asc;
     var list = section.querySelector('ol.cases');
     var items = Array.prototype.slice.call(list.children);
     items.sort(function(a, b) {
@@ -822,7 +843,10 @@ _RUNTIME_JS = r"""
     }
   }
   document.querySelectorAll('section.calendar').forEach(function(section) {
-    section.querySelector('select.sort').addEventListener('change', function() {
+    var sortSel = section.querySelector('select.sort');
+    populateDir(section, sortSel.value);  // direction labels for the initial key
+    sortSel.addEventListener('change', function() {
+      populateDir(section, this.value);  // reset direction to the key's default
       sortCases(section);
     });
     section.querySelector('select.dir').addEventListener('change', function() {
@@ -1247,16 +1271,20 @@ def _render_calendar(calendar: dict[str, Any]) -> str:
         f'<div class="controls">'
         f"<label>Sort by "
         f'<select class="sort">'
-        f'<option value="last-filing" selected>Last filing</option>'
+        f'<option value="last-filing" selected>Filing</option>'
         f'<option value="next-event">Next event</option>'
         f'<option value="filed">Date filed</option>'
         f'<option value="name">Case name</option>'
         f"</select>"
         f"</label>"
+        # Direction labels are rebuilt client-side per sort key (see
+        # DIR_OPTIONS in the runtime JS). These server-rendered options match
+        # the default "Last filing" key so a no-JS reader still sees sensible
+        # labels; JS repopulates them on load and on every sort-key change.
         f"<label>Direction "
         f'<select class="dir">'
-        f'<option value="desc" selected>Descending</option>'
-        f'<option value="asc">Ascending</option>'
+        f'<option value="desc" selected>Newest first</option>'
+        f'<option value="asc">Oldest first</option>'
         f"</select>"
         f"</label>"
         f"</div>"
