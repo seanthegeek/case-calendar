@@ -36,9 +36,11 @@ adheres to [Semantic Versioning][semver].
   soonest-first for Next event, A-Z for Case name). So selecting "Case name"
   lands alphabetical and "Next event" lands soonest-first without a second click.
   The default sort key's label was also clarified from "Last filing" to **"Last
-  filing date"**. Sorting stays client-side; the server-rendered Direction
-  options are a no-JS fallback matching the default key. Covered by
-  `tests/test_index.py` and `tests/test_index_events.py`.
+  filing date"**, and the per-case metadata date labels were aligned to match the
+  sort options ("Filed" → "Date filed", "Last filing" → "Last filing date").
+  Sorting stays client-side; the server-rendered Direction options are a no-JS
+  fallback matching the default key. Covered by `tests/test_index.py` and
+  `tests/test_index_events.py`.
 
 ## [0.14.1] - 2026-06-01
 

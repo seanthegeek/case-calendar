@@ -1221,9 +1221,9 @@ def _render_case(case: dict[str, Any]) -> str:
     tags_block = _render_tags(list(case.get("tags") or []))
     dates_bits = []
     if date_filed:
-        dates_bits.append(f"<span><b>Filed</b> {_esc(date_filed)}</span>")
+        dates_bits.append(f"<span><b>Date filed</b> {_esc(date_filed)}</span>")
     if last_filing:
-        dates_bits.append(f"<span><b>Last filing</b> {_esc(last_filing)}</span>")
+        dates_bits.append(f"<span><b>Last filing date</b> {_esc(last_filing)}</span>")
     dates_block = f'<p class="dates">{"".join(dates_bits)}</p>' if dates_bits else ""
     return (
         f"<li {data}><h3>{name}</h3>"

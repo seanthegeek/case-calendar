@@ -422,7 +422,8 @@ class TestRenderCaseEdges:
         # The visible label was historically "Last activity" and sourced
         # from docket.date_modified, which conflates filings with OCR /
         # metadata churn. The renderer now reads ``last_filing_date`` and
-        # labels it "Last filing".
+        # labels it "Last filing date" (matching the sort-dropdown wording);
+        # the case-open date is labeled "Date filed".
         html = _render_case(
             {
                 "name": "US v. X",
@@ -431,7 +432,8 @@ class TestRenderCaseEdges:
                 "last_filing_date": "2026-05-10",
             }
         )
-        assert "<b>Last filing</b> 2026-05-10" in html
+        assert "<b>Last filing date</b> 2026-05-10" in html
+        assert "<b>Date filed</b> 2025-01-15" in html
         assert "Last activity" not in html
         assert 'data-last-filing="2026-05-10"' in html
 
