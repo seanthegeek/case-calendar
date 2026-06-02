@@ -1583,6 +1583,12 @@ _DEFAULT_SUMMARY_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-5.4",
     "gemini": "gemini-2.5-pro",
+    # Local inference via Ollama. gemma4:31b — the same capable all-rounder the
+    # extraction track defaults to locally (see providers._DEFAULT_MODELS), so a
+    # zero-config local install pulls and runs ONE model for both tracks.
+    # Override with LLM_SUMMARY_MODEL, and raise OLLAMA_NUM_CTX since summaries
+    # feed tens of thousands of tokens of legal prose. See docs/local-llms.md.
+    "ollama": "gemma4:31b",
 }
 
 

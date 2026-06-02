@@ -288,6 +288,28 @@ def test_parse_extra_variant_rejects_bad_shape_and_provider():
         mod._parse_extra_variant("gemini:")  # empty extract field
 
 
+def test_parse_extra_variant_accepts_ollama_opt_in():
+    # Ollama is NOT in the default-built set (it needs a local server), but is
+    # selectable as an explicit extra column for local-vs-hosted benchmarking.
+    v = mod._parse_extra_variant("ollama:llama3.1")
+    assert v.provider == "ollama" and v.extract_model == "llama3.1"
+    assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["ollama"]
+    assert v.label == "ollama/llama3.1"
+    # Explicit summary model too (":"-bearing model name still parses since the
+    # split caps at three fields... a colon-bearing summary model would not, so
+    # use a plain name here).
+    v2 = mod._parse_extra_variant("ollama:llama3.1:qwen2.5")
+    assert v2.summary_model == "qwen2.5"
+
+
+def test_ollama_not_in_default_built_set():
+    # The committed default comparison set stays the three hosted providers —
+    # a clean `--validate` / `--fake` run can't assume a local server.
+    assert "ollama" not in mod.ALL_PROVIDERS
+    assert "ollama" in mod.SELECTABLE_PROVIDERS
+    assert {v.provider for v in mod._default_variants()} == set(mod.ALL_PROVIDERS)
+
+
 # --------------------------------------------------------------------------- #
 # _variant_dispatch — per-column extraction-model injection
 # --------------------------------------------------------------------------- #

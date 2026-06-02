@@ -260,14 +260,27 @@ def _rates(model: str) -> Optional[_Rates]:
     return None
 
 
-def estimate_cost(model: str, usage: TokenUsage) -> Optional[float]:
+def estimate_cost(
+    model: str, usage: TokenUsage, provider: Optional[str] = None
+) -> Optional[float]:
     """Estimated USD for one call, or ``None`` when ``model`` isn't in the
     table (the caller flags that as unpriced rather than guessing).
 
     ``usage.input`` is the TOTAL prompt tokens with the cached + cache-write
     portions included, so the freshly-processed (uncached) input is
     ``input - cached - cache_write``; each slice is billed at its own rate.
+
+    ``provider`` lets us price by provider as well as model. A local provider
+    (Ollama) has no per-token API charge, so it bills ``0.0`` regardless of
+    the model name — returning ``None`` there would mislabel every local call
+    as "unpriced" (``cost_est=?``) when the API cost is genuinely zero. (Local
+    inference still has hardware / electricity cost; this estimator only ever
+    modeled per-token API billing, so ``0.0`` is the accurate figure for the
+    thing it measures.) ``provider`` defaults to ``None`` so direct 2-arg
+    callers keep the original table-lookup behavior.
     """
+    if provider == "ollama":
+        return 0.0
     rates = _rates(model)
     if rates is None:
         return None

@@ -142,7 +142,14 @@ logger = logging.getLogger("provider_stores")
 # prices the out-of-the-box configuration regardless of any LLM_MODEL override.
 EXTRACT_MODELS = dict(providers._DEFAULT_MODELS)
 SUMMARY_MODELS = dict(llm._DEFAULT_SUMMARY_MODELS)
+# Providers built in the DEFAULT comparison set (one column each at their
+# out-of-the-box models). Ollama is deliberately NOT here: it needs a local
+# server running and a model pulled, which a clean `--validate` / `--fake` run
+# can't assume — so it's opt-in only, reachable via
+# `--extra-variant ollama:<extract>[:<summary>]`. SELECTABLE_PROVIDERS is the
+# wider set an extra-variant may name.
 ALL_PROVIDERS = ["anthropic", "openai", "gemini"]
+SELECTABLE_PROVIDERS = [*ALL_PROVIDERS, "ollama"]
 OUT_DIR = Path("data/provider-stores")
 DERIVED_TABLES = ("hearings", "deadlines", "case_summaries")
 
@@ -225,10 +232,10 @@ def _parse_extra_variant(spec: str) -> Variant:
     if len(parts) not in (2, 3):
         raise SystemExit(f"--extra-variant {spec!r} must be provider:extract[:summary]")
     provider, extract = parts[0], parts[1]
-    if provider not in ALL_PROVIDERS:
+    if provider not in SELECTABLE_PROVIDERS:
         raise SystemExit(
             f"--extra-variant {spec!r}: unknown provider {provider!r}; "
-            f"choose from {ALL_PROVIDERS}"
+            f"choose from {SELECTABLE_PROVIDERS}"
         )
     summary = parts[2] if len(parts) == 3 else llm._DEFAULT_SUMMARY_MODELS[provider]
     if not (extract and summary):
@@ -363,7 +370,7 @@ def _capturing_record(
         purpose=purpose,
         docket="?" if docket is None else str(docket),
         tokens=tokens,
-        cost=costs.estimate_cost(model, tokens),
+        cost=costs.estimate_cost(model, tokens, provider),
     )
     with _CAP_LOCK:
         CAP.calls.append(call)

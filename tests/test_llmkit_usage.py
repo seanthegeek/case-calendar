@@ -283,7 +283,7 @@ class TestLedgerCostEstimation:
 
     def test_per_call_line_carries_cost(self, caplog):
         led = TokenLedger()
-        led.set_price_estimator(lambda model, tokens: 0.0025)
+        led.set_price_estimator(lambda model, tokens, provider: 0.0025)
         with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.record(
                 purpose="summary",
@@ -294,9 +294,32 @@ class TestLedgerCostEstimation:
             )
         assert any("cost_est=$0.0025" in r.getMessage() for r in caplog.records)
 
+    def test_price_estimator_receives_provider(self):
+        # Price is a function of (model, usage, PROVIDER) — the ledger must
+        # forward the provider so an estimator can price by provider (e.g. a
+        # local provider that bills nothing regardless of model name). Without
+        # this, a model-only estimator can't distinguish a local model from a
+        # hosted one with an arbitrary name.
+        seen = {}
+        led = TokenLedger()
+
+        def fake_price(model, tokens, provider):
+            seen["args"] = (model, provider)
+            return 0.0 if provider == "ollama" else 1.0
+
+        led.set_price_estimator(fake_price)
+        led.record(
+            purpose="extract",
+            provider="ollama",
+            model="llama3.1",
+            tokens=TokenUsage(10, 2, 0, 0),
+            docket=1,
+        )
+        assert seen["args"] == ("llama3.1", "ollama")
+
     def test_summary_totals_include_cost(self, caplog):
         led = TokenLedger()
-        led.set_price_estimator(lambda model, tokens: 1.0)
+        led.set_price_estimator(lambda model, tokens, provider: 1.0)
         for d in (1, 1, 2):
             led.record(
                 purpose="extract",
@@ -318,7 +341,9 @@ class TestLedgerCostEstimation:
     def test_unpriced_calls_flagged_partial(self, caplog):
         # Estimator prices "known" but returns None for "unknown".
         led = TokenLedger()
-        led.set_price_estimator(lambda model, tokens: 0.5 if model == "known" else None)
+        led.set_price_estimator(
+            lambda model, tokens, provider: 0.5 if model == "known" else None
+        )
         led.record(
             purpose="extract",
             provider="x",
@@ -350,7 +375,7 @@ class TestLedgerCostEstimation:
 
     def test_unpriced_per_call_shows_question_mark(self, caplog):
         led = TokenLedger()
-        led.set_price_estimator(lambda model, tokens: None)
+        led.set_price_estimator(lambda model, tokens, provider: None)
         with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.record(
                 purpose="extract",
@@ -363,7 +388,7 @@ class TestLedgerCostEstimation:
 
     def test_reset_clears_estimator(self, caplog):
         led = TokenLedger()
-        led.set_price_estimator(lambda model, tokens: 1.0)
+        led.set_price_estimator(lambda model, tokens, provider: 1.0)
         led.reset()
         with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             led.record(
@@ -376,7 +401,7 @@ class TestLedgerCostEstimation:
         assert all("cost_est" not in r.getMessage() for r in caplog.records)
 
     def test_module_facade_set_price_estimator(self, caplog):
-        usage.set_price_estimator(lambda model, tokens: 0.01)
+        usage.set_price_estimator(lambda model, tokens, provider: 0.01)
         with caplog.at_level(logging.INFO, logger="case_calendar.llmkit.usage"):
             usage.record(
                 purpose="summary",

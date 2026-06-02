@@ -84,6 +84,19 @@ class TestDetectProvider:
             == "openai"
         )
 
+    def test_explicit_ollama_provider(self, monkeypatch):
+        # Ollama (local) is a valid explicit choice via LLM_PROVIDER even
+        # though it has no API key to auto-detect from.
+        monkeypatch.setenv("LLM_PROVIDER", "ollama")
+        assert providers._detect_provider() == "ollama"
+
+    def test_ollama_is_explicit_only_not_autodetected(self, monkeypatch):
+        # Ollama has no API key, so it's never reached by key auto-detection —
+        # an OLLAMA_BASE_URL alone must NOT select it. Local is opt-in by
+        # design (set LLM_PROVIDER / a per-track override).
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+        assert providers._detect_provider() is None
+
 
 class TestDetectExtractionProvider:
     """``_detect_extraction_provider`` layers ``LLM_EXTRACTION_PROVIDER``
@@ -147,6 +160,12 @@ class TestDetectExtractionProvider:
         # configured" error).
         assert providers._detect_extraction_provider() is None
 
+    def test_ollama_extraction_override(self, monkeypatch):
+        # The extraction track can be pinned to local inference independently
+        # of the summary track — local extraction, hosted summaries.
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "ollama")
+        assert providers._detect_extraction_provider() == "ollama"
+
 
 # --- _parse_actions ---
 
@@ -165,6 +184,14 @@ class TestProviderInfo:
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
         monkeypatch.setenv("LLM_MODEL", "claude-opus-4-7")
         assert "claude-opus-4-7" in providers.provider_info()
+
+    def test_ollama_provider_default_model(self, monkeypatch):
+        # provider_info reflects an explicit ollama selection + its default
+        # model, so the startup `extraction LLM:` log line names it.
+        monkeypatch.setenv("LLM_EXTRACTION_PROVIDER", "ollama")
+        info = providers.provider_info()
+        assert "provider=ollama" in info
+        assert providers._DEFAULT_MODELS["ollama"] in info
 
 
 class TestDispatchLLMCall:
@@ -212,6 +239,20 @@ class TestDispatchLLMCall:
         # behavior across all three callers.
         monkeypatch.setattr(providers, "_call_gemini", fake)
         assert providers._dispatch_llm_call("gemini", "s", "u", 100) == "ok"
+        assert captured["kw"]["json_mode"] is True
+
+    def test_routes_to_ollama(self, monkeypatch):
+        captured = {}
+
+        def fake(system, user, max_tokens, **kw):
+            captured["provider"] = "ollama"
+            captured["kw"] = kw
+            return "ok"
+
+        monkeypatch.setattr(providers, "_call_ollama", fake)
+        assert providers._dispatch_llm_call("ollama", "s", "u", 100) == "ok"
+        assert captured["provider"] == "ollama"
+        # json_mode propagates the same as the other OpenAI-shaped providers.
         assert captured["kw"]["json_mode"] is True
 
     def test_model_and_json_mode_passthrough(self, monkeypatch):
@@ -791,6 +832,135 @@ class TestCallGemini:
 
         out = providers._call_gemini("s", "u", 50)
         assert out == '{"actions": []}'
+
+
+class TestCallOllama:
+    """Local inference through Ollama's OpenAI-compatible endpoint. We reuse
+    the ``openai`` SDK pointed at a local base URL, so these tests inject a
+    fake ``openai`` module the same way ``TestCallOpenAI`` does, and assert on
+    the Ollama-specific call shape (base_url, dummy key, ``max_tokens`` rather
+    than ``max_completion_tokens``, optional ``num_ctx``)."""
+
+    @staticmethod
+    def _fake_openai(monkeypatch, content="hello"):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = content
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+        return fake_mod, fake_client
+
+    def test_returns_message_content(self, monkeypatch):
+        _mod, client = self._fake_openai(monkeypatch, content='{"actions": []}')
+        out = providers._call_ollama("s", "u", 50)
+        assert out == '{"actions": []}'
+        kw = client.chat.completions.create.call_args.kwargs
+        # JSON mode on by default; default model is the ollama default.
+        assert kw["response_format"] == {"type": "json_object"}
+        assert kw["model"] == providers._DEFAULT_MODELS["ollama"]
+
+    def test_uses_classic_max_tokens_not_completion_tokens(self, monkeypatch):
+        # Ollama's OpenAI-compat endpoint expects the classic `max_tokens`,
+        # unlike the gpt-5 family (which requires `max_completion_tokens`).
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 64)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert kw["max_tokens"] == 64
+        assert "max_completion_tokens" not in kw
+
+    def test_default_base_url_and_dummy_key(self, monkeypatch):
+        # Nothing leaves the machine: a localhost base URL and a throwaway key
+        # (Ollama ignores the key but the SDK requires a non-empty one).
+        fake_mod, _client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        ctor = fake_mod.OpenAI.call_args.kwargs
+        assert ctor["base_url"] == "http://localhost:11434/v1"
+        assert ctor["api_key"]  # non-empty
+
+    def test_base_url_override(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434/v1")
+        fake_mod, _client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert fake_mod.OpenAI.call_args.kwargs["base_url"] == "http://gpu-box:11434/v1"
+
+    def test_respects_model_kwarg_and_llm_model_env(self, monkeypatch):
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10, model="qwen2.5:32b")
+        assert client.chat.completions.create.call_args.kwargs["model"] == "qwen2.5:32b"
+        # LLM_MODEL is the env fallback when no model kwarg is passed.
+        monkeypatch.setenv("LLM_MODEL", "mistral-small")
+        providers._call_ollama("s", "u", 10)
+        assert (
+            client.chat.completions.create.call_args.kwargs["model"] == "mistral-small"
+        )
+
+    def test_json_mode_off_omits_response_format(self, monkeypatch):
+        _mod, client = self._fake_openai(monkeypatch, content="prose")
+        providers._call_ollama("s", "u", 50, json_mode=False)
+        assert "response_format" not in client.chat.completions.create.call_args.kwargs
+
+    def test_num_ctx_forwarded_via_extra_body_when_set(self, monkeypatch):
+        # Local models truncate long prompts silently; OLLAMA_NUM_CTX widens
+        # the window. It rides through the OpenAI SDK's extra_body as the
+        # native `options.num_ctx`.
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert kw["extra_body"] == {"options": {"num_ctx": 32768}}
+
+    def test_num_ctx_omitted_when_unset(self, monkeypatch):
+        # Default path sends a vanilla request any Ollama version accepts.
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert "extra_body" not in client.chat.completions.create.call_args.kwargs
+
+    def test_empty_content_raises(self, monkeypatch):
+        _mod, _client = self._fake_openai(monkeypatch, content="")
+        with pytest.raises(ValueError, match="No content in Ollama"):
+            providers._call_ollama("s", "u", 10)
+
+    def test_length_finish_reason_raises_truncated(self, monkeypatch):
+        _mod, client = self._fake_openai(monkeypatch, content='{"actions": [')
+        client.chat.completions.create.return_value.choices[0].finish_reason = "length"
+        with pytest.raises(providers.OutputTruncatedError) as exc_info:
+            providers._call_ollama("s", "u", 2048)
+        assert exc_info.value.provider == "ollama"
+        assert exc_info.value.max_tokens == 2048
+
+    def test_records_usage_under_ollama_provider(self, monkeypatch):
+        # Telemetry must bucket the call under provider="ollama" (so cost
+        # estimation can zero it) — recorded via the OpenAI-shaped usage path.
+        from case_calendar.llmkit import usage
+
+        seen = {}
+        monkeypatch.setattr(
+            usage,
+            "record",
+            lambda **kw: seen.update(kw),
+        )
+        _mod, _client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert seen["provider"] == "ollama"
+
+    def test_temperature_omitted_when_none(self, monkeypatch):
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+    def test_temperature_forwarded_when_zero(self, monkeypatch):
+        # 0.0 must survive the falsy-zero trap (the `is not None` check).
+        _mod, client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10, temperature=0.0)
+        assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
 
 
 # --- verify_deadline (parallel to verify_hearing) ---

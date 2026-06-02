@@ -289,11 +289,13 @@ step-by-step walkthrough is in
 | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | at least one | API key for each LLM provider you use. Extraction always needs one; summaries need one when enabled. `GOOGLE_API_KEY` is accepted as an alias for `GEMINI_API_KEY`. |
 | `CASE_CALENDAR_WEBHOOK_SECRET` | only for `serve` | Long URL-safe random string that gates the webhook receiver path. See [webhooks](webhooks.md#1-choose-a-secret). |
 | `M365_CLIENT_ID` | only if pushing to Microsoft 365 | Entra app (client) ID — an alternative to the `m365_client_id` YAML key. |
-| `LLM_PROVIDER` | no | Pin ONE provider (`anthropic` / `openai` / `gemini`) for BOTH the extraction and summary tracks. Overridden per-track by the two variables below. |
-| `LLM_EXTRACTION_PROVIDER` | no | Pin the extraction track's provider only (beats `LLM_PROVIDER` for that track). |
-| `LLM_SUMMARY_PROVIDER` | no | Pin the summary track's provider only. The `case_summaries.provider` YAML key takes precedence over this. |
+| `LLM_PROVIDER` | no | Pin ONE provider (`anthropic` / `openai` / `gemini` / `ollama`) for BOTH the extraction and summary tracks. Overridden per-track by the two variables below. |
+| `LLM_EXTRACTION_PROVIDER` | no | Pin the extraction track's provider only (beats `LLM_PROVIDER` for that track). Accepts `ollama` for local extraction. |
+| `LLM_SUMMARY_PROVIDER` | no | Pin the summary track's provider only. The `case_summaries.provider` YAML key takes precedence over this. Accepts `ollama` for local summaries. |
 | `LLM_MODEL` | no | Override the extraction track's model (default: the per-provider small/fast tier). |
 | `LLM_SUMMARY_MODEL` | no | Override the summary track's model. The `case_summaries.model` YAML key takes precedence over this. |
+| `OLLAMA_BASE_URL` | no (default `http://localhost:11434/v1`) | Where the local [Ollama](local-llms.md) server listens. Only consulted when a track resolves to the `ollama` provider. |
+| `OLLAMA_NUM_CTX` | no | Context window (tokens) for Ollama requests. Local models default to a small window and silently truncate longer prompts — raise it for the summary track. See [Local models](local-llms.md). |
 | `LOG_LEVEL` | no (default `INFO`) | Python logging level — `DEBUG`, `INFO`, `WARNING`, etc. |
 
 When no provider is pinned, each track auto-detects from whichever API keys are

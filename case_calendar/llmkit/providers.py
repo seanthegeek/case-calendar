@@ -50,7 +50,24 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5",
     "openai": "gpt-5.4-nano",
     "gemini": "gemini-3.1-flash-lite",
+    # Local inference via Ollama's OpenAI-compatible endpoint. Unlike the
+    # hosted providers, the local extraction default is deliberately NOT a
+    # small/fast tier: gemma4:31b is a single capable all-rounder used for both
+    # tracks, so a zero-config local install pulls and runs ONE model. The
+    # "small/fast for extraction" rule (see AGENTS.md) is a COST trade for the
+    # hosted APIs; local inference has no per-token cost, so the only thing a
+    # big extraction model costs locally is speed — which the operator can
+    # trade back by overriding LLM_MODEL with a smaller Gemma (e.g.
+    # gemma4:e4b) for faster backfills. gemma4 is Western-built (Google),
+    # permissively licensed, and text-capable — see docs/local-llms.md. Ollama
+    # is opt-in only (no API key to auto-detect from): select it with
+    # LLM_PROVIDER=ollama or a per-track override.
+    "ollama": "gemma4:31b",
 }
+
+# Every provider this layer can dispatch to. Used to validate the
+# LLM_PROVIDER / LLM_*_PROVIDER env overrides before trusting them.
+_KNOWN_PROVIDERS = ("anthropic", "openai", "gemini", "ollama")
 
 
 # Default API-key auto-detection priority. The two tracks differ on purpose
@@ -84,7 +101,7 @@ def _detect_provider(
         ``llm.summary_provider_info`` / ``llm.generate_docket_summary``.
     """
     provider = os.environ.get("LLM_PROVIDER", "").lower().strip()
-    if provider in ("anthropic", "openai", "gemini"):
+    if provider in _KNOWN_PROVIDERS:
         return provider
     have = {
         "anthropic": bool(os.environ.get("ANTHROPIC_API_KEY")),
@@ -111,7 +128,7 @@ def _detect_extraction_provider() -> Optional[str]:
          summary track still defaults to Anthropic.
     """
     extract = os.environ.get("LLM_EXTRACTION_PROVIDER", "").lower().strip()
-    if extract in ("anthropic", "openai", "gemini"):
+    if extract in _KNOWN_PROVIDERS:
         return extract
     return _detect_provider(key_priority=_EXTRACTION_KEY_PRIORITY)
 
@@ -278,6 +295,83 @@ def _call_gemini(
     return resp.text
 
 
+def _call_ollama(
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    model: Optional[str] = None,
+    json_mode: bool = True,
+    purpose: str = "llm",
+    docket: Any = None,
+    temperature: Optional[float] = None,
+) -> str:
+    """Local inference through Ollama's OpenAI-compatible endpoint.
+
+    Ollama serves an OpenAI-shaped ``/v1/chat/completions`` API, so we reuse
+    the ``openai`` SDK pointed at the local server (``OLLAMA_BASE_URL``,
+    default ``http://localhost:11434/v1``) with a throwaway key — Ollama
+    ignores the key but the SDK requires a non-empty one. The response carries
+    OpenAI-shaped ``usage`` and ``finish_reason``, so token telemetry and
+    truncation detection go through the same ``from_openai`` / ``length`` paths
+    as the hosted OpenAI provider.
+
+    Three deliberate differences from :func:`_call_openai`:
+
+    - **``max_tokens``, not ``max_completion_tokens``.** The latter is a
+      gpt-5-family requirement; Ollama's endpoint expects the classic name.
+    - **A local ``base_url`` + dummy key**, so nothing leaves the machine.
+    - **Optional ``num_ctx``.** Local models default to a small context window
+      (often 4K–8K tokens) and SILENTLY TRUNCATE longer prompts — which the
+      summary track (tens of thousands of tokens of legal prose) will hit.
+      When ``OLLAMA_NUM_CTX`` is set we pass it through ``extra_body`` so the
+      server allocates a larger window. It is opt-in because the OpenAI-compat
+      passthrough of ``options`` is Ollama-version-dependent; the guaranteed
+      way to raise the window is a Modelfile ``PARAMETER num_ctx`` (see
+      docs/local-llms.md). Left unset, we send a vanilla request that any
+      Ollama version accepts.
+    """
+    import openai
+
+    chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["ollama"])
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # Ollama ignores the key, but the SDK refuses to construct without one.
+    api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+    client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=600.0)
+    kwargs: dict[str, Any] = {
+        "model": chosen,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    num_ctx = os.environ.get("OLLAMA_NUM_CTX", "").strip()
+    if num_ctx:
+        # Ollama reads model runtime options from a top-level `options` object;
+        # the OpenAI SDK forwards unknown body fields via `extra_body`.
+        kwargs["extra_body"] = {"options": {"num_ctx": int(num_ctx)}}
+    resp = client.chat.completions.create(**kwargs)
+    usage.record(
+        purpose=purpose,
+        provider="ollama",
+        model=chosen,
+        tokens=usage.from_openai(resp),
+        docket=docket,
+    )
+    choice = resp.choices[0]
+    text = choice.message.content
+    if not text:
+        raise ValueError("No content in Ollama response")
+    if getattr(choice, "finish_reason", None) == "length":
+        raise OutputTruncatedError("ollama", text, max_tokens)
+    return text
+
+
 def _dispatch_llm_call(
     provider: str,
     system: str,
@@ -292,11 +386,11 @@ def _dispatch_llm_call(
 ) -> str:
     """Route to the per-provider call function by ``provider`` name.
 
-    Single home for the three-way ``anthropic | openai | gemini``
+    Single home for the ``anthropic | openai | gemini | ollama``
     dispatch. The per-provider functions still own their SDK quirks
     (truncation signal detection, json-mode kwargs, model-default
     selection); this helper just picks which one to call so callers don't
-    have to rewrite the if/elif/else when a fourth provider is added or a
+    have to rewrite the if/elif/else when another provider is added or a
     kwarg shape shifts. ``OutputTruncatedError`` and any other exceptions
     propagate unchanged so callers can convert them into their own
     caller-specific fallback shape (IGNORE list vs UNCLEAR dict vs raise).
@@ -326,6 +420,17 @@ def _dispatch_llm_call(
         )
     if provider == "openai":
         return _call_openai(
+            system,
+            user,
+            max_tokens,
+            model=model,
+            json_mode=json_mode,
+            purpose=purpose,
+            docket=docket,
+            temperature=temperature,
+        )
+    if provider == "ollama":
+        return _call_ollama(
             system,
             user,
             max_tokens,

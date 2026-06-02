@@ -133,6 +133,33 @@ class TestEstimateCost:
     def test_zero_usage_is_zero(self):
         assert costs.estimate_cost("claude-haiku-4-5", TokenUsage()) == 0.0
 
+    def test_ollama_provider_is_free_regardless_of_model(self):
+        # Local inference has no per-token API charge, so the ollama provider
+        # bills $0.00 for ANY model name — including names the table doesn't
+        # list, which would otherwise return None (unpriced). The provider, not
+        # the model string, is what makes it free.
+        usage = TokenUsage(input=1_000_000, output=1_000_000)
+        assert costs.estimate_cost("llama3.1", usage, provider="ollama") == 0.0
+        assert (
+            costs.estimate_cost("some-local-model-we-never-heard-of", usage, "ollama")
+            == 0.0
+        )
+        # An empty-usage local call is also $0, not None.
+        assert costs.estimate_cost("llama3.1", TokenUsage(), "ollama") == 0.0
+
+    def test_provider_arg_defaults_to_table_lookup(self):
+        # When provider is omitted (or a hosted provider is passed), pricing
+        # still comes from the per-model table — the ollama short-circuit must
+        # not change hosted behavior.
+        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("claude-haiku-4-5", usage) == pytest.approx(6.0)
+        assert costs.estimate_cost(
+            "claude-haiku-4-5", usage, provider="anthropic"
+        ) == pytest.approx(6.0)
+        # A hosted provider with an unlisted model is still unpriced (None),
+        # NOT zeroed — only ollama is free.
+        assert costs.estimate_cost("gpt-4o-mini", usage, provider="openai") is None
+
     def test_prices_verified_date_present(self):
         # The table is dated so an operator can judge staleness.
         assert isinstance(costs.PRICES_VERIFIED, str) and costs.PRICES_VERIFIED
