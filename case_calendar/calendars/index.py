@@ -712,7 +712,7 @@ _RUNTIME_JS = r"""
     }).join(' ');
   }
   // Direction options per sort key. The labels describe each key's ordering
-  // in its own words (a date sorts newest/oldest, a name A–Z, the next event
+  // in its own words (a date sorts newest/oldest, a name A-Z, the next event
   // soonest/latest) and the FIRST entry is that key's default direction, so
   // picking a sort key resets the direction to the one a reader expects:
   // alphabetical for Case name, soonest-first for Next event, newest-first
@@ -722,7 +722,7 @@ _RUNTIME_JS = r"""
     'last-filing': [['desc', 'Newest first'], ['asc', 'Oldest first']],
     'filed':       [['desc', 'Newest first'], ['asc', 'Oldest first']],
     'next-event':  [['asc', 'Soonest first'], ['desc', 'Latest first']],
-    'name':        [['asc', 'A–Z'], ['desc', 'Z–A']]
+    'name':        [['asc', 'A-Z'], ['desc', 'Z-A']]
   };
   function populateDir(section, key) {
     // Rebuild the Direction <select> for the given sort key and select that

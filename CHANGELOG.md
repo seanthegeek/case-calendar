@@ -31,9 +31,9 @@ adheres to [Semantic Versioning][semver].
   generic "Descending / Ascending", the Direction dropdown is rebuilt client-side
   per key with labels that describe that key's ordering — **Newest first /
   Oldest first** for the date keys, **Soonest first / Latest first** for Next
-  event, **A–Z / Z–A** for Case name — and picking a sort key resets the
+  event, **A-Z / Z-A** for Case name — and picking a sort key resets the
   direction to that key's natural default (newest-first for the dates,
-  soonest-first for Next event, A–Z for Case name). So selecting "Case name"
+  soonest-first for Next event, A-Z for Case name). So selecting "Case name"
   lands alphabetical and "Next event" lands soonest-first without a second click.
   The default sort key's label was also clarified from "Last filing" to **"Last
   filing date"**. Sorting stays client-side; the server-rendered Direction

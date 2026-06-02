@@ -789,7 +789,7 @@ class TestRenderIndex:
         # same way the other JS handlers are guarded so the per-key labels +
         # defaults can't silently regress.
         html = render_index(calendars=calendars)
-        # Date keys: newest-first default; name: A–Z (ascending) default;
+        # Date keys: newest-first default; name: A-Z (ascending) default;
         # next-event: soonest-first (ascending) default.
         assert (
             "'last-filing': [['desc', 'Newest first'], ['asc', 'Oldest first']]" in html
@@ -801,7 +801,7 @@ class TestRenderIndex:
             "'next-event':  [['asc', 'Soonest first'], ['desc', 'Latest first']]"
             in html
         )
-        assert "'name':        [['asc', 'A–Z'], ['desc', 'Z–A']]" in html
+        assert "'name':        [['asc', 'A-Z'], ['desc', 'Z-A']]" in html
         # Picking a sort key resets the direction to that key's default.
         assert "populateDir(section, this.value);" in html
         # The old generic Descending/Ascending wording is gone, and the
