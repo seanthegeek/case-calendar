@@ -191,12 +191,14 @@ def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make sure tests don't accidentally hit the real CourtListener API."""
     monkeypatch.setenv("COURTLISTENER_TOKEN", "test-token")
     # Strip any real LLM creds the dev shell might have. Cover the global
-    # provider/model knobs AND the per-track override env vars
-    # (LLM_EXTRACTION_PROVIDER / LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL):
+    # provider/model knobs, the per-track override env vars
+    # (LLM_EXTRACTION_PROVIDER / LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL), AND
+    # the local-Ollama knobs (OLLAMA_BASE_URL / OLLAMA_NUM_CTX / OLLAMA_API_KEY):
     # tests that exercise cli.main() call load_dotenv() which pulls those
     # values from the maintainer's real .env into the process env outside
-    # monkeypatch's tracking, where they then leak into later tests'
-    # "no provider configured" assertions.
+    # monkeypatch's tracking, where they then leak into later tests — e.g. a
+    # maintainer running a local Ollama whose .env sets OLLAMA_BASE_URL would
+    # otherwise break the default-localhost-base-url assertion.
     for k in (
         "ANTHROPIC_API_KEY",
         "OPENAI_API_KEY",
@@ -207,6 +209,9 @@ def _no_real_token(monkeypatch: pytest.MonkeyPatch) -> None:
         "LLM_EXTRACTION_PROVIDER",
         "LLM_SUMMARY_PROVIDER",
         "LLM_SUMMARY_MODEL",
+        "OLLAMA_BASE_URL",
+        "OLLAMA_NUM_CTX",
+        "OLLAMA_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 

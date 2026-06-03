@@ -221,25 +221,32 @@ VARIANTS = _default_variants()
 
 
 def _parse_extra_variant(spec: str) -> Variant:
-    """Parse a ``--extra-variant`` spec ``provider:extract[:summary]``.
+    """Parse a ``--extra-variant`` spec ``provider:extract[,summary]``.
 
-    The summary model is optional; when omitted it defaults to ``provider``'s
-    summary default, matching how the built-in evaluation candidates are
-    defined. Raises ``SystemExit`` on a malformed spec or unknown provider so a
-    typo fails at the command line, not three minutes into a paid build.
+    The provider is split off on the FIRST colon; an optional distinct summary
+    model is separated from the extraction model by a COMMA. A comma (not a
+    second colon) delimits the two model fields because a model TAG may itself
+    contain a colon — an Ollama model is written ``family:size`` (e.g.
+    ``gemma4:e4b``), so a colon can't unambiguously separate the extract model
+    from the summary model. The summary model is optional; when omitted it
+    defaults to ``provider``'s summary default, matching how the built-in
+    evaluation candidates are defined. Raises ``SystemExit`` on a malformed spec
+    or unknown provider so a typo fails at the command line, not three minutes
+    into a paid build.
     """
-    parts = spec.split(":")
-    if len(parts) not in (2, 3):
-        raise SystemExit(f"--extra-variant {spec!r} must be provider:extract[:summary]")
-    provider, extract = parts[0], parts[1]
+    provider, sep, rest = spec.partition(":")
+    if not sep:
+        raise SystemExit(f"--extra-variant {spec!r} must be provider:extract[,summary]")
     if provider not in SELECTABLE_PROVIDERS:
         raise SystemExit(
             f"--extra-variant {spec!r}: unknown provider {provider!r}; "
             f"choose from {SELECTABLE_PROVIDERS}"
         )
-    summary = parts[2] if len(parts) == 3 else llm._DEFAULT_SUMMARY_MODELS[provider]
-    if not (extract and summary):
-        raise SystemExit(f"--extra-variant {spec!r}: empty field")
+    extract, _, summary = rest.partition(",")
+    extract = extract.strip()
+    summary = summary.strip() or llm._DEFAULT_SUMMARY_MODELS[provider]
+    if not extract:
+        raise SystemExit(f"--extra-variant {spec!r}: empty extraction model")
     return Variant(provider, extract, summary)
 
 
@@ -940,7 +947,14 @@ def _copy_store(src_path: str, dst_path: str) -> None:
     for suffix in ("", "-wal", "-shm"):
         s = Path(str(src) + suffix)
         if s.exists():
-            shutil.copy2(s, dst_path + suffix)
+            dst = dst_path + suffix
+            shutil.copy2(s, dst)
+            # shutil.copy2 preserves the source's mode bits. A frozen benchmark
+            # snapshot is intentionally read-only (0444), so the copy inherits
+            # that and _clear_derived's DELETE then fails with "attempt to write
+            # a readonly database". Restore owner-write on the working copy so
+            # the replay can mutate it.
+            os.chmod(dst, os.stat(dst).st_mode | 0o200)
     logger.info("copied %s -> %s (with WAL sidecars)", src, dst_path)
 
 
@@ -1340,6 +1354,8 @@ def build_report(
 
 
 def _has_key(provider: str) -> bool:
+    if provider == "ollama":
+        return True  # local inference needs no API key
     if provider == "anthropic":
         return bool(os.environ.get("ANTHROPIC_API_KEY"))
     if provider == "openai":

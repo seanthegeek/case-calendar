@@ -10,6 +10,8 @@ from __future__ import annotations
 import importlib.util
 import json
 import logging
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -275,8 +277,8 @@ def test_parse_extra_variant_two_fields_defaults_summary():
     assert v.label == "gemini/gemini-3.1-pro-preview"
 
 
-def test_parse_extra_variant_three_fields_explicit_summary():
-    v = mod._parse_extra_variant("openai:gpt-5.4-mini:gpt-5.4")
+def test_parse_extra_variant_explicit_summary_via_comma():
+    v = mod._parse_extra_variant("openai:gpt-5.4-mini,gpt-5.4")
     assert v.summary_model == "gpt-5.4" and v.extract_model == "gpt-5.4-mini"
 
 
@@ -296,11 +298,60 @@ def test_parse_extra_variant_accepts_ollama_opt_in():
     assert v.provider == "ollama" and v.extract_model == "llama3.1"
     assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["ollama"]
     assert v.label == "ollama/llama3.1"
-    # Explicit summary model too (":"-bearing model name still parses since the
-    # split caps at three fields... a colon-bearing summary model would not, so
-    # use a plain name here).
-    v2 = mod._parse_extra_variant("ollama:llama3.1:qwen2.5")
+    # Distinct summary model via the comma separator.
+    v2 = mod._parse_extra_variant("ollama:llama3.1,qwen2.5")
     assert v2.summary_model == "qwen2.5"
+
+
+def test_parse_extra_variant_colon_bearing_model_tag():
+    # Regression: an Ollama model TAG contains a colon (``gemma4:e4b``). The
+    # provider is split on the FIRST colon, so the whole tag becomes the
+    # extraction model and the summary defaults — it must NOT mis-parse as
+    # extract=``gemma4`` / summary=``e4b``.
+    v = mod._parse_extra_variant("ollama:gemma4:e4b")
+    assert v.provider == "ollama"
+    assert v.extract_model == "gemma4:e4b"
+    assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["ollama"]
+    assert v.label == "ollama/gemma4:e4b"
+    # A distinct, also-colon-bearing summary tag, separated by a comma.
+    v2 = mod._parse_extra_variant("ollama:gemma4:e4b,gemma4:31b")
+    assert v2.extract_model == "gemma4:e4b"
+    assert v2.summary_model == "gemma4:31b"
+
+
+def test_has_key_ollama_needs_no_api_key(monkeypatch):
+    # Ollama runs locally, so a column on it must be buildable with NO provider
+    # keys set — otherwise the build refuses an ollama column unless an unrelated
+    # Gemini/Google key happens to be present.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    assert mod._has_key("ollama") is True
+    assert mod._has_key("anthropic") is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert mod._has_key("anthropic") is True
+
+
+def test_copy_store_makes_readonly_source_writable(tmp_path):
+    # A frozen snapshot is read-only (0444); the working copy must come out
+    # writable so _clear_derived can DELETE from it. Regression: shutil.copy2
+    # preserved the read-only mode -> "attempt to write a readonly database".
+    src = tmp_path / "snap.sqlite"
+    sqlite3.connect(src).close()
+    os.chmod(src, 0o444)
+    dst = tmp_path / "work" / "case-calendar.sqlite"
+    mod._copy_store(str(src), str(dst))
+    assert dst.exists()
+    assert os.access(dst, os.W_OK)
+    # And it's writable at the SQLite level (the actual failure mode).
+    con = sqlite3.connect(dst)
+    con.execute("CREATE TABLE t(x)")
+    con.commit()
+    con.close()
 
 
 def test_ollama_not_in_default_built_set():
