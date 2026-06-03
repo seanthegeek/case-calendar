@@ -43,6 +43,11 @@ uv sync --extra test --extra lint
 check suite. Prefix every command with `uv run` and uv handles activation
 for you.
 
+The test suite needs nothing else. If you want to run the **model-comparison
+benchmark** against the committed, frozen input snapshot, fetch it once with
+`git lfs install && git lfs pull` (it's a Git LFS object — see
+[model-comparison/README.md](../model-comparison/README.md)).
+
 ## Configure secrets
 
 Copy the example env file and fill in your two required secrets:

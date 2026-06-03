@@ -176,8 +176,9 @@ really want a 32 GB card with offload or two 24 GB cards.
 **Software support varies by vendor — VRAM is necessary but not sufficient.**
 Nvidia (CUDA) is the most plug-and-play. AMD (ROCm) works well on recent Radeon
 cards — the 24 GB RX 7900 XTX is a strong-value pick for the sweet-spot tier —
-but is smoothest on Linux (on Windows, run it in WSL2 — see below — rather than
-native, which is still preview) and doesn't cover every card. Intel Arc runs local models (through `llama.cpp`'s Vulkan backend or
+but doesn't cover every card. It's smoothest on bare Linux; on Windows, native
+Ollama already drives the Radeon GPU directly, while running ROCm *inside* WSL2
+needs a WSL-specific runtime (see below). Intel Arc runs local models (through `llama.cpp`'s Vulkan backend or
 Intel's own tooling) but native Ollama support is still experimental in 2026 and
 more hands-on — confirm it works before buying a card for this. Higher-VRAM
 workstation cards exist beyond the consumer lineup (AMD Radeon Pro W7900 48 GB,
@@ -187,14 +188,28 @@ page](https://docs.ollama.com/gpu).
 
 ### Windows (WSL2)
 
-On Windows, run Case Calendar and Ollama inside **WSL2** rather than natively —
-you get the better-supported Linux GPU stack, which is also how this project is
-developed. **Nvidia** is nearly transparent: the Windows driver exposes CUDA to
-WSL2 automatically (do *not* install a Linux GPU driver inside the distro), and
-inference runs within a few percent of bare-metal Linux. **AMD** is officially
-supported as of 2026 — install ROCm inside the WSL2 distro on top of a current
-AMD Windows driver; expect roughly 10–20% lower throughput than native Linux
-from the virtualized GPU path, but it beats Windows-native ROCm (still preview).
+On Windows, Case Calendar itself runs inside **WSL2** (it's a Linux app, and
+that's how this project is developed). Where you run **Ollama** depends on your
+GPU vendor.
+
+**Nvidia** is nearly transparent in WSL2: the Windows driver exposes
+CUDA to WSL2 automatically (do *not* install a Linux GPU driver inside the
+distro), and inference runs within a few percent of bare-metal Linux — so run
+Ollama in WSL2 too.
+
+**AMD**'s simplest path is the opposite: run Ollama
+**natively on Windows**, where its ROCm/Vulkan build already drives recent Radeon
+GPUs, and point Case Calendar at it from WSL2 with
+`OLLAMA_BASE_URL=http://WINDOWS_HOST_IP:11434/v1` (the WSL default-gateway IP).
+Running Ollama *inside* WSL2 on AMD is officially supported too, but takes an
+extra step the Nvidia path doesn't: AMD's **ROCDXG** (`librocdxg`) runtime, which
+reaches the Windows GPU driver through Microsoft's DXCore interface (`/dev/dxg`)
+and supersedes the older roc4wsl method. It needs a current WSL-capable Adrenalin
+driver (26.2.2 at the time of writing) and Ubuntu 22.04/24.04, and is installed
+from the `librocdxg` Quickstart — not the standard Linux ROCm packages. See AMD's
+[WSL how-to for Radeon and
+Ryzen](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/wsl/howto_wsl.html).
+
 **Intel Arc** is the roughest path here: possible via Intel's tooling but layered
 on already-experimental Ollama support. (Multi-GPU tensor parallelism via NCCL
 doesn't work in WSL2, but that only affects multi-card rigs — single-GPU
@@ -338,7 +353,9 @@ uv run python model-comparison/build_provider_stores.py \
   --case <a-china-nexus-case-id>
 ```
 
-The spec is `ollama:<extraction-model>[:<summary-model>]`. The harness pins each
+The spec is `ollama:<extraction-model>[,<summary-model>]` (the optional distinct
+summary model is comma-separated, since an Ollama model tag like `gemma4:e4b`
+already contains a colon). The harness pins each
 column's models and replays the real pipeline, so the resulting store, ICS, and
 index page reflect exactly what that local model produces — including, in the
 second example, whether a China-developed model omits or softens anything a

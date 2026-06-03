@@ -17,12 +17,12 @@ the dockets, or re-running the whole thing on other cases and models.
 > Act exclusions, PSIR deadlines, CIPA submissions, jury-process deadlines,
 > surrender-for-service-of-sentence) that the score didn't penalize hard
 > enough. The 0.9.0 release tried again with matching prompt edits and the
-> dedupe-sweep delete-rather-than-flip change closing the in-fixture gap —
+> dedupe-sweep delete-rather-than-flip change closing the gap on the scored cases —
 > Gemini retook the deviation lead AND looked clean on every substantive
 > class in the SCORECARD.
 >
 > 0.10.0 reverts to Anthropic again because the same failure pattern resurfaced
-> on out-of-fixture classes: PSR interview / first disclosure / objection
+> on classes outside the scored set: PSR interview / first disclosure / objection
 > windows, Speedy Trial Act § 3161(h) exclusions, surrender-for-service-of-
 > sentence, civil-forfeiture Supp. R. G claim/answer, substantive sealing
 > motion practice, exhibit-filing deadlines under a final pretrial order, and
@@ -199,7 +199,7 @@ reaches the request-stat recorder, so the CourtListener total and peak rate in
 `cost.md` count genuine network calls only, in either mode. Each column is stored under
 `data/provider-stores/<provider>/<extraction-model>/`, so sibling models on one
 provider sit side by side. Point it at your own `config.yaml` to compare on other
-cases, or add a column with `--extra-variant provider:extract[:summary]`. Requires
+cases, or add a column with `--extra-variant provider:extract[,summary]`. Requires
 `COURTLISTENER_TOKEN` + an API key for each provider in play, and re-spends the
 cost above.
 
@@ -222,6 +222,55 @@ uv run python model-comparison/ground_truth_worksheet.py --force
 The large stores, their `build.log`s (with the per-entry extraction DECISION
 trace), and the rendered calendars live under the gitignored
 `data/provider-stores/`; the committed artifact is `model_events.csv`.
+
+## Reproducible benchmarking: freeze a snapshot
+
+By default the build reads the **live** prod store (`store_path`), which
+`case-calendar sync` keeps mutating as the cases move. That's fine for a
+one-off, but it means a comparison run today isn't comparable to one last week,
+and the human `ground_truth.csv` (filled by reading the dockets at one point in
+time) slowly drifts away from the data the models actually saw. To test new
+models or prompts against an **unchanging baseline** — the whole point when
+you're tuning — pin the build to a frozen snapshot of the input store.
+
+A snapshot ships with this repo, so anyone can reproduce a comparison or score
+their own model against the **identical** inputs. The snapshot's SQLite file is
+large, so it's stored with **Git LFS** — fetch it once after cloning:
+
+```bash
+git lfs install        # one-time, if you've never used LFS
+git lfs pull           # fetch model-comparison/snapshots/benchmark-store.sqlite
+
+# Run any comparison against the snapshot, frozen. --frozen makes ANY live
+# CourtListener request or PDF download a hard error, so the run provably uses
+# only the snapshot's data — it can't silently drift, even on another machine.
+uv run python model-comparison/build_provider_stores.py \
+    --source model-comparison/snapshots/benchmark-store.sqlite --frozen \
+    --extra-variant ollama:gemma4:31b --out model-comparison/cost.md
+python3 model-comparison/export_model_events.py
+python3 model-comparison/score.py    # scores against the committed ground_truth.csv
+```
+
+The snapshot is **input-only** (the model-output tables — hearings / deadlines /
+case_summaries — are cleared, so it can't be opened to peek at what a model
+produced, which keeps the blind ground-truth scoring honest). Its sibling
+`benchmark-store.manifest.json` (committed, not LFS) records the snapshot date,
+row counts, the snapshot's sha256, and the paired `ground_truth.csv` sha256, so
+you can confirm you're holding the exact snapshot a SCORECARD was produced
+against.
+
+To refresh the baseline (e.g. for a new release), re-snapshot **deliberately**
+and re-score the worksheet against the new dockets at the same time, so truth and
+inputs stay captured from one point in time:
+
+```bash
+uv run python model-comparison/snapshot_benchmark_store.py --force   # from a fresh sync
+# -> commits a new LFS object; re-run ground_truth_worksheet.py + re-score
+```
+
+A fully-synced source means a frozen run reports **0 CourtListener calls**; if it
+errors with a `FrozenSnapshotError`, the snapshot was missing an entry's text —
+re-snapshot from a freshly-synced store.
 
 ## `model_events.csv` columns
 

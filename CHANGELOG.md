@@ -1689,7 +1689,7 @@ toward a model whose coverage matches Anthropic's.
   with `--help` to discover what they meant. A custom
   `_HelpfulArgumentParser` writes the relevant subparser's help first
   (auto-located when the typo is on a subcommand flag like
-  `case-calendar sync --sumarize`), then the error, then exits with
+  `case-calendar sync --summarize`), then the error, then exits with
   code 2 — same exit semantics as before, much more useful UX.
 
 ### Internal

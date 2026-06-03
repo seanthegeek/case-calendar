@@ -2505,7 +2505,7 @@ class CaseSyncer:
         due_at_utc = existing.get("due_at_utc") if existing else None
         if action.get("local_date"):
             # Convert via the existing row's tz (sticky) so a sibling-docket
-            # extension doesn't shift the deadline's wall-clock by retz.
+            # extension doesn't shift the deadline's wall-clock by tz.
             convert_tz = (existing.get("timezone") if existing else None) or tz
             due_at_utc = _deadline_local_to_utc(
                 action["local_date"], action.get("local_time"), convert_tz

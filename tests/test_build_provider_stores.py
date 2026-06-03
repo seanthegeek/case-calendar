@@ -8,7 +8,10 @@ handler, the decision-line formatters, and the LLM-wrapping factory."""
 from __future__ import annotations
 
 import importlib.util
+import json
 import logging
+import os
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -274,8 +277,8 @@ def test_parse_extra_variant_two_fields_defaults_summary():
     assert v.label == "gemini/gemini-3.1-pro-preview"
 
 
-def test_parse_extra_variant_three_fields_explicit_summary():
-    v = mod._parse_extra_variant("openai:gpt-5.4-mini:gpt-5.4")
+def test_parse_extra_variant_explicit_summary_via_comma():
+    v = mod._parse_extra_variant("openai:gpt-5.4-mini,gpt-5.4")
     assert v.summary_model == "gpt-5.4" and v.extract_model == "gpt-5.4-mini"
 
 
@@ -295,11 +298,60 @@ def test_parse_extra_variant_accepts_ollama_opt_in():
     assert v.provider == "ollama" and v.extract_model == "llama3.1"
     assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["ollama"]
     assert v.label == "ollama/llama3.1"
-    # Explicit summary model too (":"-bearing model name still parses since the
-    # split caps at three fields... a colon-bearing summary model would not, so
-    # use a plain name here).
-    v2 = mod._parse_extra_variant("ollama:llama3.1:qwen2.5")
+    # Distinct summary model via the comma separator.
+    v2 = mod._parse_extra_variant("ollama:llama3.1,qwen2.5")
     assert v2.summary_model == "qwen2.5"
+
+
+def test_parse_extra_variant_colon_bearing_model_tag():
+    # Regression: an Ollama model TAG contains a colon (``gemma4:e4b``). The
+    # provider is split on the FIRST colon, so the whole tag becomes the
+    # extraction model and the summary defaults — it must NOT mis-parse as
+    # extract=``gemma4`` / summary=``e4b``.
+    v = mod._parse_extra_variant("ollama:gemma4:e4b")
+    assert v.provider == "ollama"
+    assert v.extract_model == "gemma4:e4b"
+    assert v.summary_model == mod.llm._DEFAULT_SUMMARY_MODELS["ollama"]
+    assert v.label == "ollama/gemma4:e4b"
+    # A distinct, also-colon-bearing summary tag, separated by a comma.
+    v2 = mod._parse_extra_variant("ollama:gemma4:e4b,gemma4:31b")
+    assert v2.extract_model == "gemma4:e4b"
+    assert v2.summary_model == "gemma4:31b"
+
+
+def test_has_key_ollama_needs_no_api_key(monkeypatch):
+    # Ollama runs locally, so a column on it must be buildable with NO provider
+    # keys set — otherwise the build refuses an ollama column unless an unrelated
+    # Gemini/Google key happens to be present.
+    for var in (
+        "ANTHROPIC_API_KEY",
+        "OPENAI_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    assert mod._has_key("ollama") is True
+    assert mod._has_key("anthropic") is False
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    assert mod._has_key("anthropic") is True
+
+
+def test_copy_store_makes_readonly_source_writable(tmp_path):
+    # A frozen snapshot is read-only (0444); the working copy must come out
+    # writable so _clear_derived can DELETE from it. Regression: shutil.copy2
+    # preserved the read-only mode -> "attempt to write a readonly database".
+    src = tmp_path / "snap.sqlite"
+    sqlite3.connect(src).close()
+    os.chmod(src, 0o444)
+    dst = tmp_path / "work" / "case-calendar.sqlite"
+    mod._copy_store(str(src), str(dst))
+    assert dst.exists()
+    assert os.access(dst, os.W_OK)
+    # And it's writable at the SQLite level (the actual failure mode).
+    con = sqlite3.connect(dst)
+    con.execute("CREATE TABLE t(x)")
+    con.commit()
+    con.close()
 
 
 def test_ollama_not_in_default_built_set():
@@ -792,3 +844,83 @@ def test_extraction_provider_env_short_circuits_threadlocal_until_popped(monkeyp
     # Once the run neutralizes it, the column's thread-local provider wins.
     monkeypatch.delenv("LLM_EXTRACTION_PROVIDER", raising=False)
     assert providers._detect_extraction_provider() == "anthropic"
+
+
+# --------------------------------------------------------------------------- #
+# Frozen-snapshot mode (--frozen): the benchmark can't silently reach live data
+# --------------------------------------------------------------------------- #
+
+
+class _FakeCL:
+    """Stands in for the CourtListener client: counts any call that reaches it
+    (i.e. that the frozen guard failed to block)."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def _get(self, *a, **k):
+        self.calls += 1
+        return {"live": True}
+
+    def _post(self, *a, **k):
+        self.calls += 1
+        return {"live": True}
+
+
+def test_frozen_cl_cache_miss_raises_without_network(monkeypatch):
+    # In frozen mode a cache MISS must raise rather than hit the network, so a
+    # benchmark run can't drift by pulling data the snapshot predates.
+    monkeypatch.setattr(mod, "_GET_CACHE", {})
+    monkeypatch.setattr(mod, "_FROZEN", True)
+    cl = _FakeCL()
+    mod._install_cl_cache(cl)
+    with pytest.raises(mod.FrozenSnapshotError, match="not in the snapshot"):
+        cl._get("dockets/1/")
+    assert cl.calls == 0  # never reached the (fake) network
+
+
+def test_frozen_cl_cache_hit_is_served(monkeypatch):
+    # A request already in the shared cache is served even when frozen — only
+    # genuinely-absent data trips the guard.
+    monkeypatch.setattr(mod, "_GET_CACHE", {})
+    monkeypatch.setattr(mod, "_FROZEN", False)
+    cl = _FakeCL()
+    mod._install_cl_cache(cl)
+    assert cl._get("dockets/1/") == {"live": True}  # miss while warm -> caches
+    assert cl.calls == 1
+    monkeypatch.setattr(mod, "_FROZEN", True)
+    assert cl._get("dockets/1/") == {"live": True}  # same request -> cache hit
+    assert cl.calls == 1  # no second live call
+
+
+def test_frozen_pdf_guard_blocks_download(monkeypatch):
+    # Register the current fetch_pdf_bytes for restore, then install the guard
+    # (which reassigns it). monkeypatch restores the original at teardown.
+    monkeypatch.setattr(mod.pdf, "fetch_pdf_bytes", mod.pdf.fetch_pdf_bytes)
+    mod._install_frozen_pdf_guard()
+    with pytest.raises(mod.FrozenSnapshotError, match="download a PDF"):
+        mod.pdf.fetch_pdf_bytes({"id": 42})
+
+
+def test_log_snapshot_manifest_present(tmp_path, caplog):
+    store = tmp_path / "benchmark-store.sqlite"
+    store.with_suffix(".manifest.json").write_text(
+        json.dumps(
+            {
+                "snapshot_utc": "2026-06-02T00:00:00+00:00",
+                "row_counts": {"entries": 123},
+                "ground_truth_sha256": "abcdef1234567890",
+            }
+        )
+    )
+    with caplog.at_level(logging.INFO, logger=mod.logger.name):
+        mod._log_snapshot_manifest(str(store))
+    msgs = " ".join(r.getMessage() for r in caplog.records)
+    assert "frozen snapshot" in msgs and "2026-06-02" in msgs and "entries=123" in msgs
+
+
+def test_log_snapshot_manifest_absent_warns(tmp_path, caplog):
+    store = tmp_path / "no-manifest.sqlite"
+    with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+        mod._log_snapshot_manifest(str(store))
+    assert any("no manifest beside" in r.getMessage() for r in caplog.records)
