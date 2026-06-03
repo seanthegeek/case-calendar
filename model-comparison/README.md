@@ -199,7 +199,7 @@ reaches the request-stat recorder, so the CourtListener total and peak rate in
 `cost.md` count genuine network calls only, in either mode. Each column is stored under
 `data/provider-stores/<provider>/<extraction-model>/`, so sibling models on one
 provider sit side by side. Point it at your own `config.yaml` to compare on other
-cases, or add a column with `--extra-variant provider:extract[:summary]`. Requires
+cases, or add a column with `--extra-variant provider:extract[,summary]`. Requires
 `COURTLISTENER_TOKEN` + an API key for each provider in play, and re-spends the
 cost above.
 
