@@ -8,6 +8,53 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.15.1] - 2026-06-04
+
+### Added
+
+- **`case-calendar reconcile` — cheap re-check of placeholder entries for
+  upstream enrichment** (`case_calendar/sync.py`, `case_calendar/cli.py`,
+  `case_calendar/store.py`, `case_calendar/courtlistener.py`). A CourtListener
+  `DOCKET_ALERT` webhook fires once, when an entry is first docketed, and the
+  payload reflects the entry's state at that instant — frequently a stub with
+  an empty description and a document that isn't on RECAP yet. CourtListener
+  fills in the text and makes the document available afterward but does NOT
+  fire a second webhook for that enrichment (only an updated email alert —
+  [CourtListener issue #7423](https://github.com/freelawproject/courtlistener/issues/7423)),
+  so `serve` never re-delivers the filled-in entry and a hearing or deadline
+  whose date lives only in the filled-in text can be missed until a poll
+  re-reads it. The canonical instance is the Kejia "Tony" Wang docket
+  (1:25-cr-10274, D. Mass.) entry #42: an endorsed order extending a
+  self-surrender deadline (June 10 → July 10, 2026) arrived as an empty stub
+  and enriched roughly 90 minutes later, leaving the deadline stale.
+  `reconcile` closes the gap without a full sync's per-docket cost: it
+  re-fetches ONLY the entries still pending enrichment (`is_pending_enrichment`:
+  an empty body plus an unsealed, not-yet-available document — surfaced by
+  `Store.get_empty_body_entries_since` with a `--days` age cutoff, default 7),
+  one CourtListener request each via the new `CourtListener.get_docket_entry`,
+  and re-runs the normal pipeline. Its cost therefore scales with recent filing
+  activity, not with caseload size — a quiet case adds nothing. Intended to run
+  on a frequent cheap cron alongside `serve`, with a full `sync` as the
+  infrequent catch-all. Flags: `--case`, `--days`, `--no-emit`. Documented in
+  `docs/cli.md` and `docs/webhooks.md` (including a systemd `.timer` unit), with
+  the design rationale in `AGENTS.md`.
+- **`scripts/reconcile-prod`** — operator wrapper that runs
+  `case-calendar reconcile` on the production host over ssh, mirroring
+  `scripts/sync-prod`.
+
+### Fixed
+
+- **Case summaries no longer echo a superseded event date when a later order
+  has moved it** (`case_calendar/llm.py`). The summary model could source an
+  event's date from a document (e.g. a judgment's self-surrender date) even
+  when the structured-events scaffold carried a newer date set by a later
+  order, so a summary could contradict its own calendar. A new
+  `SUMMARY_SYSTEM_PROMPT` rule makes the structured-events scaffold
+  authoritative for an event's current date. Surfaced by the Wang #42
+  self-surrender extension above: after `reconcile` moved the deadline to
+  July 10, 2026, the summary still read June 10 until this fix. Pinned by
+  `tests/test_llm.py`.
+
 ## [0.15.0] - 2026-06-01
 
 ### Added

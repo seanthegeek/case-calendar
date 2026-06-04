@@ -173,6 +173,87 @@ sudo -u case-calendar env HOME=/opt/case-calendar \
     /opt/case-calendar/.local/bin/uv run case-calendar setup gcal
 ```
 
+### Run reconcile on a systemd timer
+
+`serve` gives you the real-time first touch, but it can't see the later
+enrichment of an entry it already delivered (see
+[Polling, webhooks, and reconcile](#polling-webhooks-and-reconcile)). A
+`reconcile` timer fills that gap cheaply — it re-checks only the entries that
+arrived as placeholders, so it costs a handful of CourtListener requests per
+run regardless of caseload. Run it as an unprivileged `oneshot` on a timer,
+under the same service user as `serve`.
+
+**Write the service** to `/etc/systemd/system/case-calendar-reconcile.service`:
+
+```ini
+[Unit]
+Description=case-calendar placeholder reconcile
+Documentation=https://github.com/seanthegeek/case-calendar
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=case-calendar
+Group=case-calendar
+WorkingDirectory=/opt/case-calendar
+EnvironmentFile=/opt/case-calendar/.env
+Environment=HOME=/opt/case-calendar
+ExecStart=/opt/case-calendar/.local/bin/uv run case-calendar reconcile
+
+# Same hardening + write paths as the serve unit above.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+LockPersonality=true
+RestrictRealtime=true
+ReadWritePaths=/opt/case-calendar/data
+ReadWritePaths=/opt/case-calendar/out
+ReadWritePaths=/opt/case-calendar/tokens
+```
+
+**Write the timer** to `/etc/systemd/system/case-calendar-reconcile.timer`:
+
+```ini
+[Unit]
+Description=Run case-calendar reconcile hourly
+
+[Timer]
+OnCalendar=hourly
+# Run a missed timer at next boot (e.g. after a reboot spanning the hour).
+Persistent=true
+# Spread load off the top of the hour so every box doesn't hit CourtListener
+# at :00.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
+```
+
+**Enable the timer** (enable the `.timer`, not the `.service` — the timer
+pulls the service in on schedule):
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now case-calendar-reconcile.timer
+systemctl list-timers case-calendar-reconcile.timer   # next run + last run
+journalctl -u case-calendar-reconcile.service -f      # follow reconcile logs
+```
+
+Keep a full `sync` as an infrequent catch-all for anything `reconcile`
+doesn't cover. Copy the two units above to `case-calendar-sync.service` /
+`.timer`, swap the `ExecStart` to `... case-calendar sync` and the timer to
+`OnCalendar=daily`. Mind your CourtListener request budget: a full `sync`
+spends roughly one request per docket every run, while `reconcile` spends
+one per pending placeholder — so the full sync is the one to keep
+infrequent as the caseload grows.
+
 ## 3. Put it behind HTTPS with Caddy
 
 CourtListener needs to reach your receiver over public HTTPS, but `serve`
@@ -292,13 +373,39 @@ rows:
 Even without the idempotency check, the per-entry fingerprint dedup in the
 store means a double-delivery of the same content does no extra work.
 
-## Polling and webhooks at the same time
+## Polling, webhooks, and reconcile
 
-You can run both safely. `case-calendar sync` (the polling path) and
-`case-calendar serve` (the webhook path) share the same SQLite file and use
-WAL journaling + a 5-second `busy_timeout` so concurrent writes don't
-collide. There's no harm in keeping a once-an-hour cron running as a
-safety net even when webhooks are healthy.
+You can run all three safely. `case-calendar sync` (polling),
+`case-calendar serve` (webhooks), and `case-calendar reconcile` (the
+enrichment re-check) share the same SQLite file and use WAL journaling + a
+5-second `busy_timeout` so concurrent writes don't collide.
+
+Webhooks alone are not a complete picture of a docket. A CourtListener
+docket alert fires **once**, when an entry is first docketed, and the
+payload reflects the entry's state at that instant — which for many filings
+is a stub: an empty description and a document that isn't on RECAP yet.
+CourtListener fills in the entry text and makes the document available
+shortly after, but it does **not** fire a second webhook for that update —
+only an updated email alert
+([CourtListener issue #7423](https://github.com/freelawproject/courtlistener/issues/7423)).
+So `serve` on its own never sees the enriched entry, and a hearing or
+deadline whose date lives only in the filled-in text can be missed until a
+poll re-reads it.
+
+Reconciling that enrichment is the job of polling — and `reconcile` does it
+cheaply. Instead of re-checking every docket like a full `sync`, it
+re-fetches only the entries that arrived as placeholders (one CourtListener
+request each), so its cost scales with recent filing activity, not caseload
+size. The recommended shape for a webhook deployment:
+
+- `serve` for real-time first-touch,
+- `reconcile` on a frequent cheap cron (e.g. hourly) to pick up enrichment,
+- a full `sync` on an infrequent cron (e.g. daily) as the catch-all.
+
+There's no harm in running the full `sync` cron more often if your
+CourtListener request budget allows — it's the original safety net, and it
+catches anything `reconcile` doesn't. `reconcile` simply lets the common
+case stay cheap as the caseload grows.
 
 ## Operational tips
 

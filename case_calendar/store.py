@@ -1009,6 +1009,38 @@ class Store:
         ).fetchone()
         return row["m"] if row and row["m"] else None
 
+    def get_empty_body_entries_since(
+        self, docket_ids: Iterable[int], *, filed_after: str
+    ) -> list[dict[str, Any]]:
+        """Stored entries on these dockets, filed on/after ``filed_after``,
+        whose ``description`` is empty and that carry recap_documents.
+
+        The cheap SQL pre-filter for the placeholder-reconcile sweep
+        (``CaseSyncer.reconcile_placeholders``): the empty-body + recent
+        conditions are pushed into SQL, and the caller applies
+        ``sync.is_pending_enrichment`` to the parsed ``recap_documents`` to
+        decide which are genuinely pending an upstream document. Scoped by
+        ``filed_after`` (an ISO date) so only recent stubs are returned,
+        never every paperless entry ever stored.
+        """
+        ids = list(docket_ids)
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT docket_id, entry_id, recap_documents
+            FROM entries
+            WHERE docket_id IN ({placeholders})
+              AND date_filed >= ?
+              AND recap_documents IS NOT NULL
+              AND (description IS NULL OR TRIM(description) = '')
+            ORDER BY date_filed
+            """,
+            (*ids, filed_after),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def get_case_aggregates(
         self, docket_ids: Iterable[int]
     ) -> dict[str, Optional[str]]:

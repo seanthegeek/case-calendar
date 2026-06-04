@@ -2756,3 +2756,97 @@ class TestNearslotClusters:
             "cipa-a",
             "cipa-b",
         ]
+
+
+class TestEmptyBodyEntriesSince:
+    """The cheap SQL pre-filter for the placeholder-reconcile sweep:
+    empty-body + recent + has-recap_documents. The doc-level placeholder
+    test (is_pending_enrichment) is applied by the caller on top of this.
+    """
+
+    def _doc(self):
+        return [
+            {"id": 9001, "is_available": False, "is_sealed": False, "plain_text": ""}
+        ]
+
+    def test_selects_recent_empty_body_with_docs(self, store):
+        # A: the placeholder we want — empty body, has docs, recent.
+        store.mark_entry(
+            1,
+            100,
+            "2026-05-20T10:00:00Z",
+            "fpA",
+            date_filed="2026-05-20",
+            description="",
+            recap_documents=self._doc(),
+        )
+        # B: has a body → excluded.
+        store.mark_entry(
+            1,
+            101,
+            "2026-05-21T10:00:00Z",
+            "fpB",
+            date_filed="2026-05-21",
+            description="ORDER ...",
+            recap_documents=self._doc(),
+        )
+        # C: fingerprint-only stub (no recap_documents) → excluded.
+        store.mark_entry(
+            1,
+            102,
+            "2026-05-22T10:00:00Z",
+            "fpC",
+            date_filed="2026-05-22",
+            description=None,
+            recap_documents=None,
+        )
+        # D: empty body + docs but filed before the window → excluded.
+        store.mark_entry(
+            1,
+            103,
+            "2026-01-01T10:00:00Z",
+            "fpD",
+            date_filed="2026-01-01",
+            description="",
+            recap_documents=self._doc(),
+        )
+        # E: matches but on a docket not in the query → excluded.
+        store.mark_entry(
+            2,
+            104,
+            "2026-05-20T10:00:00Z",
+            "fpE",
+            date_filed="2026-05-20",
+            description="",
+            recap_documents=self._doc(),
+        )
+        rows = store.get_empty_body_entries_since([1], filed_after="2026-05-01")
+        assert [r["entry_id"] for r in rows] == [100]
+        assert rows[0]["recap_documents"] is not None
+
+    def test_null_description_is_treated_as_empty_body(self, store):
+        # A NULL description with docs present still qualifies (the SQL
+        # checks both NULL and trimmed-empty).
+        store.mark_entry(
+            1,
+            200,
+            "2026-05-20T10:00:00Z",
+            "fp",
+            date_filed="2026-05-20",
+            description=None,
+            recap_documents=self._doc(),
+        )
+        rows = store.get_empty_body_entries_since([1], filed_after="2026-05-01")
+        assert [r["entry_id"] for r in rows] == [200]
+
+    def test_empty_docket_list_returns_empty(self, store):
+        store.mark_entry(
+            1,
+            100,
+            "2026-05-20T10:00:00Z",
+            "fp",
+            date_filed="2026-05-20",
+            description="",
+            recap_documents=self._doc(),
+        )
+        assert store.get_empty_body_entries_since([], filed_after="2026-05-01") == []

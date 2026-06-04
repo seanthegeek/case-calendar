@@ -12,6 +12,7 @@ For each case we:
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -199,6 +200,43 @@ def _is_fetchable(rd: dict[str, Any]) -> bool:
     if not rd.get("is_available"):
         return False
     return bool(rd.get("filepath_local") or rd.get("filepath_ia"))
+
+
+def is_pending_enrichment(entry: dict[str, Any]) -> bool:
+    """True if the entry has no readable body yet but a document that could
+    still arrive — the placeholder shape a docket-alert webhook delivers at
+    entry creation.
+
+    Concretely: the entry's own ``description`` is empty AND it carries at
+    least one unsealed ``recap_document`` whose text we don't have yet
+    (``is_available`` false, ``plain_text`` empty). The substance lives in a
+    document CourtListener hasn't made available, so re-fetching later —
+    once the upload / text extraction lands — is what surfaces it. This is
+    the us-v-kejia-wang #42 shape: an endorsed order delivered as a stub
+    (``description=""``, an ``is_available=False`` doc) whose text only
+    appeared upstream afterward, with no second webhook to deliver it
+    (CourtListener re-fires an *email* alert on such an update but not a
+    webhook — reported upstream as CourtListener issue #7423).
+
+    Deliberately tight. An entry whose ``description`` already carries the
+    order text (a paperless electronic order) is NOT pending — its
+    recap_document may be permanently ``is_available=False`` and there is
+    nothing to enrich. The empty-body guard is exactly what separates the
+    two, and without it the predicate matches every paperless order ever
+    stored. The age cutoff that bounds the reconcile sweep lives in the
+    caller (``filed_after``), not here.
+    """
+    if (entry.get("description") or "").strip():
+        return False
+    for rd in entry.get("recap_documents") or []:
+        if rd.get("is_sealed"):
+            continue
+        if rd.get("is_available"):
+            continue
+        if (rd.get("plain_text") or "").strip():
+            continue
+        return True
+    return False
 
 
 def _validate_action_dial_in(action: dict[str, Any]) -> None:
@@ -982,6 +1020,59 @@ class CaseSyncer:
             if docket_number and court_id:
                 self.store.mark_summary_stale(case.case_id, docket_number, court_id)
         return processed
+
+    # --- placeholder reconcile (enrichment of webhook-delivered stubs) ---
+
+    def reconcile_placeholders(
+        self, case: CaseConfig, *, filed_after: str
+    ) -> dict[str, int]:
+        """Re-check this case's placeholder entries for upstream enrichment.
+
+        A docket-alert webhook delivers an entry once, at creation — often
+        as a stub whose document text isn't available yet (see
+        :func:`is_pending_enrichment`). CourtListener later fills in the
+        description / makes the PDF available but does NOT fire a second
+        webhook (only an updated email alert — CourtListener issue #7423),
+        so the webhook path never re-delivers the enriched entry, and the
+        per-docket polling short-circuit can take until the next full sync
+        to notice. This sweep closes that gap cheaply: for each
+        still-pending placeholder on the case's dockets filed on/after
+        ``filed_after``, it re-fetches the entry BY ID (one request) and
+        re-runs ``process_entry``. If the entry enriched, its fingerprint
+        flips and the normal pipeline reschedules / updates from it (and
+        flips the summary stale via the upsert chokepoint); if not, the
+        fingerprint matches and it's a no-op.
+
+        Cost is one CourtListener request per pending placeholder —
+        O(pending placeholders), independent of the docket count — so it
+        scales with filing activity like the webhook path, not with the
+        size of the caseload like a full per-docket poll. ``filed_after``
+        (an ISO date the caller derives from an age cutoff) bounds the
+        retries so a stub that never enriches drops out of scope rather
+        than being re-checked forever.
+        """
+        stats: dict[str, int] = {
+            "checked": 0,
+            "entries_processed": 0,
+            "actions": 0,
+        }
+        rows = self.store.get_empty_body_entries_since(
+            case.dockets, filed_after=filed_after
+        )
+        for row in rows:
+            # The store query guarantees a non-null recap_documents JSON and
+            # an empty description; apply the doc-level half of the predicate
+            # here (the SQL can't reach into the JSON), so a row whose docs
+            # are all available/sealed is skipped without a fetch.
+            docs = json.loads(row["recap_documents"])
+            if not is_pending_enrichment({"description": "", "recap_documents": docs}):
+                continue
+            stats["checked"] += 1
+            entry = self.cl.get_docket_entry(row["entry_id"])
+            self.process_entry(case, row["docket_id"], entry, stats=stats)
+            with self.store.tx() as _:
+                pass  # commit per entry so partial progress sticks
+        return stats
 
     # --- polling entry point ---
 

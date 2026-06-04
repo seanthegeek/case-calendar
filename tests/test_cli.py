@@ -27,6 +27,7 @@ from case_calendar.cli import (
     _resolve_gcal,
     _resolve_m365,
     cmd_emit,
+    cmd_reconcile,
     cmd_serve,
     cmd_setup,
     cmd_show,
@@ -1463,6 +1464,93 @@ class TestCmdSync:
         assert "no new cases" in out
 
 
+class TestCmdReconcile:
+    def test_unknown_case_id_returns_2(self, cfg_file):
+        args = Namespace(config=str(cfg_file), case="nope", days=7, no_emit=False)
+        assert cmd_reconcile(args) == 2
+
+    def test_case_filter_scopes_to_one_case(self, cfg_file, fake_cl_ctx, monkeypatch):
+        # A matching --case filters the case list and continues (rather than
+        # the unknown-case early return), running reconcile only for it.
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        seen: list[str] = []
+
+        def _fake_reconcile(self, case, **_):
+            seen.append(case.case_id)
+            return {"checked": 0, "entries_processed": 0, "actions": 0}
+
+        monkeypatch.setattr(cli.CaseSyncer, "reconcile_placeholders", _fake_reconcile)
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+        args = Namespace(config=str(cfg_file), case="us-v-x", days=7, no_emit=False)
+        assert cmd_reconcile(args) == 0
+        assert seen == ["us-v-x"]
+
+    def test_runs_reconcile_and_emits_on_actions(
+        self, cfg_file, fake_cl_ctx, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+
+        def _fake_reconcile(self, case, **_):
+            return {"checked": 2, "entries_processed": 1, "actions": 1}
+
+        monkeypatch.setattr(cli.CaseSyncer, "reconcile_placeholders", _fake_reconcile)
+        emit_calls: list[set[str] | None] = []
+        monkeypatch.setattr(
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
+        )
+        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=False)
+        assert cmd_reconcile(args) == 0
+        assert emit_calls == [{"cyber"}]
+        out = capsys.readouterr().out
+        assert "checked=2" in out
+
+    def test_no_changes_skips_calendar_emit_but_writes_index(
+        self, cfg_file, fake_cl_ctx, monkeypatch
+    ):
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        # Re-checked a placeholder but it hadn't enriched — no actions, no
+        # processed entries, so no calendar is marked affected.
+        monkeypatch.setattr(
+            cli.CaseSyncer,
+            "reconcile_placeholders",
+            lambda self, case, **_: {
+                "checked": 1,
+                "entries_processed": 0,
+                "actions": 0,
+            },
+        )
+        emit_calls: list[Any] = []
+        monkeypatch.setattr(
+            cli,
+            "emit_calendars",
+            lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
+        )
+        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=False)
+        assert cmd_reconcile(args) == 0
+        assert emit_calls == [set()]
+
+    def test_no_emit_flag_skips_emit(self, cfg_file, fake_cl_ctx, monkeypatch):
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        monkeypatch.setattr(
+            cli.CaseSyncer,
+            "reconcile_placeholders",
+            lambda self, case, **_: {
+                "checked": 1,
+                "entries_processed": 1,
+                "actions": 1,
+            },
+        )
+        called = []
+        monkeypatch.setattr(
+            cli, "emit_calendars", lambda *a, **kw: called.append(1) or {}
+        )
+        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=True)
+        assert cmd_reconcile(args) == 0
+        assert called == []
+
+
 class TestCmdEmit:
     def test_runs_and_prints_each_backend(
         self,
@@ -2546,7 +2634,9 @@ class TestMain:
         assert excinfo.value.code == 2
         err = capsys.readouterr().err
         # Parent help shows the subcommand list.
-        assert "{sync,emit,serve,setup,summarize,show,prune,webhook-url}" in err, err
+        assert (
+            "{sync,reconcile,emit,serve,setup,summarize,show,prune,webhook-url}" in err
+        ), err
         # And the error message is appended after the help body.
         assert "error:" in err, err
 

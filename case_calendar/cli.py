@@ -14,6 +14,7 @@ import logging
 import os
 import sys
 from collections import defaultdict
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -394,6 +395,45 @@ def _log_llm_setup(cfg: dict[str, Any]) -> None:
         )
 
 
+def _refresh_stale_summaries(
+    cfg: dict[str, Any],
+    cl: CourtListener,
+    store: Store,
+    cases: list[CaseConfig],
+    affected_calendars: set[str],
+    *,
+    force: bool = False,
+) -> None:
+    """Regenerate any stale/missing case summaries and mark their calendars
+    affected. Shared by ``sync`` and ``reconcile`` — both can flip a summary
+    stale (``sync`` via a new primary/disposition document, ``reconcile``
+    via a placeholder enrichment that reschedules a deadline through the
+    ``upsert_*`` chokepoint). No-op when ``case_summaries.enabled`` is off.
+    """
+    if not (cfg.get("case_summaries") or {}).get("enabled"):
+        return
+    summary_cfg = cfg["case_summaries"]
+    from . import summary as summary_mod
+
+    raw_cases = {c["id"]: c for c in cfg["cases"]}
+    written = summary_mod.refresh_stale(
+        cl=cl,
+        store=store,
+        cases=cases,
+        case_overrides=raw_cases,
+        only_case_ids={c.case_id for c in cases},
+        provider=summary_cfg.get("provider"),
+        model=summary_cfg.get("model"),
+        allow_ocr=bool(summary_cfg.get("allow_ocr", True)),
+        force=force,
+    )
+    for case_id, docket_ids in written.items():
+        case = next(c for c in cases if c.case_id == case_id)
+        affected_calendars.add(case.calendar)
+        for did in docket_ids:
+            print(f"[{case_id}] regenerated summary for docket {did}")
+
+
 def cmd_sync(args: argparse.Namespace) -> int:
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)
@@ -448,33 +488,20 @@ def cmd_sync(args: argparse.Namespace) -> int:
             ):
                 affected_calendars.add(case.calendar)
 
-        # Agentic summary refresh: process_entry flipped stale=1 on the
+        # Automatic summary refresh: process_entry flipped stale=1 on the
         # rows whose dockets received a primary document or disposition
         # this sync; refresh_stale also picks up dockets that have no
         # summary row yet (new cases / new dockets in config). Calendars
         # whose summary text changed get added to affected_calendars so
         # the emit below re-renders them.
-        if (cfg.get("case_summaries") or {}).get("enabled"):
-            summary_cfg = cfg["case_summaries"]
-            from . import summary as summary_mod
-
-            raw_cases = {c["id"]: c for c in cfg["cases"]}
-            written = summary_mod.refresh_stale(
-                cl=cl,
-                store=store,
-                cases=cases,
-                case_overrides=raw_cases,
-                only_case_ids={c.case_id for c in cases},
-                provider=summary_cfg.get("provider"),
-                model=summary_cfg.get("model"),
-                allow_ocr=bool(summary_cfg.get("allow_ocr", True)),
-                force=bool(getattr(args, "force_summaries", False)),
-            )
-            for case_id, docket_ids in written.items():
-                case = next(c for c in cases if c.case_id == case_id)
-                affected_calendars.add(case.calendar)
-                for did in docket_ids:
-                    print(f"[{case_id}] regenerated summary for docket {did}")
+        _refresh_stale_summaries(
+            cfg,
+            cl,
+            store,
+            cases,
+            affected_calendars,
+            force=bool(getattr(args, "force_summaries", False)),
+        )
 
     # Always run emit_calendars (unless --no-emit). Per-calendar work is
     # scoped by `only_calendars=affected_calendars` — an empty set skips
@@ -727,6 +754,63 @@ def emit_calendars(
         write_index(index_path, calendars=models, **kwargs)
         log.info("wrote index -> %s", index_path)
     return out
+
+
+def cmd_reconcile(args: argparse.Namespace) -> int:
+    """Cheaply re-check recent placeholder entries for upstream enrichment.
+
+    A docket-alert webhook delivers an entry once, at creation — often as a
+    stub whose document text isn't available yet. CourtListener fills it in
+    later but fires only an updated *email* alert, NOT a second webhook, so
+    `serve` never sees the enriched entry and the per-docket short-circuit
+    can take until the next full `sync` to notice. This command closes that
+    gap without the per-docket cost of a full sync: it re-fetches only the
+    pending placeholders (by entry id, one request each), so its cost scales
+    with recent filing activity, not with the size of the caseload. Intended
+    to run on a frequent cheap cron alongside `serve`, with the full `sync`
+    as an infrequent catch-all.
+    """
+    cfg = _load_config(args.config)
+    cases = _cases_from_config(cfg)
+    if args.case:
+        cases = [c for c in cases if c.case_id == args.case]
+        if not cases:
+            print(f"no case with id {args.case!r}", file=sys.stderr)
+            return 2
+
+    store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+    filed_after = (date.today() - timedelta(days=args.days)).isoformat()
+
+    _log_llm_setup(cfg)
+    affected_calendars: set[str] = set()
+    with CourtListener() as cl:
+        syncer = CaseSyncer(cl, store)
+        for case in cases:
+            stats = syncer.reconcile_placeholders(case, filed_after=filed_after)
+            print(
+                f"[{case.case_id}] checked={stats['checked']} "
+                f"processed={stats['entries_processed']} "
+                f"actions={stats['actions']}"
+            )
+            # Re-emit when the reconcile changed anything — a reschedule
+            # (actions) or a plain re-process that rewrote an entry's
+            # recap_documents JSON (entries_processed), the latter being
+            # the doc-availability-flip case that adds document URLs.
+            if stats.get("actions") or stats.get("entries_processed"):
+                affected_calendars.add(case.calendar)
+
+        # A placeholder enrichment that reschedules a deadline flips the
+        # summary stale through the upsert chokepoint; regenerate here so
+        # the index prose tracks the corrected date in the same run.
+        _refresh_stale_summaries(cfg, cl, store, cases, affected_calendars)
+
+    if not args.no_emit:
+        results = emit_calendars(cfg, store, only_calendars=affected_calendars)
+        _print_emit_results(cfg, results)
+    llmkit.usage.log_summary(scope="reconcile")
+    llmkit.usage.reset()
+    store.close()
+    return 0
 
 
 def cmd_emit(args: argparse.Namespace) -> int:
@@ -1377,6 +1461,27 @@ def main(argv: list[str] | None = None) -> int:
         "classify_significance.py).",
     )
     p_sync.set_defaults(func=cmd_sync)
+
+    p_reconcile = sub.add_parser(
+        "reconcile",
+        help="cheaply re-check recent placeholder entries for upstream "
+        "enrichment (run on a frequent cron alongside serve; cost scales "
+        "with filing activity, not caseload size)",
+    )
+    p_reconcile.add_argument("--case", help="only reconcile this case_id")
+    p_reconcile.add_argument(
+        "--days",
+        type=int,
+        default=7,
+        help="only re-check placeholder entries filed within this many days "
+        "(default 7) — bounds retries on stubs that never enrich",
+    )
+    p_reconcile.add_argument(
+        "--no-emit",
+        action="store_true",
+        help="skip auto-emitting ICS for affected calendars at end of reconcile",
+    )
+    p_reconcile.set_defaults(func=cmd_reconcile)
 
     p_emit = sub.add_parser(
         "emit",

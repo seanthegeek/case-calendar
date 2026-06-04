@@ -1824,6 +1824,22 @@ exception, and they have their own rule below — they carry verbatim
 court trigger language in ``notes`` precisely because they're not
 describable by date.)
 
+CRITICAL — the structured-events scaffold OUTRANKS document text for an
+event's CURRENT date. A scaffold row reflects the most recent court
+order the system has already processed; a source document (a judgment, a
+scheduling order, a notice) may recite an EARLIER date for the same
+event that a later order has since moved, and that later order is often
+NOT in the document set you were given. So when a scaffold row plainly
+corresponds to an event a document also describes, and the scaffold's
+date DIFFERS from the date written in the document, state the SCAFFOLD's
+date — never the superseded document date. The document tells you the
+event exists and what it is; the scaffold tells you when it now stands.
+Canonical case: a judgment ordered the defendant to self-surrender to
+the Bureau of Prisons by June 10, 2026; a later endorsed order extended
+that to July 10, 2026; the deadlines scaffold carries July 10 — so the
+summary MUST say July 10, even though the judgment text in front of you
+still says June 10.
+
 CRITICAL — past-dated 'scheduled' rows: a row whose ``status=scheduled``
 and whose ``starts_at_utc`` is in the past relative to today means the
 date was set, the date elapsed, and the public docket has NOT confirmed

@@ -26,6 +26,7 @@ from case_calendar.sync import (
     _record_proceeding_name,
     fingerprint_entry,
     heal_proceeding_notes,
+    is_pending_enrichment,
 )
 
 from .conftest import FakeCourtListener, must
@@ -5423,3 +5424,238 @@ class TestHealProceedingNotes:
             store, "good-hearing", "Motion Hearing held; under submission", [200]
         )
         assert heal_proceeding_notes(store, apply=True) == []
+
+
+class TestIsPendingEnrichment:
+    """The placeholder predicate: an entry with no readable body yet but an
+    unsealed, not-yet-available document that could still arrive — the
+    us-v-kejia-wang #42 shape a docket-alert webhook delivers at creation.
+    """
+
+    def _rd(self, **over):
+        rd = {
+            "is_available": False,
+            "is_sealed": False,
+            "plain_text": "",
+            "description": "Order on Motion for Extension of Time",
+        }
+        rd.update(over)
+        return rd
+
+    def test_empty_body_with_unavailable_doc_is_pending(self):
+        # The Wang #42 shape: empty description, unsealed doc not on RECAP.
+        entry = {"description": "", "recap_documents": [self._rd()]}
+        assert is_pending_enrichment(entry) is True
+
+    def test_whitespace_only_body_is_still_empty(self):
+        entry = {"description": "   \n ", "recap_documents": [self._rd()]}
+        assert is_pending_enrichment(entry) is True
+
+    def test_nonempty_body_is_not_pending(self):
+        # The Wang #41 shape: a paperless electronic order whose full text
+        # IS the description. Its doc may be is_available=False forever, but
+        # there is nothing to enrich — the body guard excludes it.
+        entry = {
+            "description": "ELECTRONIC ORDER finding as moot 39 Motion ...",
+            "recap_documents": [self._rd()],
+        }
+        assert is_pending_enrichment(entry) is False
+
+    def test_available_doc_is_not_pending(self):
+        entry = {"description": "", "recap_documents": [self._rd(is_available=True)]}
+        assert is_pending_enrichment(entry) is False
+
+    def test_doc_with_text_is_not_pending(self):
+        entry = {
+            "description": "",
+            "recap_documents": [self._rd(plain_text="full order text here")],
+        }
+        assert is_pending_enrichment(entry) is False
+
+    def test_sealed_doc_is_not_pending(self):
+        # Sealed docs won't enrich on a re-fetch (they're not on RECAP); the
+        # unseal flips a different fingerprint field and is handled there.
+        entry = {"description": "", "recap_documents": [self._rd(is_sealed=True)]}
+        assert is_pending_enrichment(entry) is False
+
+    def test_no_documents_is_not_pending(self):
+        entry = {"description": "", "recap_documents": []}
+        assert is_pending_enrichment(entry) is False
+
+    def test_one_pending_doc_among_several_qualifies(self):
+        entry = {
+            "description": "",
+            "recap_documents": [self._rd(is_available=True), self._rd()],
+        }
+        assert is_pending_enrichment(entry) is True
+
+
+def _placeholder_entry(eid, *, date_filed="2026-05-20"):
+    """A webhook-delivered stub: empty body, a not-yet-available doc whose
+    label trips the deadline regex so it's stored with recap_documents."""
+    return {
+        "id": eid,
+        "docket": 100,
+        "entry_number": eid,
+        "date_filed": date_filed,
+        "date_modified": f"{date_filed}T10:53:00-07:00",
+        "description": "",
+        "short_description": "",
+        "recap_documents": [
+            {
+                "id": 9000 + eid,
+                "document_number": str(eid),
+                "attachment_number": None,
+                "description": "Order on Motion for Extension of Time",
+                "is_available": False,
+                "is_sealed": False,
+                "filepath_ia": None,
+                "filepath_local": None,
+                "plain_text": "",
+            }
+        ],
+    }
+
+
+def _enriched_entry(eid, *, date_filed="2026-05-20"):
+    """The same entry after CourtListener filled in the order text + PDF."""
+    e = _placeholder_entry(eid, date_filed=date_filed)
+    e["date_modified"] = f"{date_filed}T12:32:00-07:00"
+    e["description"] = (
+        "ENDORSED ORDER granting in part 42 Motion for Extension of Time. "
+        "Defendant shall self report to the Bureau of Prisons on July 10, 2026."
+    )
+    e["recap_documents"][0]["is_available"] = True
+    e["recap_documents"][0]["plain_text"] = "full endorsed order text ... July 10, 2026"
+    return e
+
+
+class TestReconcilePlaceholders:
+    """``CaseSyncer.reconcile_placeholders`` re-checks placeholder entries by
+    id and reschedules from the enriched copy — the fix for the
+    us-v-kejia-wang miss (webhook delivered a stub, CourtListener enriched it
+    later with no second webhook).
+    """
+
+    def _seed_placeholder(self, store, case, monkeypatch, eid=42):
+        """Run one sync that delivers the placeholder, so the store holds the
+        stub (with recap_documents) and the docket meta is cached."""
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entries={100: [_placeholder_entry(eid)]},
+        )
+        # The placeholder reaches the LLM (the doc label trips the regex) but
+        # has no date to extract, so it IGNOREs — exactly the webhook path.
+        make_llm_stub(
+            monkeypatch, by_entry={eid: [{"type": "IGNORE", "reason": "stub"}]}
+        )
+        CaseSyncer(cl, store).sync_case(case)
+        return cl
+
+    def test_enriched_placeholder_reschedules(self, store, case, monkeypatch):
+        self._seed_placeholder(store, case, monkeypatch)
+        # No deadline yet — the stub carried no date.
+        assert store.get_deadlines("us-v-x") == []
+
+        # Now the entry has enriched upstream; the LLM, seeing the real text,
+        # extracts the surrender deadline.
+        def fake_extract(*, entry, **_):
+            if "July 10" in (entry.get("description") or ""):
+                return [
+                    {
+                        "type": "ADD_DEADLINE",
+                        "deadline_key": "surrender-x",
+                        "deadline_type": "other",
+                        "title": "Self-surrender to Bureau of Prisons",
+                        "local_date": "2026-07-10",
+                        "local_time": "14:00",
+                        "significance": "major",
+                    }
+                ]
+            return [{"type": "IGNORE", "reason": "still a stub"}]
+
+        monkeypatch.setattr(llm_mod, "extract_actions", fake_extract)
+
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entry_by_id={42: _enriched_entry(42)},
+        )
+        stats = CaseSyncer(cl, store).reconcile_placeholders(
+            case, filed_after="2026-04-01"
+        )
+
+        assert stats["checked"] == 1
+        assert stats["entries_processed"] == 1
+        # The reconcile fetched exactly one entry by id (O(placeholders)),
+        # not a docket-entries page.
+        assert [c for c in cl.calls if c[0] == "docket_entry"] == [("docket_entry", 42)]
+        deadlines = {d["deadline_key"]: d for d in store.get_deadlines("us-v-x")}
+        assert "surrender-x" in deadlines
+        assert deadlines["surrender-x"]["due_at_utc"].startswith("2026-07-10")
+
+    def test_unchanged_placeholder_is_a_noop(self, store, case, monkeypatch):
+        self._seed_placeholder(store, case, monkeypatch)
+
+        def boom(*a, **k):  # must not reach the LLM on an unchanged stub
+            raise AssertionError("LLM called for an unchanged placeholder")
+
+        monkeypatch.setattr(llm_mod, "extract_actions", boom)
+
+        # get_docket_entry returns the SAME stub — fingerprint unchanged.
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entry_by_id={42: _placeholder_entry(42)},
+        )
+        stats = CaseSyncer(cl, store).reconcile_placeholders(
+            case, filed_after="2026-04-01"
+        )
+        assert stats["checked"] == 1
+        # Re-fetched, but the fingerprint matched so process_entry no-oped
+        # before the LLM — no actions, nothing to re-emit.
+        assert stats["entries_processed"] == 0
+        assert stats["actions"] == 0
+        assert store.get_deadlines("us-v-x") == []
+
+    def test_age_cutoff_excludes_old_placeholders(self, store, case, monkeypatch):
+        # An old stub is outside the filed_after window, so it's never
+        # re-fetched — bounds retries on stubs that never enrich.
+        self._seed_placeholder(store, case, monkeypatch, eid=7)
+        # Move the seeded entry's date_filed into the past is implicit:
+        # _placeholder_entry defaults to 2026-05-20; ask for entries filed
+        # on/after a later date.
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entry_by_id={7: _enriched_entry(7)}
+        )
+        stats = CaseSyncer(cl, store).reconcile_placeholders(
+            case, filed_after="2026-06-01"
+        )
+        assert stats["checked"] == 0
+        assert [c for c in cl.calls if c[0] == "docket_entry"] == []
+
+    def test_empty_body_with_available_doc_is_not_fetched(
+        self, store, case, monkeypatch
+    ):
+        # The SQL pre-filter returns empty-body rows that carry docs, but a
+        # row whose document is already available is NOT a pending
+        # placeholder — the doc-level predicate rejects it, so it's skipped
+        # without a fetch. Seed it directly so the body stays empty.
+        store.upsert_docket_meta(100, {"court_id": "mad", "docket_number": "1:25-x"})
+        store.mark_entry(
+            100,
+            55,
+            "2026-05-20T10:00:00Z",
+            "fp",
+            date_filed="2026-05-20",
+            description="",
+            recap_documents=[{"id": 1, "is_available": True, "plain_text": ""}],
+        )
+
+        def boom(*a, **k):
+            raise AssertionError("no entry should be fetched")
+
+        cl = FakeCourtListener(dockets={100: _docket()})
+        monkeypatch.setattr(cl, "get_docket_entry", boom)
+        stats = CaseSyncer(cl, store).reconcile_placeholders(
+            case, filed_after="2026-04-01"
+        )
+        assert stats["checked"] == 0

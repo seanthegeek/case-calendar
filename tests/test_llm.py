@@ -2665,6 +2665,28 @@ class TestSummaryPromptDatedReferenceGuards:
         # two govern different concerns and both apply.
         assert "independent of the trial-vs-plea invariant" in llm.SUMMARY_SYSTEM_PROMPT
 
+    def test_scaffold_date_outranks_superseded_document_date(self):
+        # The us-v-kejia-wang self-surrender regression: a judgment recited
+        # "self-surrender by June 10, 2026"; a later endorsed order
+        # extended it to July 10, 2026, which the deadline scaffold
+        # correctly carried — but the summary echoed the judgment's
+        # superseded June 10 because the extension order was not in the
+        # disposition document set. The rule tells the model the scaffold
+        # date wins over a stale date written in a document.
+        import re
+
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        normalized = re.sub(r"\s+", " ", p)
+        # The precedence statement itself.
+        assert "structured-events scaffold OUTRANKS document text" in normalized
+        # The directive must say to use the scaffold date, not the
+        # superseded document date.
+        assert "never the superseded document date" in normalized
+        # The canonical case must stay so the rule's intent survives edits.
+        assert "self-surrender to the Bureau of Prisons by June 10, 2026" in normalized
+        assert "extended that to July 10, 2026" in normalized
+        assert "the summary MUST say July 10" in normalized
+
 
 class TestSummaryPromptInsufficientDocumentsRefusal:
     """Regression guards for the refuse-rather-than-fabricate rule added
