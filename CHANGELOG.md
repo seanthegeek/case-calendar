@@ -8,6 +8,20 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.15.2] - 2026-06-04
+
+### Security
+
+- **Bumped `aiohttp` 3.13.5 → 3.14.0** (Dependabot #62). `aiohttp` is a
+  transitive dependency pulled in via the Microsoft Graph stack used for
+  Microsoft 365 / Outlook calendar push (`microsoft-kiota-authentication-azure`).
+  Version 3.14.0 resolves two medium-severity advisories that affect all
+  prior versions: a cross-origin redirect that leaks per-request cookies
+  ([GHSA-hg6j-4rv6-33pg](https://github.com/advisories/GHSA-hg6j-4rv6-33pg))
+  and deserialization of untrusted data
+  ([GHSA-jg22-mg44-37j8](https://github.com/advisories/GHSA-jg22-mg44-37j8)).
+  Lockfile-only — no source or API change.
+
 ## [0.15.1] - 2026-06-04
 
 ### Added
