@@ -385,8 +385,7 @@ docket alert fires **once**, when an entry is first docketed, and the
 payload reflects the entry's state at that instant — which for many filings
 is a stub: an empty description and a document that isn't on RECAP yet.
 CourtListener fills in the entry text and makes the document available
-shortly after, but it does **not** fire a second webhook for that update —
-only an updated email alert
+shortly after, but it does **not** fire a second webhook for that update
 ([CourtListener issue #7423](https://github.com/freelawproject/courtlistener/issues/7423)).
 So `serve` on its own never sees the enriched entry, and a hearing or
 deadline whose date lives only in the filled-in text can be missed until a
