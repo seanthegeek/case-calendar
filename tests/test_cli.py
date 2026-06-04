@@ -1469,6 +1469,22 @@ class TestCmdReconcile:
         args = Namespace(config=str(cfg_file), case="nope", days=7, no_emit=False)
         assert cmd_reconcile(args) == 2
 
+    def test_case_filter_scopes_to_one_case(self, cfg_file, fake_cl_ctx, monkeypatch):
+        # A matching --case filters the case list and continues (rather than
+        # the unknown-case early return), running reconcile only for it.
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        seen: list[str] = []
+
+        def _fake_reconcile(self, case, **_):
+            seen.append(case.case_id)
+            return {"checked": 0, "entries_processed": 0, "actions": 0}
+
+        monkeypatch.setattr(cli.CaseSyncer, "reconcile_placeholders", _fake_reconcile)
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+        args = Namespace(config=str(cfg_file), case="us-v-x", days=7, no_emit=False)
+        assert cmd_reconcile(args) == 0
+        assert seen == ["us-v-x"]
+
     def test_runs_reconcile_and_emits_on_actions(
         self, cfg_file, fake_cl_ctx, monkeypatch, capsys
     ):
