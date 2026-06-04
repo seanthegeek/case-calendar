@@ -19,7 +19,7 @@ adheres to [Semantic Versioning][semver].
   payload reflects the entry's state at that instant — frequently a stub with
   an empty description and a document that isn't on RECAP yet. CourtListener
   fills in the text and makes the document available afterward but does NOT
-  fire a second webhook for that enrichment (only an updated email alert —
+  fire a second webhook for that enrichment (
   [CourtListener issue #7423](https://github.com/freelawproject/courtlistener/issues/7423)),
   so `serve` never re-delivers the filled-in entry and a hearing or deadline
   whose date lives only in the filled-in text can be missed until a poll
