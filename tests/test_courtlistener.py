@@ -66,6 +66,24 @@ class TestSimpleGets:
         cl = make_client(handler)
         assert cl.get_court("mad")["citation_string"] == "D. Mass."
 
+    def test_get_docket_entry(self, make_client):
+        def handler(req):
+            assert req.url.path == "/api/rest/v4/docket-entries/466316702/"
+            return httpx.Response(
+                200,
+                json={
+                    "id": 466316702,
+                    "entry_number": 42,
+                    "description": "ENDORSED ORDER ...",
+                    "recap_documents": [{"id": 481552307, "is_available": True}],
+                },
+            )
+
+        cl = make_client(handler)
+        entry = cl.get_docket_entry(466316702)
+        assert entry["id"] == 466316702
+        assert entry["recap_documents"][0]["is_available"] is True
+
     def test_get_recap_document(self, make_client):
         def handler(req):
             assert req.url.path == "/api/rest/v4/recap-documents/99/"

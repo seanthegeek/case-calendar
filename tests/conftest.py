@@ -112,11 +112,17 @@ class FakeCourtListener(CourtListener):
         courts: dict[str, dict] | None = None,
         recap_docs: dict[int, dict] | None = None,
         existing_alerts: list[dict] | None = None,
+        entry_by_id: dict[int, dict] | None = None,
     ):
         self._dockets = dockets or {}
         self._entries = entries or {}
         self._courts = courts or {}
         self._recap_docs = recap_docs or {}
+        # The "current upstream" copy of an entry returned by
+        # get_docket_entry(id) — lets a placeholder-reconcile test return a
+        # freshly-ENRICHED entry by id, distinct from the stale stub the
+        # store holds. Falls back to a scan of `entries` when not provided.
+        self._entry_by_id = entry_by_id or {}
         # Authenticated user's existing docket-alert subscriptions. Each
         # entry shape mirrors CourtListener's API response:
         # {"docket": <id>, "alert_type": 1, ...}. Tests that want
@@ -141,6 +147,16 @@ class FakeCourtListener(CourtListener):
                 "full_name": court_id,
             },
         )
+
+    def get_docket_entry(self, entry_id: int) -> dict:
+        self.calls.append(("docket_entry", entry_id))
+        if entry_id in self._entry_by_id:
+            return self._entry_by_id[entry_id]
+        for ents in self._entries.values():
+            for e in ents:
+                if e.get("id") == entry_id:
+                    return e
+        raise KeyError(f"no canned docket entry for id={entry_id}")
 
     def get_recap_document(self, doc_id: int) -> dict:
         self.calls.append(("recap", doc_id))

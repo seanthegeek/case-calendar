@@ -43,6 +43,42 @@ Run on a cron once you're past the initial backfill — every five minutes is
 fine; once an hour is plenty for most cases. Or skip cron entirely and use
 [real-time webhooks](webhooks.md).
 
+## `reconcile` — catch enriched placeholder entries cheaply
+
+A docket-alert webhook delivers a new entry once, the moment it's docketed —
+often as a stub whose document text isn't available yet (an empty
+description plus a document that isn't on RECAP). CourtListener fills the
+text in and makes the document available shortly after, but it fires only an
+updated *email* alert for that change, not a second webhook
+([CourtListener issue #7423](https://github.com/freelawproject/courtlistener/issues/7423)).
+So `serve` never sees the enriched version, and a hearing or deadline whose
+date lives only in the filled-in text can be missed until a poll re-reads
+it. `reconcile` closes that gap without the per-docket cost of a full
+`sync`: it re-checks only the entries that arrived as placeholders, one
+CourtListener request each, so its cost scales with recent filing activity
+rather than with the size of your caseload.
+
+```bash
+uv run case-calendar reconcile
+```
+
+| Flag | Purpose |
+| --- | --- |
+| `--case <case_id>` | Reconcile only this one case. |
+| `--days <n>` | Only re-check placeholder entries filed within this many days (default 7). Bounds retries on stubs that never enrich — a placeholder older than the window drops out of scope. |
+| `--no-emit` | Skip the auto-emit at the end of the reconcile. |
+
+When a placeholder has enriched, the re-fetch re-runs the normal pipeline:
+the entry's fingerprint flips, any new hearing or deadline is extracted, and
+the case summary is regenerated if its posture changed — exactly as a `sync`
+would, but touching only the handful of pending entries. An unchanged
+placeholder is a no-op (the fingerprint matches, so no LLM call is made).
+
+Intended to run on a frequent cheap cron alongside `serve`, with a full
+`sync` kept as an infrequent catch-all. See
+[real-time webhooks](webhooks.md#polling-webhooks-and-reconcile) for how the
+three fit together.
+
 ## `serve` — real-time webhook receiver
 
 Runs an HTTPS-ready webhook receiver. CourtListener pushes `DOCKET_ALERT`

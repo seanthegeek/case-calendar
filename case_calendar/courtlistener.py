@@ -355,6 +355,20 @@ class CourtListener:
         buffer.sort(key=lambda e: e.get("date_modified") or "")
         yield from buffer
 
+    def get_docket_entry(self, entry_id: int) -> dict:
+        """Fetch one docket entry by id, with its recap_documents inline.
+
+        One request, versus a whole ``/docket-entries/`` page per docket.
+        Used by the placeholder-reconcile sweep to cheaply re-check whether
+        an entry that arrived as a not-yet-readable stub (empty description
+        plus an unsealed recap_document with ``is_available=False`` and no
+        ``plain_text``) has since been enriched upstream — CourtListener
+        fires an updated *email* alert when that happens but not an updated
+        webhook, so the webhook path never re-delivers the filled-in entry
+        (reported upstream as CourtListener issue #7423).
+        """
+        return self._get(f"{API_BASE}/docket-entries/{entry_id}/").json()
+
     # --- RECAP documents (PDF metadata + extracted plain text) ---
 
     def get_recap_document(self, doc_id: int) -> dict:
