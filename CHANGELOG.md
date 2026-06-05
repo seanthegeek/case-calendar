@@ -8,6 +8,42 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.15.3] - 2026-06-05
+
+### Fixed
+
+- **Local (Ollama) case summaries no longer come back empty on thinking
+  models.** gemma4 and other local "thinking" models draw their reasoning
+  tokens from the same output budget as the answer, so the summary track's small
+  `max_tokens=800` ceiling was consumed entirely by reasoning and left no answer
+  — surfacing as `ValueError: No content in Ollama response` and aborting the
+  docket's summary. The fix mirrors the existing Gemini headroom logic:
+  `llmkit.providers.ensure_thinking_budget` now raises the output ceiling to at
+  least 8192 for thinking models (local inference is free, so the headroom costs
+  nothing). The bump is conditional, not blanket — it applies only to models
+  that report the `thinking` capability via Ollama's `/api/show` (queried once
+  per model and cached by the new `llmkit.providers.ollama_capabilities`), so a
+  plain instruction model keeps its requested budget and isn't handed room to
+  over-generate. When the capability can't be confirmed (an Ollama too old to
+  report it, or an unreachable server) the model is treated as thinking, since an
+  under-budgeted thinking model fails hard while an over-budgeted plain one is at
+  worst a soft quality issue. Anthropic / OpenAI are untouched (their reasoning
+  stays off the answer budget). The thinking-budget decision moved out of
+  `llm.generate_docket_summary` into `llmkit`, where it belongs as
+  provider-behavior logic independent of what the call is for.
+
+### Documentation
+
+- **`docs/local-llms.md`: native Windows vs in-WSL2 ROCm on AMD.** Recorded a
+  measured finding (RX 7900 XTX, 24 GB, gemma4): native-Windows Ollama runs
+  `gemma4:31b` entirely in VRAM at 100% GPU where the in-WSL2 ROCm-via-DXG path
+  cannot — the DXG layer's memory overhead starves the inference compute buffer,
+  so realistic prompts fail with an out-of-memory HTTP 500 or a load timeout —
+  and is \~40% faster on `gemma4:e4b`. Also documented the in-WSL2 ROCm
+  enablement steps (the separate `ollama-linux-amd64-rocm` bundle plus
+  `HSA_ENABLE_DXG_DETECTION=1`) for operators who still want the in-WSL2 path for
+  small models.
+
 ## [0.15.2] - 2026-06-04
 
 ### Security
