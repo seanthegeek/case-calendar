@@ -210,6 +210,28 @@ from the `librocdxg` Quickstart — not the standard Linux ROCm packages. See AM
 [WSL how-to for Radeon and
 Ryzen](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/wsl/howto_wsl.html).
 
+**Measured on an RX 7900 XTX (24 GB), gemma4, June 2026 — on AMD, prefer
+native Windows over in-WSL2 ROCm.** Running Ollama *inside* WSL2 does work once
+you add the ROCm backend, which the stock Linux install omits: drop the matching
+`ollama-linux-amd64-rocm` bundle into `/usr/local/lib/ollama/` and set
+`HSA_ENABLE_DXG_DETECTION=1` on the service so the runtime enumerates the GPU
+through `/dev/dxg`. But on the same card, **native Windows was clearly better**
+on two counts:
+
+- **\~40% faster** generation on the small model — `gemma4:e4b` ran at \~83
+  tok/s on native Windows vs \~58 tok/s in WSL2 (both at 100% GPU).
+- It ran **`gemma4:31b` entirely in VRAM at 100% GPU**, which the WSL2 path could
+  **not**. Inside WSL2 the DXG/DXCore layer's memory overhead leaves too little
+  room for the model's inference compute buffer, so a realistic (10K+ token)
+  prompt to the 31b failed with an out-of-memory HTTP 500 or a load timeout even
+  though the weights themselves loaded. The 32K-context / 24 GB summary ceiling
+  in [Hardware](#hardware-requirements) applies on top of this — WSL2 just hits
+  the wall sooner.
+
+Net: on AMD, run Ollama natively on Windows and point Case Calendar at it from
+WSL2 (the `OLLAMA_BASE_URL` line above). Reserve in-WSL2 ROCm for small models
+where the extra setup and the VRAM overhead are acceptable.
+
 **Intel Arc** is the roughest path here: possible via Intel's tooling but layered
 on already-experimental Ollama support. (Multi-GPU tensor parallelism via NCCL
 doesn't work in WSL2, but that only affects multi-card rigs — single-GPU
