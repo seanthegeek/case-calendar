@@ -963,4 +963,133 @@ class TestCallOllama:
         assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
 
 
+class TestOllamaCapabilities:
+    """providers.ollama_capabilities reads the model's /api/show capabilities,
+    cached per (base_url, model), with an empty set on any lookup failure."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        providers._OLLAMA_CAPABILITIES_CACHE.clear()
+        yield
+        providers._OLLAMA_CAPABILITIES_CACHE.clear()
+
+    @staticmethod
+    def _fake_urlopen(monkeypatch, payload, calls=None):
+        import json
+        import urllib.request
+
+        class _Resp:
+            def read(self):
+                return json.dumps(payload).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake(req, timeout=None):
+            if calls is not None:
+                calls.append(req.full_url)
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+    def test_parses_capabilities(self, monkeypatch):
+        self._fake_urlopen(monkeypatch, {"capabilities": ["completion", "thinking"]})
+        assert providers.ollama_capabilities("gemma4:e4b") == frozenset(
+            {"completion", "thinking"}
+        )
+
+    def test_strips_v1_and_calls_api_show(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434/v1")
+        calls: list[str] = []
+        self._fake_urlopen(monkeypatch, {"capabilities": ["completion"]}, calls)
+        providers.ollama_capabilities("m")
+        assert calls == ["http://gpu-box:11434/api/show"]
+
+    def test_base_url_without_v1_used_as_is(self, monkeypatch):
+        # A base_url with no trailing /v1 (bare host, or a custom server) is used
+        # as-is — only a /v1 suffix is stripped before appending /api/show.
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        calls: list[str] = []
+        self._fake_urlopen(monkeypatch, {"capabilities": ["completion"]}, calls)
+        providers.ollama_capabilities("m")
+        assert calls == ["http://localhost:11434/api/show"]
+
+    def test_caches_per_model(self, monkeypatch):
+        calls: list[str] = []
+        self._fake_urlopen(monkeypatch, {"capabilities": ["thinking"]}, calls)
+        providers.ollama_capabilities("m")
+        providers.ollama_capabilities("m")  # served from cache, no second call
+        assert len(calls) == 1
+
+    def test_missing_capabilities_field_is_empty(self, monkeypatch):
+        self._fake_urlopen(monkeypatch, {"model_info": {}})
+        assert providers.ollama_capabilities("m") == frozenset()
+
+    def test_lookup_failure_returns_empty(self, monkeypatch):
+        import urllib.request
+
+        def boom(req, timeout=None):
+            raise OSError("connection refused")
+
+        monkeypatch.setattr(urllib.request, "urlopen", boom)
+        assert providers.ollama_capabilities("m") == frozenset()
+
+
+class TestEnsureThinkingBudget:
+    """providers.ensure_thinking_budget raises a too-small output budget only for
+    a thinking model (whose reasoning is drawn from the answer budget)."""
+
+    def test_gemini_always_bumps(self):
+        assert providers.ensure_thinking_budget("gemini", "any", 800) == 8192
+
+    def test_gemini_keeps_larger_request(self):
+        assert providers.ensure_thinking_budget("gemini", "any", 20000) == 20000
+
+    def test_anthropic_unchanged(self):
+        assert providers.ensure_thinking_budget("anthropic", "claude", 800) == 800
+
+    def test_openai_unchanged(self):
+        assert providers.ensure_thinking_budget("openai", "gpt-5.4", 800) == 800
+
+    def test_ollama_thinking_model_bumps(self, monkeypatch):
+        monkeypatch.setattr(
+            providers,
+            "ollama_capabilities",
+            lambda m: frozenset({"completion", "thinking"}),
+        )
+        assert providers.ensure_thinking_budget("ollama", "gemma4:e4b", 800) == 8192
+
+    def test_ollama_plain_model_unchanged(self, monkeypatch):
+        monkeypatch.setattr(
+            providers,
+            "ollama_capabilities",
+            lambda m: frozenset({"completion", "tools"}),
+        )
+        assert providers.ensure_thinking_budget("ollama", "phi4", 800) == 800
+
+    def test_ollama_unknown_caps_bumps(self, monkeypatch):
+        # /api/show couldn't confirm -> treat as thinking (safe default: an
+        # under-budgeted thinking model fails hard, an over-budgeted plain one is
+        # only a soft quality issue).
+        monkeypatch.setattr(providers, "ollama_capabilities", lambda m: frozenset())
+        assert providers.ensure_thinking_budget("ollama", "mystery", 800) == 8192
+
+    def test_ollama_without_model_bumps_without_lookup(self, monkeypatch):
+        # No resolved model -> can't check -> bump, and skip the lookup entirely.
+        seen: list = []
+        monkeypatch.setattr(
+            providers,
+            "ollama_capabilities",
+            lambda m: seen.append(m) or frozenset({"completion"}),
+        )
+        assert providers.ensure_thinking_budget("ollama", None, 800) == 8192
+        assert seen == []
+
+    def test_custom_floor(self):
+        assert providers.ensure_thinking_budget("gemini", "x", 100, floor=4096) == 4096
+
+
 # --- verify_deadline (parallel to verify_hearing) ---

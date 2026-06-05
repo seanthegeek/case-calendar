@@ -1899,6 +1899,19 @@ class TestBuildSummaryUserMessage:
 
 
 class TestGenerateDocketSummary:
+    @pytest.fixture(autouse=True)
+    def _stub_ollama_capabilities(self, monkeypatch):
+        # Keep the suite hermetic: the Ollama summary-budget logic calls
+        # providers.ollama_capabilities, which would otherwise make a real
+        # /api/show request. Default to a thinking-capable model (the common
+        # case); the budget tests below override this to exercise the
+        # non-thinking and unknown branches.
+        monkeypatch.setattr(
+            providers,
+            "ollama_capabilities",
+            lambda model: frozenset({"completion", "thinking"}),
+        )
+
     def test_no_provider_raises(self):
         with pytest.raises(RuntimeError, match="No LLM provider"):
             llm.generate_docket_summary(
@@ -1998,6 +2011,63 @@ class TestGenerateDocketSummary:
         # so thinking + the 2-4 sentence answer both fit. (Regression: every
         # Gemini summary returned "No content" with the 800-token budget.)
         assert called["max_tokens"] >= 8192
+
+    def test_ollama_gets_thinking_headroom(self, monkeypatch):
+        # Local thinking models (e.g. gemma4, reasoning on by default) draw
+        # reasoning from the output budget just like Gemini, so a bare 800-token
+        # summary ceiling returns "No content" — the reasoning starves the
+        # answer. generate_docket_summary must give Ollama the same >=8192
+        # headroom; local inference is free, so the bump costs nothing.
+        # (Regression: gemma summaries via Ollama came back empty at
+        # max_tokens=800.)
+        called: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
+            called["max_tokens"] = max_tokens
+            return "A local summary."
+
+        monkeypatch.setattr(providers, "_call_ollama", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="ollama",
+            max_tokens=800,
+        )
+        assert called["max_tokens"] >= 8192
+
+    def test_ollama_non_thinking_keeps_budget(self, monkeypatch):
+        # A plain (non-thinking) local model stops at its end-of-turn token, so
+        # the budget must NOT be bumped — leaving the requested ceiling so a
+        # rambling model isn't handed extra rope. (Overrides the autouse stub.)
+        monkeypatch.setattr(
+            providers,
+            "ollama_capabilities",
+            lambda model: frozenset({"completion", "tools"}),
+        )
+        called: dict[str, Any] = {}
+
+        def fake(system, user, max_tokens, *, model=None, json_mode=True, **kwargs):
+            called["max_tokens"] = max_tokens
+            return "A local summary."
+
+        monkeypatch.setattr(providers, "_call_ollama", fake)
+        llm.generate_docket_summary(
+            case_name="x",
+            aggregation_note=None,
+            docket={"docket_number": "x"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            provider="ollama",
+            max_tokens=800,
+        )
+        assert called["max_tokens"] == 800
 
     def test_ollama_dispatch_local_summaries(self, monkeypatch):
         # Summaries can run on a local model: provider="ollama" routes through

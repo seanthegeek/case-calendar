@@ -295,6 +295,105 @@ def _call_gemini(
     return resp.text
 
 
+# Cache each local model's reported capabilities (from Ollama's /api/show) so the
+# lookup runs at most once per (base_url, model) per process. A model name's
+# capabilities don't change at runtime, so the cache never needs busting.
+_OLLAMA_CAPABILITIES_CACHE: dict[tuple[str, str], frozenset[str]] = {}
+
+
+def ollama_capabilities(model: str) -> frozenset[str]:
+    """The capabilities the local Ollama model reports via ``/api/show`` — e.g.
+    ``frozenset({"completion", "tools", "thinking"})``.
+
+    The summary track uses this to tell a *thinking* model (whose reasoning is
+    drawn from the same output budget as the answer, so it needs a larger
+    ``max_tokens``) from a plain instruction model (which stops at its end-of-turn
+    token and would only be encouraged to over-generate by a bigger ceiling).
+    Cached per ``(OLLAMA_BASE_URL, model)``.
+
+    Returns an EMPTY set when the capability can't be determined — an Ollama too
+    old to report ``capabilities``, an unreachable server, or an unknown model.
+    Callers treat "unknown" conservatively (see ``llm.generate_docket_summary``):
+    guessing wrong in the not-a-thinking-model direction would re-introduce the
+    empty-summary failure, so unknown is handled like thinking.
+    """
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    cache_key = (base_url, model)
+    cached = _OLLAMA_CAPABILITIES_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    import json
+    import urllib.request
+
+    # /api/show is Ollama's native endpoint; the OpenAI-compat base_url carries a
+    # trailing /v1 that has to come off first.
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    caps: frozenset[str] = frozenset()
+    try:
+        req = urllib.request.Request(
+            root + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.load(resp)
+        caps = frozenset(data.get("capabilities") or ())
+    except Exception:
+        logger.debug(
+            "ollama capabilities lookup failed for model=%s (base_url=%s); "
+            "treating as unknown",
+            model,
+            base_url,
+            exc_info=True,
+        )
+    _OLLAMA_CAPABILITIES_CACHE[cache_key] = caps
+    return caps
+
+
+def ensure_thinking_budget(
+    provider: str,
+    model: Optional[str],
+    requested: int,
+    *,
+    floor: int = 8192,
+) -> int:
+    """Raise a too-small output budget to ``floor`` for a "thinking" model.
+
+    Thinking models draw their reasoning tokens from the SAME output budget as
+    the answer, so a small ``requested`` ceiling can be consumed entirely by
+    reasoning and leave zero answer text (an empty / ``No content`` response).
+    For a non-thinking model ``requested`` is just a ceiling the answer stops
+    well under, so it is returned unchanged — raising it would only give a
+    rambling model room to over-generate.
+
+    Which providers/models count as "thinking":
+
+    - **Gemini 2.5** always — its reasoning is counted against
+      ``max_output_tokens`` (and billed as output).
+    - **Ollama** iff the model reports the ``thinking`` capability via
+      :func:`ollama_capabilities`. An unconfirmable lookup (old Ollama, offline,
+      unknown model) is treated AS thinking — the safe default, since an
+      under-budgeted thinking model fails hard (empty answer) while an
+      over-budgeted plain model is at worst a soft quality issue.
+    - **Anthropic / OpenAI** never — they keep reasoning off the answer budget,
+      stopping at the natural end of the response regardless of the ceiling.
+
+    This lives in llmkit, not the domain layer, because it is purely about how a
+    provider/model spends its output budget — independent of what the call is for.
+    """
+    if provider == "gemini":
+        thinking = True
+    elif provider == "ollama":
+        caps = ollama_capabilities(model) if model else frozenset()
+        thinking = (not caps) or ("thinking" in caps)
+    else:
+        thinking = False
+    return max(requested, floor) if thinking else requested
+
+
 def _call_ollama(
     system: str,
     user: str,
