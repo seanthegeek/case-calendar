@@ -360,9 +360,7 @@ function makeCard(e){
       const l=document.createElement("label"); l.textContent=lab;
       const inp=document.createElement("input"); inp.type="number"; inp.min=0;
       inp.value=(s[k]!=null? s[k]:0);
-      inp.addEventListener("input",()=>{ s[k]=+inp.value||0;
-        if(s[k]>0 && !s.reviewed){ s.reviewed=true; card.classList.add("reviewed"); }
-        persist(); recount(); });
+      inp.addEventListener("input",()=>{ s[k]=+inp.value||0; persist(); recount(); });
       l.appendChild(inp); g.appendChild(l); }
     return g; }
   ctr.appendChild(grp("h", CATS.slice(0,4)));
