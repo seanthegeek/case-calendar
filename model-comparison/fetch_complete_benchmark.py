@@ -209,31 +209,62 @@ def main(argv: Optional[list[str]] = None) -> int:
         action="store_true",
         help="overwrite an existing complete snapshot",
     )
+    ap.add_argument(
+        "--case",
+        action="append",
+        help="IN-PLACE update mode: re-fetch ONLY this case id into the EXISTING "
+        "snapshot, leaving every other case's frozen text untouched (repeatable). "
+        "Requires the snapshot to already exist — use it to pick up a new filing "
+        "on one docket without re-pulling the whole benchmark.",
+    )
     args = ap.parse_args(argv)
 
     source = Path(args.source or _store_path_from_config(args.config))
-    if not source.exists():
-        raise SystemExit(f"source store not found: {source}")
-
     out = Path(args.out)
     manifest_path = _manifest_path(out)
-    if out.exists() and not args.force:
-        raise SystemExit(
-            f"{out} already exists — pass --force to rebuild the complete snapshot"
-        )
-    _remove_existing(out, manifest_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-
-    _backup(source, out)
-    cleared = _clear_model_output_tables(out)
-
     cfg = _load_config(args.config)
-    cases = _cases_from_config(cfg)
+    all_cases = _cases_from_config(cfg)
 
-    print(
-        f"fetching complete entry text for {len(cases)} cases from CourtListener...",
-        flush=True,
-    )
+    if args.case:
+        # In-place surgical update: re-fetch ONLY the named case(s) into the
+        # existing snapshot, leaving every other case's frozen text untouched —
+        # to pick up a new filing on one docket without re-pulling (and risking
+        # drift on) the whole benchmark.
+        if not out.exists():
+            raise SystemExit(
+                f"{out} not found — run a full fetch (no --case) first; --case "
+                "updates individual cases in an existing snapshot."
+            )
+        want = set(args.case)
+        cases = [c for c in all_cases if c.case_id in want]
+        missing = want - {c.case_id for c in cases}
+        if missing:
+            raise SystemExit(f"no such case(s) in {args.config}: {sorted(missing)}")
+        out.chmod(0o644)  # committed snapshot is read-only; make writable to update
+        cleared = []
+        partial = [c.case_id for c in cases]
+        print(
+            f"in-place update of {len(cases)} case(s) in {out}: {', '.join(partial)}",
+            flush=True,
+        )
+    else:
+        if not source.exists():
+            raise SystemExit(f"source store not found: {source}")
+        if out.exists() and not args.force:
+            raise SystemExit(
+                f"{out} already exists — pass --force to rebuild the complete snapshot"
+            )
+        _remove_existing(out, manifest_path)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        _backup(source, out)
+        cleared = _clear_model_output_tables(out)
+        cases = all_cases
+        partial = None
+        print(
+            f"fetching complete entry text for {len(cases)} cases from CourtListener...",
+            flush=True,
+        )
+
     with CourtListener() as cl:
         result = backfill_complete_text(
             out, cases, cl=cl, page_size=args.page_size, max_pages=args.max_pages
@@ -252,7 +283,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "kind": "complete-benchmark-store",
         "source_store": str(source),
         "config": args.config,
-        "case_ids": [c.case_id for c in cases],
+        "case_ids": [c.case_id for c in all_cases],
         "snapshot_file": out.name,
         "snapshot_bytes": out.stat().st_size,
         "snapshot_sha256": _sha256(out),
@@ -263,6 +294,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "entries_inserted": result["inserted"],
         "courtlistener_requests": result["courtlistener_requests"],
         "per_docket_fetched": result["per_docket"],
+        "partial_update_cases": partial,
         "ground_truth": None,
         "ground_truth_sha256": None,
         "code_git_sha": _git_sha(),

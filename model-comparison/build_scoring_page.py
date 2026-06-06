@@ -320,7 +320,7 @@ function recount(){
   document.getElementById("nz").textContent=nz;
   document.getElementById("bo").textContent=bo;
   for(const c of DATA.cases){ let r=0; for(const e of c.entries){ if((saved[e.entry_id]||{}).reviewed) r++; }
-    const el=document.getElementById("cv-"+c.case_id); if(el) el.textContent=r+"/"+c.entries.length; }
+    const el=document.getElementById("cv-"+c.case_id); if(el) el.textContent=r; }
 }
 
 function makeCard(e){
