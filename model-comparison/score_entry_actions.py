@@ -2,7 +2,7 @@
 """Score each provider's per-entry extractor actions against human ground truth.
 
 The human fills ``ground_truth.csv`` by reading every entry's COMPLETE text in
-``ground_truth_scoring.html`` (built by ``build_scoring_pages.py``) and tallying,
+``ground_truth_scoring.html`` (built by ``build_scoring_page.py``) and tallying,
 per entry, the eight action counts the extractor itself emits. The model side
 (``model_entry_actions.csv``, captured by ``build_provider_stores.py
 --entry-actions-csv``) carries the same eight counts per entry per provider. This

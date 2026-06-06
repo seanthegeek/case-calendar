@@ -39,7 +39,7 @@ model-comparison/cost.*.md
 # normally don't exist; ignored defensively).
 model-comparison/snapshots/*.sqlite-*
 
-# Per-entry ground-truth scoring pages (model-comparison/build_scoring_pages.py):
+# Per-entry ground-truth scoring page (model-comparison/build_scoring_page.py):
 # large generated HTML, regenerable from the committed complete-benchmark
 # snapshot. The human's FILLED scores download to model-comparison/
 # ground_truth.csv (committed normally), not here.

@@ -28,7 +28,7 @@ records) are deduped to one card per logical entry; genuinely separate dockets
 (a district case + its appeal) stay in separate sub-sections.
 
 Usage:
-    uv run python model-comparison/build_scoring_pages.py \
+    uv run python model-comparison/build_scoring_page.py \
         [--config config.benchmark.yaml] \
         [--store model-comparison/snapshots/complete-benchmark-store.sqlite] \
         [--out model-comparison/scoring/ground_truth_scoring.html] [--case CASE_ID ...]
