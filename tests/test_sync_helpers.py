@@ -268,6 +268,31 @@ class TestLocalToUtc:
         # Casing + leading/trailing whitespace also normalize.
         assert _local_to_utc("2026-01-07", "NULL ", "America/New_York") == midnight_et
 
+    def test_out_of_range_date_returns_none(self, caplog):
+        # The model can emit a calendar-INVALID date (e.g. "2023-03-34" — day
+        # out of range for the month), which crashed a real sync via an uncaught
+        # ``ValueError: day is out of range for month`` out of
+        # ``_apply_deadline_action`` (the build-comparison replay only survived
+        # because it wraps each entry in its own try/except). It must be stored
+        # date-less (None), not raised, with a WARNING for the operator.
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            assert _local_to_utc("2023-03-34", "16:00", "America/New_York") is None
+        assert any("unparseable local date" in r.message for r in caplog.records)
+        # the date-only path is guarded too
+        assert _local_to_utc("2023-02-30", None, "America/New_York") is None
+        # and the deadline wrapper (defaults the time to 16:00) must not crash
+        assert _deadline_local_to_utc("2023-03-34", None, "America/New_York") is None
+
+    def test_invalid_time_falls_back_to_date_only(self):
+        # A bad time string but a VALID date salvages the date (stored date-only
+        # at midnight local) rather than dropping the row entirely.
+        assert (
+            _local_to_utc("2026-04-14", "25:99", "America/New_York")
+            == "2026-04-14T04:00:00+00:00"
+        )
+
 
 # --- _default_duration ---
 

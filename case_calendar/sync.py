@@ -357,12 +357,37 @@ def _local_to_utc(
     # to ``fromisoformat``.
     if time_str and time_str.strip().lower() in ("null", "none", ""):
         time_str = None
-    if time_str:
-        dt = datetime.fromisoformat(f"{date_str}T{time_str}")
-    else:
-        # date-only — treat as midnight local; the calendar layer turns this
-        # into an all-day event.
-        dt = datetime.fromisoformat(f"{date_str}T00:00")
+    # The model can emit a syntactically-plausible but calendar-INVALID date or
+    # time — e.g. "2023-03-34" (day out of range), which crashed a real sync via
+    # an uncaught ``ValueError: day is out of range for month`` out of
+    # ``_apply_deadline_action`` (the build-comparison replay only survived
+    # because it wraps each entry in its own try/except). Parse defensively: on a
+    # bad time, fall back to date-only (midnight local — the calendar layer turns
+    # this into an all-day event); on a bad date, store the row date-less (the
+    # same end state as the null-date case above) rather than letting the
+    # exception abort the case sync or 500 a webhook on every retry.
+    iso = f"{date_str}T{time_str}" if time_str else f"{date_str}T00:00"
+    try:
+        dt = datetime.fromisoformat(iso)
+    except ValueError:
+        if time_str:
+            try:
+                dt = datetime.fromisoformat(f"{date_str}T00:00")
+            except ValueError:
+                log.warning(
+                    "unparseable local date %r (time %r); storing date-less",
+                    date_str,
+                    time_str,
+                )
+                return None
+            log.warning(
+                "unparseable local time %r for date %r; storing date-only",
+                time_str,
+                date_str,
+            )
+        else:
+            log.warning("unparseable local date %r; storing date-less", date_str)
+            return None
     dt = dt.replace(tzinfo=ZoneInfo(tz))
     return dt.astimezone(timezone.utc).isoformat()
 
