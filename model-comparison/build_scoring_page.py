@@ -143,11 +143,41 @@ def _fetch_entries(con: sqlite3.Connection, docket_id: int) -> list[dict[str, An
     return out
 
 
+def _has_content(e: dict[str, Any]) -> bool:
+    """True if there's anything for a human OR a model to read.
+
+    Excludes the content-less rows CourtListener returns for some paperless
+    clerk's notices — empty ``description`` / ``short_description`` and a single
+    not-on-RECAP document with no text. The extractor sees the same (nothing),
+    so it can't score them and neither can the human; showing them is pure
+    review noise. An entry is kept if it has body text, OR any recap_document
+    with extracted ``plain_text``, OR an unsealed document with a fetchable URL
+    (the human can open the PDF even when its text hasn't been extracted yet).
+    """
+    if (e.get("description") or "").strip() or (
+        e.get("short_description") or ""
+    ).strip():
+        return True
+    for d in json.loads(e.get("recap_documents") or "[]"):
+        if (d.get("plain_text") or "").strip():
+            return True
+        if not d.get("is_sealed") and (d.get("filepath_local") or d.get("filepath_ia")):
+            return True
+    return False
+
+
 def _sort_entries(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    # Chronological by filing date FIRST, then docket position (numbered
+    # entries before paperless ones on the same day), then entry_id for a
+    # stable tiebreaker. Sorting by date_filed first is what interleaves
+    # paperless minute entries into their correct place — the old key sent
+    # every numberless entry to the very end (1 << 30), so an early paperless
+    # entry appeared after the last numbered filing.
     rows.sort(
         key=lambda e: (
-            e["entry_number"] if e["entry_number"] is not None else 1 << 30,
             e["date_filed"] or "",
+            e["entry_number"] if e["entry_number"] is not None else 1 << 30,
+            e["entry_id"],
         )
     )
     return rows
@@ -189,6 +219,7 @@ def build_case_entries(con: sqlite3.Connection, case: Any) -> list[dict[str, Any
         ].append(did)
 
     out: list[dict[str, Any]] = []
+    hidden = 0
     for (docket_number, court), dids in sorted(groups.items()):
         cl_url = ""
         for did in dids:
@@ -196,6 +227,9 @@ def build_case_entries(con: sqlite3.Connection, case: Any) -> list[dict[str, Any
             if cl_url:
                 break
         for e in _entries_for_group(con, dids):
+            if not _has_content(e):
+                hidden += 1
+                continue
             out.append(
                 {
                     "case_id": case.case_id,
@@ -211,6 +245,11 @@ def build_case_entries(con: sqlite3.Connection, case: Any) -> list[dict[str, Any
                     "docs": _docs_for(e["recap_documents"]),
                 }
             )
+    if hidden:
+        print(
+            f"  {case.case_id}: hid {hidden} content-less entries "
+            "(no description / no document text on RECAP)"
+        )
     return out
 
 
