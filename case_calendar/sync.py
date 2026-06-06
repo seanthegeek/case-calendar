@@ -138,6 +138,23 @@ _ORDER_GRANTS_SCHEDULING_MOTION = re.compile(
     re.IGNORECASE,
 )
 
+# Orders / stipulations that SET a trial date or a briefing / hearing schedule
+# are the same trap as a granted scheduling motion: the operative dates live in
+# the document — typically a TABLE under backward-looking "WHEREAS" prose — not
+# in the one-line docket description, which usually names only the signing judge
+# (tripping the _DETAIL_HINTS "judge" hint, so the PDF would otherwise be
+# skipped) and the stipulation by docket position. Force the PDF fetch so the
+# extractor sees the actual schedule. (Canonical: us-v-ding doc 55, "ORDER ...
+# granting ... Stipulation Setting Trial Date and Briefing Schedules".)
+_SETS_SCHEDULE = re.compile(
+    r"\bscheduling\s+order\b"
+    r"|\b(?:setting|re-?setting|amend(?:ing|ed)|modif(?:ying|ied)|adopting)\b"
+    r"[^.]{0,40}?\b(?:trial\s+date|(?:briefing|hearing|pretrial|case)\s+schedul)"
+    r"|\bstipulation\b[^.]{0,80}?\b(?:trial\s+date|(?:briefing|hearing)\s+schedul|scheduling)"
+    r"|\btrial\s+date\s+and\s+(?:briefing|hearing|pretrial)\s+schedul",
+    re.IGNORECASE,
+)
+
 # Cross-reference pattern: PACER-style "ORDER granting 65 Motion ..." or
 # "DENYING 42 Motion" or just "see [12]". The verb tells us this is a
 # reference to another docket entry we may have already seen; the bare
@@ -176,6 +193,8 @@ def _needs_pdf(entry: dict[str, Any]) -> bool:
     )
     desc = _ENTERED_FOOTER.sub("", desc)
     if _ORDER_GRANTS_SCHEDULING_MOTION.search(desc):
+        return True
+    if _SETS_SCHEDULE.search(desc):
         return True
     if _DETAIL_HINTS.search(desc):
         return False

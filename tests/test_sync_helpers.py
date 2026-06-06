@@ -107,6 +107,32 @@ class TestNeedsPdf:
     def test_empty_description_needs_pdf(self):
         assert _needs_pdf(_entry(""))
 
+    def test_order_setting_trial_date_and_schedule_needs_pdf(self):
+        # An order / stipulation SETTING a trial date + briefing schedule keeps
+        # the operative dates in a TABLE in the document, not the docket text —
+        # which here names only the signing judge, tripping the _DETAIL_HINTS
+        # "judge" hint so the PDF would otherwise be skipped. Force the fetch.
+        # Canonical: us-v-ding doc 55.
+        assert _needs_pdf(
+            _entry(
+                "ORDER by Judge Vince Chhabria granting AS MODIFIED 47 "
+                "Stipulation Setting Trial Date and Briefing Schedules as to "
+                "Linwei Ding (1). Signed by Judge Vince Chhabria on 2/12/2025. "
+                "(Entered: 02/26/2025)"
+            )
+        )
+        assert _needs_pdf(_entry("Scheduling Order"))
+        assert _needs_pdf(
+            _entry(
+                "JOINT STIPULATION AND PROPOSED ORDER RE: "
+                "TRIAL DATE AND HEARING SCHEDULE"
+            )
+        )
+
+    def test_grant_scheduling_motion_still_needs_pdf(self):
+        # Regression: the original grant-a-scheduling-motion trap still fetches.
+        assert _needs_pdf(_entry("ORDER granting 47 Motion to Continue Trial"))
+
     def test_entered_footer_does_not_satisfy_hint(self):
         # CourtListener appends "[Entered: MM/DD/YYYY HH:MM AM/PM]" to almost every entry;
         # without stripping it, the time-of-day match fools _needs_pdf into
