@@ -184,15 +184,62 @@ class TestNeedsPdf:
             )
         )
 
-    def test_order_granting_substantive_motion_does_not_force_pdf(self):
-        # Substantive rulings don't move the docket; existing _DETAIL_HINTS
-        # logic governs PDF fetch as before.
-        assert not _needs_pdf(
+    def test_order_granting_substantive_motion_now_fetches_pdf(self):
+        # Behavior change: we now read the PDF of EVERY order that reached the
+        # filter, substantive or scheduling — a ruling routinely sets follow-on
+        # deadlines / a status conference in its body that the one-line
+        # description never echoes. (Was: substantive orders skipped the fetch.)
+        assert _needs_pdf(
             _entry(
                 "ORDER granting 50 Motion to Suppress. "
                 "Hearing concluded 4/14/2026 03:00 PM."
             )
         )
+
+    def test_order_with_only_judge_name_fetches_pdf(self):
+        # The judge-hint trap: an order names the signing judge (tripping
+        # _DETAIL_HINTS) but sets the operative dates only in the PDF body.
+        # Naming the judge must NOT suppress the fetch for an order.
+        assert _needs_pdf(
+            _entry("ORDER denying motion to dismiss. Signed by Judge X on 6/1/2026.")
+        )
+
+    def test_order_setting_hidden_deadline_fetches_pdf(self):
+        # The us-v-ding-class case: a clerk sets a deadline in the order body
+        # that the description doesn't pin. The entry is an order, so fetch.
+        assert _needs_pdf(
+            _entry(
+                "ORDER as to Defendant: By 9/25/2025 the parties shall advise "
+                "the Court whether they will proceed to trial. Signed by Judge Y."
+            )
+        )
+
+    def test_transcript_of_proceedings_skips_pdf(self):
+        # A transcript is testimony, not scheduling — never fetch the body. The
+        # held-date the entry implies is already in the description.
+        assert not _needs_pdf(
+            _entry(
+                "Transcript of Proceedings as to Linwei Ding held on 05/22/2024, "
+                "before Judge Vince Chhabria"
+            )
+        )
+
+    def test_transcript_with_no_judge_still_skips_pdf(self):
+        # Robustness: a bare transcript with no judge name (so _DETAIL_HINTS
+        # wouldn't have suppressed it) is still skipped by the transcript guard
+        # rather than falling through to the default fetch.
+        assert not _needs_pdf(_entry("Transcript of Jury Trial Proceedings, Volume 1"))
+
+    def test_transcript_order_skips_pdf_despite_order_word(self):
+        # "TRANSCRIPT ORDER" contains "order" — the transcript guard runs first
+        # so it isn't pulled in by the read-every-order rule. (It's a private
+        # purchase request the LLM IGNOREs anyway.)
+        assert not _needs_pdf(
+            _entry("TRANSCRIPT ORDER for proceedings held on 05/22/2024 before Judge X")
+        )
+
+    def test_official_transcript_filing_notice_skips_pdf(self):
+        assert not _needs_pdf(_entry("NOTICE OF FILING OF OFFICIAL TRANSCRIPT"))
 
 
 # --- _extract_docket_refs ---

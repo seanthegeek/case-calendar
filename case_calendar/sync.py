@@ -128,9 +128,12 @@ _ENTERED_FOOTER = re.compile(r"[\(\[]Entered:[^\)\]]*[\)\]]", re.IGNORECASE)
 # typically lists ALL the dates the order set, including ones not echoed
 # in the brief description (e.g. the CIPA conference itself).
 #
-# Limited to scheduling/hearing motions on purpose. Orders granting
-# substantive motions ("granting 50 Motion to Suppress / Dismiss / Compel")
-# don't move the docket and don't justify the extra LLM tokens.
+# This pattern survives mainly to catch grant-a-scheduling-motion phrasings
+# that DON'T carry the literal word "order" (e.g. a minute entry: "Minute
+# Entry ... granting 47 Motion to Continue Trial"), which _IS_ORDER below
+# wouldn't match. Entries that DO say "ORDER" are now caught by _IS_ORDER
+# regardless of whether the granted motion is scheduling or substantive — we
+# read every available order's PDF (see that rule for why).
 _ORDER_GRANTS_SCHEDULING_MOTION = re.compile(
     r"\bgranting\b[^.]{0,80}?\bMotion\s+"
     r"(?:for\s+Hearing|for\s+Continuance|for\s+Status\s+Conference|"
@@ -154,6 +157,39 @@ _SETS_SCHEDULE = re.compile(
     r"|\btrial\s+date\s+and\s+(?:briefing|hearing|pretrial)\s+schedul",
     re.IGNORECASE,
 )
+
+# A transcript document, a transcript-purchase ORDER, or a transcript filing
+# notice. None carries forward-looking scheduling: a transcript is a verbatim
+# record of testimony (often hundreds of OCR-heavy pages), a transcript order is
+# a private purchase request (IGNORE per the prompt), and the held-date,
+# redaction-request deadline, and public-release deadline a transcript implies
+# all live in the docket DESCRIPTION, never the body. Checked FIRST in
+# _needs_pdf so it overrides the general read-every-order rule below — a
+# "TRANSCRIPT ORDER ..." entry contains the word "order" and would otherwise
+# force a pointless, expensive fetch of the transcript itself.
+_TRANSCRIPT_DOC = re.compile(
+    r"\btranscript\s+order\b"
+    r"|\border\s+for\s+transcript\b"
+    r"|\btranscript\s+of\s+[^.\n]*?\bproceedings?\b"
+    r"|\b(?:official|corrected|amended|redacted|rough)\s+transcript\b"
+    r"|\bnotice\s+of\s+filing\s+of\s+(?:official\s+)?transcript\b"
+    r"|\btranscript\s+filed\b",
+    re.IGNORECASE,
+)
+
+# Any order / endorsement document. An order is the entry class whose operative
+# dates most often live ONLY in the PDF — a scheduling table under backward-
+# looking "WHEREAS" prose, or follow-on deadlines a ruling sets — while the
+# one-line docket description names just the signing judge (which trips
+# _DETAIL_HINTS and would otherwise suppress the fetch). Some clerks (e.g.
+# N.D. Cal. on us-v-ding) set multiple deadlines in the order body that the
+# description never echoes, so we read the PDF of every available order rather
+# than trust the one-line description to be complete. Only orders that already
+# passed the hearing/deadline pre-filter reach _needs_pdf, so this never fetches
+# a purely substantive ruling that carries no scheduling vocabulary at all.
+# Storage GETs don't spend the CourtListener API quota and the LLM call happens
+# regardless, so the marginal cost is bandwidth plus a few input tokens.
+_IS_ORDER = re.compile(r"\border\b|\bendors(?:ed|ement)\b", re.IGNORECASE)
 
 # Cross-reference pattern: PACER-style "ORDER granting 65 Motion ..." or
 # "DENYING 42 Motion" or just "see [12]". The verb tells us this is a
@@ -192,9 +228,19 @@ def _needs_pdf(entry: dict[str, Any]) -> bool:
         (entry.get("description") or "") + " " + (entry.get("short_description") or "")
     )
     desc = _ENTERED_FOOTER.sub("", desc)
+    # Transcripts carry no scheduling — never spend a fetch on the body. Checked
+    # first so a "TRANSCRIPT ORDER" doesn't trip the read-every-order rule below.
+    if _TRANSCRIPT_DOC.search(desc):
+        return False
     if _ORDER_GRANTS_SCHEDULING_MOTION.search(desc):
         return True
     if _SETS_SCHEDULE.search(desc):
+        return True
+    # An order's operative dates often live only in the PDF (a schedule table, or
+    # follow-on deadlines a ruling sets) and aren't echoed in the one-line
+    # description, so read it even when the description names a hearing time or
+    # the signing judge. _maybe_fetch_pdfs still no-ops when nothing is fetchable.
+    if _IS_ORDER.search(desc):
         return True
     if _DETAIL_HINTS.search(desc):
         return False
