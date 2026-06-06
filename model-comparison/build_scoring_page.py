@@ -284,6 +284,10 @@ hearing <b>held</b> AND schedule the next one AND set deadlines. A
 <b>continuance is a reschedule</b> (=1), never cancel+schedule. <b>Cancel</b> is
 ONLY an explicit cancellation/vacatur with no new date. A minute entry that
 records or discusses a proceeding / held hearing is <b>held</b> (+1).
+<b>One slot is one hearing</b> — a single proceeding that disposes of several
+motions at the same date+time counts <b>once</b> (h&nbsp;sched / h&nbsp;held =
+1), never once per motion; only genuinely distinct proceedings at <i>different
+times</i> on the same day count separately.
 <b>Dark trial days are NOT events</b> — a day the trial is not in session is
 neither a hearing nor a deadline (count 0 for it). <b>Amended supersedes</b>:
 when a later AMENDED / correcting minute entry replaces an earlier one, count the
