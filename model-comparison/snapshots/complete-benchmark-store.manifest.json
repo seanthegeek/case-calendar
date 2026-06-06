@@ -1,0 +1,88 @@
+{
+  "case_ids": [
+    "us-v-ding",
+    "anthropic-v-dow",
+    "us-v-knoot",
+    "us-v-gholinejad",
+    "us-v-mcgonigal",
+    "us-v-schmitz"
+  ],
+  "code_git_sha": "3e9b6180a3f4fcf449a5c5428f97667f9333d3a0",
+  "config": "config.benchmark.yaml",
+  "courtlistener_requests": 72,
+  "entries_inserted": 68,
+  "entries_updated": 1124,
+  "entries_with_body": 1737,
+  "ground_truth": null,
+  "ground_truth_sha256": null,
+  "kind": "complete-benchmark-store",
+  "model_output_tables_cleared": [
+    "hearings",
+    "deadlines",
+    "case_summaries"
+  ],
+  "per_docket_fetched": {
+    "66749883": {
+      "fetched": 126,
+      "stored_before": 126
+    },
+    "68317014": {
+      "fetched": 421,
+      "stored_before": 403
+    },
+    "69026861": {
+      "fetched": 146,
+      "stored_before": 146
+    },
+    "70378502": {
+      "fetched": 91,
+      "stored_before": 91
+    },
+    "70402649": {
+      "fetched": 66,
+      "stored_before": 19
+    },
+    "71906511": {
+      "fetched": 24,
+      "stored_before": 24
+    },
+    "72379655": {
+      "fetched": 185,
+      "stored_before": 182
+    },
+    "72380208": {
+      "fetched": 90,
+      "stored_before": 90
+    },
+    "73136734": {
+      "fetched": 17,
+      "stored_before": 17
+    },
+    "73292090": {
+      "fetched": 12,
+      "stored_before": 12
+    },
+    "73353898": {
+      "fetched": 9,
+      "stored_before": 9
+    },
+    "73388385": {
+      "fetched": 5,
+      "stored_before": 5
+    }
+  },
+  "row_counts": {
+    "case_summaries": 0,
+    "courts": 23,
+    "deadlines": 0,
+    "dockets": 46,
+    "entries": 2807,
+    "hearings": 0,
+    "webhook_events": 40
+  },
+  "snapshot_bytes": 23621632,
+  "snapshot_file": "complete-benchmark-store.sqlite",
+  "snapshot_sha256": "c28173736856e773984f67b6b3c6098e2ea1914cf7db6970b5570ed487991505",
+  "snapshot_utc": "2026-06-06T03:40:48.259309+00:00",
+  "source_store": "data/case-calendar.sqlite"
+}

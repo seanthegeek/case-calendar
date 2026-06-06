@@ -1,0 +1,116 @@
+# Case Calendar — MODEL-COMPARISON BENCHMARK config
+#
+# A SEPARATE, stratified sample of dockets used to score per-entry extraction
+# accuracy (see model-comparison/README.md). Distinct from config.dev.yaml,
+# which is the regression-iteration fixture: this set is chosen to be
+# REPRESENTATIVE across docket TYPES (criminal minute-entry, civil briefing,
+# appellate, multi-CourtListener-record) so a human can establish per-entry
+# ground truth on a bounded sample and score every provider against it.
+#
+# The ground truth is built by a human reading EVERY entry's complete text
+# (fetched fresh from the v4 API into the complete-benchmark snapshot — NOT the
+# web UI, which is itself incomplete, see freelawproject/courtlistener#7429) and
+# tallying, per entry, the action counts the extractor itself emits:
+#   hearings:  scheduled / rescheduled / held / cancelled
+#   deadlines: set / rescheduled / met-filed / cancelled
+# That makes the human count apples-to-apples with llm.extract_actions output,
+# and catches regex (is_extractable) misses for free — a regex-dropped entry
+# that schedules a real hearing gets a human count > 0 while the model emitted
+# nothing for it.
+#
+# Entry counts (skim-to-zero for most; only scheduling/minute entries need a
+# careful read) — total ~1,124 across these 6 cases:
+#   us-v-ding         403   criminal, minute-entry-heavy, verdict-form (the case that started this)
+#   anthropic-v-dow   289   civil, briefing-schedule deadlines, multi-docket (district + 2 appeals)
+#   us-v-knoot        151   appellate criminal, forfeiture/restitution
+#   us-v-gholinejad   134   appellate, multi-docket, grounding-guard
+#   us-v-mcgonigal    126   criminal, verify-pass / past-trial / DELETE_HALLUCINATION
+#   us-v-schmitz       21   multi-CourtListener-record dedup, PACER-stamps-only OCR
+# Trim to taste: dropping us-v-ding cuts ~400, dropping anthropic-v-dow ~290.
+
+# Prod store is the copy base for the fetch + the build (read-only on the live
+# file). The complete-benchmark fetch backfills full text for the dockets below.
+store_path: data/case-calendar.sqlite
+
+# Never touch the prod deployment's CourtListener alert subscriptions.
+ensure_docket_alerts: false
+
+# Benchmark output dir, separate from prod out/ and dev out/dev/.
+index_path: out/benchmark/index.html
+site_title: "CaseCalendar.net (benchmark sample)"
+
+case_summaries:
+  enabled: true
+  allow_ocr: true
+  debounce_seconds: 300
+
+calendars:
+  cybercrime:
+    name: "Cybercrime cases (benchmark)"
+    ics_path: out/benchmark/cybercrime.ics
+  tech:
+    name: "Tech cases (benchmark)"
+    ics_path: out/benchmark/tech.ics
+  natsec:
+    name: "National security cases (benchmark)"
+    ics_path: out/benchmark/natsec.ics
+
+cases:
+  # Criminal, minute-entry-heavy (the Ding minute-entry that started this
+  # whole thread: full text in the v4 API, terse on the web UI). Verdict-form
+  # link-target regression also lives here.
+  - id: us-v-ding
+    name: "United States v. Ding"
+    calendar: natsec
+    dockets: [68317014]
+    tags: [PRC, China, espionage, AI, Google]
+
+  # Civil, briefing-schedule deadlines, multi-docket (district + two appeals) —
+  # the densest deadline source and the posture-change stale-refresh case.
+  - id: anthropic-v-dow
+    name: "Anthropic v. DOW"
+    calendar: tech
+    dockets: [72380208, 72379655, 73136734]
+    tags: [defense, AI, LLM]
+    aggregation_note: "parallel suits challenging separate Department of War actions taken under distinct statutory authorities, each filed in the proper venue for the action it targets"
+
+  # Appellate criminal, forfeiture/restitution — and an appeal aggregated with
+  # the district case.
+  - id: us-v-knoot
+    name: "United States v. Knoot"
+    calendar: cybercrime
+    dockets: [69026861, 73388385]
+    tags: [DPRK, IT worker fraud, laptop farm]
+    aggregation_note: >-
+      The same defendant is appealing his conviction.
+
+  # Appellate, multi-docket (two district courts + a circuit appeal) —
+  # appellate-scope rule and the grounding-guard-vs-aggregation-note case.
+  - id: us-v-gholinejad
+    name: "United States v. Gholinejad"
+    calendar: cybercrime
+    dockets: [70378502, 70402649, 71906511]
+    tags: [ransomware, Robbinhood]
+    aggregation_note: >-
+      The same defendant in two courts. In the Eastern District of North
+      Carolina case (4:24-cr-00016), Gholinejad pled guilty and on
+      November 3, 2025 was sentenced to 72 months' imprisonment; this
+      Fourth Circuit docket (25-4607) is his appeal of that final criminal
+      judgment. He is in federal custody.
+
+  # Criminal, verify-pass / past-trial-not-held / DELETE_HALLUCINATION class —
+  # a 2024 jury trial scheduled by a 2023 order, plus the 12/14/2023
+  # sentencing-miss (around-date window).
+  - id: us-v-mcgonigal
+    name: "United States v. McGonigal"
+    calendar: natsec
+    dockets: [66749883]
+    tags: [Russia, espionage]
+
+  # Multi-CourtListener-record dedup + PACER-stamps-only OCR (two records of
+  # one logical D.N.J. docket, one with empty plain_text, one with 20 KB).
+  - id: us-v-schmitz
+    name: "United States v. Schmitz"
+    calendar: cybercrime
+    dockets: [73292090, 73353898]
+    tags: [marketplace, drugs]
