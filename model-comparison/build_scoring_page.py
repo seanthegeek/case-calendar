@@ -283,7 +283,11 @@ hearing. One entry often has several non-zero counts: a minute entry can record 
 hearing <b>held</b> AND schedule the next one AND set deadlines. A
 <b>continuance is a reschedule</b> (=1), never cancel+schedule. <b>Cancel</b> is
 ONLY an explicit cancellation/vacatur with no new date. A minute entry that
-records or discusses a proceeding / held hearing is <b>held</b> (+1). Tick
+records or discusses a proceeding / held hearing is <b>held</b> (+1).
+<b>Dark trial days are NOT events</b> — a day the trial is not in session is
+neither a hearing nor a deadline (count 0 for it). <b>Amended supersedes</b>:
+when a later AMENDED / correcting minute entry replaces an earlier one, count the
+event(s) once on the amended entry and 0 on the superseded original. Tick
 <b>bad OCR</b> when the source text is unreadable so neither model nor human could
 fairly extract — those entries are set aside in scoring, not counted against any
 model.</p>
