@@ -266,6 +266,8 @@ details.dt>summary{cursor:pointer;color:GrayText;font-size:13px}
   <span class="stat">non-zero <b id="nz">0</b></span>
   <span class="stat">bad-OCR <b id="bo">0</b></span>
   <button id="dl">Download CSV</button>
+  <button id="load">Load CSV</button>
+  <input id="loadfile" type="file" accept=".csv,text/csv" style="display:none">
   <button id="exp">Expand all</button>
   <button id="col">Collapse all</button>
   <span class="stat" id="saved" style="color:GrayText"></span>
@@ -314,6 +316,7 @@ function recount(){
     if(s.reviewed) rv++; if(s.bad_ocr) bo++;
     if(CATS.some(c=>(+s[c[0]]||0)>0)) nz++; }
   document.getElementById("rv").textContent=rv;
+  document.getElementById("tot").textContent=allEntries.length;
   document.getElementById("nz").textContent=nz;
   document.getElementById("bo").textContent=bo;
   for(const c of DATA.cases){ let r=0; for(const e of c.entries){ if((saved[e.entry_id]||{}).reviewed) r++; }
@@ -389,22 +392,71 @@ function renderCase(c, body){
 }
 
 const root=document.getElementById("root");
-const dets=[];
-for(const c of DATA.cases){
-  const det=document.createElement("details"); det.className="case"; dets.push(det);
-  const sum=document.createElement("summary");
-  sum.appendChild(document.createTextNode(c.name+" — reviewed "));
-  const cv=document.createElement("b"); cv.id="cv-"+c.case_id; cv.textContent="0"; sum.appendChild(cv);
-  sum.appendChild(document.createTextNode("/"+c.entries.length+" entries"));
-  det.appendChild(sum);
-  const body=document.createElement("div"); body.className="casebody"; det.appendChild(body);
-  let rendered=false;
-  det.addEventListener("toggle",()=>{ if(det.open && !rendered){ rendered=true; renderCase(c, body); } });
-  root.appendChild(det);
+let dets=[];
+function buildCases(){
+  root.innerHTML=""; dets=[];
+  for(const c of DATA.cases){
+    const det=document.createElement("details"); det.className="case"; dets.push(det);
+    const sum=document.createElement("summary");
+    sum.appendChild(document.createTextNode(c.name+" — reviewed "));
+    const cv=document.createElement("b"); cv.id="cv-"+c.case_id; cv.textContent="0"; sum.appendChild(cv);
+    sum.appendChild(document.createTextNode("/"+c.entries.length+" entries"));
+    det.appendChild(sum);
+    const body=document.createElement("div"); body.className="casebody"; det.appendChild(body);
+    let rendered=false;
+    det.addEventListener("toggle",()=>{ if(det.open && !rendered){ rendered=true; renderCase(c, body); } });
+    root.appendChild(det);
+  }
 }
+buildCases();
 
 document.getElementById("exp").addEventListener("click",()=>dets.forEach(d=>d.open=true));
 document.getElementById("col").addEventListener("click",()=>dets.forEach(d=>d.open=false));
+
+// --- Load CSV: restore scoring state from a previously downloaded ground_truth
+// CSV (keyed by entry_id) — so progress survives a page regenerate, a different
+// machine/browser, or cleared localStorage. Rows are merged in by entry_id.
+function parseCSV(text){
+  const rows=[]; let i=0, field="", row=[], inq=false;
+  while(i<text.length){
+    const ch=text[i];
+    if(inq){
+      if(ch==='"'){ if(text[i+1]==='"'){ field+='"'; i++; } else inq=false; }
+      else field+=ch;
+    } else if(ch==='"'){ inq=true; }
+    else if(ch===','){ row.push(field); field=""; }
+    else if(ch==='\n'){ row.push(field); rows.push(row); row=[]; field=""; }
+    else if(ch!=='\r'){ field+=ch; }
+    i++;
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+document.getElementById("load").addEventListener("click",()=>document.getElementById("loadfile").click());
+document.getElementById("loadfile").addEventListener("change",ev=>{
+  const f=ev.target.files[0]; if(!f) return;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    const rows=parseCSV(String(rd.result));
+    if(rows.length<2){ alert("CSV has no data rows"); return; }
+    const idx={}; rows[0].forEach((h,i)=>idx[h.trim()]=i);
+    if(idx.entry_id==null){ alert("CSV is missing an entry_id column"); return; }
+    let n=0;
+    for(let k=1;k<rows.length;k++){
+      const row=rows[k]; const eid=(row[idx.entry_id]||"").trim();
+      if(!eid) continue;
+      const s={};
+      for(const c of CATS){ const j=idx[c[0]]; s[c[0]] = j!=null ? (+row[j]||0) : 0; }
+      s.reviewed = idx.reviewed!=null && !!(+row[idx.reviewed]);
+      s.bad_ocr = idx.bad_ocr!=null && !!(+row[idx.bad_ocr]);
+      saved[eid]=s; n++;
+    }
+    persist(); buildCases(); recount();
+    alert("Loaded "+n+" scored rows from CSV.");
+  };
+  rd.readAsText(f);
+  ev.target.value="";
+});
 document.getElementById("dl").addEventListener("click",()=>{
   const cols=["case_id","docket_number","court","docket_id","entry_id","entry_number",
     "date_filed","reviewed","bad_ocr",...CATS.map(c=>c[0])];
