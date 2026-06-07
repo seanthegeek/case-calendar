@@ -206,8 +206,8 @@ calendars:
 
 - **`notify_emails`** — added as Google Calendar attendees (so the address
   gets the invitation + the event lands on their own calendar) and as ICS
-  `ATTENDEE` lines. In Microsoft Graph, attendees are not part of this
-  feature today.
+  `ATTENDEE` lines. In Microsoft 365 / Outlook, they are added as required
+  Graph event attendees.
 
 - **`reminders.method=popup`** — fires in any subscriber's local calendar
   app from a `VALARM:DISPLAY` block (in ICS) or a Google reminder override

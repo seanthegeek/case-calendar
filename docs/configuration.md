@@ -263,8 +263,8 @@ extra_documents:
 ## Validation
 
 Case Calendar validates the config at startup. Bad values (a missing required
-field, a docket id that isn't an integer, an `extra_documents` entry whose
-`docket` isn't in this case's `dockets` list) fail fast with a clear error
+field, an `extra_documents` entry whose `docket` isn't an integer or isn't in
+this case's `dockets` list) fail fast with a clear error
 rather than silently being skipped.
 
 ## Full example

@@ -323,10 +323,12 @@ deadline tracking is uniform, with no per-case opt-in.
 
 ## The data model
 
-The SQLite store has six operational tables:
+The SQLite store has seven operational tables:
 
 - **`dockets`** — id, last `date_modified` (the short-circuit cutoff),
   last filing date, cached court metadata.
+- **`courts`** — cached CourtListener court metadata (citation string,
+  short / full name) keyed by `court_id`.
 - **`entries`** — dedup of already-processed entries, keyed by
   `(docket_id, entry_id)` with a content fingerprint. Description and
   document body are persisted only for entries that matter to either
@@ -487,7 +489,7 @@ is told without opening the source:
 - [`SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L155) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
 - [`VERIFY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L979) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1392) — same-docket same-slot duplicate resolver.
-- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1624) — the higher-tier case-summary prompt.
+- [`SUMMARY_SYSTEM_PROMPT`](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1630) — the higher-tier case-summary prompt.
 
 Reading any of those alongside the corresponding entry in
 [`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)

@@ -18,8 +18,9 @@ instead.
   pins exact versions, so everyone — and CI — runs the same thing.
 - A **CourtListener API token** (free account at
   [courtlistener.com](https://www.courtlistener.com/)).
-- One **LLM API key** — Anthropic, Google (Gemini), or OpenAI. Anthropic is
-  the recommended default; see [Installation](installation.md) for why.
+- One **LLM API key** — Anthropic, Google (Gemini), or OpenAI. The recommended
+  default is a split: Gemini for extraction, Anthropic for summaries; see
+  [Installation](installation.md) for why.
 - Optional but recommended: **poppler** and **tesseract** for the local OCR
   fallback. Without them the pipeline still runs — it just skips PDFs whose
   text it can't extract any other way and retries them on a later sync.
@@ -104,7 +105,7 @@ writes the resulting hearings and deadlines into the SQLite store at
 line per case, then one per calendar written:
 
 ```text
-[us-v-moucka] entries_seen=42 entries_processed=11 actions=8 verified=11
+[us-v-moucka] dockets_skipped=0 entries_seen=42 processed=11 actions=8
 [cybercrime (dev)] wrote 14 events -> out/dev/cybercrime.ics
 ```
 
