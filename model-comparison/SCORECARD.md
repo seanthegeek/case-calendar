@@ -72,6 +72,87 @@ allocate more distinct scheduled hearings + set-deadlines than the human folds
 into one). Anthropic's `Dc` 46 is spurious deadline cancellations the human
 didn't count.
 
+## What a deviation of 653 means for the calendar (it is not a count of calendar errors)
+
+Read in isolation, "best model: 653" suggests a calendar full of mistakes. It
+isn't, and the reason is structural: **this score counts raw per-entry extractor
+*actions*, captured before any cleanup the live pipeline runs.** The calendar
+renders *final* events, after three stages this score never sees — the
+significance gate (drops `minor` rows), the per-row verify pass (deletes
+hallucinations, confirms holds), and the same-slot dedupe sweeps (collapse
+duplicate keys). The score and the calendar are measured at opposite ends of the
+pipeline, so a deviation in the hundreds and a clean calendar are consistent.
+
+Traced through the Gemini default on this benchmark, the funnel collapses fast:
+
+| stage | count |
+| --- | ---: |
+| raw actions the scorer counts (the 653 / 421 human-counted) | 719 |
+| logical rows those actions create or maintain (one per key) | 342 |
+| rows the renderer actually writes to the `.ics` (`major`, not cancelled or filed, dated) | 195 |
+| of those, duplicate rows that leaked past the sweeps (all in the past) | 8 |
+
+### Where the 456 over-count goes
+
+Only an `ADD` action can put a *new* event on the calendar, and only when it is
+tagged `major`. Splitting the over-count by what each action *does* (the `over`
+slice of each category; the totals table above adds the `under` slice):
+
+| over bucket | over | share | effect on the calendar |
+| --- | ---: | ---: | --- |
+| `ADD` (Hs 45 + Ds 190) | 235 | 52% | adds an event — only if `major` |
+| lifecycle (Hr 34 + Hh 58 + Dr 59 + Df 47) | 198 | 43% | patches a row that already exists |
+| cancellations (Hc 15 + Dc 8) | 23 | 5% | removes an event |
+
+So 48% of the over-count cannot add calendar clutter by construction — it acts
+on rows keyed by `hearing_key` / `deadline_key` that already exist, so it patches
+or removes. Two more effects keep most of the remaining `ADD` over off the
+calendar:
+
+- **The significance gate.** 78 of the 339 events Gemini newly creates (23%) are
+  tagged `minor` — 71 of them procedural deadlines. Most are transcript
+  redaction-request windows (`minor` by the project's transcript rules); the rest
+  are amicus-brief response/reply dates and procedural filings (mediation
+  questionnaire, entry of appearance). The renderer drops every `minor` row, so
+  roughly a quarter of what the extractor proposes is structurally invisible.
+  Note this is the *procedural* tail: dispositive briefing (MTD/MSJ
+  response/reply) and recurring joint status reports are classed `major` and are
+  NOT in this set.
+- **Duplicate firing on near-identical entries (a scoring artifact).** A single
+  reschedule often lands as several near-identical entries — on us-v-ding, a
+  stipulation to continue the status conference, the order granting it, and the
+  clerk's `Set/Reset Hearing` notice each carried the same reschedule of that
+  conference to 2024-05-08. The extractor fires the same
+  action on each; the human ground truth counts the logical action once. Those
+  repeats all upsert onto one key — one stored row — but the per-entry scorer
+  charges every extra one as an over. This benchmark carries 98 such repeat
+  firings; **88 are lifecycle re-confirmations and only 2 are `ADD`s**, so they
+  almost never add a visible event. Collapsing the model's output to
+  one-per-`(key, date, action)` — the way the human counted it — removes 68 of
+  the 456 over (deviation 653 → 607). Both the per-entry and the per-docket
+  aggregate carry this inflation — collapsing the repeats drops the aggregate
+  399 → 335 too; the aggregate neutralizes only pure attribution drift (the same
+  action pinned to a neighboring entry), not a model firing on both copies.
+
+### What actually reaches the rendered calendar
+
+After the gate, verify, and dedupe: the dedupe sweeps leave **zero duplicate
+hearing slots**, and the verify pass deleted 3 hallucinations (2 hearing, 1
+deadline). The one place raw over-extraction does leak through is the deadline
+side, which has **no dedupe sweep** (only hearings do): **8 duplicate deadline
+rows survive** on this benchmark — all transcript-release key-drift on one docket
+(us-v-ding), all in the past, so they sit muted at the bottom of the agenda.
+Closing that gap needs a deterministic same-slot merge for deadlines, the
+analogue of the hearing sweep `_dedupe_concurrent_held_hearings`.
+
+The takeaway: 653 is the right number for **ranking models on the identical
+extraction task** — which is what this page exists to do — but it is NOT a count
+of calendar errors. The duplicate over-extraction that survives onto the rendered
+calendar is 8 rows, all in the past. (The over buckets are
+computable from the committed `model_actions.csv` × `ground_truth.csv`; the
+funnel, significance split, and duplicate-firing counts come from the Gemini
+benchmark build's decision trace and final store.)
+
 ## Per-docket-aggregate deviation
 
 The same |model − human|, but counts are summed per logical docket *first* —

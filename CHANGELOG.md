@@ -8,6 +8,61 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.16.0] - 2026-06-07
+
+### Added
+
+- **The extractor now reads every order's PDF for hidden dates.** Some courts
+  set deadlines — or a whole briefing / trial schedule — in the body of an
+  order (a table under backward-looking "WHEREAS" prose) that the one-line
+  docket description never echoes. Previously an order that named the signing
+  judge tripped the inline-detail check and its PDF was skipped, losing those
+  dates. `_needs_pdf` now fetches the PDF of every order / endorsement entry
+  that reached the filter, regardless of an inline hearing time or judge name
+  (canonical case: an N.D. Cal. scheduling order on *United States v. Ding*
+  whose deadlines lived only in the PDF). Cost is bounded — only entries that
+  already passed the hearing / deadline pre-filter reach this, storage fetches
+  don't spend the CourtListener API quota, and the LLM call happens regardless,
+  so the marginal cost is bandwidth plus a few input tokens (see
+  [Cost](docs/cost.md)).
+- **Two deadline forms the regex pre-filter used to drop are now caught.** A
+  bare "`<noun>` due `<date>`" (the old pattern matched only "due by / on" — one
+  D.C. Circuit clerk order set *eleven* deadlines this way, all lost), and a
+  filing that *meets* a deadline (a brief / response / reply at the entry head,
+  or any appellate submission carrying the `[Service Date: …]` e-filing stamp).
+  Both are anchored so "due process" and an order merely *mentioning* a response
+  don't match. Measured against a human reading of the dockets, this halved the
+  share of real actions the pre-filter dropped before any model saw them
+  (11.2% → 5.5%).
+
+### Changed
+
+- **Transcript bodies are no longer fetched.** A transcript is a verbatim record
+  of testimony (often hundreds of OCR-heavy pages) with no forward-looking
+  scheduling; the held-date, redaction-request deadline, and public-release
+  deadline it implies all live in the docket description. The extractor still
+  reads that description (so those deadlines are still tracked) — it just stops
+  spending tokens and OCR time on the transcript itself.
+- **Default-provider benchmark rebuilt on a stronger, per-entry methodology.**
+  The model comparison now scores each provider *per docket entry* against a
+  human reading of the **complete** v4-API text, rather than per-docket counts
+  read off the incomplete CourtListener web UI
+  ([#7429](https://github.com/freelawproject/courtlistener/issues/7429)) — which
+  also makes the regex pre-filter's own recall measurable. Gemini stays the
+  extraction default and Anthropic the summary default; Gemini wins the
+  refreshed benchmark on both metrics, and the recall fix above widened its
+  lead. The `model-comparison/` tooling was consolidated and renamed for clarity
+  (`snapshot_benchmark.py`, `score_models.py`, `model_actions.csv`,
+  `benchmark-store.sqlite`), and the old per-docket scorer + worksheet were
+  removed. See [SCORECARD.md](model-comparison/SCORECARD.md) and the refreshed
+  [Cost](docs/cost.md) figures.
+
+### Fixed
+
+- **Out-of-range or invalid dates no longer crash a sync.** A docket entry whose
+  text yields an impossible date (e.g. a day-of-month past the month's length)
+  is now stored without a date and logged, rather than aborting the docket.
+
 ## [0.15.3] - 2026-06-05
 
 ### Fixed
