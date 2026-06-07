@@ -13,13 +13,13 @@ action-count boxes the extractor itself emits:
 
 You read top-to-bottom, type the counts (most rows stay 0), tick "bad OCR" when
 the source text is unreadable, and hit "Download CSV" — that one CSV (all cases)
-is the human ground truth ``score.py`` reads, apples-to-apples with the model's
-per-entry actions (``model_entry_actions.csv``). Counts autosave to localStorage,
+is the human ground truth ``score_models.py`` reads, apples-to-apples with the
+model's per-entry actions (``model_actions.csv``). Counts autosave to localStorage,
 so a refresh can't lose work, and each case's cards render only when expanded so
 the ~1,100-entry file stays responsive.
 
 Reads the COMPLETE benchmark store (every entry's text, fetched fresh from the
-v4 API by ``fetch_complete_benchmark.py`` — NOT the web UI, which is incomplete,
+v4 API by ``snapshot_benchmark.py`` — NOT the web UI, which is incomplete,
 see freelawproject/courtlistener#7429), so a regex-dropped entry that actually
 schedules a hearing is visible and gets a human count the model never could.
 
@@ -30,7 +30,7 @@ records) are deduped to one card per logical entry; genuinely separate dockets
 Usage:
     uv run python model-comparison/build_scoring_page.py \
         [--config config.benchmark.yaml] \
-        [--store model-comparison/snapshots/complete-benchmark-store.sqlite] \
+        [--store model-comparison/snapshots/benchmark-store.sqlite] \
         [--out model-comparison/scoring/ground_truth_scoring.html] [--case CASE_ID ...]
 """
 
@@ -50,7 +50,7 @@ load_dotenv()
 from case_calendar.cli import _cases_from_config, _load_config  # noqa: E402
 from case_calendar.pdf import recap_document_url  # noqa: E402
 
-_DEFAULT_STORE = "model-comparison/snapshots/complete-benchmark-store.sqlite"
+_DEFAULT_STORE = "model-comparison/snapshots/benchmark-store.sqlite"
 _DEFAULT_OUT = "model-comparison/scoring/ground_truth_scoring.html"
 _CL_BASE = "https://www.courtlistener.com"
 
@@ -543,7 +543,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     store = Path(args.store)
     if not store.exists():
-        raise SystemExit(f"store not found: {store} — run fetch_complete_benchmark.py")
+        raise SystemExit(f"store not found: {store} — run snapshot_benchmark.py")
 
     cfg = _load_config(args.config)
     cases = _cases_from_config(cfg)

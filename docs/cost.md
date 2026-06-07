@@ -68,6 +68,15 @@ focused call per non-terminal hearing/deadline + the new source-entry-aware
 context as of 0.11.0) is what runs on every sync, and even that stayed under
 $1.00 across the whole caseload on the priciest provider.
 
+**As of 0.16.0** the extractor reads the PDF of every *order* (an order's
+operative dates often live only in a schedule table the one-line docket text
+doesn't echo) and stops fetching *transcript* bodies (testimony with no
+forward-looking scheduling). Net, that raises the extraction figures above
+modestly — on the maintainer's benchmark, single-digit cents per full re-sync
+for the Gemini default — and it's **one-time** (fingerprint dedup keeps
+steady-state spend unchanged). The figures above were measured 2026-05-31,
+before that change.
+
 These are **estimates**, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.

@@ -1,52 +1,66 @@
 #!/usr/bin/env python3
-"""Fetch a COMPLETE benchmark snapshot — every docket entry's full text.
+"""Build the model-comparison benchmark snapshot — every docket entry's full text.
 
-The ordinary benchmark snapshot (``snapshot_benchmark_store.py``) inherits the
-operational store's space-saving policy: full ``description`` + ``recap_documents``
-are kept only for entries that passed the extractor's regex pre-filter
-(``extractor.is_extractable``) OR matched a primary / disposition document; every
-other entry is a fingerprint-only stub with no body. That makes the snapshot the
-pipeline's OWN post-regex view — fine for COMPARING providers (the regex is
-identical across them, so it can't change the relative ranking), but it cannot
-serve as ground truth for end-to-end date-extraction accuracy: a real date hidden
-in a stubbed (filter-failed) entry is invisible to both the models AND a human
-reading the snapshot, so the regex stage's own recall is unmeasurable from it.
+The harness (``build_provider_stores.py``) replays the LLM pipeline over a store's
+cached ``entries`` — NOT live CourtListener. Pinning it to a frozen snapshot
+(``--source <snapshot> --frozen``) keeps a model/prompt benchmark reproducible
+while the live cases keep moving, and keeps the human ``ground_truth.csv`` (filled
+at one point in time) matched to the data the models extracted from.
 
-This script builds a COMPLETE store. It copies the operational store (keeping
-docket metadata, courts, and every entry row), clears the model-output tables,
-then re-paginates each benchmark docket's full ``docket-entries`` feed from the
-v4 API (no ``modified_after`` cutoff) and overwrites EVERY entry's
-``description`` / ``short_description`` / ``recap_documents`` with the complete
-text — no stub-dropping. The result is a drop-in ``--source`` for
-``build_provider_stores.py`` AND the text the ground-truth date-sweep reads, so
-the regex stage's recall finally becomes measurable. (Background: CourtListener's
-web UI is itself incomplete relative to the v4 API — see
-freelawproject/courtlistener#7429 — which is exactly why ground truth must come
-from the API text, not the page.)
+The snapshot carries EVERY entry's COMPLETE text. The operational store keeps full
+``description`` / ``recap_documents`` only for entries that passed the extractor's
+regex pre-filter (``extractor.is_extractable``) OR matched a primary / disposition
+document; every other entry is a fingerprint-only stub. A stub would hide a real
+date from BOTH the models AND a human reading the snapshot, making the regex
+stage's own recall unmeasurable. So this script copies the operational store
+(docket metadata, courts, every entry row), clears the model-output tables, then
+re-paginates each benchmark docket's full ``docket-entries`` feed from the v4 API
+(no ``modified_after`` cutoff) and overwrites EVERY entry's ``description`` /
+``short_description`` / ``recap_documents`` with the complete text — no
+stub-dropping. The result is what ``build_scoring_page.py`` reads (so a
+regex-dropped entry that actually schedules a hearing is visible and gets a human
+count no model could) and a drop-in ``--source`` for the harness. (Background:
+CourtListener's web UI is itself incomplete relative to the v4 API —
+freelawproject/courtlistener#7429 — which is why ground truth must come from the
+API text, not the page.)
 
-Cost: one ``docket-entries`` pagination per docket (~60–110 requests total for
-the current caseload); docket metadata is already cached, so no per-docket meta
-call. One-time — the result is frozen read-only.
+The model-output tables (hearings / deadlines / case_summaries — what the harness
+rebuilds per column) are cleared so the shared file is input-only: smaller, and it
+can't be opened to peek at what a model produced, which keeps the blind
+ground-truth scoring honest. The ``.sqlite`` is committed via Git LFS (see
+``.gitattributes``; fetch with ``git lfs pull``); the sibling
+``benchmark-store.manifest.json`` records the snapshot date, source, caseload, row
+counts, and the file's sha256.
+
+Cost: one ``docket-entries`` pagination per docket (~60–110 requests for the
+current caseload); docket metadata is already cached. One-time — result is frozen
+read-only.
 
 Usage:
-    uv run python model-comparison/fetch_complete_benchmark.py \
+    # full (re)build:
+    uv run python model-comparison/snapshot_benchmark.py \
         [--config config.yaml] [--source data/case-calendar.sqlite] \
-        [--out model-comparison/snapshots/complete-benchmark-store.sqlite] \
+        [--out model-comparison/snapshots/benchmark-store.sqlite] \
         [--page-size 100] [--max-pages 50] [--force]
+    # surgical: refresh ONLY one case in the existing snapshot:
+    uv run python model-comparison/snapshot_benchmark.py --case us-v-ding
 
-Refuses to overwrite an existing complete snapshot unless --force.
+Refuses to overwrite an existing snapshot unless --force.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import sqlite3
+import subprocess
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -56,21 +70,116 @@ from case_calendar.courtlistener import CourtListener  # noqa: E402
 from case_calendar.store import compact_recap_documents  # noqa: E402
 from case_calendar.sync import fingerprint_entry  # noqa: E402
 
-# Reuse the snapshot tooling's copy / clear / manifest helpers so the two
-# snapshot artifacts are produced the same way (one source of truth for the
-# online-backup copy, the model-output-table clear, and the manifest sidecar).
-from snapshot_benchmark_store import (  # noqa: E402
-    _backup,
-    _clear_model_output_tables,
-    _git_sha,
-    _manifest_path,
-    _remove_existing,
-    _sha256,
-    _store_path_from_config,
-    _table_counts,
-)
+_DEFAULT_OUT = "model-comparison/snapshots/benchmark-store.sqlite"
+_DEFAULT_STORE = "data/case-calendar.sqlite"
 
-_DEFAULT_OUT = "model-comparison/snapshots/complete-benchmark-store.sqlite"
+# Tables the benchmark REBUILDS per column from the inputs. Cleared from the
+# shared snapshot for size AND so the file can't be opened to peek at what a
+# model produced (which would defeat the blind ground-truth scoring). Mirrors
+# build_provider_stores.DERIVED_TABLES; the snapshot carries only the
+# CourtListener-fetched INPUTS (entries / dockets / courts) the benchmark
+# replays from.
+_MODEL_OUTPUT_TABLES = ("hearings", "deadlines", "case_summaries")
+
+
+def _store_path_from_config(config_path: str) -> str:
+    """The ``store_path`` the harness would read, so the default source matches
+    what an un-pinned build uses."""
+    try:
+        with open(config_path) as f:
+            cfg = yaml.safe_load(f) or {}
+    except FileNotFoundError:
+        return _DEFAULT_STORE
+    return cfg.get("store_path", _DEFAULT_STORE)
+
+
+def _backup(src: Path, dst: Path) -> None:
+    """Consistent single-file copy via SQLite's online-backup API. Reads ``src``
+    READ-ONLY (never write-locks the source) and produces a clean, self-contained
+    ``dst`` with no ``-wal`` / ``-shm`` sidecars."""
+    source = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    try:
+        dest = sqlite3.connect(str(dst))
+        try:
+            source.backup(dest)
+        finally:
+            dest.close()
+    finally:
+        source.close()
+
+
+def _clear_model_output_tables(path: Path) -> list[str]:
+    """Empty the model-output tables in the snapshot (the benchmark rebuilds
+    them) and VACUUM, so the shared file is input-only. Returns tables cleared."""
+    conn = sqlite3.connect(str(path))
+    cleared: list[str] = []
+    try:
+        existing = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        for t in _MODEL_OUTPUT_TABLES:
+            if t in existing:
+                conn.execute(f'DELETE FROM "{t}"')
+                cleared.append(t)
+        conn.commit()
+        conn.execute("VACUUM")  # reclaim the space the deleted rows held
+    finally:
+        conn.close()
+    return cleared
+
+
+def _table_counts(path: Path) -> dict[str, int]:
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        tables = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            )
+        ]
+        return {
+            t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in tables
+        }
+    finally:
+        conn.close()
+
+
+def _sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _git_sha() -> Optional[str]:
+    try:
+        out = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return out.stdout.strip()
+    except Exception:
+        return None
+
+
+def _remove_existing(out: Path, manifest: Path) -> None:
+    """Drop a prior (read-only) snapshot + sidecars + manifest so --force can
+    re-snapshot. Each is chmod'd writable first since the snapshot is 0o444."""
+    for p in (out, Path(f"{out}-wal"), Path(f"{out}-shm"), manifest):
+        if p.exists():
+            p.chmod(0o644)
+            p.unlink()
+
+
+def _manifest_path(out: Path) -> Path:
+    # benchmark-store.sqlite -> benchmark-store.manifest.json (NOT *.sqlite*, so
+    # the gitignore for the SQLite file doesn't also hide the committed manifest).
+    return out.with_suffix(".manifest.json")
 
 
 def _hhmmss(seconds: float) -> str:
@@ -207,7 +316,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument(
         "--force",
         action="store_true",
-        help="overwrite an existing complete snapshot",
+        help="overwrite an existing snapshot",
     )
     ap.add_argument(
         "--case",
@@ -252,7 +361,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             raise SystemExit(f"source store not found: {source}")
         if out.exists() and not args.force:
             raise SystemExit(
-                f"{out} already exists — pass --force to rebuild the complete snapshot"
+                f"{out} already exists — pass --force to rebuild the snapshot"
             )
         _remove_existing(out, manifest_path)
         out.parent.mkdir(parents=True, exist_ok=True)
@@ -280,7 +389,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     manifest: dict[str, Any] = {
         "snapshot_utc": datetime.now(timezone.utc).isoformat(),
-        "kind": "complete-benchmark-store",
+        "kind": "benchmark-store",
         "source_store": str(source),
         "config": args.config,
         "case_ids": [c.case_id for c in all_cases],
@@ -303,7 +412,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     out.chmod(0o444)
 
     print(
-        f"DONE complete snapshot {out} ({out.stat().st_size / 1_000_000:.1f} MB)",
+        f"DONE snapshot {out} ({out.stat().st_size / 1_000_000:.1f} MB)",
         flush=True,
     )
     print(

@@ -64,10 +64,10 @@ side:
     e.g. data/provider-stores/gemini/gemini-3.1-flash-lite/   (the gemini default)
          data/provider-stores/gemini/gemini-3.5-flash/        (an eval candidate)
 
-The committed comparison artifact is the events CSV
-``model-comparison/export_model_events.py`` produces from these, not the stores
-themselves (which are large, and whose rendered calendars would make the blind
-ground-truth scoring peekable).
+The committed comparison artifact is the per-entry actions CSV the
+``--entry-actions-csv`` tap produces (``model-comparison/model_actions.csv``), not
+the stores themselves (which are large, and whose rendered calendars would make
+the blind ground-truth scoring peekable).
 
 For each column C (folder ``<provider>/<extraction-model>``):
   1. Copy the warm source store -> data/provider-stores/<C>/case-calendar.sqlite
@@ -732,7 +732,7 @@ def _install_cl_cache(cl: CourtListener) -> None:
                         raise FrozenSnapshotError(
                             f"frozen build needs a live CourtListener {verb} not "
                             f"in the snapshot: {a!r} {k!r}. Re-snapshot from a "
-                            "fully-synced store (snapshot_benchmark_store.py)."
+                            "fully-synced store (snapshot_benchmark.py)."
                         )
                     CAP.cl_calls += 1  # genuine network call
                     resp = orig(*a, **k)
@@ -756,7 +756,7 @@ def _install_frozen_pdf_guard() -> None:
         raise FrozenSnapshotError(
             "frozen build needs to download a PDF not cached in the snapshot "
             f"(recap_document id={rd.get('id')}). Re-snapshot from a "
-            "fully-synced store (snapshot_benchmark_store.py)."
+            "fully-synced store (snapshot_benchmark.py)."
         )
 
     pdf.fetch_pdf_bytes = _no_fetch  # type: ignore[assignment]
@@ -769,7 +769,7 @@ def _log_snapshot_manifest(src_path: str) -> None:
     if not manifest.exists():
         logger.warning(
             "frozen build: no manifest beside %s — provenance unknown "
-            "(was it made by snapshot_benchmark_store.py?)",
+            "(was it made by snapshot_benchmark.py?)",
             src_path,
         )
         return
@@ -1505,7 +1505,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="override the source store to copy + replay from (default: "
         "store_path from --config). Point this at a frozen snapshot from "
-        "snapshot_benchmark_store.py for a benchmark that's reproducible as the "
+        "snapshot_benchmark.py for a benchmark that's reproducible as the "
         "live cases move.",
     )
     ap.add_argument(
@@ -1514,7 +1514,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="forbid ALL live data access (CourtListener requests AND PDF "
         "downloads): any cache miss raises instead of fetching, so the run "
         "provably uses only the --source snapshot's data. Use with a snapshot "
-        "from snapshot_benchmark_store.py. Ignored under --fake.",
+        "from snapshot_benchmark.py. Ignored under --fake.",
     )
     ap.add_argument(
         "--variants",

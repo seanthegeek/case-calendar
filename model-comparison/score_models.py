@@ -4,12 +4,13 @@
 The human fills ``ground_truth.csv`` by reading every entry's COMPLETE text in
 ``ground_truth_scoring.html`` (built by ``build_scoring_page.py``) and tallying,
 per entry, the eight action counts the extractor itself emits. The model side
-(``model_entry_actions.csv``, captured by ``build_provider_stores.py
+(``model_actions.csv``, captured by ``build_provider_stores.py
 --entry-actions-csv``) carries the same eight counts per entry per provider. This
 script joins them on ``entry_id`` and reports, per provider, how far the model's
 per-entry actions deviate from the human's.
 
-Why per-entry (not per-docket counts off the web UI like the old ``score.py``):
+Why per-entry (not per-docket counts off the web UI like the retired
+per-docket scorer):
 the web UI is incomplete relative to the v4 API (freelawproject/courtlistener
 #7429), so a web-UI count under-reports real actions and penalizes a correct
 extractor. Here the human reads the SAME complete API text the model saw, so a
@@ -34,10 +35,10 @@ not the model's fault). Only ``reviewed`` entries are scored unless
 ``--include-unreviewed`` (an unreviewed row's 0s aren't a real human judgment).
 
 Usage:
-    python3 model-comparison/score_entry_actions.py \
+    python3 model-comparison/score_models.py \
         [--truth model-comparison/ground_truth.csv] \
-        [--model model-comparison/model_entry_actions.csv] \
-        [--out model-comparison/SCORECARD_entry.md] [--include-unreviewed]
+        [--model model-comparison/model_actions.csv] \
+        [--out model-comparison/score.md] [--include-unreviewed]
 """
 
 from __future__ import annotations
@@ -241,7 +242,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     ap.add_argument("--truth", default="model-comparison/ground_truth.csv")
-    ap.add_argument("--model", default="model-comparison/model_entry_actions.csv")
+    ap.add_argument("--model", default="model-comparison/model_actions.csv")
     ap.add_argument("--out", help="also write the markdown report here")
     ap.add_argument(
         "--include-unreviewed",
