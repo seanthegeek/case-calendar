@@ -94,15 +94,18 @@ Traced through the Gemini default on this benchmark, the funnel collapses fast:
 
 ### Where the 456 over-count goes
 
-Only an `ADD` action can put a *new* event on the calendar, and only when it is
-tagged `major`. Splitting the over-count by what each action *does* (the `over`
-slice of each category; the totals table above adds the `under` slice):
+Gemini's 653 deviation is 456 `over` plus 197 `under` — the `over` and `under`
+columns of the totals table above. Only an `ADD` action can put a *new* event on
+the calendar, and only when it is tagged `major`. Splitting just the 456 `over`
+by what each action *does* (the `over` slice of each category; the totals table
+adds the `under` slice):
 
 | over bucket | over | share | effect on the calendar |
 | --- | ---: | ---: | --- |
 | `ADD` (Hs 45 + Ds 190) | 235 | 52% | adds an event — only if `major` |
 | lifecycle (Hr 34 + Hh 58 + Dr 59 + Df 47) | 198 | 43% | patches a row that already exists |
 | cancellations (Hc 15 + Dc 8) | 23 | 5% | removes an event |
+| **total** | **456** | **100%** | the `over` column of the totals table |
 
 So 48% of the over-count cannot add calendar clutter by construction — it acts
 on rows keyed by `hearing_key` / `deadline_key` that already exist, so it patches
@@ -118,14 +121,15 @@ calendar:
   Note this is the *procedural* tail: dispositive briefing (MTD/MSJ
   response/reply) and recurring joint status reports are classed `major` and are
   NOT in this set.
-- **Duplicate firing on near-identical entries (a scoring artifact).** A single
-  reschedule often lands as several near-identical entries — on us-v-ding, a
-  stipulation to continue the status conference, the order granting it, and the
-  clerk's `Set/Reset Hearing` notice each carried the same reschedule of that
-  conference to 2024-05-08. The extractor fires the same
-  action on each; the human ground truth counts the logical action once. Those
-  repeats all upsert onto one key — one stored row — but the per-entry scorer
-  charges every extra one as an over. This benchmark carries 98 such repeat
+- **Repeated firing across related entries (a scoring artifact).** One
+  reschedule often shows up across several entries — on us-v-ding, a stipulation
+  to continue the status conference, the order granting it, and the clerk's
+  `Set/Reset Hearing` notice all reference the same move of that conference to
+  2024-05-08. The human ground-truth convention is *count what this entry does*,
+  so the reschedule is logged once — on the notice that operatively sets the new
+  date (`h_rescheduled`: human 1, Gemini 3 across the trio). The extractor instead
+  fires it on each entry; those repeats all upsert onto one key — one stored row —
+  but the per-entry scorer charges every extra one as an over. This benchmark carries 98 such repeat
   firings; **88 are lifecycle re-confirmations and only 2 are `ADD`s**, so they
   almost never add a visible event. Collapsing the model's output to
   one-per-`(key, date, action)` — the way the human counted it — removes 68 of

@@ -330,7 +330,13 @@ times</i> on the same day count separately.
 <b>Dark trial days are NOT events</b> — a day the trial is not in session is
 neither a hearing nor a deadline (count 0 for it). <b>Amended supersedes</b>:
 when a later AMENDED / correcting minute entry replaces an earlier one, count the
-event(s) once on the amended entry and 0 on the superseded original. Tick
+event(s) once on the amended entry and 0 on the superseded original.
+<b>Repeated across entries &mdash; count once</b>: when more than one entry states
+the same action (a stipulation and the order granting it; a notice re-issued; the
+same logical PACER entry mirrored on two CourtListener records), count the action
+once &mdash; on the entry that operatively does it &mdash; and 0 on the
+restatements (the same idea as <b>count what THIS entry does</b>: a proposed or
+duplicated restatement does nothing new). Tick
 <b>bad OCR</b> when the source text is unreadable so neither model nor human could
 fairly extract — those entries are set aside in scoring, not counted against any
 model.</p>
