@@ -3,7 +3,7 @@ title: Real-time webhooks
 ---
 
 By default Case Calendar polls CourtListener on a cron. That works, but
-CourtListener throttles the free tier (300 requests per day) and a polling
+CourtListener throttles the free tier (125 requests per day; 300/day on the paid Tier 1) and a polling
 schedule means the ICS file is only refreshed at each cron tick —
 minutes or hours after CourtListener has the entry, depending on how
 often the cron runs.
@@ -363,8 +363,8 @@ Two safety nets keep duplicate or retried deliveries from creating duplicate
 rows:
 
 - **URL secret check.** Every `POST` URL ends in `/<secret>`. The receiver
-  compares against `CASE_CALENDAR_WEBHOOK_SECRET` with a constant-time
-  comparison. Wrong secret → 404, no processing.
+  compares against `CASE_CALENDAR_WEBHOOK_SECRET` with a direct string
+  comparison. Wrong secret → 403, no processing.
 - **`Idempotency-Key` header.** CourtListener stamps each delivery with a
   stable key and retries failures using the same key. The receiver records
   every key it sees in the `webhook_events` table and acks duplicates

@@ -356,7 +356,7 @@ class TestShortCircuits:
             dockets={100: _docket()},
             entries={
                 100: [
-                    _entry(1, "RESPONDENT BRIEF filed by Peter B. Hegseth"),
+                    _entry(1, "CERTIFICATE OF SERVICE by Peter B. Hegseth"),
                     _entry(2, "NOTICE OF ATTORNEY APPEARANCE for USA"),
                 ]
             },

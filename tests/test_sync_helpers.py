@@ -107,6 +107,32 @@ class TestNeedsPdf:
     def test_empty_description_needs_pdf(self):
         assert _needs_pdf(_entry(""))
 
+    def test_order_setting_trial_date_and_schedule_needs_pdf(self):
+        # An order / stipulation SETTING a trial date + briefing schedule keeps
+        # the operative dates in a TABLE in the document, not the docket text —
+        # which here names only the signing judge, tripping the _DETAIL_HINTS
+        # "judge" hint so the PDF would otherwise be skipped. Force the fetch.
+        # Canonical: us-v-ding doc 55.
+        assert _needs_pdf(
+            _entry(
+                "ORDER by Judge Vince Chhabria granting AS MODIFIED 47 "
+                "Stipulation Setting Trial Date and Briefing Schedules as to "
+                "Linwei Ding (1). Signed by Judge Vince Chhabria on 2/12/2025. "
+                "(Entered: 02/26/2025)"
+            )
+        )
+        assert _needs_pdf(_entry("Scheduling Order"))
+        assert _needs_pdf(
+            _entry(
+                "JOINT STIPULATION AND PROPOSED ORDER RE: "
+                "TRIAL DATE AND HEARING SCHEDULE"
+            )
+        )
+
+    def test_grant_scheduling_motion_still_needs_pdf(self):
+        # Regression: the original grant-a-scheduling-motion trap still fetches.
+        assert _needs_pdf(_entry("ORDER granting 47 Motion to Continue Trial"))
+
     def test_entered_footer_does_not_satisfy_hint(self):
         # CourtListener appends "[Entered: MM/DD/YYYY HH:MM AM/PM]" to almost every entry;
         # without stripping it, the time-of-day match fools _needs_pdf into
@@ -158,15 +184,62 @@ class TestNeedsPdf:
             )
         )
 
-    def test_order_granting_substantive_motion_does_not_force_pdf(self):
-        # Substantive rulings don't move the docket; existing _DETAIL_HINTS
-        # logic governs PDF fetch as before.
-        assert not _needs_pdf(
+    def test_order_granting_substantive_motion_now_fetches_pdf(self):
+        # Behavior change: we now read the PDF of EVERY order that reached the
+        # filter, substantive or scheduling — a ruling routinely sets follow-on
+        # deadlines / a status conference in its body that the one-line
+        # description never echoes. (Was: substantive orders skipped the fetch.)
+        assert _needs_pdf(
             _entry(
                 "ORDER granting 50 Motion to Suppress. "
                 "Hearing concluded 4/14/2026 03:00 PM."
             )
         )
+
+    def test_order_with_only_judge_name_fetches_pdf(self):
+        # The judge-hint trap: an order names the signing judge (tripping
+        # _DETAIL_HINTS) but sets the operative dates only in the PDF body.
+        # Naming the judge must NOT suppress the fetch for an order.
+        assert _needs_pdf(
+            _entry("ORDER denying motion to dismiss. Signed by Judge X on 6/1/2026.")
+        )
+
+    def test_order_setting_hidden_deadline_fetches_pdf(self):
+        # The us-v-ding-class case: a clerk sets a deadline in the order body
+        # that the description doesn't pin. The entry is an order, so fetch.
+        assert _needs_pdf(
+            _entry(
+                "ORDER as to Defendant: By 9/25/2025 the parties shall advise "
+                "the Court whether they will proceed to trial. Signed by Judge Y."
+            )
+        )
+
+    def test_transcript_of_proceedings_skips_pdf(self):
+        # A transcript is testimony, not scheduling — never fetch the body. The
+        # held-date the entry implies is already in the description.
+        assert not _needs_pdf(
+            _entry(
+                "Transcript of Proceedings as to Linwei Ding held on 05/22/2024, "
+                "before Judge Vince Chhabria"
+            )
+        )
+
+    def test_transcript_with_no_judge_still_skips_pdf(self):
+        # Robustness: a bare transcript with no judge name (so _DETAIL_HINTS
+        # wouldn't have suppressed it) is still skipped by the transcript guard
+        # rather than falling through to the default fetch.
+        assert not _needs_pdf(_entry("Transcript of Jury Trial Proceedings, Volume 1"))
+
+    def test_transcript_order_skips_pdf_despite_order_word(self):
+        # "TRANSCRIPT ORDER" contains "order" — the transcript guard runs first
+        # so it isn't pulled in by the read-every-order rule. (It's a private
+        # purchase request the LLM IGNOREs anyway.)
+        assert not _needs_pdf(
+            _entry("TRANSCRIPT ORDER for proceedings held on 05/22/2024 before Judge X")
+        )
+
+    def test_official_transcript_filing_notice_skips_pdf(self):
+        assert not _needs_pdf(_entry("NOTICE OF FILING OF OFFICIAL TRANSCRIPT"))
 
 
 # --- _extract_docket_refs ---
@@ -267,6 +340,31 @@ class TestLocalToUtc:
         assert _local_to_utc("2026-01-07", "", "America/New_York") == midnight_et
         # Casing + leading/trailing whitespace also normalize.
         assert _local_to_utc("2026-01-07", "NULL ", "America/New_York") == midnight_et
+
+    def test_out_of_range_date_returns_none(self, caplog):
+        # The model can emit a calendar-INVALID date (e.g. "2023-03-34" — day
+        # out of range for the month), which crashed a real sync via an uncaught
+        # ``ValueError: day is out of range for month`` out of
+        # ``_apply_deadline_action`` (the build-comparison replay only survived
+        # because it wraps each entry in its own try/except). It must be stored
+        # date-less (None), not raised, with a WARNING for the operator.
+        import logging
+
+        with caplog.at_level(logging.WARNING):
+            assert _local_to_utc("2023-03-34", "16:00", "America/New_York") is None
+        assert any("unparseable local date" in r.message for r in caplog.records)
+        # the date-only path is guarded too
+        assert _local_to_utc("2023-02-30", None, "America/New_York") is None
+        # and the deadline wrapper (defaults the time to 16:00) must not crash
+        assert _deadline_local_to_utc("2023-03-34", None, "America/New_York") is None
+
+    def test_invalid_time_falls_back_to_date_only(self):
+        # A bad time string but a VALID date salvages the date (stored date-only
+        # at midnight local) rather than dropping the row entirely.
+        assert (
+            _local_to_utc("2026-04-14", "25:99", "America/New_York")
+            == "2026-04-14T04:00:00+00:00"
+        )
 
 
 # --- _default_duration ---

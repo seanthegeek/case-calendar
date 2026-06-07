@@ -64,10 +64,10 @@ side:
     e.g. data/provider-stores/gemini/gemini-3.1-flash-lite/   (the gemini default)
          data/provider-stores/gemini/gemini-3.5-flash/        (an eval candidate)
 
-The committed comparison artifact is the events CSV
-``model-comparison/export_model_events.py`` produces from these, not the stores
-themselves (which are large, and whose rendered calendars would make the blind
-ground-truth scoring peekable).
+The committed comparison artifact is the per-entry actions CSV the
+``--entry-actions-csv`` tap produces (``model-comparison/model_actions.csv``), not
+the stores themselves (which are large, and whose rendered calendars would make
+the blind ground-truth scoring peekable).
 
 For each column C (folder ``<provider>/<extraction-model>``):
   1. Copy the warm source store -> data/provider-stores/<C>/case-calendar.sqlite
@@ -105,6 +105,7 @@ from __future__ import annotations
 import argparse
 import copy
 import hashlib
+import csv
 import json
 import logging
 import os
@@ -627,20 +628,82 @@ _DECISION_WRAPS = {
 }
 
 
+# --- Per-entry extractor-action capture (per-entry ground-truth scoring) ---
+# When --entry-actions-csv is set, the extract_actions wrap records each entry's
+# action counts keyed by (column label, CourtListener entry_id), so the model's
+# per-entry output can be scored against the human ground_truth.csv
+# apples-to-apples. The eight columns mirror the scoring worksheet; significance
+# is NOT consulted (a deadline is a deadline), so a minor deadline the render
+# gate would hide still counts here.
+_ENTRY_ACTION_COLS = [
+    "h_scheduled",
+    "h_rescheduled",
+    "h_held",
+    "h_cancelled",
+    "d_set",
+    "d_rescheduled",
+    "d_met_filed",
+    "d_cancelled",
+]
+_ACTION_TO_COL = {
+    "ADD_HEARING": "h_scheduled",
+    "RESCHEDULE_HEARING": "h_rescheduled",
+    "MARK_HELD": "h_held",
+    "CANCEL_HEARING": "h_cancelled",
+    "ADD_DEADLINE": "d_set",
+    "RESCHEDULE_DEADLINE": "d_rescheduled",
+    "MARK_FILED": "d_met_filed",
+    "CANCEL_DEADLINE": "d_cancelled",
+}
+_ENTRY_ACTIONS: dict[tuple[str, int], dict[str, Any]] = {}
+_ENTRY_ACTIONS_LOCK = threading.Lock()
+_RECORD_ENTRY_ACTIONS = False
+_LOG_DECISIONS = True
+
+
+def _record_entry_actions(kwargs: dict[str, Any], result: Any) -> None:
+    """Accumulate one extract_actions call's per-entry action counts, keyed by
+    (column label, entry_id). Unknown action types (UPDATE_DETAILS, IGNORE) are
+    ignored; counts are significance-agnostic."""
+    label = _tl_label()
+    entry = kwargs.get("entry") or {}
+    eid = entry.get("id")
+    if not label or eid is None:
+        return
+    with _ENTRY_ACTIONS_LOCK:
+        rec = _ENTRY_ACTIONS.get((label, eid))
+        if rec is None:
+            rec = {"docket_id": kwargs.get("docket_id")}
+            rec.update({c: 0 for c in _ENTRY_ACTION_COLS})
+            _ENTRY_ACTIONS[(label, eid)] = rec
+        for a in result if isinstance(result, list) else []:
+            if isinstance(a, dict):
+                col = _ACTION_TO_COL.get(str(a.get("type") or "").upper())
+                if col:
+                    rec[col] += 1
+
+
 def _wrap_llm(name: str, kind: str) -> Any:
     """Return a wrapper around ``llm.<name>`` that, after delegating to the
     real function, logs one DECISION line tagged to the calling thread's
-    provider (via ``_PerProviderLogHandler``). The real result is returned
-    unchanged; a logging failure never sinks a build."""
+    provider (via ``_PerProviderLogHandler``) and — when --entry-actions-csv is
+    on — records the per-entry action counts. The real result is returned
+    unchanged; a logging / capture failure never sinks a build."""
     orig = getattr(llm, name)
 
     def wrapped(*args: Any, **kwargs: Any) -> Any:
         result = orig(*args, **kwargs)
         if getattr(_TL, "provider", None):
-            try:
-                _DLOG.info("%s", _format_decision(kind, kwargs, result))
-            except Exception:  # noqa: BLE001
-                logger.debug("decision log failed for %s", name, exc_info=True)
+            if _RECORD_ENTRY_ACTIONS and name == "extract_actions":
+                try:
+                    _record_entry_actions(kwargs, result)
+                except Exception:  # noqa: BLE001
+                    logger.debug("entry-action capture failed", exc_info=True)
+            if _LOG_DECISIONS:
+                try:
+                    _DLOG.info("%s", _format_decision(kind, kwargs, result))
+                except Exception:  # noqa: BLE001
+                    logger.debug("decision log failed for %s", name, exc_info=True)
         return result
 
     return wrapped
@@ -669,7 +732,7 @@ def _install_cl_cache(cl: CourtListener) -> None:
                         raise FrozenSnapshotError(
                             f"frozen build needs a live CourtListener {verb} not "
                             f"in the snapshot: {a!r} {k!r}. Re-snapshot from a "
-                            "fully-synced store (snapshot_benchmark_store.py)."
+                            "fully-synced store (snapshot_benchmark.py)."
                         )
                     CAP.cl_calls += 1  # genuine network call
                     resp = orig(*a, **k)
@@ -693,7 +756,7 @@ def _install_frozen_pdf_guard() -> None:
         raise FrozenSnapshotError(
             "frozen build needs to download a PDF not cached in the snapshot "
             f"(recap_document id={rd.get('id')}). Re-snapshot from a "
-            "fully-synced store (snapshot_benchmark_store.py)."
+            "fully-synced store (snapshot_benchmark.py)."
         )
 
     pdf.fetch_pdf_bytes = _no_fetch  # type: ignore[assignment]
@@ -706,7 +769,7 @@ def _log_snapshot_manifest(src_path: str) -> None:
     if not manifest.exists():
         logger.warning(
             "frozen build: no manifest beside %s — provenance unknown "
-            "(was it made by snapshot_benchmark_store.py?)",
+            "(was it made by snapshot_benchmark.py?)",
             src_path,
         )
         return
@@ -1149,6 +1212,75 @@ def build_for_variant(
 # ---------------------------------------------------------------------------
 
 
+def _write_entry_actions_csv(path: str, src_path: str, cases: list[CaseConfig]) -> int:
+    """Write the captured per-entry model actions to CSV, joined with the source
+    store for docket_number / court / entry_number so it lines up with the human
+    ``ground_truth.csv``. Match key for scoring is ``entry_id`` (also carries
+    docket_number + court + entry_number for the multi-record logical key).
+    Returns the row count."""
+    did_to_case: dict[int, str] = {}
+    for c in cases:
+        for did in c.dockets:
+            did_to_case[did] = c.case_id
+    con = sqlite3.connect(f"file:{src_path}?mode=ro", uri=True)
+    con.row_factory = sqlite3.Row
+    try:
+        dmeta = {
+            r["docket_id"]: (r["docket_number"], r["court_id"])
+            for r in con.execute(
+                "SELECT docket_id, docket_number, court_id FROM dockets"
+            )
+        }
+        enum = {
+            r["entry_id"]: r["entry_number"]
+            for r in con.execute("SELECT entry_id, entry_number FROM entries")
+        }
+    finally:
+        con.close()
+
+    cols = [
+        "provider",
+        "case_id",
+        "docket_number",
+        "court",
+        "docket_id",
+        "entry_id",
+        "entry_number",
+        *_ENTRY_ACTION_COLS,
+    ]
+    rows: list[dict[str, Any]] = []
+    for (label, eid), rec in _ENTRY_ACTIONS.items():
+        did = rec.get("docket_id")
+        dn, court = dmeta.get(did, ("", ""))
+        en = enum.get(eid)
+        rows.append(
+            {
+                "provider": label,
+                "case_id": did_to_case.get(did, ""),
+                "docket_number": dn or "",
+                "court": court or "",
+                "docket_id": did if did is not None else "",
+                "entry_id": eid,
+                "entry_number": en if en is not None else "",
+                **{c: rec[c] for c in _ENTRY_ACTION_COLS},
+            }
+        )
+    rows.sort(
+        key=lambda r: (
+            r["provider"],
+            r["case_id"],
+            str(r["docket_number"]),
+            r["entry_number"] if isinstance(r["entry_number"], int) else 1 << 30,
+        )
+    )
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=cols)
+        w.writeheader()
+        w.writerows(rows)
+    return len(rows)
+
+
 def _store_counts(path: str) -> dict[str, int]:
     s = Store(path)
     out: dict[str, int] = {}
@@ -1373,7 +1505,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         default=None,
         help="override the source store to copy + replay from (default: "
         "store_path from --config). Point this at a frozen snapshot from "
-        "snapshot_benchmark_store.py for a benchmark that's reproducible as the "
+        "snapshot_benchmark.py for a benchmark that's reproducible as the "
         "live cases move.",
     )
     ap.add_argument(
@@ -1382,7 +1514,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         help="forbid ALL live data access (CourtListener requests AND PDF "
         "downloads): any cache miss raises instead of fetching, so the run "
         "provably uses only the --source snapshot's data. Use with a snapshot "
-        "from snapshot_benchmark_store.py. Ignored under --fake.",
+        "from snapshot_benchmark.py. Ignored under --fake.",
     )
     ap.add_argument(
         "--variants",
@@ -1453,6 +1585,11 @@ def main(argv: Optional[list[str]] = None) -> int:
         "invalidate every cached response.",
     )
     ap.add_argument("--out", help="also write the markdown report to this path")
+    ap.add_argument(
+        "--entry-actions-csv",
+        help="also capture each provider's per-entry extract_actions counts to "
+        "this CSV (for per-entry ground-truth scoring against the human worksheet)",
+    )
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format=_LOG_FMT, stream=sys.stderr)
@@ -1552,7 +1689,10 @@ def main(argv: Optional[list[str]] = None) -> int:
     # caught by every call site (sync's ``llm_mod.verify_hearing`` etc. bind the
     # same module object and resolve the attribute at call time).
     saved_llm: dict[str, Any] = {}
-    if not args.no_decisions:
+    global _RECORD_ENTRY_ACTIONS, _LOG_DECISIONS
+    _RECORD_ENTRY_ACTIONS = bool(args.entry_actions_csv)
+    _LOG_DECISIONS = not args.no_decisions
+    if _LOG_DECISIONS or _RECORD_ENTRY_ACTIONS:
         for _name, _kind in _DECISION_WRAPS.items():
             saved_llm[_name] = getattr(llm, _name)
             setattr(llm, _name, _wrap_llm(_name, _kind))
@@ -1633,6 +1773,12 @@ def main(argv: Optional[list[str]] = None) -> int:
                 cl_close()
             except Exception:  # noqa: BLE001
                 pass
+
+    if args.entry_actions_csv:
+        n_ea = _write_entry_actions_csv(args.entry_actions_csv, src_path, cases)
+        msg = f"wrote {args.entry_actions_csv} ({n_ea} per-entry model-action rows)"
+        logger.info("%s", msg)
+        print("\n" + msg)
 
     report = build_report(
         variants_to_build, cfg, src_path, cl, args.validate, failed=failed

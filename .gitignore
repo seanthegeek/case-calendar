@@ -30,7 +30,13 @@ model-comparison/*.log
 model-comparison/cost.md
 model-comparison/cost.*.md
 
-# Benchmark-input snapshots (model-comparison/snapshot_benchmark_store.py): the
+# Per-run scorer report written by `score_models.py --out model-comparison/score.md`.
+# The committed analysis is hand-curated in `model-comparison/SCORECARD.md`; this
+# is just the scorer's own scratch output and shouldn't go in git.
+model-comparison/score.md
+model-comparison/score.*.md
+
+# Benchmark-input snapshots (model-comparison/snapshot_benchmark.py): the
 # SQLite file is large + binary, so it's tracked via Git LFS (see .gitattributes)
 # and committed — run `git lfs pull` after clone to fetch it — NOT gitignored.
 # Its sibling *.manifest.json (date, row counts, checksums incl. the paired
@@ -38,6 +44,12 @@ model-comparison/cost.*.md
 # sidecars are ignored (a backup-API snapshot is a single file, so these
 # normally don't exist; ignored defensively).
 model-comparison/snapshots/*.sqlite-*
+
+# Per-entry ground-truth scoring page (model-comparison/build_scoring_page.py):
+# large generated HTML, regenerable from the committed benchmark snapshot. The
+# human's FILLED scores download to model-comparison/ground_truth.csv (committed
+# normally), not here.
+model-comparison/scoring/
 
 # Local user config
 .local/

@@ -40,17 +40,17 @@ Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
 mislead. Instead, here are **real measured numbers** from a full from-scratch
 backfill of the maintainer's own calendar (28 cases / 34 logical dockets,
-measured 2026-05-31), broken out by provider and track. "Backfill" means
-processing every historical docket entry plus generating every summary — the
-one-time cost of onboarding a caseload:
+measured 2026-06-07 on 0.16.0), broken out by provider and track. "Backfill"
+means processing every historical docket entry plus generating every summary —
+the one-time cost of onboarding a caseload:
 
 | Provider (extraction / summary model) | Extraction | Verify | Summary | Backfill total |
 | --- | --: | --: | --: | --: |
-| OpenAI (GPT-5.4-nano / GPT-5.4) | $1.10 | $0.13 | $1.52 | **$2.76** |
-| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.82 | $0.19 | $1.11 | **$3.12** |
-| **Default** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.82 | $0.19 | $2.30 | **$4.30** |
-| OpenAI (GPT-5.4-mini / GPT-5.4) | $3.73 | $0.45 | $1.67 | **$5.85** |
-| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.72 | $0.83 | $2.30 | **$9.84** |
+| OpenAI (GPT-5.4-nano / GPT-5.4) | $1.17 | $0.12 | $1.58 | **$2.87** |
+| Gemini (3.1 Flash Lite / 2.5 Pro) | $1.87 | $0.16 | $1.16 | **$3.19** |
+| **Default** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.87 | $0.16 | $2.51 | **$4.54** |
+| OpenAI (GPT-5.4-mini / GPT-5.4) | $3.94 | $0.44 | $1.78 | **$6.15** |
+| Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.99 | $0.74 | $2.51 | **$10.24** |
 
 The **Default** row is what zero-config gives you — it pairs the two tracks'
 own defaults, Gemini extraction with Anthropic summaries; the single-provider
@@ -59,14 +59,23 @@ to priciest backfill.
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. Extraction runs roughly
-**$0.04–0.24 per case** (it scales with entry count, so a busy docket costs
-more — the high end is Anthropic's $6.72 over 28 cases), and summaries roughly
+**$0.04–0.25 per case** (it scales with entry count, so a busy docket costs
+more — the high end is Anthropic's $6.99 over 28 cases), and summaries roughly
 **$0.03–0.07 per docket**. After the backfill,
 existing summaries are reused unless a docket gets a new primary document or
 disposition, so ongoing spend is **pennies a week**; the `verify` track (one
 focused call per non-terminal hearing/deadline + the new source-entry-aware
 context as of 0.11.0) is what runs on every sync, and even that stayed under
 $1.00 across the whole caseload on the priciest provider.
+
+**These figures already include the 0.16.0 change** where the extractor reads
+the PDF of every *order* (an order's operative dates often live only in a
+schedule table the one-line docket text doesn't echo) and stops fetching
+*transcript* bodies (testimony with no forward-looking scheduling). Reading
+order PDFs is what nudged extraction up versus the prior 2026-05-31 measurement
+(Gemini $1.82 → $1.87, Anthropic $6.72 → $6.99 over the same 28 cases); it's a
+**one-time** backfill cost — fingerprint dedup means steady-state spend is
+unchanged.
 
 These are **estimates**, and they
 reflect one specific caseload on one date — don't take them on faith; measure
@@ -96,14 +105,15 @@ Membership API access is intended for small firms, small government / media
 outlets, academics, and pre-revenue / pre-funding organizations — not large or
 funded ones.
 
-Against the backfill above: it made **38 API calls total**, so its **hourly and
-daily** totals (38 / 38) sit inside even the free tier (50 / 125). The catch is
-the **per-minute burst** — the backfill peaked at **9 requests in one minute**
-(cold-docket lookups firing back-to-back), which exceeds the free (5/min) cap
-but stays inside Tier 1 (10/min). That isn't data loss: the client honors
-`Retry-After` and backs off automatically (just slower). But a from-scratch
-backfill wants at least **Tier 1 (10/min)** to avoid per-minute throttling.
-Steady-state polling is a handful of requests per sync, far below every tier. The per-run `courtlistener-requests`
+Against the backfill above: it made **37 API calls total**, so its **hourly and
+daily** totals (37 / 37) sit inside even the free tier (50 / 125). The catch is
+the **per-minute burst** — the backfill peaked at **14 requests in one minute**
+(cold-docket lookups firing back-to-back), which exceeds the free (5/min) and
+Tier 1 (10/min) caps but stays inside Tier 2 (15/min). That isn't data loss: the
+client honors `Retry-After` and backs off automatically (just slower). A
+from-scratch backfill is smoothest on **Tier 2 (15/min)**; a lower tier still
+completes, just with back-off pauses. Steady-state polling is a handful of
+requests per sync, far below every tier. The per-run `courtlistener-requests`
 log line reports your actual peak min / hour / day so you can size your
 membership.
 

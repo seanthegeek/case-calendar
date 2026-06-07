@@ -924,3 +924,63 @@ def test_log_snapshot_manifest_absent_warns(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger=mod.logger.name):
         mod._log_snapshot_manifest(str(store))
     assert any("no manifest beside" in r.getMessage() for r in caplog.records)
+
+
+class TestEntryActionsTap:
+    """The --entry-actions-csv tap: maps each extract_actions result to per-entry
+    counts keyed by (column label, entry_id). It wraps extract_actions ABOVE the
+    LLM cache, so it records on every call regardless of cache hit."""
+
+    def _reset(self):
+        mod._ENTRY_ACTIONS.clear()
+        for attr in ("provider", "label"):
+            if hasattr(mod._TL, attr):
+                delattr(mod._TL, attr)
+
+    def test_action_to_col_mapping(self):
+        m = mod._ACTION_TO_COL
+        assert m["ADD_HEARING"] == "h_scheduled"
+        assert m["RESCHEDULE_HEARING"] == "h_rescheduled"
+        assert m["MARK_HELD"] == "h_held"
+        assert m["CANCEL_HEARING"] == "h_cancelled"
+        assert m["ADD_DEADLINE"] == "d_set"
+        assert m["RESCHEDULE_DEADLINE"] == "d_rescheduled"
+        assert m["MARK_FILED"] == "d_met_filed"
+        assert m["CANCEL_DEADLINE"] == "d_cancelled"
+        # non-mutating action types carry no count column
+        assert "IGNORE" not in m and "UPDATE_DETAILS" not in m
+
+    def test_record_accumulates_by_label_and_entry(self):
+        self._reset()
+        try:
+            mod._TL.provider = "gemini/x"
+            mod._record_entry_actions(
+                {"entry": {"id": 7}, "docket_id": 5},
+                [
+                    {"type": "ADD_HEARING"},
+                    {"type": "ADD_HEARING"},
+                    {"type": "MARK_HELD"},
+                    {"type": "IGNORE"},  # not counted
+                    {"type": "UPDATE_DETAILS"},  # not counted
+                ],
+            )
+            rec = mod._ENTRY_ACTIONS[("gemini/x", 7)]
+            assert rec["h_scheduled"] == 2
+            assert rec["h_held"] == 1
+            assert rec["d_set"] == 0
+            assert rec["docket_id"] == 5
+        finally:
+            self._reset()
+
+    def test_record_noop_without_label_or_entry_id(self):
+        self._reset()
+        try:
+            # no column label set -> no-op
+            mod._record_entry_actions({"entry": {"id": 1}}, [{"type": "ADD_HEARING"}])
+            assert mod._ENTRY_ACTIONS == {}
+            # label set but the entry carries no id -> no-op
+            mod._TL.provider = "p/m"
+            mod._record_entry_actions({"entry": {}}, [{"type": "ADD_HEARING"}])
+            assert mod._ENTRY_ACTIONS == {}
+        finally:
+            self._reset()
