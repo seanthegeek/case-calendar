@@ -57,6 +57,36 @@ _DEADLINE_HINTS = re.compile(
     re.IGNORECASE,
 )
 
+# Deadline forms the `\b(...)\b`-wrapped _DEADLINE_HINTS above can't express,
+# both surfaced by the ground-truth scoring as entries that set or met a real
+# deadline yet were dropped before any LLM saw them:
+#   - Bare "due <date>" — _DEADLINE_HINTS only catches "due by/on". Appellate
+#     and clerk orders write "docketing statement due 04/08/2026"; one D.C.
+#     Circuit clerk order set ELEVEN such deadlines in a single entry, all lost.
+#     Anchored to an actual date (or "within N days") so "due process" /
+#     "due diligence" don't match.
+#   - A party FILING that MEETS a deadline: a brief / response / opposition /
+#     reply at the head of the entry ("BRIEF by ...", "RESPONSE in Opposition
+#     ...", "PETITIONER REPLY BRIEF ..."), or any appellate submission carrying
+#     the "[Service Date: ...]" e-filing stamp. The existing regex only catches
+#     the forward-looking "shall file a response", never the past-tense filing,
+#     so the matching deadline never flipped to filed.
+# Kept as its own regex (not folded into _DEADLINE_HINTS) because the date forms
+# end in digits, which that pattern's trailing `\b` cannot anchor, and because
+# the filing forms must anchor to the entry head (`^`, MULTILINE).
+_MONTHS = r"jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec"
+_DEADLINE_EXTRA_HINTS = re.compile(
+    r"\bdue\s+(?:by\s+|on\s+|within\s+|no\s+later\s+than\s+)?"
+    rf"(?:\d{{1,2}}[/-]\d|\d{{4}}\b|\d{{1,2}}\s+(?:business\s+)?days\b|(?:{_MONTHS}))"
+    r"|\[service\s+date:"
+    r"|^\s*(?:\d+\s+)?"
+    r"(?:(?:petitioner|respondent|appellant|appellee|cross-?appell\w+|"
+    r"opening|answering|amended|corrected|supplemental|first|second|third|"
+    r"final|joint)\s+)*"
+    r"(?:response|opposition|reply|sur-?reply|brief)\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+
 
 def _entry_text(entry: dict[str, Any]) -> str:
     blobs: list[str] = []
@@ -81,7 +111,7 @@ def is_deadline_relevant(entry: dict[str, Any]) -> bool:
     text = _entry_text(entry)
     if not text.strip():
         return False
-    return bool(_DEADLINE_HINTS.search(text))
+    return bool(_DEADLINE_HINTS.search(text) or _DEADLINE_EXTRA_HINTS.search(text))
 
 
 def is_extractable(entry: dict[str, Any]) -> bool:
@@ -94,4 +124,8 @@ def is_extractable(entry: dict[str, Any]) -> bool:
     text = _entry_text(entry)
     if not text.strip():
         return False
-    return bool(_HEARING_HINTS.search(text) or _DEADLINE_HINTS.search(text))
+    return bool(
+        _HEARING_HINTS.search(text)
+        or _DEADLINE_HINTS.search(text)
+        or _DEADLINE_EXTRA_HINTS.search(text)
+    )

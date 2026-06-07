@@ -42,7 +42,7 @@ class TestIsDeadlineRelevant:
             make(desc="Joint stipulation re briefing schedule. SO ORDERED.")
         )
 
-    def test_brief_filing_is_not_relevant(self):
+    def test_notice_of_appearance_is_not_relevant(self):
         assert not is_deadline_relevant(
             make(desc="NOTICE OF ATTORNEY APPEARANCE for USA")
         )
@@ -212,6 +212,68 @@ class TestIsDeadlineRelevant:
             make(desc="Brady material is due 30 days before trial")
         )
         assert is_deadline_relevant(make(desc="Expert report due 06/01/2026"))
+
+
+class TestDeadlineExtraHints:
+    """Forms _DEADLINE_HINTS can't express, recovered after the ground-truth
+    scoring showed them dropped before any LLM saw them (see _DEADLINE_EXTRA_HINTS)."""
+
+    def test_bare_due_date_relevant(self):
+        # The canonical D.C. Circuit clerk order set 11 deadlines as bare
+        # "<noun> due <date>" — no noun the old regex recognized.
+        assert is_deadline_relevant(
+            make(desc="PETITIONER docketing statement due 04/08/2026")
+        )
+        assert is_deadline_relevant(make(desc="certificate as to parties due 4/8/2026"))
+        assert is_deadline_relevant(make(desc="statement of issues due 2026-04-08"))
+        assert is_deadline_relevant(make(desc="opening submission due June 1, 2026"))
+        assert is_deadline_relevant(make(desc="objections due within 14 days"))
+
+    def test_due_without_a_date_is_not_a_false_positive(self):
+        assert not is_deadline_relevant(
+            make(desc="motion alleging a due process violation")
+        )
+        assert not is_deadline_relevant(
+            make(desc="counsel exercised due diligence here")
+        )
+
+    def test_filing_that_meets_a_deadline_relevant(self):
+        # A brief / response / reply at the head IS a filing that meets a
+        # deadline, so it must reach the LLM to flip the deadline to filed.
+        assert is_deadline_relevant(
+            make(desc="BRIEF by Matthew Isaac Knoot re 48 MOTION to Suppress")
+        )
+        assert is_deadline_relevant(
+            make(desc="RESPONSE IN OPPOSITION to motion filed by United States")
+        )
+        assert is_deadline_relevant(
+            make(desc="PETITIONER REPLY BRIEF filed by Anthropic")
+        )
+        assert is_deadline_relevant(make(desc="RESPONDENT SUPPLEMENTAL BRIEF filed"))
+
+    def test_appellate_service_date_stamp_relevant(self):
+        # Appellate submissions whose doc type isn't a brief (appendix, index)
+        # still carry the "[Service Date: ...]" e-filing stamp.
+        assert is_deadline_relevant(
+            make(
+                desc="APPENDIX [2169955] filed by Anthropic [Service Date: 04/22/2026]"
+            )
+        )
+
+    def test_doc_type_must_be_at_head(self):
+        # "response"/"brief" only count when the entry IS that filing, not when
+        # an order merely mentions one.
+        assert not is_deadline_relevant(
+            make(desc="ORDER denying the response to the motion to compel")
+        )
+
+    def test_new_forms_pass_is_extractable(self):
+        assert is_extractable(
+            make(desc="PETITIONER docketing statement due 04/08/2026")
+        )
+        assert is_extractable(
+            make(desc="BRIEF by Sina Gholinejad. Type of Brief: OPENING")
+        )
 
 
 class TestIsExtractable:
