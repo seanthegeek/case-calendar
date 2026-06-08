@@ -15,7 +15,7 @@ import re
 from typing import Any, Optional
 
 from .llmkit import providers
-from .llmkit.providers import OutputTruncatedError
+from .llmkit.providers import ContextWindowExceededError, OutputTruncatedError
 
 logger = logging.getLogger(__name__)
 
@@ -932,6 +932,17 @@ def extract_actions(
             docket=docket_id,
             temperature=0.0,
         )
+    except ContextWindowExceededError as exc:
+        logger.warning(
+            "LLM prompt exceeds the context window for entry %s (provider=%s): "
+            "%s. Skipping rather than emit hearings/deadlines from a truncated "
+            "prompt. Raise the model's context window (OLLAMA_NUM_CTX or a "
+            "larger model) or reduce the entry's attached PDF text.",
+            entry.get("id"),
+            exc.provider,
+            exc,
+        )
+        return [{"type": "IGNORE", "reason": "prompt exceeds context window"}]
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM output truncated at max_tokens=%d for entry %s (provider=%s, "
@@ -1181,6 +1192,15 @@ def _call_lm_and_parse(
             docket=docket,
             temperature=0.0,
         )
+    except ContextWindowExceededError as exc:
+        logger.warning(
+            "LLM %s prompt exceeds the context window (provider=%s): %s. "
+            "Returning UNCLEAR rather than a verdict from a truncated prompt.",
+            label,
+            exc.provider,
+            exc,
+        )
+        return {"type": "UNCLEAR", "reason": "prompt exceeds context window"}
     except OutputTruncatedError as exc:
         logger.warning(
             "LLM %s output truncated at max_tokens=%d (provider=%s, partial=%d chars)",
@@ -1583,12 +1603,17 @@ _DEFAULT_SUMMARY_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-5.4",
     "gemini": "gemini-2.5-pro",
-    # Local inference via Ollama. gemma4:31b — the same capable all-rounder the
+    # Local inference via Ollama. gemma4:e4b — the same 9.6 GB all-rounder the
     # extraction track defaults to locally (see providers._DEFAULT_MODELS), so a
-    # zero-config local install pulls and runs ONE model for both tracks.
-    # Override with LLM_SUMMARY_MODEL, and raise OLLAMA_NUM_CTX since summaries
-    # feed tens of thousands of tokens of legal prose. See docs/local-llms.md.
-    "ollama": "gemma4:31b",
+    # zero-config local install pulls and runs ONE model for both tracks that
+    # fits a mainstream 16 GB card (24 GB with headroom). Summaries benefit most
+    # from a bigger model: on a 32 GB card (RTX 5090) upgrade just this track
+    # with LLM_SUMMARY_MODEL=gemma4:31b. The 31b (20 GB of weights) does NOT fit
+    # a 24 GB card at a summary-sized context window (no room left for the KV
+    # cache), so there the quality path is a hosted summary provider. Raise
+    # OLLAMA_NUM_CTX either way since summaries feed tens of thousands of tokens
+    # of legal prose. See docs/local-llms.md.
+    "ollama": "gemma4:e4b",
 }
 
 
@@ -1625,6 +1650,18 @@ SUMMARY_PRIMARY_DOCUMENT_NOT_AVAILABLE = (
     "The primary document(s) are not yet available on RECAP."
 )
 SUMMARY_PRIMARY_DOCUMENT_UNREADABLE = "The primary document(s) could not be read."
+
+
+# Written by ``summary.summarize_docket`` (without an LLM round-trip) when the
+# summary call raised :class:`~case_calendar.llmkit.providers.ContextWindowExceededError`
+# — the documents for this docket were too large for the model's / configured
+# context window, so a real summary would have been built from a silently
+# truncated prompt. Operator-actionable: raise the context window
+# (``OLLAMA_NUM_CTX`` / a larger model) or lower the per-document char budgets.
+SUMMARY_CONTEXT_EXCEEDED = (
+    "This docket's documents are too large to summarize within the model's "
+    "configured context window."
+)
 
 
 SUMMARY_SYSTEM_PROMPT = """\

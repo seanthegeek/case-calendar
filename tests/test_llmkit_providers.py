@@ -841,6 +841,17 @@ class TestCallOllama:
     the Ollama-specific call shape (base_url, dummy key, ``max_tokens`` rather
     than ``max_completion_tokens``, optional ``num_ctx``)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_context_lookup(self, monkeypatch):
+        # Keep these call-shape tests hermetic: the pre-flight context check
+        # would otherwise reach for a real /api/show. Its own behavior (limit
+        # resolution + pre/post-flight) is covered by TestOllamaContextWindow
+        # and TestOllamaInputTruncation below.
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda model: None)
+        providers._OLLAMA_SHOW_CACHE.clear()
+        yield
+        providers._OLLAMA_SHOW_CACHE.clear()
+
     @staticmethod
     def _fake_openai(monkeypatch, content="hello"):
         from unittest.mock import MagicMock
@@ -969,9 +980,9 @@ class TestOllamaCapabilities:
 
     @pytest.fixture(autouse=True)
     def _clear_cache(self):
-        providers._OLLAMA_CAPABILITIES_CACHE.clear()
+        providers._OLLAMA_SHOW_CACHE.clear()
         yield
-        providers._OLLAMA_CAPABILITIES_CACHE.clear()
+        providers._OLLAMA_SHOW_CACHE.clear()
 
     @staticmethod
     def _fake_urlopen(monkeypatch, payload, calls=None):
@@ -1090,6 +1101,383 @@ class TestEnsureThinkingBudget:
 
     def test_custom_floor(self):
         assert providers.ensure_thinking_budget("gemini", "x", 100, floor=4096) == 4096
+
+
+class TestOllamaModelDefaults:
+    """The local-inference default is `gemma4:e4b` for BOTH tracks — chosen for
+    hardware fit (it runs on common consumer GPUs), with `gemma4:31b` as the
+    opt-in quality upgrade. Pins the 0.16 flip; see AGENTS.md's Ollama
+    default-model design decision and docs/local-llms.md. Don't flip it back up."""
+
+    def test_extraction_default_is_e4b(self):
+        assert providers._DEFAULT_MODELS["ollama"] == "gemma4:e4b"
+
+    def test_summary_default_is_e4b(self):
+        from case_calendar import llm
+
+        assert llm._DEFAULT_SUMMARY_MODELS["ollama"] == "gemma4:e4b"
+
+    def test_both_tracks_share_one_local_model(self):
+        # Zero-config local install pulls and runs ONE model for both tracks.
+        from case_calendar import llm
+
+        assert (
+            providers._DEFAULT_MODELS["ollama"] == llm._DEFAULT_SUMMARY_MODELS["ollama"]
+        )
+
+
+class TestContextWindowExceededError:
+    """The error carries best-effort token figures and a readable message; any
+    figure may be None (a hosted provider's error gives only a message)."""
+
+    def test_message_with_all_fields(self):
+        e = providers.ContextWindowExceededError(
+            "ollama", sent=300000, processed=255000, limit=256000
+        )
+        s = str(e)
+        assert "ollama" in s and "300000" in s and "255000" in s and "256000" in s
+        assert e.provider == "ollama"
+        assert (e.sent, e.processed, e.limit) == (300000, 255000, 256000)
+
+    def test_message_with_detail_only(self):
+        e = providers.ContextWindowExceededError("openai", detail="prompt is too long")
+        assert "openai" in str(e) and "prompt is too long" in str(e)
+        assert e.sent is None and e.processed is None and e.limit is None
+
+    def test_message_bare(self):
+        e = providers.ContextWindowExceededError("gemini")
+        assert str(e) == "gemini prompt exceeds the context window"
+
+
+class TestContextAndMemoryErrorMatchers:
+    """`_is_context_length_error` / `_is_memory_error` classify SDK exceptions by
+    message text (no SDK error-class imports), so they stay provider-agnostic."""
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "This model's maximum context length is 8192 tokens, however you...",
+            "Error code: 400 - context_length_exceeded",
+            "prompt is too long: 250000 tokens > 200000 maximum",
+            "The input token count (300000) exceeds the maximum number of tokens",
+            "Please reduce the length of the messages",
+        ],
+    )
+    def test_context_length_errors_match(self, msg):
+        assert providers._is_context_length_error(Exception(msg)) is True
+
+    @pytest.mark.parametrize(
+        "msg",
+        ["rate limit exceeded", "connection refused", "500 internal server error"],
+    )
+    def test_non_context_errors_dont_match(self, msg):
+        assert providers._is_context_length_error(Exception(msg)) is False
+
+    @pytest.mark.parametrize(
+        "msg",
+        [
+            "CUDA error: out of memory",
+            "cudaMalloc failed: out of memory",
+            "failed to allocate 12.3 GiB",
+            "model requires more system memory (40.0 GiB) than is available",
+            "not enough memory",
+        ],
+    )
+    def test_memory_errors_match(self, msg):
+        assert providers._is_memory_error(Exception(msg)) is True
+
+    def test_context_and_memory_are_distinct(self):
+        # A memory error must NOT read as a context-length error (opposite
+        # remedy), and vice versa.
+        mem = Exception("CUDA error: out of memory")
+        ctx = Exception("prompt is too long: 250000 tokens > 200000 maximum")
+        assert providers._is_memory_error(
+            mem
+        ) and not providers._is_context_length_error(mem)
+        assert providers._is_context_length_error(
+            ctx
+        ) and not providers._is_memory_error(ctx)
+
+
+class TestDispatchContextError:
+    """`_dispatch_llm_call` normalizes a hosted provider's context-length 400 to
+    ContextWindowExceededError, and passes through everything else unchanged."""
+
+    def test_hosted_context_error_converted(self, monkeypatch):
+        def boom(system, user, max_tokens, **kw):
+            raise RuntimeError("This model's maximum context length is 200000 tokens")
+
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
+        with pytest.raises(providers.ContextWindowExceededError) as exc:
+            providers._dispatch_llm_call("anthropic", "s", "u", 100)
+        assert exc.value.provider == "anthropic"
+        assert "maximum context length" in exc.value.detail
+
+    def test_context_window_exceeded_passes_through(self, monkeypatch):
+        # Ollama raises ContextWindowExceededError from its own pre/post-flight;
+        # the wrapper must not re-wrap or swallow it.
+        orig = providers.ContextWindowExceededError("ollama", limit=4096)
+
+        def boom(system, user, max_tokens, **kw):
+            raise orig
+
+        monkeypatch.setattr(providers, "_call_ollama", boom)
+        with pytest.raises(providers.ContextWindowExceededError) as exc:
+            providers._dispatch_llm_call("ollama", "s", "u", 100)
+        assert exc.value is orig
+
+    def test_output_truncated_passes_through(self, monkeypatch):
+        def boom(system, user, max_tokens, **kw):
+            raise providers.OutputTruncatedError("openai", "partial", 100)
+
+        monkeypatch.setattr(providers, "_call_openai", boom)
+        with pytest.raises(providers.OutputTruncatedError):
+            providers._dispatch_llm_call("openai", "s", "u", 100)
+
+    def test_unrelated_error_propagates_unchanged(self, monkeypatch):
+        def boom(system, user, max_tokens, **kw):
+            raise ValueError("rate limit exceeded")
+
+        monkeypatch.setattr(providers, "_call_gemini", boom)
+        with pytest.raises(ValueError, match="rate limit"):
+            providers._dispatch_llm_call("gemini", "s", "u", 100)
+
+
+class TestOllamaContextWindowResolution:
+    """`ollama_context_window` reads the model's architecture context_length from
+    /api/show's model_info; `_ollama_context_limit` layers OLLAMA_NUM_CTX on top.
+    Both monkeypatch `_ollama_show` so no network is touched."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        providers._OLLAMA_SHOW_CACHE.clear()
+        yield
+        providers._OLLAMA_SHOW_CACHE.clear()
+
+    def test_reads_context_length_from_model_info(self, monkeypatch):
+        monkeypatch.setattr(
+            providers,
+            "_ollama_show",
+            lambda m: {"model_info": {"gemma4.context_length": 262144}},
+        )
+        assert providers.ollama_context_window("gemma4:31b") == 262144
+
+    def test_none_when_show_unavailable(self, monkeypatch):
+        monkeypatch.setattr(providers, "_ollama_show", lambda m: None)
+        assert providers.ollama_context_window("m") is None
+
+    def test_none_when_no_context_length_key(self, monkeypatch):
+        monkeypatch.setattr(
+            providers, "_ollama_show", lambda m: {"model_info": {"general.name": "x"}}
+        )
+        assert providers.ollama_context_window("m") is None
+
+    def test_none_when_model_info_not_a_dict(self, monkeypatch):
+        # Defensive against an unexpected payload shape (model_info as a list).
+        monkeypatch.setattr(
+            providers, "_ollama_show", lambda m: {"model_info": ["unexpected"]}
+        )
+        assert providers.ollama_context_window("m") is None
+
+    def test_ignores_bool_context_length(self, monkeypatch):
+        # A bool is an int subclass — must not be returned as a window size.
+        monkeypatch.setattr(
+            providers,
+            "_ollama_show",
+            lambda m: {"model_info": {"x.context_length": True}},
+        )
+        assert providers.ollama_context_window("m") is None
+
+    def test_limit_prefers_env_num_ctx(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
+        # Even if the model max is larger, the explicit per-request window wins.
+        monkeypatch.setattr(providers, "ollama_context_window", lambda m: 262144)
+        assert providers._ollama_context_limit("m") == 32768
+
+    def test_limit_falls_back_to_model_max(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.setattr(providers, "ollama_context_window", lambda m: 262144)
+        assert providers._ollama_context_limit("m") == 262144
+
+    def test_limit_malformed_env_falls_back(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_NUM_CTX", "lots")
+        monkeypatch.setattr(providers, "ollama_context_window", lambda m: 8192)
+        assert providers._ollama_context_limit("m") == 8192
+
+    def test_limit_none_when_nothing_known(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+        monkeypatch.setattr(providers, "ollama_context_window", lambda m: None)
+        assert providers._ollama_context_limit("m") is None
+
+    def test_capabilities_and_context_share_one_show_call(self, monkeypatch):
+        # The refactor's payoff: both fields come from ONE cached /api/show.
+        # Drive the real shared-cache path: patch the urllib layer, not _ollama_show.
+        import json
+        import urllib.request
+
+        class _Resp:
+            def read(self):
+                return json.dumps(
+                    {
+                        "capabilities": ["completion", "thinking"],
+                        "model_info": {"gemma4.context_length": 262144},
+                    }
+                ).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        urls: list[str] = []
+
+        def fake_urlopen(req, timeout=None):
+            urls.append(req.full_url)
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        assert providers.ollama_capabilities("gemma4:31b") == frozenset(
+            {"completion", "thinking"}
+        )
+        assert providers.ollama_context_window("gemma4:31b") == 262144
+        assert len(urls) == 1  # second read served from the shared cache
+
+
+class TestDetectOllamaInputTruncation:
+    """The post-flight backstop: the server's real prompt-token count reveals a
+    silently truncated prompt. Known-limit uses budget saturation (tokenizer-
+    independent); unknown-limit uses a gross sent-vs-processed shortfall."""
+
+    def test_zero_processed_is_noop(self):
+        # A test double / missing usage coerces to 0 — no signal, no raise.
+        providers._detect_ollama_input_truncation(
+            processed=0, prompt_chars=10_000_000, limit=4096, max_tokens=800
+        )
+
+    def test_known_limit_saturated_raises(self):
+        with pytest.raises(providers.ContextWindowExceededError) as exc:
+            providers._detect_ollama_input_truncation(
+                processed=3300, prompt_chars=400_000, limit=4096, max_tokens=800
+            )
+        assert exc.value.limit == 4096 and exc.value.processed == 3300
+
+    def test_known_limit_with_headroom_no_raise(self):
+        # Prompt fit comfortably (processed well under limit - max_tokens).
+        providers._detect_ollama_input_truncation(
+            processed=1000, prompt_chars=4000, limit=256000, max_tokens=800
+        )
+
+    def test_unknown_limit_gross_shortfall_raises(self):
+        # We estimate we sent ~26k tokens (100k chars / 3.83) but the server only
+        # processed 4k — a clear truncation even with no known limit.
+        with pytest.raises(providers.ContextWindowExceededError):
+            providers._detect_ollama_input_truncation(
+                processed=4000, prompt_chars=100_000, limit=None, max_tokens=800
+            )
+
+    def test_unknown_limit_mild_difference_no_raise(self):
+        # est_sent ~2610 vs processed 2500 — within tokenizer variance, no raise.
+        providers._detect_ollama_input_truncation(
+            processed=2500, prompt_chars=10_000, limit=None, max_tokens=800
+        )
+
+
+class TestCallOllamaContextChecks:
+    """Pre-flight + post-flight + memory-error handling inside `_call_ollama`,
+    with the openai SDK and the usage/limit hooks mocked."""
+
+    @staticmethod
+    def _fake_openai(monkeypatch, content="hello"):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = content
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+        return fake_mod, fake_client
+
+    @staticmethod
+    def _set_processed(monkeypatch, processed):
+        from case_calendar.llmkit import usage
+
+        monkeypatch.setattr(
+            usage, "from_openai", lambda resp: usage.TokenUsage(input=processed)
+        )
+
+    def test_preflight_refuses_before_calling(self, monkeypatch):
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 100)
+        _mod, client = self._fake_openai(monkeypatch)
+        # ~115-token estimate (400 chars / 3.5) + max_tokens 10 > limit 100.
+        with pytest.raises(providers.ContextWindowExceededError) as exc:
+            providers._call_ollama("x" * 400, "", 10)
+        assert exc.value.limit == 100
+        client.chat.completions.create.assert_not_called()
+
+    def test_within_limit_proceeds(self, monkeypatch):
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 100000)
+        self._set_processed(monkeypatch, 50)
+        _mod, client = self._fake_openai(monkeypatch, content="ok")
+        assert providers._call_ollama("s", "u", 10) == "ok"
+        client.chat.completions.create.assert_called_once()
+
+    def test_postflight_saturation_raises(self, monkeypatch):
+        # Tiny prompt passes pre-flight, but the server reports it evaluated up
+        # to the prompt budget (limit - max_tokens) — a silent truncation.
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 1000)
+        self._set_processed(monkeypatch, 995)
+        _mod, client = self._fake_openai(monkeypatch)
+        with pytest.raises(providers.ContextWindowExceededError) as exc:
+            providers._call_ollama("s", "u", 10)
+        assert exc.value.processed == 995 and exc.value.limit == 1000
+        client.chat.completions.create.assert_called_once()
+
+    def test_memory_error_logs_hint_and_reraises(self, monkeypatch, caplog):
+        import logging
+
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
+        _mod, client = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = RuntimeError(
+            "CUDA error: out of memory"
+        )
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError, match="out of memory"):
+                providers._call_ollama("s", "u", 10)
+        # Operator-actionable hint, NOT a context-exceeded refusal.
+        assert "LOWER the context window" in caplog.text
+
+    def test_non_memory_error_propagates_without_hint(self, monkeypatch, caplog):
+        # A non-memory failure from the SDK propagates unchanged and does NOT
+        # emit the lower-the-window hint (that guidance is memory-error only).
+        import logging
+
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
+        _mod, client = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = RuntimeError(
+            "503 service unavailable"
+        )
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError, match="service unavailable"):
+                providers._call_ollama("s", "u", 10)
+        assert "LOWER the context window" not in caplog.text
+
+    def test_memory_error_not_converted_to_context_exceeded(self, monkeypatch):
+        # End-to-end through dispatch: an OOM must stay a plain error (opposite
+        # remedy), never ContextWindowExceededError.
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
+        _mod, client = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = RuntimeError(
+            "failed to allocate 12.3 GiB"
+        )
+        with pytest.raises(RuntimeError, match="allocate"):
+            providers._dispatch_llm_call("ollama", "s", "u", 10)
 
 
 # --- verify_deadline (parallel to verify_hearing) ---

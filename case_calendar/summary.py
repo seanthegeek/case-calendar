@@ -2522,22 +2522,42 @@ def summarize_docket(
         primary_documents, disposition_documents, extra_documents
     )
 
-    summary_text, model_id = _generate_guarded_summary(
-        source_text=source_text,
-        docket_id=docket_id,
-        case_name=case.name,
-        aggregation_note=aggregation_note,
-        docket=docket_for_prompt,
-        primary_documents=primary_documents,
-        disposition_documents=disposition_documents,
-        extra_documents=extra_documents,
-        hearings=hearings,
-        deadlines=deadlines,
-        sealing_advisory=sealing_advisory,
-        restitution_unreadable=restitution_unreadable,
-        provider=provider,
-        model=model,
-    )
+    try:
+        summary_text, model_id = _generate_guarded_summary(
+            source_text=source_text,
+            docket_id=docket_id,
+            case_name=case.name,
+            aggregation_note=aggregation_note,
+            docket=docket_for_prompt,
+            primary_documents=primary_documents,
+            disposition_documents=disposition_documents,
+            extra_documents=extra_documents,
+            hearings=hearings,
+            deadlines=deadlines,
+            sealing_advisory=sealing_advisory,
+            restitution_unreadable=restitution_unreadable,
+            provider=provider,
+            model=model,
+        )
+    except llm.ContextWindowExceededError as exc:
+        # The assembled prompt was too large for the model's / configured
+        # context window. Don't publish a summary built from a silently
+        # truncated prompt — store the polite refusal (rendered like any
+        # other fallback message) and WARN loudly so the operator can raise
+        # the window or trim the per-document char budgets. This is the one
+        # refusal driven by prompt SIZE rather than document availability,
+        # so it lives here rather than in the no-document-text branch above.
+        log.warning(
+            "summary: docket %s — prompt exceeds the model's context window "
+            "(%s); writing the context-exceeded refusal instead of a summary "
+            "built from a truncated prompt. Raise the context window "
+            "(OLLAMA_NUM_CTX / a larger model) or lower the per-document "
+            "char budgets.",
+            docket_id,
+            exc,
+        )
+        summary_text = llm.SUMMARY_CONTEXT_EXCEEDED
+        model_id = "n/a (context window exceeded)"
 
     # Resolve inline document citations to real links before storing. The
     # truthfulness guards inside _generate_guarded_summary run on the

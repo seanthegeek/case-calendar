@@ -361,6 +361,35 @@ class TestExtractActionsErrors:
         assert "max_tokens=2048" in msg
         assert "anthropic" in msg
 
+    def test_context_window_exceeded_returns_ignore_with_named_reason(
+        self, monkeypatch, caplog
+    ):
+        # Prompt too big for the window (Ollama silent truncation, or a hosted
+        # context-length 400 normalized by dispatch). We must NOT emit
+        # hearings/deadlines from a truncated prompt — skip with a distinct,
+        # operator-actionable reason, separate from "llm call failed".
+        monkeypatch.setenv("LLM_PROVIDER", "anthropic")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+        def boom(*a, **kw):
+            raise providers.ContextWindowExceededError(
+                "ollama", sent=300000, limit=256000
+            )
+
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            result = llm.extract_actions(
+                case_name="x",
+                court_id="x",
+                court_tz="x",
+                entry={"id": 7, "description": "", "recap_documents": []},
+                pdf_texts=[],
+                known_hearings=[],
+            )
+        assert result == [{"type": "IGNORE", "reason": "prompt exceeds context window"}]
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "context window" in msg and "entry 7" in msg
+
 
 # --- provider_info ---
 
@@ -606,6 +635,27 @@ class TestVerifyHearing:
         assert out == {"type": "UNCLEAR", "reason": "llm output truncated"}
         msg = "\n".join(r.getMessage() for r in caplog.records)
         assert "truncated" in msg and "max_tokens=512" in msg
+
+    def test_context_window_exceeded_returns_unclear(self, monkeypatch, caplog):
+        # A verify call whose context window overflows is a benign no-op
+        # (UNCLEAR), not a verdict from a truncated prompt — distinct reason
+        # so the log separates it from "llm call failed".
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+
+        def boom(system, user, max_tokens, **kw):
+            raise providers.ContextWindowExceededError("ollama", limit=4096)
+
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
+        with caplog.at_level("WARNING", logger="case_calendar.llm"):
+            out = llm.verify_hearing(
+                case_name="US v. X",
+                court_id="mad",
+                court_tz="America/New_York",
+                hearing=_hearing(),
+                recent_entries=[],
+            )
+        assert out == {"type": "UNCLEAR", "reason": "prompt exceeds context window"}
+        assert "context window" in "\n".join(r.getMessage() for r in caplog.records)
 
     def test_user_message_includes_hearing_and_entries(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
@@ -1935,6 +1985,26 @@ class TestGenerateDocketSummary:
                 hearings=[],
                 deadlines=[],
                 provider="bogus",
+            )
+
+    def test_context_window_exceeded_propagates(self, monkeypatch):
+        # generate_docket_summary must NOT swallow a context-window overflow:
+        # summary.summarize_docket relies on it propagating so it can store the
+        # polite SUMMARY_CONTEXT_EXCEEDED refusal.
+        def boom(system, user, max_tokens, *, model=None, **kwargs):
+            raise providers.ContextWindowExceededError("ollama", limit=8192)
+
+        monkeypatch.setattr(providers, "_call_anthropic", boom)
+        with pytest.raises(providers.ContextWindowExceededError):
+            llm.generate_docket_summary(
+                case_name="x",
+                aggregation_note=None,
+                docket={"docket_number": "x"},
+                primary_documents=[],
+                disposition_documents=[],
+                hearings=[],
+                deadlines=[],
+                provider="anthropic",
             )
 
     def test_anthropic_default_model(self, monkeypatch):

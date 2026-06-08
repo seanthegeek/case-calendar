@@ -1982,6 +1982,56 @@ class TestSummarizeDocket:
         assert call["docket"]["court_tz"] is not None
         assert [d["entry_id"] for d in call["primary_documents"]] == [10]
 
+    def test_context_window_exceeded_writes_polite_refusal(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        # When the assembled prompt is too big for the model's / configured
+        # context window, the generation call raises ContextWindowExceededError;
+        # summarize_docket must store the polite SUMMARY_CONTEXT_EXCEEDED refusal
+        # (rendered like any other fallback) rather than crash or publish a
+        # summary built from a silently truncated prompt.
+        _seed_docket_meta(store, 1)
+        patch_pdf["texts"] = {500: "INDICTMENT body text..."}
+
+        def _boom(**kwargs):
+            raise summary.llm.ContextWindowExceededError(
+                "ollama", sent=300000, limit=256000
+            )
+
+        monkeypatch.setattr(summary.llm, "generate_docket_summary", _boom)
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [
+                    {
+                        "id": 10,
+                        "description": "INDICTMENT",
+                        "date_filed": "2024-01-01",
+                        "entry_number": 1,
+                        "recap_documents": [{"id": 500}],
+                    }
+                ],
+                (1, "-date_filed"): [],
+            }
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1], calendar="cyber"
+        )
+
+        with caplog.at_level("WARNING", logger="case_calendar.summary"):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+
+        assert row is not None
+        assert row["summary"] == summary.llm.SUMMARY_CONTEXT_EXCEEDED
+        assert row["model"] == "n/a (context window exceeded)"
+        # Persisted like any other summary so the index shows the refusal.
+        persisted = store.get_docket_summary("us-v-doe", *_DEFAULT_GROUP)
+        assert persisted["summary"] == summary.llm.SUMMARY_CONTEXT_EXCEEDED
+        # Source entries preserved for the audit trail.
+        assert row["source_entry_ids"] == [10]
+        # Operator-visible WARNING explains the remedy.
+        msg = "\n".join(r.getMessage() for r in caplog.records)
+        assert "context window" in msg
+
     def test_inline_links_resolved_in_stored_summary(
         self, store, patch_pdf, monkeypatch
     ):

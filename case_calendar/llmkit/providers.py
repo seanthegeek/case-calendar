@@ -42,6 +42,51 @@ class OutputTruncatedError(RuntimeError):
         self.max_tokens = max_tokens
 
 
+class ContextWindowExceededError(RuntimeError):
+    """The prompt was too large for the model's / configured context window.
+
+    Distinct from :class:`OutputTruncatedError` (the *output* hit
+    ``max_tokens``): here the *input* didn't fit. The danger is silent — Ollama
+    TRUNCATES an over-long prompt and returns a normal-looking answer built from
+    a partial prompt, and the hosted providers reject the request with a
+    context-length API error. Either way the result would be built from
+    incomplete input, so callers convert this into a refusal (an ``IGNORE`` for
+    extraction, a UNCLEAR no-op for the verify/dedupe passes, a polite "too
+    large" message for summaries) rather than emit half-baked output.
+
+    ``sent`` / ``processed`` / ``limit`` are best-effort token figures for the
+    log line; any may be ``None`` when the figure isn't known (a hosted
+    provider's error gives us only a message, not counts). ``detail`` carries the
+    provider's own error text when there is one.
+    """
+
+    def __init__(
+        self,
+        provider: str,
+        *,
+        sent: Optional[int] = None,
+        processed: Optional[int] = None,
+        limit: Optional[int] = None,
+        detail: str = "",
+    ) -> None:
+        bits = []
+        if sent is not None:
+            bits.append(f"sent~{sent} tok")
+        if processed is not None:
+            bits.append(f"processed={processed} tok")
+        if limit is not None:
+            bits.append(f"limit={limit} tok")
+        if detail:
+            bits.append(detail)
+        suffix = f" ({'; '.join(bits)})" if bits else ""
+        super().__init__(f"{provider} prompt exceeds the context window{suffix}")
+        self.provider = provider
+        self.sent = sent
+        self.processed = processed
+        self.limit = limit
+        self.detail = detail
+
+
 # Default model per provider when the caller passes none and ``LLM_MODEL`` is
 # unset. The small/fast tier — this layer is used for structured extraction by
 # default; callers that want a heavier model (e.g. case_calendar's summary
@@ -50,19 +95,24 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5",
     "openai": "gpt-5.4-nano",
     "gemini": "gemini-3.1-flash-lite",
-    # Local inference via Ollama's OpenAI-compatible endpoint. Unlike the
-    # hosted providers, the local extraction default is deliberately NOT a
-    # small/fast tier: gemma4:31b is a single capable all-rounder used for both
-    # tracks, so a zero-config local install pulls and runs ONE model. The
-    # "small/fast for extraction" rule (see AGENTS.md) is a COST trade for the
-    # hosted APIs; local inference has no per-token cost, so the only thing a
-    # big extraction model costs locally is speed — which the operator can
-    # trade back by overriding LLM_MODEL with a smaller Gemma (e.g.
-    # gemma4:e4b) for faster backfills. gemma4 is Western-built (Google),
-    # permissively licensed, and text-capable — see docs/local-llms.md. Ollama
-    # is opt-in only (no API key to auto-detect from): select it with
-    # LLM_PROVIDER=ollama or a per-track override.
-    "ollama": "gemma4:31b",
+    # Local inference via Ollama's OpenAI-compatible endpoint. The local
+    # default is gemma4:e4b (a 9.6 GB download, 4.5B effective params,
+    # multimodal) for BOTH tracks, so a zero-config local install pulls and
+    # runs ONE model that fits a mainstream 16 GB card (12 GB at a reduced
+    # window); an 8 GB card is too small for it (use the 7.2 GB gemma4:e2b
+    # there, or hosted summaries). The larger gemma4:31b needs 20 GB just for
+    # weights, which leaves no room for a summary-sized KV cache on a 24 GB card
+    # (it OOMs / spills to RAM and crawls) — it wants a 32 GB GPU (an RTX 5090),
+    # so it is the opt-in QUALITY upgrade, not the default. Operators with a
+    # 32 GB+ card trade UP with
+    # LLM_MODEL=gemma4:31b (or LLM_SUMMARY_MODEL=gemma4:31b to upgrade only
+    # summaries); on 24 GB or less the quality path for summaries is hosted
+    # (the hybrid setup), not local 31b. Local inference has no per-token cost,
+    # so the one-model-for-both-tracks design holds either way. gemma4 is
+    # Western-built (Google), permissively licensed, and text-capable — see
+    # docs/local-llms.md. Ollama is opt-in only (no API key to auto-detect
+    # from): select it with LLM_PROVIDER=ollama or a per-track override.
+    "ollama": "gemma4:e4b",
 }
 
 # Every provider this layer can dispatch to. Used to validate the
@@ -295,10 +345,52 @@ def _call_gemini(
     return resp.text
 
 
-# Cache each local model's reported capabilities (from Ollama's /api/show) so the
-# lookup runs at most once per (base_url, model) per process. A model name's
-# capabilities don't change at runtime, so the cache never needs busting.
-_OLLAMA_CAPABILITIES_CACHE: dict[tuple[str, str], frozenset[str]] = {}
+# Cache each local model's full /api/show response so the lookup runs at most
+# once per (base_url, model) per process. Both `ollama_capabilities` and
+# `ollama_context_window` read from this one cache, so a model is shown only
+# once even though two different fields are wanted. A model name's /api/show
+# data doesn't change at runtime, so the cache never needs busting; a failed
+# lookup caches None so we don't retry a downed server on every call.
+_OLLAMA_SHOW_CACHE: dict[tuple[str, str], Optional[dict[str, Any]]] = {}
+
+
+def _ollama_show(model: str) -> Optional[dict[str, Any]]:
+    """Fetch (and cache) the model's ``/api/show`` payload, or ``None`` on any
+    failure (server down, old Ollama, unknown model). Shared by
+    :func:`ollama_capabilities` and :func:`ollama_context_window`."""
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    cache_key = (base_url, model)
+    if cache_key in _OLLAMA_SHOW_CACHE:
+        return _OLLAMA_SHOW_CACHE[cache_key]
+
+    import json
+    import urllib.request
+
+    # /api/show is Ollama's native endpoint; the OpenAI-compat base_url carries a
+    # trailing /v1 that has to come off first.
+    root = base_url.rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    data: Optional[dict[str, Any]] = None
+    try:
+        req = urllib.request.Request(
+            root + "/api/show",
+            data=json.dumps({"model": model}).encode(),
+            headers={"content-type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.load(resp)
+    except Exception:
+        logger.debug(
+            "ollama /api/show lookup failed for model=%s (base_url=%s); "
+            "treating as unknown",
+            model,
+            base_url,
+            exc_info=True,
+        )
+        data = None
+    _OLLAMA_SHOW_CACHE[cache_key] = data
+    return data
 
 
 def ollama_capabilities(model: str) -> frozenset[str]:
@@ -317,40 +409,116 @@ def ollama_capabilities(model: str) -> frozenset[str]:
     guessing wrong in the not-a-thinking-model direction would re-introduce the
     empty-summary failure, so unknown is handled like thinking.
     """
-    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
-    cache_key = (base_url, model)
-    cached = _OLLAMA_CAPABILITIES_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
+    data = _ollama_show(model)
+    if not data:
+        return frozenset()
+    return frozenset(data.get("capabilities") or ())
 
-    import json
-    import urllib.request
 
-    # /api/show is Ollama's native endpoint; the OpenAI-compat base_url carries a
-    # trailing /v1 that has to come off first.
-    root = base_url.rstrip("/")
-    if root.endswith("/v1"):
-        root = root[:-3].rstrip("/")
-    caps: frozenset[str] = frozenset()
-    try:
-        req = urllib.request.Request(
-            root + "/api/show",
-            data=json.dumps({"model": model}).encode(),
-            headers={"content-type": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.load(resp)
-        caps = frozenset(data.get("capabilities") or ())
-    except Exception:
-        logger.debug(
-            "ollama capabilities lookup failed for model=%s (base_url=%s); "
-            "treating as unknown",
-            model,
-            base_url,
-            exc_info=True,
-        )
-    _OLLAMA_CAPABILITIES_CACHE[cache_key] = caps
-    return caps
+def ollama_context_window(model: str) -> Optional[int]:
+    """The model's MAXIMUM trained context length, read from ``/api/show``'s
+    ``model_info`` (the ``<architecture>.context_length`` field, e.g.
+    ``gemma4.context_length``). Cached per ``(OLLAMA_BASE_URL, model)`` via the
+    shared :func:`_ollama_show`.
+
+    Returns ``None`` when it can't be determined (old Ollama, unreachable
+    server, unknown model, unexpected payload shape) — the caller degrades to
+    the post-flight truncation backstop in :func:`_call_ollama`.
+
+    NOTE: this is the model's architecture CEILING, which is not necessarily the
+    server's runtime window. The Ollama desktop app's ``num_ctx`` can be set
+    LOWER and isn't exposed through the API, so a prompt under this ceiling can
+    still be truncated by a smaller runtime window. The post-flight check is the
+    backstop for that case; an explicit ``OLLAMA_NUM_CTX`` (which case-calendar
+    both forwards and reads) is the exact-knowledge case.
+    """
+    data = _ollama_show(model)
+    if not data:
+        return None
+    info = data.get("model_info") or {}
+    if not isinstance(info, dict):
+        return None
+    for key, val in info.items():
+        if (
+            key.endswith("context_length")
+            and isinstance(val, int)
+            and not isinstance(val, bool)
+        ):
+            return val
+    return None
+
+
+def _ollama_context_limit(model: str) -> Optional[int]:
+    """The effective context window to check a prompt against, or ``None`` when
+    we have no figure to check (the post-flight backstop then handles it).
+
+    Resolution order:
+      1. ``OLLAMA_NUM_CTX`` — the operator's explicit per-request window, which
+         :func:`_call_ollama` also forwards as ``options.num_ctx``, so when it's
+         set we know the limit EXACTLY.
+      2. the model's architecture max via :func:`ollama_context_window`.
+    A malformed ``OLLAMA_NUM_CTX`` falls through to the model max rather than
+    crashing the call.
+    """
+    env = os.environ.get("OLLAMA_NUM_CTX", "").strip()
+    if env:
+        try:
+            return int(env)
+        except ValueError:
+            logger.warning("OLLAMA_NUM_CTX=%r is not an integer; ignoring", env)
+    return ollama_context_window(model)
+
+
+# Calibration: legal prose tokenizes at roughly 3.83 chars/token on Anthropic's
+# tokenizer (measured against SYSTEM_PROMPT — see AGENTS.md cache notes), and
+# other tokenizers land within ~15% of that. The pre-flight guard divides by a
+# slightly SMALLER number so it OVER-counts tokens and errs toward refusing a
+# borderline prompt rather than letting Ollama silently truncate it; the
+# post-flight comparison uses the best-estimate number.
+_PREFLIGHT_CHARS_PER_TOKEN = 3.5
+_ESTIMATE_CHARS_PER_TOKEN = 3.83
+# Post-flight backstop when the limit is UNKNOWN (no OLLAMA_NUM_CTX and
+# /api/show unavailable): only flag truncation on a GROSS shortfall between what
+# we estimate we sent and what the server reports it processed, so tokenizer
+# variance between our char estimate and the server's real count can't
+# false-positive on a prompt that actually fit.
+_UNKNOWN_LIMIT_TRUNCATION_RATIO = 1.6
+_UNKNOWN_LIMIT_MIN_GAP_TOKENS = 1000
+
+
+def _detect_ollama_input_truncation(
+    *, processed: int, prompt_chars: int, limit: Optional[int], max_tokens: int
+) -> None:
+    """Raise :class:`ContextWindowExceededError` if the Ollama server appears to
+    have silently truncated the prompt. Ground-truth: ``processed`` is the
+    prompt-token count the server actually evaluated (post-truncation), read
+    from the OpenAI-shaped ``usage``.
+
+    - **Limit known:** truncation shows up as the server SATURATING the prompt
+      budget — ``processed`` reaching ``limit - max_tokens``. A prompt that
+      genuinely fit leaves headroom, so it stays below that line. This signal is
+      tokenizer-independent (it doesn't depend on our char estimate at all).
+    - **Limit unknown:** fall back to comparing our char-based estimate of what
+      we sent against ``processed``; only fire on a gross shortfall (both the
+      ratio AND an absolute-gap floor) to stay clear of tokenizer variance.
+
+    A non-positive ``processed`` (e.g. a test double whose usage coerces to 0)
+    carries no signal, so it's a no-op.
+    """
+    if processed <= 0:
+        return
+    est_sent = int(prompt_chars / _ESTIMATE_CHARS_PER_TOKEN)
+    if limit is not None:
+        if processed >= limit - max_tokens:
+            raise ContextWindowExceededError(
+                "ollama", sent=est_sent, processed=processed, limit=limit
+            )
+        return
+    if (
+        est_sent > processed * _UNKNOWN_LIMIT_TRUNCATION_RATIO
+        and est_sent - processed > _UNKNOWN_LIMIT_MIN_GAP_TOKENS
+    ):
+        raise ContextWindowExceededError("ollama", sent=est_sent, processed=processed)
 
 
 def ensure_thinking_budget(
@@ -433,6 +601,23 @@ def _call_ollama(
     import openai
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["ollama"])
+
+    # Pre-flight: refuse a prompt that won't fit BEFORE spending a (possibly
+    # multi-minute) local generation that Ollama would build from a silently
+    # truncated prompt. When we can't learn the window, we fall through and let
+    # the post-flight check below catch any truncation from the real token count.
+    limit = _ollama_context_limit(chosen)
+    prompt_chars = len(system) + len(user)
+    if limit is not None:
+        est_prompt = int(prompt_chars / _PREFLIGHT_CHARS_PER_TOKEN) + 1
+        if est_prompt + max_tokens > limit:
+            raise ContextWindowExceededError(
+                "ollama",
+                sent=est_prompt,
+                limit=limit,
+                detail=f"reserving max_tokens={max_tokens} for output",
+            )
+
     base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
     # Ollama ignores the key, but the SDK refuses to construct without one.
     api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
@@ -454,13 +639,48 @@ def _call_ollama(
         # Ollama reads model runtime options from a top-level `options` object;
         # the OpenAI SDK forwards unknown body fields via `extra_body`.
         kwargs["extra_body"] = {"options": {"num_ctx": int(num_ctx)}}
-    resp = client.chat.completions.create(**kwargs)
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # A configured context window the hardware can't hold (e.g. a 256K
+        # num_ctx set in the Ollama desktop app on a GPU that can't fit the KV
+        # cache) surfaces here as a memory-allocation failure, NOT a
+        # context-length error. Log a clear, operator-actionable hint (the
+        # remedy is to LOWER the window, the opposite of the too-big-prompt
+        # case) and re-raise unchanged so the caller's existing fail-safe runs
+        # (extraction -> IGNORE, verify/dedupe -> UNCLEAR, summary -> left
+        # stale to retry). We do NOT turn this into ContextWindowExceededError:
+        # that would tell the operator to RAISE the window, making it worse.
+        if _is_memory_error(exc):
+            logger.warning(
+                "Ollama could not allocate memory for model=%s at context "
+                "window=%s tok — the hardware likely can't hold the KV cache "
+                "for the configured num_ctx (OLLAMA_NUM_CTX / the Ollama "
+                "desktop context setting). LOWER the context window or free "
+                "GPU/system RAM. Error: %s",
+                chosen,
+                limit,
+                str(exc)[:300],
+            )
+        raise
+    tok = usage.from_openai(resp)
     usage.record(
         purpose=purpose,
         provider="ollama",
         model=chosen,
-        tokens=usage.from_openai(resp),
+        tokens=tok,
         docket=docket,
+    )
+    # Post-flight backstop: the server reports how many prompt tokens it
+    # actually evaluated. If it silently truncated an over-long prompt (the
+    # desktop num_ctx is lower than the model max we checked pre-flight, or we
+    # had no limit to check), this raises rather than return an answer built
+    # from a partial prompt.
+    _detect_ollama_input_truncation(
+        processed=tok.input,
+        prompt_chars=prompt_chars,
+        limit=limit,
+        max_tokens=max_tokens,
     )
     choice = resp.choices[0]
     text = choice.message.content
@@ -504,21 +724,50 @@ def _dispatch_llm_call(
     is what ``case_calendar.llm`` uses for every domain call so
     extraction / verify / dedupe / summary decisions don't depend on
     sampling variance across syncs.
+
+    A hosted provider's "context length exceeded" error is normalized to
+    :class:`ContextWindowExceededError` here (matched on the SDK error
+    message — see :func:`_is_context_length_error`), so a too-large prompt
+    reads the same to callers regardless of provider: Ollama raises it from
+    its own pre/post-flight checks, and the hosted SDKs' 400s are converted
+    to it here. Callers then turn it into a refusal instead of crashing.
     """
-    if provider == "anthropic":
-        # Anthropic has no `json_mode` knob (no JSON mode flag in the
-        # SDK; we just rely on the prompt and validate the response).
-        return _call_anthropic(
-            system,
-            user,
-            max_tokens,
-            model=model,
-            purpose=purpose,
-            docket=docket,
-            temperature=temperature,
-        )
-    if provider == "openai":
-        return _call_openai(
+    try:
+        if provider == "anthropic":
+            # Anthropic has no `json_mode` knob (no JSON mode flag in the
+            # SDK; we just rely on the prompt and validate the response).
+            return _call_anthropic(
+                system,
+                user,
+                max_tokens,
+                model=model,
+                purpose=purpose,
+                docket=docket,
+                temperature=temperature,
+            )
+        if provider == "openai":
+            return _call_openai(
+                system,
+                user,
+                max_tokens,
+                model=model,
+                json_mode=json_mode,
+                purpose=purpose,
+                docket=docket,
+                temperature=temperature,
+            )
+        if provider == "ollama":
+            return _call_ollama(
+                system,
+                user,
+                max_tokens,
+                model=model,
+                json_mode=json_mode,
+                purpose=purpose,
+                docket=docket,
+                temperature=temperature,
+            )
+        return _call_gemini(
             system,
             user,
             max_tokens,
@@ -528,27 +777,67 @@ def _dispatch_llm_call(
             docket=docket,
             temperature=temperature,
         )
-    if provider == "ollama":
-        return _call_ollama(
-            system,
-            user,
-            max_tokens,
-            model=model,
-            json_mode=json_mode,
-            purpose=purpose,
-            docket=docket,
-            temperature=temperature,
-        )
-    return _call_gemini(
-        system,
-        user,
-        max_tokens,
-        model=model,
-        json_mode=json_mode,
-        purpose=purpose,
-        docket=docket,
-        temperature=temperature,
-    )
+    except (ContextWindowExceededError, OutputTruncatedError):
+        # Already in the shape callers expect — pass through unchanged.
+        raise
+    except Exception as exc:
+        # A hosted provider rejects an over-long prompt with a context-length
+        # 400 rather than truncating silently; convert it so callers handle
+        # over-context uniformly. Anything else propagates unchanged.
+        if _is_context_length_error(exc):
+            raise ContextWindowExceededError(provider, detail=str(exc)[:300]) from exc
+        raise
+
+
+# Substrings (lowercased) that mark a provider's "the prompt is too big for the
+# model's context window" error. Curated from each SDK's actual message rather
+# than matching on error class, so the check stays provider-agnostic and needs
+# no SDK imports: OpenAI says "maximum context length" + code
+# `context_length_exceeded`; Anthropic says "prompt is too long"; Gemini says
+# "input token count ... exceeds the maximum number of tokens".
+_CONTEXT_ERROR_MARKERS = (
+    "context length",
+    "context_length_exceeded",
+    "maximum context",
+    "context window",
+    "prompt is too long",
+    "input token count",
+    "exceeds the maximum number of tokens",
+    "too many input tokens",
+    "reduce the length of the messages",
+)
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    """True when an SDK exception is a context-length / prompt-too-long error,
+    matched on its message text (see :data:`_CONTEXT_ERROR_MARKERS`)."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _CONTEXT_ERROR_MARKERS)
+
+
+# Substrings (lowercased) marking an Ollama "couldn't allocate memory for this
+# context window" failure — the hardware can't hold the KV cache for the
+# configured num_ctx (e.g. an operator set a 256K window on a GPU that can't
+# fit it). This is the OPPOSITE problem from ContextWindowExceededError (the
+# prompt may be tiny) with the OPPOSITE remedy (LOWER num_ctx / free RAM, not
+# raise it), so it is deliberately NOT converted to ContextWindowExceededError
+# — see `_call_ollama`, which only logs a clearer operator hint and re-raises
+# so the call still fails safe.
+_MEMORY_ERROR_MARKERS = (
+    "out of memory",
+    "cudamalloc",
+    "failed to allocate",
+    "requires more system memory",
+    "not enough memory",
+    "insufficient memory",
+)
+
+
+def _is_memory_error(exc: Exception) -> bool:
+    """True when an exception looks like an Ollama out-of-memory / can't-allocate
+    failure (see :data:`_MEMORY_ERROR_MARKERS`)."""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _MEMORY_ERROR_MARKERS)
 
 
 def provider_info() -> str:
