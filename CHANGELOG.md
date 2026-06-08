@@ -8,6 +8,58 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.16.1] - 2026-06-07
+
+### Added
+
+- **Over-context prompts are now refused, not silently truncated.** When a
+  prompt is too large for the model's (or configured) context window, Case
+  Calendar refuses rather than emit output built from a partial prompt. This
+  closes a silent-corruption hole specific to local inference: Ollama truncates
+  an over-long prompt and returns a normal-looking answer built from only the
+  first few pages. The window is learned from `OLLAMA_NUM_CTX` if set, otherwise
+  the model's maximum via Ollama's `/api/show`, and each prompt is checked both
+  before the call and afterward against the prompt-token count the server
+  reports it actually read. On overflow, extraction skips the entry (logged and
+  retried on the next sync), the verify / dedupe passes return a no-op, and a
+  summary stores a short "this docket's documents are too large to summarize
+  within the model's configured context window" message on the index page.
+  Hosted providers (Anthropic / OpenAI / Gemini) reject an over-long prompt
+  with a context-length error instead of truncating; that error is normalized
+  to the same refusal, so the behavior is uniform across providers.
+  (`ContextWindowExceededError` in `case_calendar/llmkit/providers.py`.)
+- **Distinct out-of-memory diagnostic for local models.** Configuring a context
+  window larger than the GPU can hold surfaces as a memory-allocation failure,
+  not a context-length error — and the remedy is the opposite (LOWER the
+  window). Case Calendar now logs a separate, operator-actionable warning for
+  that case, fails the one call safely, and never mislabels it as "documents
+  too large."
+
+### Changed
+
+- **The default local (Ollama) model is now `gemma4:e4b` for both the
+  extraction and summary tracks** (previously `gemma4:31b`). The default is
+  chosen for hardware fit: e4b is a 9.6 GB download that runs comfortably on a
+  mainstream 16 GB card (12 GB at a reduced window; an 8 GB card needs the
+  smaller 7.2 GB `gemma4:e2b` or hosted summaries), while `gemma4:31b` needs
+  20 GB just for its weights, leaving no room for a summary-sized context window
+  on a 24 GB card — it wants a 32 GB GPU (an RTX 5090). The larger model is the
+  opt-in quality upgrade: set `LLM_MODEL=gemma4:31b` on a 32 GB card (or
+  `LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries); on smaller cards
+  the quality path for summaries is a hosted provider (the hybrid setup).
+  Hosted-provider defaults are unchanged.
+
+### Documentation
+
+- Rewrote the Ollama context-window guidance in [docs/local-llms.md]: links to
+  Ollama's [context length documentation](https://docs.ollama.com/context-length),
+  recommends setting the window to 128K (`131072`, the full window of the
+  default `gemma4:e4b`), documents all three ways to set it
+  (`OLLAMA_CONTEXT_LENGTH` / the desktop slider, `OLLAMA_NUM_CTX`, and a
+  Modelfile), and explains the out-of-memory case and its opposite remedy.
+
+[docs/local-llms.md]: docs/local-llms.md
+
 ## [0.16.0] - 2026-06-07
 
 ### Added

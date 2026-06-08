@@ -34,14 +34,26 @@ and the summarizer ask very different things of a model:
   solid small/mid model already handles. This is the track whose per-token cost
   adds up on a hosted API, so it's the one most worth moving to your GPU.
 - **Summaries** — low volume (one call per docket) but **long context** (tens of
-  thousands of tokens of indictment / judgment text) and synthesis-heavy. Needs
-  a more capable model, a large context window, and — for adversary-nation
-  cases — a model you trust to describe the charges faithfully.
+  thousands of tokens of indictment / judgment text) and synthesis-heavy.
+  Benefits from a more capable model and a large context window, and — for
+  adversary-nation cases — a model you trust to describe the charges faithfully.
 
-A capable GPU runs local extraction comfortably while a 32K-context summary
-model is a tighter fit, which is why the **hybrid** setup (local extraction,
-hosted or Western-model summaries) is the sweet spot for most consumer GPUs.
-The two tracks are configured independently — see [Configure](#configure).
+The default local model — `gemma4:e4b` — runs **both** tracks. It's a 9.6 GB
+download (4.5B effective parameters, multimodal), so it wants a **16 GB** card
+to run comfortably at the recommended 128K window; a 12 GB card works at a
+reduced window, and an 8 GB card is too small — there, drop to the 7.2 GB
+`gemma4:e2b` at a modest window or run summaries hosted. On a card that fits it,
+the simplest setup is everything local. Summaries are the more demanding track,
+and there are two ways to improve their quality. The larger `gemma4:31b` is
+better, but its 20 GB of weights leave no room for a useful context window even
+on a 24 GB card — it runs out of memory (or spills to system RAM and crawls) at
+the windows summaries need — so it wants a **32 GB GPU**, which on the current
+consumer line means an RTX 5090 (the 5080 is only 16 GB) or the older route of
+two cards. On anything smaller the quality path is instead the **hybrid** setup:
+keep extraction local and send only summaries to a hosted (or Western-model)
+provider. Hybrid is also the answer for adversary-nation cases where you want a
+model you specifically trust. The two tracks are configured
+independently — see [Configure](#configure).
 
 ## Choosing a model
 
@@ -61,11 +73,20 @@ LLM), so you never need a vision/multimodal variant.
 
 For a single recommendation: **Gemma 4** is the cleanest all-rounder — Western
 (Google), permissively licensed, good at the structured output extraction
-needs, and capable enough for summaries — with a size for every GPU tier
-(`gemma4:e2b` for 8 GB up to `gemma4:31b` for 24 GB). It's also the built-in
-Ollama default: selecting `LLM_PROVIDER=ollama` with no model override runs
-`gemma4:31b` for both tracks (override `LLM_MODEL` with a smaller Gemma if you
-want faster extraction — see [Configure](#configure)).
+needs, and capable enough for summaries — and it comes in several sizes
+(`e2b` 7.2 GB / `e4b` 9.6 GB / `26b` 18 GB / `31b` 20 GB) so one fits your card.
+It's the built-in Ollama default: selecting `LLM_PROVIDER=ollama` with no model
+override runs **`gemma4:e4b` for both tracks** — the 9.6 GB default, which runs
+comfortably on a mainstream 16 GB card (12 GB at a reduced window; an 8 GB card
+needs the smaller `gemma4:e2b` or hosted summaries). On a **32 GB-or-larger**
+card, trade UP to the higher-quality `gemma4:31b` with `LLM_MODEL=gemma4:31b`
+(or `LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries, where the bigger
+model helps most). It does **not** fit a 24 GB card at the context window
+summaries need — its 20 GB of weights leave no room for the KV cache (see
+[Context window](#context-window)) — so on 24 GB or less, keep `gemma4:e4b`
+local and send summaries to a hosted provider if you want higher quality (the
+hybrid setup). The two tracks are configured separately — see
+[Configure](#configure).
 
 China-developed models (**Qwen3 / Qwen 3.6** from Alibaba, **DeepSeek-R1**,
 **Kimi**) are technically excellent — Qwen in particular is top-tier at
@@ -155,8 +176,21 @@ yes/no.
 | 7–8B | ≈5–6 GB | 8–12 GB |
 | 12–14B | ≈10–12 GB | 16 GB |
 | 24–27B | ≈16–20 GB | 24 GB (or 16 GB at reduced context) |
-| 31–32B | ≈18–22 GB | 24 GB |
+| 31–32B | ≈18–22 GB | **32 GB** — won't fit a useful window on 24 GB |
 | 70B | ≈40 GB | 32 GB with minimal CPU offload, or 2× 24 GB |
+
+The "32K context" column is a reference point. The window this project
+**recommends** is 128K (see [Context window](#context-window)), whose KV cache is
+roughly 4× the 32K figure — so a model that only *just* fits 32K on a card will
+overrun it at 128K. This is exactly why `gemma4:31b` (20 GB of weights) is not a
+24 GB model for summaries: there's no room left for the cache at the window
+summaries need.
+
+Size a model by its actual download, not its parameter count — the multimodal
+Gemma 4 variants are heavier than the per-billion rule suggests. The default
+`gemma4:e4b` is **9.6 GB** (it carries vision/audio weights on top of its text
+params), `gemma4:e2b` is 7.2 GB, `gemma4:26b` is 18 GB, and `gemma4:31b` is
+20 GB.
 
 ### By GPU tier
 
@@ -164,19 +198,24 @@ The VRAM tier is what matters; the cards are examples across vendors.
 
 | VRAM | Nvidia | AMD (ROCm) | Intel Arc | What runs |
 | --- | --- | --- | --- | --- |
-| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | 7–8B extraction (`gemma4:e2b`); summaries hosted |
-| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | 7–14B; small summaries at 16–24K context |
-| **16 GB** | RTX 4060 Ti 16GB / 5080 | RX 7800 XT / 9070 XT | Arc A770 | any 7–14B; Mistral Small 24B or `gpt-oss:20b` at reduced context |
-| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | **the sweet spot** — `gemma4:31b` at full 32K context, both tracks |
-| **32 GB** | RTX 5090 | — | — | 32B at a heavier quant, or a 70B with minimal offload |
+| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | too small for the default `gemma4:e4b` (9.6 GB) — use `gemma4:e2b` (7.2 GB) at a small window, or run summaries hosted |
+| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | runs the default `gemma4:e4b` at a reduced window; `gemma4:e2b` for the full 128K |
+| **16 GB** | RTX 4060 Ti 16GB / 5070 Ti / 5080 | RX 7800 XT / 9070 XT | Arc A770 | **runs the default `gemma4:e4b` at the full 128K window** — the recommended local setup; also Mistral Small 24B or `gpt-oss:20b` at reduced context |
+| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | runs the default `gemma4:e4b` for both tracks with room to spare, even at a 128K window. `gemma4:31b` does **not** fit a useful window here (its 20 GB of weights crowd out the KV cache) — for better summaries, use the hybrid setup (hosted summaries). See [Context window](#context-window) |
+| **32 GB** | RTX 5090 | — | — | the home for the `gemma4:31b` summary upgrade at a real window; or a 70B with minimal offload |
 
-A single consumer card tops out around **32B** comfortably; 70B-class models
-really want a 32 GB card with offload or two 24 GB cards.
+A single consumer card tops out around **32B**, and only on the biggest one — a
+32 GB **RTX 5090**. Mind the NVIDIA gap: 24 GB was the previous-gen flagship
+(RTX 3090 / 4090), but the current line jumps from the 16 GB **RTX 5080**
+straight to the 32 GB 5090, so on NVIDIA the `gemma4:31b` upgrade effectively
+means a 5090. On AMD the 24 GB **RX 7900 XTX** is the value option — plenty for
+the default `gemma4:e4b`, but still short for a 31b summary at a real window.
+70B-class models want 32 GB with offload, or two cards.
 
 **Software support varies by vendor — VRAM is necessary but not sufficient.**
 Nvidia (CUDA) is the most plug-and-play. AMD (ROCm) works well on recent Radeon
-cards — the 24 GB RX 7900 XTX is a strong-value pick for the sweet-spot tier —
-but doesn't cover every card. It's smoothest on bare Linux; on Windows, native
+cards — the 24 GB RX 7900 XTX is a strong-value pick for running the default
+`gemma4:e4b` locally — but doesn't cover every card. It's smoothest on bare Linux; on Windows, native
 Ollama already drives the Radeon GPU directly, while running ROCm *inside* WSL2
 needs a WSL-specific runtime (see below). Intel Arc runs local models (through `llama.cpp`'s Vulkan backend or
 Intel's own tooling) but native Ollama support is still experimental in 2026 and
@@ -220,13 +259,15 @@ on two counts:
 
 - **\~40% faster** generation on the small model — `gemma4:e4b` ran at \~83
   tok/s on native Windows vs \~58 tok/s in WSL2 (both at 100% GPU).
-- It ran **`gemma4:31b` entirely in VRAM at 100% GPU**, which the WSL2 path could
-  **not**. Inside WSL2 the DXG/DXCore layer's memory overhead leaves too little
-  room for the model's inference compute buffer, so a realistic (10K+ token)
-  prompt to the 31b failed with an out-of-memory HTTP 500 or a load timeout even
-  though the weights themselves loaded. The 32K-context / 24 GB summary ceiling
-  in [Hardware](#hardware-requirements) applies on top of this — WSL2 just hits
-  the wall sooner.
+- It could **load `gemma4:31b`'s weights entirely in VRAM at 100% GPU**, which
+  the WSL2 path could not — inside WSL2 the DXG/DXCore layer's memory overhead
+  leaves too little room even for the inference compute buffer, so a realistic
+  (10K+ token) prompt to the 31b failed with an out-of-memory HTTP 500 or a load
+  timeout though the weights themselves loaded. But loading the weights is not
+  the same as running summaries: either way, 24 GB has no room for a
+  summary-sized context window on top of 31b's 20 GB of weights (see
+  [Hardware](#hardware-requirements)) — WSL2 just hits the wall sooner. This is
+  why the local default is `gemma4:e4b`, with 31b reserved for a 32 GB+ card.
 
 Net: on AMD, run Ollama natively on Windows and point Case Calendar at it from
 WSL2 (the `OLLAMA_BASE_URL` line above). Reserve in-WSL2 ROCm for small models
@@ -253,14 +294,15 @@ Ollama is **opt-in only**. The hosted providers auto-detect from their API
 keys; Ollama has no key, so you select it explicitly in `.env`. No
 `config.yaml` change is needed.
 
-**Everything local** — both tracks. The default model is `gemma4:31b` for
+**Everything local** — both tracks. The default model is `gemma4:e4b` for
 extraction *and* summaries, so the minimal config is one line:
 
 ```bash
 LLM_PROVIDER=ollama
-# Defaults to gemma4:31b for both tracks. Extraction is high-volume, so to
-# speed up large backfills, point it at a smaller Gemma (summaries stay on 31b):
-# LLM_MODEL=gemma4:e4b
+# Defaults to gemma4:e4b for both tracks (fits common consumer GPUs). If you
+# have the VRAM, upgrade to the higher-quality 31B model — for both tracks
+# (LLM_MODEL=gemma4:31b) or just summaries, where it helps most:
+# LLM_SUMMARY_MODEL=gemma4:31b
 ```
 
 **Hybrid** — local extraction, hosted (or Western-model) summaries. This is the
@@ -281,47 +323,95 @@ confirm the wiring at a glance.
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull gemma4:e4b      # extraction
-ollama pull gemma4:31b      # summaries (if running them locally)
+ollama pull gemma4:e4b      # the default — both tracks
+ollama pull gemma4:31b      # optional quality upgrade (summaries), if you have the VRAM
 ollama serve                # usually already running as a service
 ```
 
 ### Context window
 
-Local models default to a **small context window** (often 4K–8K tokens) and
-Ollama **silently truncates** anything longer instead of erroring. Extraction
+Local models default to a **small context window** — Ollama allocates
+[4K on cards under 24 GB of VRAM and 32K on 24–48 GB](https://docs.ollama.com/context-length) —
+and **silently truncates** anything longer instead of erroring. Extraction
 sends one short entry at a time, so it's rarely affected. **Summaries are** —
-they feed tens of thousands of tokens into one call, so with the default window
-you'd get a confident summary of only the first few pages, with no warning.
+they feed tens of thousands of tokens into one call, so with too small a window
+the model would otherwise summarize only the first few pages.
 
-Two ways to raise it:
+Case Calendar guards against this rather than publishing half-baked output. It
+learns the window (`OLLAMA_NUM_CTX` if set, otherwise the model's maximum via
+Ollama's `/api/show`) and, if a prompt won't fit — checked before the call, and
+again afterward against the tokens the server reports it actually read — it
+**refuses instead of emitting a truncated result**: extraction skips the entry
+(logged, retried next sync), the verify/dedupe passes return a no-op, and a
+summary stores a short "this docket's documents are too large to summarize
+within the model's configured context window" message on the index. Each refusal
+logs a `WARNING` naming the remedy. So the fix below is about *avoiding* the
+refusal, not preventing silent corruption.
 
-1. **`OLLAMA_NUM_CTX`** (quick, best-effort) — Case Calendar forwards it per
-   request:
+**Set the window to 128K (`131072`) — the full window of the default
+`gemma4:e4b`.** Ollama's own defaults are too small for summaries (4K under
+24 GB of VRAM, 32K on 24–48 GB; it [recommends at least 64K](https://docs.ollama.com/context-length)
+for large-context work), so you have to raise it. 128K comfortably covers
+Case Calendar's summary prompts — the per-document char budgets bound how large
+one gets — and the context-overflow guard cleanly refuses anything that still
+wouldn't fit, so there's no downside to using the model's full window.
+
+There are three places to set it; any one works:
+
+1. **In Ollama itself** (simplest, applies to every model) — set the
+   `OLLAMA_CONTEXT_LENGTH` environment variable on the server, or move the
+   context-length slider in the Ollama desktop app's settings. See the
+   [Ollama context length docs](https://docs.ollama.com/context-length):
 
    ```bash
-   OLLAMA_NUM_CTX=32768
+   OLLAMA_CONTEXT_LENGTH=131072 ollama serve
+   ```
+
+2. **`OLLAMA_NUM_CTX`** in Case Calendar's `.env` (quick, best-effort) — Case
+   Calendar forwards it to Ollama per request:
+
+   ```bash
+   OLLAMA_NUM_CTX=131072
    ```
 
    Whether the OpenAI-compatible endpoint honors a per-request `num_ctx`
-   depends on your Ollama version, so verify it took effect.
+   depends on your Ollama version, so verify it took effect (or use option 1
+   or 3).
 
-2. **A Modelfile `PARAMETER num_ctx`** (reliable) — bake the window into a
+3. **A Modelfile `PARAMETER num_ctx`** (most reliable) — bake the window into a
    derived model and use that name:
 
    ```text
-   FROM gemma4:31b
-   PARAMETER num_ctx 32768
+   FROM gemma4:e4b
+   PARAMETER num_ctx 131072
    ```
 
    ```bash
    ollama create casecal-gemma -f ./Modelfile
-   # then: LLM_SUMMARY_MODEL=casecal-gemma
+   # then: LLM_MODEL=casecal-gemma
    ```
 
-A bigger window costs more VRAM (the KV cache in [Hardware](#hardware-requirements)),
-so size it to your card. 32K is a sensible target for summaries; extraction is
-fine at the default.
+Confirm it took effect with `ollama ps`, which shows each loaded model's
+allocated context and whether it's running on GPU or CPU. A bigger window costs
+more VRAM (the KV cache in [Hardware](#hardware-requirements)): 128K fits a
+24 GB card running `gemma4:e4b` comfortably; on a smaller card, drop it (64K is
+the floor Ollama recommends for large-context work). Don't exceed what your
+hardware can hold — see the warning below.
+
+> **Don't set the window bigger than your computer can run.** Picking a 256K
+> window (in `OLLAMA_NUM_CTX`, a Modelfile, or the Ollama desktop app) doesn't
+> mean your GPU has the memory for it. If it doesn't, one of two things happens:
+> Ollama keeps going by using your regular system memory — the answers are still
+> correct, but it gets *much* slower — or, if there isn't enough memory at all,
+> the request fails with an out-of-memory error.
+>
+> That out-of-memory error is a different problem from a prompt being too big,
+> and the fix is the opposite: make the window *smaller* (or free up memory),
+> not bigger. Case Calendar tells the two apart. When it runs out of memory it
+> writes a clear warning saying so — it does not call it "documents too large."
+> It also won't publish anything broken: it skips the entry, or leaves the
+> summary blank. But the same error will happen on every run until you shrink
+> the window or add memory. So pick a window size your card can actually run.
 
 ## Other OpenAI-compatible servers
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from . import usage
 from .providers import (
+    ContextWindowExceededError,
     OutputTruncatedError,
 )
 from .providers import (
@@ -37,6 +38,7 @@ from .usage import TokenLedger, TokenUsage
 
 __all__ = [
     "DEFAULT_MODELS",
+    "ContextWindowExceededError",
     "OutputTruncatedError",
     "TokenLedger",
     "TokenUsage",
