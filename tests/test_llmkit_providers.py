@@ -984,37 +984,28 @@ class TestCallOllama:
         providers._call_ollama("s", "u", 10, temperature=0.0)
         assert cap["body"]["options"]["temperature"] == 0.0
 
-    # --- per-track thinking control ---
+    # --- thinking policy: local thinking models think fully, unbounded ---
 
-    def test_thinking_model_disables_thinking_off_summary(self, monkeypatch):
-        # High-volume structured tracks: thinking OFF so reasoning can't overrun
-        # the output budget (the qwen3 "No content" failure) or take minutes.
-        for purpose in ("extract", "verify_hearing", "dedupe_hearings", "llm"):
+    def test_thinking_model_thinks_on_every_track_unbounded(self, monkeypatch):
+        # A thinking model thinks on EVERY track (no more think=false on the
+        # high-volume tracks, which made weak models re-emit known context), with
+        # an UNBOUNDED output budget (num_predict=-1 — local inference is free, so
+        # the reasoning isn't capped to a guessed number).
+        for purpose in (
+            "extract",
+            "verify_hearing",
+            "dedupe_hearings",
+            "llm",
+            "summary",
+        ):
             cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
             providers._call_ollama("s", "u", 8192, purpose=purpose)
-            assert cap["body"]["think"] is False, purpose
-            assert cap["body"]["options"]["num_predict"] == 8192, purpose
-
-    def test_thinking_model_summary_keeps_thinking_bounded_budget(self, monkeypatch):
-        # Summary track: thinking ON, output cap lifted to the generous BOUNDED
-        # budget (not unlimited — a runaway can hang the local GPU).
-        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
-        providers._call_ollama("s", "u", 8192, purpose="summary")
-        assert cap["body"]["think"] is True
-        assert (
-            cap["body"]["options"]["num_predict"]
-            == providers._OLLAMA_SUMMARY_THINKING_BUDGET
-        )
-
-    def test_summary_budget_respects_larger_max_tokens(self, monkeypatch):
-        # max() — a caller asking for more than the bounded budget still wins.
-        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
-        big = providers._OLLAMA_SUMMARY_THINKING_BUDGET + 5000
-        providers._call_ollama("s", "u", big, purpose="summary")
-        assert cap["body"]["options"]["num_predict"] == big
+            assert cap["body"]["think"] is True, purpose
+            assert cap["body"]["options"]["num_predict"] == -1, purpose
 
     def test_nonthinking_model_omits_think_field(self, monkeypatch):
-        # A model without the thinking capability gets a plain request.
+        # A model without the thinking capability gets a plain request — no think
+        # field, and the requested max_tokens as the budget (NOT unbounded).
         cap = self._fake_ollama(monkeypatch, caps=frozenset({"completion"}))
         providers._call_ollama("s", "u", 10, purpose="summary")
         assert "think" not in cap["body"]
@@ -1022,40 +1013,29 @@ class TestCallOllama:
 
     def test_unknown_caps_treated_as_thinking(self, monkeypatch):
         # An unconfirmable capability lookup (empty set) is treated AS thinking
-        # — the safe default — so a structured call still disables thinking.
+        # — the safe default — so the model still thinks (unbounded).
         cap = self._fake_ollama(monkeypatch, caps=frozenset())
         providers._call_ollama("s", "u", 10, purpose="extract")
-        assert cap["body"]["think"] is False
+        assert cap["body"]["think"] is True
+        assert cap["body"]["options"]["num_predict"] == -1
 
     # --- gpt-oss level-based thinking (think=false is ignored; can't disable) ---
 
-    def test_level_thinking_extract_uses_low_level_and_budget(self, monkeypatch):
-        # gpt-oss can't turn reasoning OFF — a boolean is ignored. So the
-        # high-volume tracks get the SHORTEST level ("low") plus output room for
-        # the trace + the answer, not think=false on a too-small budget.
+    def test_level_thinking_extract_uses_low_level_unbounded(self, monkeypatch):
+        # gpt-oss can't turn reasoning OFF — a boolean is ignored. Its deepest
+        # trace is too slow for high-volume work, so it gets the SHORTEST level
+        # ("low") there, with the same unbounded budget as other thinkers.
         for purpose in ("extract", "verify_hearing", "dedupe_hearings", "llm"):
             cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
             providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose=purpose)
             assert cap["body"]["think"] == "low", purpose
-            assert (
-                cap["body"]["options"]["num_predict"]
-                == providers._OLLAMA_SUMMARY_THINKING_BUDGET
-            ), purpose
+            assert cap["body"]["options"]["num_predict"] == -1, purpose
 
-    def test_level_thinking_summary_uses_high_level_and_budget(self, monkeypatch):
+    def test_level_thinking_summary_uses_high_level_unbounded(self, monkeypatch):
         cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
         providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="summary")
         assert cap["body"]["think"] == "high"
-        assert (
-            cap["body"]["options"]["num_predict"]
-            == providers._OLLAMA_SUMMARY_THINKING_BUDGET
-        )
-
-    def test_level_thinking_summary_respects_larger_max_tokens(self, monkeypatch):
-        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
-        big = providers._OLLAMA_SUMMARY_THINKING_BUDGET + 5000
-        providers._call_ollama("s", "u", big, model="gpt-oss:120b", purpose="summary")
-        assert cap["body"]["options"]["num_predict"] == big
+        assert cap["body"]["options"]["num_predict"] == -1
 
     def test_requires_thinking_level_matches_gpt_oss_variants(self):
         assert providers._ollama_requires_thinking_level("gpt-oss:20b")
@@ -1068,9 +1048,9 @@ class TestCallOllama:
     def test_think_value_is_string_level_for_gpt_oss_but_bool_for_others(
         self, monkeypatch
     ):
-        # Same track ("extract"), divergent contract: gpt-oss must receive a
-        # STRING level (Ollama ignores a boolean for it), every other thinking
-        # model receives a BOOLEAN. Pins the type divergence that's easy to
+        # Same track ("extract"), divergent contract: gpt-oss receives a STRING
+        # level (Ollama ignores a boolean for it), every other thinking model
+        # receives the boolean True. Pins the type divergence that's easy to
         # regress if the two branches are ever collapsed.
         cap_oss = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
         providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="extract")
@@ -1079,7 +1059,7 @@ class TestCallOllama:
 
         cap_qwen = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
         providers._call_ollama("s", "u", 4096, model="qwen3.5:9b", purpose="extract")
-        assert cap_qwen["body"]["think"] is False
+        assert cap_qwen["body"]["think"] is True
         assert isinstance(cap_qwen["body"]["think"], bool)
 
 

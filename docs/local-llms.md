@@ -419,38 +419,39 @@ hardware can hold — see the warning below.
 
 ## Thinking models
 
-Some open models (**Qwen3**, **DeepSeek**, **Gemma**) are *thinking* models:
-they emit a hidden chain of reasoning before the answer, drawn from the **same
-output budget** as the answer. That's a poor fit for high-volume structured
-extraction — on a dense docket entry the reasoning can run to many thousands of
-tokens, overrunning the output budget (the model hits the limit mid-thought and
-returns an empty answer) and taking a minute or more per call.
+Some open models (**Qwen3**, **DeepSeek**, **Gemma**, **GLM**) are *thinking*
+models: they emit a hidden chain of reasoning before the answer. On real Ollama
+(the native `/api/chat` endpoint, the only one that exposes the `think` control),
+Case Calendar **lets a thinking model think on every track** — extraction, verify,
+dedupe, and summaries alike — with an **unbounded** output budget. No
+configuration; it keys off the model's reported `thinking` capability.
 
-Case Calendar handles this **automatically, per track**, on real Ollama (it uses
-the native `/api/chat` endpoint — the only one that exposes the `think` control;
-the OpenAI-compatible endpoint ignores it):
+This reverses an earlier design that turned thinking **off** for the high-volume
+tracks to save time. That was a mistake: suppressing a weak model's reasoning made
+it **re-emit the known hearings/deadlines it was shown** back as spurious actions
+— a single dense entry could dump twenty-plus phantom deadlines. Letting the model
+reason fixes that and is measurably **more accurate** (in the benchmark,
+`gemma4:e4b` scored a deviation of 541 thinking vs 614 not — see
+[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)).
 
-- **Extraction / verify / dedupe** (high volume): thinking is turned **off**, so
-  the model emits the short JSON answer directly — fast and reliable.
-- **Summaries** (rare — one per docket): thinking stays **on**, with a generous
-  but **bounded** output budget, so the reasoning can finish and still produce
-  the prose (an unbounded budget risks a runaway that can hang the GPU).
-
-No configuration is needed — it keys off the model's reported `thinking`
-capability. This is why a thinking model like Qwen3 works for extraction here at
-all; without it, extraction would silently return nothing on the busiest entries.
-On a *non-Ollama* OpenAI-compatible server there is no way to control thinking, so
-a thinking model there may overrun on extraction — prefer a non-thinking model on
-those servers, or run a thinking model on real Ollama.
+The budget is unbounded because local inference has **no per-token cost**, so
+there's no reason to cap reasoning to a guessed number. It's safe: the reasoning
+is naturally bounded by the context window, a finished model stops on its own, and
+a degenerate runaway surfaces as the ordinary truncation error (the entry is
+skipped), not a hang. The only cost is **wall-clock** — a thinking model is slower
+per call (gemma \~20s, qwen3.5:9b \~41s, vs \~7s not thinking). For a free local
+model that's an accepted trade for accuracy; a *heavy* thinker like qwen is simply
+slow on big backfills.
 
 **`gpt-oss` is the exception:** its reasoning can't be turned off — Ollama
-[ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) for
-that model and tunes the trace by **level** (`low` / `medium` / `high`) instead.
-Case Calendar sends `low` on the high-volume tracks and `high` for summaries, and
-always lifts the output budget to hold the trace plus the answer. So `gpt-oss`
-still works for extraction, but it pays for an always-on (if short) reasoning
-trace on every call — a boolean-thinking model that can switch reasoning fully off
-for extraction is cheaper per entry.
+[ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) and
+tunes the trace by **level** (`low` / `medium` / `high`) instead. Its deepest
+trace is too slow for high-volume extraction, so Case Calendar sends `low` on the
+extract/verify/dedupe tracks and `high` for summaries (both unbounded).
+
+On a *non-Ollama* OpenAI-compatible server there is no `think` control at all, so a
+heavy thinker can still overrun on extraction — prefer a non-thinking model there,
+or run thinking models on real Ollama.
 
 ## Other OpenAI-compatible servers
 

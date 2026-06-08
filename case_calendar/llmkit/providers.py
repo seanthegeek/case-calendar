@@ -621,15 +621,6 @@ def _http_error_detail(exc: Exception) -> str:
     return str(exc)
 
 
-# Summary-track output budget for a LOCAL thinking model. Thinking stays ON for
-# summaries (it may aid synthesis), but a verbose reasoner (qwen3.5:9b can emit
-# tens of thousands of reasoning tokens on a long prompt) is given a
-# GENEROUS-BUT-BOUNDED cap rather than an unlimited one — unbounded generation is
-# the heaviest sustained local-GPU load and a runaway can hang the GPU driver. A
-# model needing more than this hits the normal OutputTruncatedError path (the
-# summary is left stale to retry).
-_OLLAMA_SUMMARY_THINKING_BUDGET = 24576
-
 # Models whose reasoning is tuned by a LEVEL ("low" / "medium" / "high") and
 # CANNOT be turned off with think=false — Ollama ignores a boolean for these and
 # the model always emits a reasoning trace. gpt-oss is the documented case
@@ -758,39 +749,46 @@ def _call_ollama_native(
 ) -> str:
     """Native ``/api/chat`` call with per-track thinking control.
 
-    Per-track policy (only for models reporting the ``thinking`` capability —
-    :func:`ollama_capabilities`):
-
-    - **Summary** (``purpose == "summary"``): thinking ON, the output cap lifted
-      to ``_OLLAMA_SUMMARY_THINKING_BUDGET`` (generous but BOUNDED — an unlimited
-      cap risks a runaway that hangs the local GPU) so verbose reasoning can
-      finish AND emit the answer.
-    - **Every other track** (extract / verify / dedupe — high volume): thinking
-      OFF (``think = false``). The short JSON answer fits ``max_tokens`` and the
-      call returns in seconds.
+    Thinking policy (for models reporting the ``thinking`` capability —
+    :func:`ollama_capabilities`): the model THINKS on every track, with an
+    UNBOUNDED output budget (``num_predict = -1``). Local inference has no
+    per-token cost, so the reasoning isn't capped to a guessed number — and
+    suppressing it (an earlier ``think = false`` on the high-volume tracks) made
+    weaker models re-emit the KNOWN hearings/deadlines they were shown as
+    spurious actions. gpt-oss is the one exception: its reasoning can't be turned
+    off, only tuned by LEVEL, so it gets the shortest level on the high-volume
+    tracks (its deepest is too slow there) and the deepest on summaries.
 
     Non-thinking models are sent a plain request (no ``think`` field). Hosted
     thinking (Gemini) is handled separately by :func:`ensure_thinking_budget`.
     """
-    # Per-track thinking decision. An unconfirmable capability lookup is treated
-    # AS thinking (the safe default — an unbudgeted thinking model fails hard
-    # with an empty answer, while telling a plain model not to think is a no-op).
+    # Thinking decision. An unconfirmable capability lookup is treated AS
+    # thinking (the safe default — letting a plain model think is a harmless
+    # no-op, whereas wrongly SUPPRESSING a thinker's reasoning is what made
+    # weaker models re-emit the KNOWN context they were shown).
     caps = ollama_capabilities(chosen)
     is_thinking = (not caps) or ("thinking" in caps)
     think: bool | str | None = None
     num_predict = max_tokens
     if is_thinking:
+        # A thinking model thinks on EVERY track, with an UNBOUNDED output
+        # budget. Local inference has no per-token cost, so there's no reason to
+        # cap the reasoning — and capping/suppressing it (the old per-track
+        # think=false + guessed budget) made weaker models regurgitate their
+        # KNOWN hearings/deadlines as spurious actions. Unbounded is safe: the
+        # reasoning is naturally capped by the context window, a finished model
+        # stops at its end-of-turn token, and a degenerate non-stopping
+        # generation surfaces as the ordinary OutputTruncatedError (the entry is
+        # skipped) rather than a GPU hang.
+        num_predict = -1
         if _ollama_requires_thinking_level(chosen):
-            # gpt-oss family: reasoning can't be disabled, only tuned by level.
-            # Use the shortest level for the high-volume tracks and a deeper one
-            # for summaries; both need output room for the trace + the answer.
+            # gpt-oss is the exception: its reasoning can't be turned off, only
+            # tuned by LEVEL. Its "high" trace is too heavy for high-volume
+            # extraction, so it gets the shortest level there and the deepest
+            # for the synthesis-heavy summary track.
             think = "high" if purpose == "summary" else "low"
-            num_predict = max(max_tokens, _OLLAMA_SUMMARY_THINKING_BUDGET)
-        elif purpose == "summary":
-            think = True
-            num_predict = max(max_tokens, _OLLAMA_SUMMARY_THINKING_BUDGET)
         else:
-            think = False
+            think = True
 
     options: dict[str, Any] = {"num_predict": num_predict}
     if temperature is not None:
