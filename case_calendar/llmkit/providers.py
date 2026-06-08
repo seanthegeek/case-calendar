@@ -621,6 +621,32 @@ def _http_error_detail(exc: Exception) -> str:
     return str(exc)
 
 
+# Summary-track output budget for a LOCAL thinking model. Thinking stays ON for
+# summaries (it may aid synthesis), but a verbose reasoner (qwen3.5:9b can emit
+# tens of thousands of reasoning tokens on a long prompt) is given a
+# GENEROUS-BUT-BOUNDED cap rather than an unlimited one — unbounded generation is
+# the heaviest sustained local-GPU load and a runaway can hang the GPU driver. A
+# model needing more than this hits the normal OutputTruncatedError path (the
+# summary is left stale to retry).
+_OLLAMA_SUMMARY_THINKING_BUDGET = 24576
+
+
+def _log_ollama_memory_hint(chosen: str, limit: Optional[int], detail: str) -> None:
+    """Operator-actionable hint when Ollama can't allocate memory for the
+    configured context window. The remedy is to LOWER the window (the opposite
+    of the too-big-prompt case), so we must NOT surface this as a
+    ContextWindowExceededError."""
+    logger.warning(
+        "Ollama could not allocate memory for model=%s at context window=%s "
+        "tok — the hardware likely can't hold the KV cache for the configured "
+        "num_ctx (OLLAMA_NUM_CTX / the Ollama desktop context setting). LOWER "
+        "the context window or free GPU/system RAM. Error: %s",
+        chosen,
+        limit,
+        detail[:300],
+    )
+
+
 def _call_ollama(
     system: str,
     user: str,
@@ -632,47 +658,31 @@ def _call_ollama(
     docket: Any = None,
     temperature: Optional[float] = None,
 ) -> str:
-    """Local inference through Ollama's NATIVE ``/api/chat`` endpoint.
+    """Local inference for the ``ollama`` provider — routes to one of two
+    backends, chosen automatically:
 
-    We POST to ``/api/chat`` (not the OpenAI-compatible ``/v1`` path) for ONE
-    reason: per-track **thinking control**. A "thinking" model (Qwen3,
-    DeepSeek, Gemma) draws its reasoning tokens from the same output budget as
-    the answer, and on a dense prompt that reasoning can run to many thousands
-    of tokens — which both overruns a structured-extraction output budget
-    (leaving an empty ``No content`` answer) and takes 1-2 MINUTES per call.
-    Over a per-entry extraction pass that is fatal. The fix is to turn thinking
-    OFF for the high-volume tracks; Ollama exposes that only via the native
-    ``think`` field, NOT through the OpenAI-compatible endpoint (verified
-    empirically: ``think`` and ``chat_template_kwargs`` in the OpenAI
-    ``extra_body`` are ignored — the model still thinks and overruns). See
-    docs/local-llms.md.
+    - **Real Ollama → native ``/api/chat``** (:func:`_call_ollama_native`),
+      the ONLY endpoint exposing per-request **thinking control** (the ``think``
+      field). The OpenAI-compatible ``/v1`` endpoint ignores ``think`` /
+      ``chat_template_kwargs`` (verified empirically), so a thinking model there
+      spends its whole output budget reasoning on a dense prompt — an empty
+      ``No content`` answer, 1-2 minutes per call. See docs/local-llms.md.
+    - **A generic OpenAI-compatible server → ``/v1/chat/completions``**
+      (:func:`_call_ollama_openai_compat`). LM Studio, vLLM, and llama.cpp's
+      server speak the OpenAI API but have no ``/api/chat``, so they keep the
+      original endpoint (no thinking control — there's no mechanism for it
+      there, the same as before the thinking-control feature).
 
-    Per-track thinking policy (only for models that report the ``thinking``
-    capability — :func:`ollama_capabilities`):
-
-    - **Summary track** (``purpose == "summary"``): keep thinking ON and lift
-      the output cap (``num_predict = -1`` — unlimited within the context
-      window) so verbose reasoning can finish AND still emit the answer.
-      Summaries are rare (one call per docket) and local (no per-token cost),
-      so the extra time is acceptable and the reasoning may aid synthesis.
-    - **Every other track** (extract / verify / dedupe — high volume,
-      structured output): thinking OFF (``think = false``). The answer is a
-      short JSON object that fits ``max_tokens`` easily and returns in seconds.
-
-    Non-thinking models are sent a plain request (no ``think`` field), behaving
-    as before. Hosted thinking (Gemini) is handled separately by
-    :func:`ensure_thinking_budget` and is unaffected.
-
-    ``OLLAMA_NUM_CTX`` still widens the context window (``options.num_ctx``);
-    local models otherwise default to a small window and silently truncate long
-    prompts — which the summary track will hit.
+    Detection: Ollama's ``/api/show`` exists only on Ollama, so a successful
+    lookup is the signal that the native path — and thinking control — is
+    available. ``OLLAMA_NUM_CTX`` widens the context window on either backend.
     """
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["ollama"])
 
     # Pre-flight: refuse a prompt that won't fit BEFORE spending a (possibly
-    # multi-minute) local generation that Ollama would build from a silently
+    # multi-minute) local generation the server would build from a silently
     # truncated prompt. When we can't learn the window, we fall through and let
-    # the post-flight check below catch any truncation from the real token count.
+    # the post-flight check catch any truncation from the real token count.
     limit = _ollama_context_limit(chosen)
     prompt_chars = len(system) + len(user)
     if limit is not None:
@@ -685,8 +695,55 @@ def _call_ollama(
                 detail=f"reserving max_tokens={max_tokens} for output",
             )
 
-    # Per-track thinking decision (see the docstring). Only thinking-capable
-    # models get a `think` field; an unconfirmable capability lookup is treated
+    backend = (
+        _call_ollama_native
+        if _ollama_show(chosen) is not None
+        else _call_ollama_openai_compat
+    )
+    return backend(
+        system,
+        user,
+        max_tokens,
+        chosen=chosen,
+        json_mode=json_mode,
+        purpose=purpose,
+        docket=docket,
+        temperature=temperature,
+        limit=limit,
+        prompt_chars=prompt_chars,
+    )
+
+
+def _call_ollama_native(
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    chosen: str,
+    json_mode: bool,
+    purpose: str,
+    docket: Any,
+    temperature: Optional[float],
+    limit: Optional[int],
+    prompt_chars: int,
+) -> str:
+    """Native ``/api/chat`` call with per-track thinking control.
+
+    Per-track policy (only for models reporting the ``thinking`` capability —
+    :func:`ollama_capabilities`):
+
+    - **Summary** (``purpose == "summary"``): thinking ON, the output cap lifted
+      to ``_OLLAMA_SUMMARY_THINKING_BUDGET`` (generous but BOUNDED — an unlimited
+      cap risks a runaway that hangs the local GPU) so verbose reasoning can
+      finish AND emit the answer.
+    - **Every other track** (extract / verify / dedupe — high volume): thinking
+      OFF (``think = false``). The short JSON answer fits ``max_tokens`` and the
+      call returns in seconds.
+
+    Non-thinking models are sent a plain request (no ``think`` field). Hosted
+    thinking (Gemini) is handled separately by :func:`ensure_thinking_budget`.
+    """
+    # Per-track thinking decision. An unconfirmable capability lookup is treated
     # AS thinking (the safe default — an unbudgeted thinking model fails hard
     # with an empty answer, while telling a plain model not to think is a no-op).
     caps = ollama_capabilities(chosen)
@@ -696,7 +753,7 @@ def _call_ollama(
     if is_thinking:
         if purpose == "summary":
             think = True
-            num_predict = -1  # unlimited within the context window
+            num_predict = max(max_tokens, _OLLAMA_SUMMARY_THINKING_BUDGET)
         else:
             think = False
 
@@ -724,28 +781,14 @@ def _call_ollama(
     try:
         resp = _ollama_chat_request(body)
     except Exception as exc:
-        # A configured context window the hardware can't hold (e.g. a 256K
-        # num_ctx on a GPU that can't fit the KV cache) surfaces as a
+        # A configured context window the hardware can't hold surfaces as a
         # memory-allocation failure — an HTTP 500 whose BODY names the memory
         # error, NOT a context-length error. Read the body so the marker check
-        # can see it, log an operator-actionable hint (the remedy is to LOWER
-        # the window, the opposite of the too-big-prompt case), and re-raise so
-        # the caller's fail-safe runs (extraction -> IGNORE, verify/dedupe ->
-        # UNCLEAR, summary -> left stale to retry). We do NOT convert it to
-        # ContextWindowExceededError: that would tell the operator to RAISE the
-        # window, making it worse.
+        # can see it; the caller's fail-safe then runs (extraction -> IGNORE,
+        # verify/dedupe -> UNCLEAR, summary -> left stale to retry).
         detail = _http_error_detail(exc)
         if any(marker in detail.lower() for marker in _MEMORY_ERROR_MARKERS):
-            logger.warning(
-                "Ollama could not allocate memory for model=%s at context "
-                "window=%s tok — the hardware likely can't hold the KV cache "
-                "for the configured num_ctx (OLLAMA_NUM_CTX / the Ollama "
-                "desktop context setting). LOWER the context window or free "
-                "GPU/system RAM. Error: %s",
-                chosen,
-                limit,
-                detail[:300],
-            )
+            _log_ollama_memory_hint(chosen, limit, detail)
         raise
     tok = usage.from_ollama(resp)
     usage.record(
@@ -755,11 +798,9 @@ def _call_ollama(
         tokens=tok,
         docket=docket,
     )
-    # Post-flight backstop: the server reports how many prompt tokens it
-    # actually evaluated. If it silently truncated an over-long prompt (a
-    # configured num_ctx lower than the model max we checked pre-flight, or we
-    # had no limit to check), this raises rather than return an answer built
-    # from a partial prompt.
+    # Post-flight backstop: the server reports how many prompt tokens it actually
+    # evaluated. If it silently truncated an over-long prompt, this raises rather
+    # than return an answer built from a partial prompt.
     _detect_ollama_input_truncation(
         processed=tok.input,
         prompt_chars=prompt_chars,
@@ -771,6 +812,78 @@ def _call_ollama(
     if not text:
         raise ValueError("No content in Ollama response")
     if resp.get("done_reason") == "length":
+        raise OutputTruncatedError("ollama", text, max_tokens)
+    return text
+
+
+def _call_ollama_openai_compat(
+    system: str,
+    user: str,
+    max_tokens: int,
+    *,
+    chosen: str,
+    json_mode: bool,
+    purpose: str,
+    docket: Any,
+    temperature: Optional[float],
+    limit: Optional[int],
+    prompt_chars: int,
+) -> str:
+    """OpenAI-compatible (``/v1/chat/completions``) call for a non-Ollama local
+    server (LM Studio / vLLM / llama.cpp). No thinking control — that needs
+    Ollama's native endpoint — so a thinking model here runs at its default (the
+    pre-thinking-control behavior). Telemetry + truncation go through the
+    OpenAI-shaped ``from_openai`` / ``finish_reason`` paths, as for hosted
+    OpenAI. ``max_tokens`` (the classic field) is used, not the gpt-5-family
+    ``max_completion_tokens``; the key is a throwaway (the server ignores it but
+    the SDK requires one)."""
+    import openai
+
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+    client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=600.0)
+    kwargs: dict[str, Any] = {
+        "model": chosen,
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+    }
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    if temperature is not None:
+        kwargs["temperature"] = temperature
+    num_ctx = os.environ.get("OLLAMA_NUM_CTX", "").strip()
+    if num_ctx:
+        # The OpenAI SDK forwards unknown body fields via `extra_body`; the
+        # server reads runtime options from a top-level `options` object.
+        kwargs["extra_body"] = {"options": {"num_ctx": int(num_ctx)}}
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        if _is_memory_error(exc):
+            _log_ollama_memory_hint(chosen, limit, str(exc))
+        raise
+    tok = usage.from_openai(resp)
+    usage.record(
+        purpose=purpose,
+        provider="ollama",
+        model=chosen,
+        tokens=tok,
+        docket=docket,
+    )
+    _detect_ollama_input_truncation(
+        processed=tok.input,
+        prompt_chars=prompt_chars,
+        limit=limit,
+        max_tokens=max_tokens,
+    )
+    choice = resp.choices[0]
+    text = choice.message.content
+    if not text:
+        raise ValueError("No content in Ollama response")
+    if getattr(choice, "finish_reason", None) == "length":
         raise OutputTruncatedError("ollama", text, max_tokens)
     return text
 
