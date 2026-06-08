@@ -1140,19 +1140,37 @@ class TestOllamaCapabilities:
 
 class TestEnsureThinkingBudget:
     """providers.ensure_thinking_budget raises a too-small output budget only for
-    a thinking model (whose reasoning is drawn from the answer budget)."""
+    a thinking model (whose reasoning is drawn from the answer budget). The floor
+    is 25000 — OpenAI's published reserve for reasoning + output."""
+
+    FLOOR = 25000
 
     def test_gemini_always_bumps(self):
-        assert providers.ensure_thinking_budget("gemini", "any", 800) == 8192
+        assert providers.ensure_thinking_budget("gemini", "any", 800) == self.FLOOR
 
     def test_gemini_keeps_larger_request(self):
-        assert providers.ensure_thinking_budget("gemini", "any", 20000) == 20000
+        assert providers.ensure_thinking_budget("gemini", "any", 30000) == 30000
 
     def test_anthropic_unchanged(self):
+        # Extended thinking is opt-in and we don't enable it -> answer-only budget.
         assert providers.ensure_thinking_budget("anthropic", "claude", 800) == 800
 
-    def test_openai_unchanged(self):
-        assert providers.ensure_thinking_budget("openai", "gpt-5.4", 800) == 800
+    def test_openai_reasoning_model_bumps(self):
+        # gpt-5 reasons by DEFAULT and the reasoning counts toward
+        # max_completion_tokens, so a small ceiling starves the answer just like
+        # Gemini. gpt-5 family + o-series are reasoning models.
+        f = self.FLOOR
+        assert providers.ensure_thinking_budget("openai", "gpt-5.4", 800) == f
+        assert providers.ensure_thinking_budget("openai", "gpt-5.4-nano", 800) == f
+        assert providers.ensure_thinking_budget("openai", "o3-mini", 800) == f
+
+    def test_openai_nonreasoning_model_unchanged(self):
+        # A non-reasoning OpenAI model keeps reasoning off the answer budget.
+        assert providers.ensure_thinking_budget("openai", "gpt-4o", 800) == 800
+
+    def test_openai_none_model_resolves_to_default_reasoner(self):
+        # model=None -> the openai default (gpt-5.4-nano), itself a reasoner.
+        assert providers.ensure_thinking_budget("openai", None, 800) == self.FLOOR
 
     def test_ollama_thinking_model_bumps(self, monkeypatch):
         monkeypatch.setattr(
@@ -1160,7 +1178,9 @@ class TestEnsureThinkingBudget:
             "ollama_capabilities",
             lambda m: frozenset({"completion", "thinking"}),
         )
-        assert providers.ensure_thinking_budget("ollama", "gemma4:e4b", 800) == 8192
+        assert (
+            providers.ensure_thinking_budget("ollama", "gemma4:e4b", 800) == self.FLOOR
+        )
 
     def test_ollama_plain_model_unchanged(self, monkeypatch):
         monkeypatch.setattr(
@@ -1175,7 +1195,7 @@ class TestEnsureThinkingBudget:
         # under-budgeted thinking model fails hard, an over-budgeted plain one is
         # only a soft quality issue).
         monkeypatch.setattr(providers, "ollama_capabilities", lambda m: frozenset())
-        assert providers.ensure_thinking_budget("ollama", "mystery", 800) == 8192
+        assert providers.ensure_thinking_budget("ollama", "mystery", 800) == self.FLOOR
 
     def test_ollama_without_model_bumps_without_lookup(self, monkeypatch):
         # No resolved model -> can't check -> bump, and skip the lookup entirely.
@@ -1185,7 +1205,7 @@ class TestEnsureThinkingBudget:
             "ollama_capabilities",
             lambda m: seen.append(m) or frozenset({"completion"}),
         )
-        assert providers.ensure_thinking_budget("ollama", None, 800) == 8192
+        assert providers.ensure_thinking_budget("ollama", None, 800) == self.FLOOR
         assert seen == []
 
     def test_custom_floor(self):

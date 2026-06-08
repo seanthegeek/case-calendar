@@ -2550,10 +2550,12 @@ def generate_docket_summary(
     # Thinking models draw reasoning tokens from the same output budget as the
     # answer, so the small summary ceiling can starve the answer (an empty
     # "No content" response that would crash the refresh). ensure_thinking_budget
-    # raises the ceiling for those models — Gemini always; a thinking-capable
-    # Ollama model per /api/show — and leaves non-thinking providers (Anthropic /
-    # OpenAI, and plain local models) at the requested budget. The provider/budget
-    # logic lives in llmkit; see that function for the full rationale.
+    # raises the ceiling for those models — Gemini always; an OpenAI gpt-5 /
+    # o-series reasoning model (its reasoning is billed against
+    # max_completion_tokens); a thinking-capable Ollama model per /api/show — and
+    # leaves non-thinking providers (Anthropic, non-reasoning OpenAI, plain local
+    # models) at the requested budget. The provider/budget logic lives in llmkit;
+    # see that function for the full rationale.
     effective_max_tokens = providers.ensure_thinking_budget(
         chosen_provider, chosen_model, max_tokens
     )

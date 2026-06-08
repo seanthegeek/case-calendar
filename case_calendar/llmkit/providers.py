@@ -522,12 +522,27 @@ def _detect_ollama_input_truncation(
         raise ContextWindowExceededError("ollama", sent=est_sent, processed=processed)
 
 
+# OpenAI reasoning models. The gpt-5 family reasons by DEFAULT, as do the
+# o-series; their reasoning tokens count toward ``max_completion_tokens`` and are
+# billed as output (https://developers.openai.com/api/docs/guides/reasoning), so
+# a small ceiling can be consumed entirely by reasoning before any answer is
+# emitted — the same starve-the-answer failure as Gemini / local thinking models.
+# Detected by name prefix; a non-reasoning OpenAI model (gpt-4o, etc.) is left at
+# its requested budget.
+_OPENAI_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+
+
+def _openai_is_reasoning_model(model: Optional[str]) -> bool:
+    name = (model or _DEFAULT_MODELS.get("openai") or "").lower()
+    return name.startswith(_OPENAI_REASONING_PREFIXES)
+
+
 def ensure_thinking_budget(
     provider: str,
     model: Optional[str],
     requested: int,
     *,
-    floor: int = 8192,
+    floor: int = 25000,
 ) -> int:
     """Raise a too-small output budget to ``floor`` for a "thinking" model.
 
@@ -536,25 +551,35 @@ def ensure_thinking_budget(
     reasoning and leave zero answer text (an empty / ``No content`` response).
     For a non-thinking model ``requested`` is just a ceiling the answer stops
     well under, so it is returned unchanged — raising it would only give a
-    rambling model room to over-generate.
+    rambling model room to over-generate. The floor matches OpenAI's published
+    guidance to reserve at least 25,000 tokens for reasoning + output; it's only
+    ever a CEILING (the model stops when done), so it costs nothing on a model
+    that reasons lightly and prevents truncation on one that reasons a lot.
 
     Which providers/models count as "thinking":
 
     - **Gemini 2.5** always — its reasoning is counted against
       ``max_output_tokens`` (and billed as output).
+    - **OpenAI** iff the model is a reasoning model (gpt-5 family / o-series, per
+      :func:`_openai_is_reasoning_model`) — gpt-5 reasons by default and the
+      reasoning counts toward ``max_completion_tokens``, so a small ceiling
+      starves the answer exactly as Gemini does. A non-reasoning OpenAI model is
+      left unchanged.
     - **Ollama** iff the model reports the ``thinking`` capability via
       :func:`ollama_capabilities`. An unconfirmable lookup (old Ollama, offline,
       unknown model) is treated AS thinking — the safe default, since an
       under-budgeted thinking model fails hard (empty answer) while an
       over-budgeted plain model is at worst a soft quality issue.
-    - **Anthropic / OpenAI** never — they keep reasoning off the answer budget,
-      stopping at the natural end of the response regardless of the ceiling.
+    - **Anthropic** never — extended thinking is opt-in and we don't enable it,
+      so Claude answers directly and the ceiling bounds only the answer.
 
     This lives in llmkit, not the domain layer, because it is purely about how a
     provider/model spends its output budget — independent of what the call is for.
     """
     if provider == "gemini":
         thinking = True
+    elif provider == "openai":
+        thinking = _openai_is_reasoning_model(model)
     elif provider == "ollama":
         caps = ollama_capabilities(model) if model else frozenset()
         thinking = (not caps) or ("thinking" in caps)
