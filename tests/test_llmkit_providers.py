@@ -1027,6 +1027,61 @@ class TestCallOllama:
         providers._call_ollama("s", "u", 10, purpose="extract")
         assert cap["body"]["think"] is False
 
+    # --- gpt-oss level-based thinking (think=false is ignored; can't disable) ---
+
+    def test_level_thinking_extract_uses_low_level_and_budget(self, monkeypatch):
+        # gpt-oss can't turn reasoning OFF — a boolean is ignored. So the
+        # high-volume tracks get the SHORTEST level ("low") plus output room for
+        # the trace + the answer, not think=false on a too-small budget.
+        for purpose in ("extract", "verify_hearing", "dedupe_hearings", "llm"):
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose=purpose)
+            assert cap["body"]["think"] == "low", purpose
+            assert (
+                cap["body"]["options"]["num_predict"]
+                == providers._OLLAMA_SUMMARY_THINKING_BUDGET
+            ), purpose
+
+    def test_level_thinking_summary_uses_high_level_and_budget(self, monkeypatch):
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="summary")
+        assert cap["body"]["think"] == "high"
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == providers._OLLAMA_SUMMARY_THINKING_BUDGET
+        )
+
+    def test_level_thinking_summary_respects_larger_max_tokens(self, monkeypatch):
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        big = providers._OLLAMA_SUMMARY_THINKING_BUDGET + 5000
+        providers._call_ollama("s", "u", big, model="gpt-oss:120b", purpose="summary")
+        assert cap["body"]["options"]["num_predict"] == big
+
+    def test_requires_thinking_level_matches_gpt_oss_variants(self):
+        assert providers._ollama_requires_thinking_level("gpt-oss:20b")
+        assert providers._ollama_requires_thinking_level("gpt-oss:120b")
+        assert providers._ollama_requires_thinking_level("GPT-OSS:20b")
+        # Boolean-thinking models (qwen3, gemma, glm, granite) are NOT level-based.
+        assert not providers._ollama_requires_thinking_level("qwen3.5:9b")
+        assert not providers._ollama_requires_thinking_level("gemma4:e4b")
+
+    def test_think_value_is_string_level_for_gpt_oss_but_bool_for_others(
+        self, monkeypatch
+    ):
+        # Same track ("extract"), divergent contract: gpt-oss must receive a
+        # STRING level (Ollama ignores a boolean for it), every other thinking
+        # model receives a BOOLEAN. Pins the type divergence that's easy to
+        # regress if the two branches are ever collapsed.
+        cap_oss = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="extract")
+        assert cap_oss["body"]["think"] == "low"
+        assert isinstance(cap_oss["body"]["think"], str)
+
+        cap_qwen = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="qwen3.5:9b", purpose="extract")
+        assert cap_qwen["body"]["think"] is False
+        assert isinstance(cap_qwen["body"]["think"], bool)
+
 
 class TestOllamaCapabilities:
     """providers.ollama_capabilities reads the model's /api/show capabilities,

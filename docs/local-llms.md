@@ -443,6 +443,15 @@ On a *non-Ollama* OpenAI-compatible server there is no way to control thinking, 
 a thinking model there may overrun on extraction — prefer a non-thinking model on
 those servers, or run a thinking model on real Ollama.
 
+**`gpt-oss` is the exception:** its reasoning can't be turned off — Ollama
+[ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) for
+that model and tunes the trace by **level** (`low` / `medium` / `high`) instead.
+Case Calendar sends `low` on the high-volume tracks and `high` for summaries, and
+always lifts the output budget to hold the trace plus the answer. So `gpt-oss`
+still works for extraction, but it pays for an always-on (if short) reasoning
+trace on every call — a boolean-thinking model that can switch reasoning fully off
+for extraction is cheaper per entry.
+
 ## Other OpenAI-compatible servers
 
 The provider is *named* `ollama`, but it also drives any local OpenAI-compatible

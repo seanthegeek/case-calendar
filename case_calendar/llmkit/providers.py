@@ -630,6 +630,27 @@ def _http_error_detail(exc: Exception) -> str:
 # summary is left stale to retry).
 _OLLAMA_SUMMARY_THINKING_BUDGET = 24576
 
+# Models whose reasoning is tuned by a LEVEL ("low" / "medium" / "high") and
+# CANNOT be turned off with think=false — Ollama ignores a boolean for these and
+# the model always emits a reasoning trace. gpt-oss is the documented case
+# (https://docs.ollama.com/capabilities/thinking: "GPT-OSS requires think to be
+# set to low, medium, or high. Passing true/false is ignored for that model").
+# For these we pick the SHORTEST level on the high-volume tracks (extract / verify
+# / dedupe) and a deeper level for summaries, and ALWAYS budget output room for
+# the trace plus the answer — sending think=false would be a no-op, the trace
+# would eat the short max_tokens budget, and the call would come back empty (the
+# qwen3 "No content" failure, but unavoidable here since the trace can't be
+# disabled). Matched as a substring of the model name so tags like
+# "gpt-oss:20b" / "gpt-oss:120b" all resolve.
+_OLLAMA_LEVEL_THINKING_MODELS = ("gpt-oss",)
+
+
+def _ollama_requires_thinking_level(model: str) -> bool:
+    """True when the model's reasoning is level-based and can't be disabled with
+    a boolean ``think`` (gpt-oss family) — see ``_OLLAMA_LEVEL_THINKING_MODELS``."""
+    lowered = model.lower()
+    return any(name in lowered for name in _OLLAMA_LEVEL_THINKING_MODELS)
+
 
 def _log_ollama_memory_hint(chosen: str, limit: Optional[int], detail: str) -> None:
     """Operator-actionable hint when Ollama can't allocate memory for the
@@ -748,10 +769,16 @@ def _call_ollama_native(
     # with an empty answer, while telling a plain model not to think is a no-op).
     caps = ollama_capabilities(chosen)
     is_thinking = (not caps) or ("thinking" in caps)
-    think: Optional[bool] = None
+    think: bool | str | None = None
     num_predict = max_tokens
     if is_thinking:
-        if purpose == "summary":
+        if _ollama_requires_thinking_level(chosen):
+            # gpt-oss family: reasoning can't be disabled, only tuned by level.
+            # Use the shortest level for the high-volume tracks and a deeper one
+            # for summaries; both need output room for the trace + the answer.
+            think = "high" if purpose == "summary" else "low"
+            num_predict = max(max_tokens, _OLLAMA_SUMMARY_THINKING_BUDGET)
+        elif purpose == "summary":
             think = True
             num_predict = max(max_tokens, _OLLAMA_SUMMARY_THINKING_BUDGET)
         else:
