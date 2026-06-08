@@ -369,16 +369,18 @@ There are three places to set it; any one works:
    OLLAMA_CONTEXT_LENGTH=131072 ollama serve
    ```
 
-2. **`OLLAMA_NUM_CTX`** in Case Calendar's `.env` (quick, best-effort) — Case
-   Calendar forwards it to Ollama per request:
+2. **`OLLAMA_NUM_CTX`** in Case Calendar's `.env` (quick) — Case Calendar
+   forwards it per request as the native `options.num_ctx`:
 
    ```bash
    OLLAMA_NUM_CTX=131072
    ```
 
-   Whether the OpenAI-compatible endpoint honors a per-request `num_ctx`
-   depends on your Ollama version, so verify it took effect (or use option 1
-   or 3).
+   On Ollama this is reliable — Case Calendar talks to Ollama's native
+   `/api/chat` endpoint. On a *non-Ollama* OpenAI-compatible server (see [Other
+   servers](#other-openai-compatible-servers)) it rides through the OpenAI
+   `extra_body` instead, and whether that server honors it varies, so verify it
+   took effect or use option 1 or 3.
 
 3. **A Modelfile `PARAMETER num_ctx`** (most reliable) — bake the window into a
    derived model and use that name:
@@ -415,13 +417,42 @@ hardware can hold — see the warning below.
 > summary blank. But the same error will happen on every run until you shrink
 > the window or add memory. So pick a window size your card can actually run.
 
+## Thinking models
+
+Some open models (**Qwen3**, **DeepSeek**, **Gemma**) are *thinking* models:
+they emit a hidden chain of reasoning before the answer, drawn from the **same
+output budget** as the answer. That's a poor fit for high-volume structured
+extraction — on a dense docket entry the reasoning can run to many thousands of
+tokens, overrunning the output budget (the model hits the limit mid-thought and
+returns an empty answer) and taking a minute or more per call.
+
+Case Calendar handles this **automatically, per track**, on real Ollama (it uses
+the native `/api/chat` endpoint — the only one that exposes the `think` control;
+the OpenAI-compatible endpoint ignores it):
+
+- **Extraction / verify / dedupe** (high volume): thinking is turned **off**, so
+  the model emits the short JSON answer directly — fast and reliable.
+- **Summaries** (rare — one per docket): thinking stays **on**, with a generous
+  but **bounded** output budget, so the reasoning can finish and still produce
+  the prose (an unbounded budget risks a runaway that can hang the GPU).
+
+No configuration is needed — it keys off the model's reported `thinking`
+capability. This is why a thinking model like Qwen3 works for extraction here at
+all; without it, extraction would silently return nothing on the busiest entries.
+On a *non-Ollama* OpenAI-compatible server there is no way to control thinking, so
+a thinking model there may overrun on extraction — prefer a non-thinking model on
+those servers, or run a thinking model on real Ollama.
+
 ## Other OpenAI-compatible servers
 
-The provider is *named* `ollama`, but it really means "any local
-OpenAI-compatible server" — because Case Calendar just points the OpenAI SDK at
-`OLLAMA_BASE_URL`. So **LM Studio**, **llama.cpp**'s `server`, **vLLM**, and
-similar all work with zero code change. For example, to drive LM Studio (handy
-on Apple Silicon, with first-class MLX support and its own model browser):
+The provider is *named* `ollama`, but it also drives any local OpenAI-compatible
+server. Case Calendar auto-detects which it's talking to: a real **Ollama**
+server is driven through its native `/api/chat` endpoint (the only one that
+supports [thinking control](#thinking-models)), while **LM Studio**,
+**llama.cpp**'s `server`, **vLLM**, and similar — which speak the OpenAI API but
+have no `/api/chat` — fall back to `/v1/chat/completions` and work with zero code
+change, just without thinking control. For example, to drive LM Studio (handy on
+Apple Silicon, with first-class MLX support and its own model browser):
 
 ```bash
 LLM_PROVIDER=ollama
