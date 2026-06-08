@@ -327,6 +327,22 @@ class TestLocalToUtc:
         assert _local_to_utc(" NULL ", "16:00", "America/New_York") is None
         assert _local_to_utc(None, "16:00", "America/New_York") is None
 
+    def test_non_string_date_treated_as_missing(self):
+        # Untrusted LLM output — llama3.2:3b emitted ``local_date`` as the
+        # integer ``2024`` (not a string), which crashed the column with
+        # ``AttributeError: 'int' object has no attribute 'strip'``. A
+        # non-string date is malformed: store the row date-less (return None)
+        # rather than crash.
+        assert _local_to_utc(2024, "16:00", "America/New_York") is None
+        assert _local_to_utc(20240627, None, "America/New_York") is None
+        assert _local_to_utc(["2024-06-27"], None, "America/New_York") is None
+
+    def test_non_string_time_treated_as_missing(self):
+        # The time-side twin: a non-string ``local_time`` (e.g. the integer
+        # 1600) must degrade to date-only, not crash on ``.strip()``.
+        midnight_et = "2026-01-07T05:00:00+00:00"
+        assert _local_to_utc("2026-01-07", 1600, "America/New_York") == midnight_et
+
     def test_literal_null_string_time_treated_as_missing(self):
         # gpt-5.4-mini regression — the verify-pass response emitted
         # ``local_time: "null"`` (string) on a REINSTATE action and the
