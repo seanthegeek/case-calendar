@@ -208,9 +208,11 @@ A single consumer card tops out around **32B**, and only on the biggest one — 
 32 GB **RTX 5090**. Mind the NVIDIA gap: 24 GB was the previous-gen flagship
 (RTX 3090 / 4090), but the current line jumps from the 16 GB **RTX 5080**
 straight to the 32 GB 5090, so on NVIDIA the `gemma4:31b` upgrade effectively
-means a 5090. On AMD the 24 GB **RX 7900 XTX** is the value option — plenty for
-the default `gemma4:e4b`, but still short for a 31b summary at a real window.
-70B-class models want 32 GB with offload, or two cards.
+means a 5090. AMD has **no 32 GB consumer card at all** — the line tops out at
+the 24 GB **RX 7900 XTX** (RDNA4's RX 9070 XT is 16 GB), which runs the default
+`gemma4:e4b` well but is still short for a 31b summary at a real window. So on
+AMD the 31b upgrade isn't a single-card option — use the hybrid (hosted) path or
+two cards. 70B-class models likewise want 32 GB with offload, or two cards.
 
 **Software support varies by vendor — VRAM is necessary but not sufficient.**
 Nvidia (CUDA) is the most plug-and-play. AMD (ROCm) works well on recent Radeon
