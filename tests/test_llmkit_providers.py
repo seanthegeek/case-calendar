@@ -1685,5 +1685,30 @@ class TestCallOllamaOpenAICompatFallback:
                 providers._call_ollama("s", "u", 10)
         assert "LOWER the context window" in caplog.text
 
+    def test_force_compat_env_overrides_native_on_real_ollama(self, monkeypatch):
+        # OLLAMA_USE_OPENAI_COMPAT routes to /v1 even when /api/show SUCCEEDS
+        # (real Ollama) — the parity/diagnostic override. If it didn't win, the
+        # native backend would be chosen and there'd be no OpenAI client call.
+        monkeypatch.setattr(providers, "_ollama_show", lambda model: {"x": 1})
+        monkeypatch.setenv("OLLAMA_USE_OPENAI_COMPAT", "1")
+        client = self._fake_openai(monkeypatch, content='{"actions": []}')
+        out = providers._call_ollama("s", "u", 10, purpose="extract")
+        assert out == '{"actions": []}'
+        # the /v1 (OpenAI SDK) backend ran, not the native /api/chat one
+        assert client.chat.completions.create.called
+
+    def test_force_compat_env_empty_keeps_native(self, monkeypatch):
+        # An empty value is NOT an override — native still wins on real Ollama.
+        monkeypatch.setattr(providers, "_ollama_show", lambda model: {"x": 1})
+        monkeypatch.setenv("OLLAMA_USE_OPENAI_COMPAT", "")
+        called = {}
+        monkeypatch.setattr(
+            providers,
+            "_call_ollama_native",
+            lambda *a, **k: called.setdefault("native", True) or "ok",
+        )
+        providers._call_ollama("s", "u", 10, purpose="extract")
+        assert called.get("native")
+
 
 # --- verify_deadline (parallel to verify_hearing) ---

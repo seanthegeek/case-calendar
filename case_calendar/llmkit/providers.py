@@ -716,11 +716,19 @@ def _call_ollama(
                 detail=f"reserving max_tokens={max_tokens} for output",
             )
 
-    backend = (
-        _call_ollama_native
-        if _ollama_show(chosen) is not None
-        else _call_ollama_openai_compat
-    )
+    # OLLAMA_USE_OPENAI_COMPAT forces the OpenAI-compatible `/v1` backend even on
+    # real Ollama (where `/api/show` would otherwise select the native path).
+    # This gives up thinking control, so it's NOT for thinking models that need
+    # it — it exists for parity / A-B diagnostics against the native path and for
+    # operators who prefer the `/v1` endpoint. Any non-empty value enables it.
+    if os.environ.get("OLLAMA_USE_OPENAI_COMPAT", "").strip():
+        backend = _call_ollama_openai_compat
+    else:
+        backend = (
+            _call_ollama_native
+            if _ollama_show(chosen) is not None
+            else _call_ollama_openai_compat
+        )
     return backend(
         system,
         user,
