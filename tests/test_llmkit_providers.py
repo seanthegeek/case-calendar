@@ -835,11 +835,14 @@ class TestCallGemini:
 
 
 class TestCallOllama:
-    """Local inference through Ollama's OpenAI-compatible endpoint. We reuse
-    the ``openai`` SDK pointed at a local base URL, so these tests inject a
-    fake ``openai`` module the same way ``TestCallOpenAI`` does, and assert on
-    the Ollama-specific call shape (base_url, dummy key, ``max_tokens`` rather
-    than ``max_completion_tokens``, optional ``num_ctx``)."""
+    """Local inference through Ollama's NATIVE ``/api/chat`` endpoint (chosen
+    over the OpenAI-compat ``/v1`` path because only the native endpoint exposes
+    per-request thinking control). These tests monkeypatch the
+    :func:`providers._ollama_chat_request` seam — capturing the request body and
+    returning a canned native response dict — and stub
+    :func:`providers.ollama_capabilities` to drive the per-track thinking
+    decision, then assert on the native body shape (``format``,
+    ``options.num_predict`` / ``num_ctx``, ``think``)."""
 
     @pytest.fixture(autouse=True)
     def _no_context_lookup(self, monkeypatch):
@@ -853,95 +856,100 @@ class TestCallOllama:
         providers._OLLAMA_SHOW_CACHE.clear()
 
     @staticmethod
-    def _fake_openai(monkeypatch, content="hello"):
-        from unittest.mock import MagicMock
-        import sys
+    def _fake_ollama(
+        monkeypatch,
+        content="hello",
+        *,
+        caps=frozenset({"completion"}),
+        done_reason="stop",
+        prompt_eval_count=5,
+        eval_count=3,
+    ):
+        """Patch the native request seam + capability lookup. Returns a dict
+        the test reads ``captured["body"]`` from. ``caps`` defaults to a
+        NON-thinking model (so no ``think`` field is sent unless a test opts in
+        with ``caps=frozenset({"thinking"})``)."""
+        captured: dict = {}
 
-        fake_mod = MagicMock(name="openai")
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = content
-        choice = MagicMock()
-        choice.message = msg
-        choice.finish_reason = "stop"
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-        return fake_mod, fake_client
+        def fake_request(body, *, timeout=600.0):
+            captured["body"] = body
+            captured["timeout"] = timeout
+            return {
+                "message": {"content": content},
+                "done_reason": done_reason,
+                "prompt_eval_count": prompt_eval_count,
+                "eval_count": eval_count,
+            }
+
+        monkeypatch.setattr(providers, "_ollama_chat_request", fake_request)
+        monkeypatch.setattr(providers, "ollama_capabilities", lambda model: caps)
+        return captured
 
     def test_returns_message_content(self, monkeypatch):
-        _mod, client = self._fake_openai(monkeypatch, content='{"actions": []}')
+        cap = self._fake_ollama(monkeypatch, content='{"actions": []}')
         out = providers._call_ollama("s", "u", 50)
         assert out == '{"actions": []}'
-        kw = client.chat.completions.create.call_args.kwargs
-        # JSON mode on by default; default model is the ollama default.
-        assert kw["response_format"] == {"type": "json_object"}
-        assert kw["model"] == providers._DEFAULT_MODELS["ollama"]
+        body = cap["body"]
+        # JSON mode on by default; default model is the ollama default; posts
+        # the system + user messages, non-streaming.
+        assert body["format"] == "json"
+        assert body["model"] == providers._DEFAULT_MODELS["ollama"]
+        assert body["stream"] is False
+        assert [m["role"] for m in body["messages"]] == ["system", "user"]
 
-    def test_uses_classic_max_tokens_not_completion_tokens(self, monkeypatch):
-        # Ollama's OpenAI-compat endpoint expects the classic `max_tokens`,
-        # unlike the gpt-5 family (which requires `max_completion_tokens`).
-        _mod, client = self._fake_openai(monkeypatch)
+    def test_num_predict_carries_max_tokens_for_nonthinking(self, monkeypatch):
+        # Native uses options.num_predict (not the OpenAI `max_tokens`); for a
+        # non-thinking model it's just the requested ceiling.
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 64)
-        kw = client.chat.completions.create.call_args.kwargs
-        assert kw["max_tokens"] == 64
-        assert "max_completion_tokens" not in kw
+        assert cap["body"]["options"]["num_predict"] == 64
 
-    def test_default_base_url_and_dummy_key(self, monkeypatch):
-        # Nothing leaves the machine: a localhost base URL and a throwaway key
-        # (Ollama ignores the key but the SDK requires a non-empty one).
-        fake_mod, _client = self._fake_openai(monkeypatch)
-        providers._call_ollama("s", "u", 10)
-        ctor = fake_mod.OpenAI.call_args.kwargs
-        assert ctor["base_url"] == "http://localhost:11434/v1"
-        assert ctor["api_key"]  # non-empty
-
-    def test_base_url_override(self, monkeypatch):
+    def test_native_base_strips_v1(self, monkeypatch):
+        # OLLAMA_BASE_URL points at the OpenAI-compat /v1 path; the native
+        # /api/chat lives at the host root, so the /v1 segment is stripped.
+        monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
+        assert providers._ollama_native_base() == "http://localhost:11434"
         monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434/v1")
-        fake_mod, _client = self._fake_openai(monkeypatch)
-        providers._call_ollama("s", "u", 10)
-        assert fake_mod.OpenAI.call_args.kwargs["base_url"] == "http://gpu-box:11434/v1"
+        assert providers._ollama_native_base() == "http://gpu-box:11434"
+        # Already-rootless base is left alone.
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434")
+        assert providers._ollama_native_base() == "http://gpu-box:11434"
 
     def test_respects_model_kwarg_and_llm_model_env(self, monkeypatch):
-        _mod, client = self._fake_openai(monkeypatch)
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10, model="qwen2.5:32b")
-        assert client.chat.completions.create.call_args.kwargs["model"] == "qwen2.5:32b"
+        assert cap["body"]["model"] == "qwen2.5:32b"
         # LLM_MODEL is the env fallback when no model kwarg is passed.
         monkeypatch.setenv("LLM_MODEL", "mistral-small")
         providers._call_ollama("s", "u", 10)
-        assert (
-            client.chat.completions.create.call_args.kwargs["model"] == "mistral-small"
-        )
+        assert cap["body"]["model"] == "mistral-small"
 
-    def test_json_mode_off_omits_response_format(self, monkeypatch):
-        _mod, client = self._fake_openai(monkeypatch, content="prose")
+    def test_json_mode_off_omits_format(self, monkeypatch):
+        cap = self._fake_ollama(monkeypatch, content="prose")
         providers._call_ollama("s", "u", 50, json_mode=False)
-        assert "response_format" not in client.chat.completions.create.call_args.kwargs
+        assert "format" not in cap["body"]
 
-    def test_num_ctx_forwarded_via_extra_body_when_set(self, monkeypatch):
+    def test_num_ctx_forwarded_when_set(self, monkeypatch):
         # Local models truncate long prompts silently; OLLAMA_NUM_CTX widens
-        # the window. It rides through the OpenAI SDK's extra_body as the
-        # native `options.num_ctx`.
+        # the window, carried as the native options.num_ctx.
         monkeypatch.setenv("OLLAMA_NUM_CTX", "32768")
-        _mod, client = self._fake_openai(monkeypatch)
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10)
-        kw = client.chat.completions.create.call_args.kwargs
-        assert kw["extra_body"] == {"options": {"num_ctx": 32768}}
+        assert cap["body"]["options"]["num_ctx"] == 32768
 
     def test_num_ctx_omitted_when_unset(self, monkeypatch):
-        # Default path sends a vanilla request any Ollama version accepts.
-        _mod, client = self._fake_openai(monkeypatch)
+        monkeypatch.delenv("OLLAMA_NUM_CTX", raising=False)
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10)
-        assert "extra_body" not in client.chat.completions.create.call_args.kwargs
+        assert "num_ctx" not in cap["body"]["options"]
 
     def test_empty_content_raises(self, monkeypatch):
-        _mod, _client = self._fake_openai(monkeypatch, content="")
+        self._fake_ollama(monkeypatch, content="")
         with pytest.raises(ValueError, match="No content in Ollama"):
             providers._call_ollama("s", "u", 10)
 
-    def test_length_finish_reason_raises_truncated(self, monkeypatch):
-        _mod, client = self._fake_openai(monkeypatch, content='{"actions": [')
-        client.chat.completions.create.return_value.choices[0].finish_reason = "length"
+    def test_done_reason_length_raises_truncated(self, monkeypatch):
+        self._fake_ollama(monkeypatch, content='{"actions": [', done_reason="length")
         with pytest.raises(providers.OutputTruncatedError) as exc_info:
             providers._call_ollama("s", "u", 2048)
         assert exc_info.value.provider == "ollama"
@@ -949,29 +957,60 @@ class TestCallOllama:
 
     def test_records_usage_under_ollama_provider(self, monkeypatch):
         # Telemetry must bucket the call under provider="ollama" (so cost
-        # estimation can zero it) — recorded via the OpenAI-shaped usage path.
+        # estimation can zero it) — via the native usage path (from_ollama).
         from case_calendar.llmkit import usage
 
         seen = {}
-        monkeypatch.setattr(
-            usage,
-            "record",
-            lambda **kw: seen.update(kw),
-        )
-        _mod, _client = self._fake_openai(monkeypatch)
+        monkeypatch.setattr(usage, "record", lambda **kw: seen.update(kw))
+        self._fake_ollama(monkeypatch, prompt_eval_count=11, eval_count=7)
         providers._call_ollama("s", "u", 10)
         assert seen["provider"] == "ollama"
+        assert seen["tokens"].input == 11
+        assert seen["tokens"].output == 7
 
     def test_temperature_omitted_when_none(self, monkeypatch):
-        _mod, client = self._fake_openai(monkeypatch)
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10)
-        assert "temperature" not in client.chat.completions.create.call_args.kwargs
+        assert "temperature" not in cap["body"]["options"]
 
     def test_temperature_forwarded_when_zero(self, monkeypatch):
         # 0.0 must survive the falsy-zero trap (the `is not None` check).
-        _mod, client = self._fake_openai(monkeypatch)
+        cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10, temperature=0.0)
-        assert client.chat.completions.create.call_args.kwargs["temperature"] == 0.0
+        assert cap["body"]["options"]["temperature"] == 0.0
+
+    # --- per-track thinking control ---
+
+    def test_thinking_model_disables_thinking_off_summary(self, monkeypatch):
+        # High-volume structured tracks: thinking OFF so reasoning can't overrun
+        # the output budget (the qwen3 "No content" failure) or take minutes.
+        for purpose in ("extract", "verify_hearing", "dedupe_hearings", "llm"):
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama("s", "u", 8192, purpose=purpose)
+            assert cap["body"]["think"] is False, purpose
+            assert cap["body"]["options"]["num_predict"] == 8192, purpose
+
+    def test_thinking_model_summary_keeps_thinking_unbounded(self, monkeypatch):
+        # Summary track: thinking ON, output cap lifted (-1) so verbose
+        # reasoning finishes AND still emits the answer.
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 8192, purpose="summary")
+        assert cap["body"]["think"] is True
+        assert cap["body"]["options"]["num_predict"] == -1
+
+    def test_nonthinking_model_omits_think_field(self, monkeypatch):
+        # A model without the thinking capability gets a plain request.
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"completion"}))
+        providers._call_ollama("s", "u", 10, purpose="summary")
+        assert "think" not in cap["body"]
+        assert cap["body"]["options"]["num_predict"] == 10
+
+    def test_unknown_caps_treated_as_thinking(self, monkeypatch):
+        # An unconfirmable capability lookup (empty set) is treated AS thinking
+        # — the safe default — so a structured call still disables thinking.
+        cap = self._fake_ollama(monkeypatch, caps=frozenset())
+        providers._call_ollama("s", "u", 10, purpose="extract")
+        assert cap["body"]["think"] is False
 
 
 class TestOllamaCapabilities:
@@ -1385,67 +1424,64 @@ class TestDetectOllamaInputTruncation:
 
 class TestCallOllamaContextChecks:
     """Pre-flight + post-flight + memory-error handling inside `_call_ollama`,
-    with the openai SDK and the usage/limit hooks mocked."""
+    with the native request seam, capability lookup, and limit hook mocked."""
 
     @staticmethod
-    def _fake_openai(monkeypatch, content="hello"):
-        from unittest.mock import MagicMock
-        import sys
+    def _fake_ollama(
+        monkeypatch,
+        *,
+        content="hello",
+        processed=0,
+        raise_exc=None,
+        caps=frozenset({"completion"}),
+    ):
+        captured: dict = {}
 
-        fake_mod = MagicMock(name="openai")
-        fake_client = MagicMock()
-        fake_mod.OpenAI.return_value = fake_client
-        msg = MagicMock()
-        msg.content = content
-        choice = MagicMock()
-        choice.message = msg
-        choice.finish_reason = "stop"
-        fake_client.chat.completions.create.return_value.choices = [choice]
-        monkeypatch.setitem(sys.modules, "openai", fake_mod)
-        return fake_mod, fake_client
+        def fake_request(body, *, timeout=600.0):
+            captured["body"] = body
+            if raise_exc is not None:
+                raise raise_exc
+            return {
+                "message": {"content": content},
+                "done_reason": "stop",
+                "prompt_eval_count": processed,
+                "eval_count": 3,
+            }
 
-    @staticmethod
-    def _set_processed(monkeypatch, processed):
-        from case_calendar.llmkit import usage
-
-        monkeypatch.setattr(
-            usage, "from_openai", lambda resp: usage.TokenUsage(input=processed)
-        )
+        monkeypatch.setattr(providers, "_ollama_chat_request", fake_request)
+        monkeypatch.setattr(providers, "ollama_capabilities", lambda model: caps)
+        return captured
 
     def test_preflight_refuses_before_calling(self, monkeypatch):
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 100)
-        _mod, client = self._fake_openai(monkeypatch)
+        cap = self._fake_ollama(monkeypatch)
         # ~115-token estimate (400 chars / 3.5) + max_tokens 10 > limit 100.
         with pytest.raises(providers.ContextWindowExceededError) as exc:
             providers._call_ollama("x" * 400, "", 10)
         assert exc.value.limit == 100
-        client.chat.completions.create.assert_not_called()
+        assert "body" not in cap  # the native request was never made
 
     def test_within_limit_proceeds(self, monkeypatch):
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 100000)
-        self._set_processed(monkeypatch, 50)
-        _mod, client = self._fake_openai(monkeypatch, content="ok")
+        cap = self._fake_ollama(monkeypatch, content="ok", processed=50)
         assert providers._call_ollama("s", "u", 10) == "ok"
-        client.chat.completions.create.assert_called_once()
+        assert "body" in cap
 
     def test_postflight_saturation_raises(self, monkeypatch):
         # Tiny prompt passes pre-flight, but the server reports it evaluated up
         # to the prompt budget (limit - max_tokens) — a silent truncation.
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 1000)
-        self._set_processed(monkeypatch, 995)
-        _mod, client = self._fake_openai(monkeypatch)
+        self._fake_ollama(monkeypatch, processed=995)
         with pytest.raises(providers.ContextWindowExceededError) as exc:
             providers._call_ollama("s", "u", 10)
         assert exc.value.processed == 995 and exc.value.limit == 1000
-        client.chat.completions.create.assert_called_once()
 
     def test_memory_error_logs_hint_and_reraises(self, monkeypatch, caplog):
         import logging
 
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
-        _mod, client = self._fake_openai(monkeypatch)
-        client.chat.completions.create.side_effect = RuntimeError(
-            "CUDA error: out of memory"
+        self._fake_ollama(
+            monkeypatch, raise_exc=RuntimeError("CUDA error: out of memory")
         )
         with caplog.at_level(logging.WARNING):
             with pytest.raises(RuntimeError, match="out of memory"):
@@ -1454,14 +1490,13 @@ class TestCallOllamaContextChecks:
         assert "LOWER the context window" in caplog.text
 
     def test_non_memory_error_propagates_without_hint(self, monkeypatch, caplog):
-        # A non-memory failure from the SDK propagates unchanged and does NOT
-        # emit the lower-the-window hint (that guidance is memory-error only).
+        # A non-memory failure propagates unchanged and does NOT emit the
+        # lower-the-window hint (that guidance is memory-error only).
         import logging
 
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
-        _mod, client = self._fake_openai(monkeypatch)
-        client.chat.completions.create.side_effect = RuntimeError(
-            "503 service unavailable"
+        self._fake_ollama(
+            monkeypatch, raise_exc=RuntimeError("503 service unavailable")
         )
         with caplog.at_level(logging.WARNING):
             with pytest.raises(RuntimeError, match="service unavailable"):
@@ -1472,12 +1507,27 @@ class TestCallOllamaContextChecks:
         # End-to-end through dispatch: an OOM must stay a plain error (opposite
         # remedy), never ContextWindowExceededError.
         monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
-        _mod, client = self._fake_openai(monkeypatch)
-        client.chat.completions.create.side_effect = RuntimeError(
-            "failed to allocate 12.3 GiB"
+        self._fake_ollama(
+            monkeypatch, raise_exc=RuntimeError("failed to allocate 12.3 GiB")
         )
         with pytest.raises(RuntimeError, match="allocate"):
             providers._dispatch_llm_call("ollama", "s", "u", 10)
+
+    def test_http_error_body_detected_as_memory_error(self, monkeypatch, caplog):
+        # A native HTTPError carries the OOM detail in its BODY, not str(exc);
+        # _http_error_detail must read .read() so the hint still fires.
+        import logging
+
+        class _FakeHTTPError(Exception):
+            def read(self):
+                return b"model requires more system memory than is available"
+
+        monkeypatch.setattr(providers, "_ollama_context_limit", lambda m: 262144)
+        self._fake_ollama(monkeypatch, raise_exc=_FakeHTTPError("HTTP Error 500"))
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(_FakeHTTPError):
+                providers._call_ollama("s", "u", 10)
+        assert "LOWER the context window" in caplog.text
 
 
 # --- verify_deadline (parallel to verify_hearing) ---

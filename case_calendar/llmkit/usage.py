@@ -147,6 +147,25 @@ def from_gemini(resp: Any) -> TokenUsage:
     )
 
 
+def from_ollama(resp: Any) -> TokenUsage:
+    """Extract usage from a native Ollama ``/api/chat`` response dict.
+
+    Ollama reports ``prompt_eval_count`` (prompt tokens) and ``eval_count``
+    (generated tokens — which INCLUDE any reasoning/"thinking" tokens, since a
+    thinking model draws them from the same output stream). There is no prompt
+    cache, so ``cached`` / ``cache_write`` stay 0. A non-dict (a test double, a
+    malformed body) coerces every field to 0 via :func:`_as_int`.
+    """
+    if not isinstance(resp, dict):
+        return TokenUsage()
+    return TokenUsage(
+        input=_as_int(resp.get("prompt_eval_count", 0)),
+        output=_as_int(resp.get("eval_count", 0)),
+        cached=0,
+        cache_write=0,
+    )
+
+
 class TokenLedger:
     """Accumulates token usage per docket and in total for one process run.
 
