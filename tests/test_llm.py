@@ -471,6 +471,104 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     assert "Hearing types: arraignment" in captured["system"]
 
 
+# --- structured output (opt-in schema enforcement on the extraction call) ---
+
+
+class TestStructuredOutputGating:
+    """``extract_actions`` passes ``schema=ACTIONS_SCHEMA`` to the dispatch by
+    DEFAULT (structured output is on unless ``LLM_STRUCTURED_OUTPUT`` is an
+    explicit falsy value). The closed minimal-required schema is validated on all
+    four providers, so there is no per-provider skip. The default _run_capture
+    provider is anthropic."""
+
+    @staticmethod
+    def _run_capture(monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured = {}
+
+        def fake_dispatch(provider, system, user, max_tokens, **kw):
+            captured["schema"] = kw.get("schema")
+            return '{"actions": [{"type": "IGNORE"}]}'
+
+        monkeypatch.setattr(providers, "_dispatch_llm_call", fake_dispatch)
+        llm.extract_actions(
+            case_name="US v. Z",
+            court_id="mad",
+            court_tz="America/New_York",
+            entry={
+                "id": 1,
+                "description": "Sentencing set for 4/14",
+                "recap_documents": [],
+            },
+            pdf_texts=[],
+            known_hearings=[],
+        )
+        return captured
+
+    def test_enabled_by_default_passes_schema(self, monkeypatch):
+        # default ON: unset -> schema enforced
+        monkeypatch.delenv("LLM_STRUCTURED_OUTPUT", raising=False)
+        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
+
+    def test_opt_out_passes_no_schema(self, monkeypatch):
+        # explicit falsy value opts OUT -> no schema
+        monkeypatch.setenv("LLM_STRUCTURED_OUTPUT", "0")
+        assert self._run_capture(monkeypatch)["schema"] is None
+
+    def test_explicit_on_passes_actions_schema(self, monkeypatch):
+        monkeypatch.setenv("LLM_STRUCTURED_OUTPUT", "1")
+        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
+
+    def test_actions_schema_is_closed_minimal_required(self):
+        # Pins the CLOSED, MINIMAL-required shape: every object
+        # additionalProperties:false (Gemini needs every field declared), but only
+        # `type` required (forcing all fields required depressed Gemini recall —
+        # see the 2026-06 parity). type is a non-null enum; all others nullable.
+        s = llm.ACTIONS_SCHEMA
+        assert s["required"] == ["actions"]
+        assert s["additionalProperties"] is False
+        item = s["properties"]["actions"]["items"]
+        assert item["additionalProperties"] is False
+        # only the discriminator is required (NOT all properties)
+        assert item["required"] == ["type"]
+        props = item["properties"]
+        assert props["type"] == {"type": "string", "enum": llm._ACTION_TYPES}
+        assert set(llm._ACTION_TYPES) >= {"ADD_HEARING", "ADD_DEADLINE", "IGNORE"}
+        # every non-type field is a nullable union so the model can emit null
+        for name, sub in props.items():
+            if name == "type":
+                continue
+            assert "null" in sub["type"], name
+
+    def test_enabled_flag_parsing(self, monkeypatch):
+        # default ON: only an explicit falsy value (0/false/no/off) opts out;
+        # anything else — including unset and unrecognized strings — leaves it on.
+        for val, want in [
+            ("1", True),
+            ("true", True),
+            ("on", True),
+            ("nope", True),  # unrecognized -> stays on (default)
+            ("0", False),
+            ("false", False),
+            ("FALSE", False),
+            ("no", False),
+            ("off", False),
+            ("", True),  # empty string -> on
+        ]:
+            monkeypatch.setenv("LLM_STRUCTURED_OUTPUT", val)
+            assert llm._structured_output_enabled() is want, val
+        monkeypatch.delenv("LLM_STRUCTURED_OUTPUT", raising=False)
+        assert llm._structured_output_enabled() is True  # unset -> on
+
+    def test_enabled_passes_schema_for_any_provider(self, monkeypatch):
+        # The closed ACTIONS_SCHEMA is validated on all four providers, so there is
+        # no per-provider skip: gemini gets the schema same as anthropic/openai.
+        monkeypatch.delenv("LLM_STRUCTURED_OUTPUT", raising=False)
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "x")
+        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
+
+
 # --- verify_hearing ---
 
 

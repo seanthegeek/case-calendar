@@ -96,24 +96,25 @@ _DEFAULT_MODELS = {
     "anthropic": "claude-haiku-4-5",
     "openai": "gpt-5.4-nano",
     "gemini": "gemini-3.1-flash-lite",
-    # Local inference via Ollama's OpenAI-compatible endpoint. The local
-    # default is gemma4:e4b (a 9.6 GB download, 4.5B effective params,
-    # multimodal) for BOTH tracks, so a zero-config local install pulls and
-    # runs ONE model that fits a mainstream 16 GB card (12 GB at a reduced
-    # window); an 8 GB card is too small for it (use the 7.2 GB gemma4:e2b
-    # there, or hosted summaries). The larger gemma4:31b needs 20 GB just for
-    # weights, which leaves no room for a summary-sized KV cache on a 24 GB card
-    # (it OOMs / spills to RAM and crawls) — it wants a 32 GB GPU (an RTX 5090),
-    # so it is the opt-in QUALITY upgrade, not the default. Operators with a
-    # 32 GB+ card trade UP with
-    # LLM_MODEL=gemma4:31b (or LLM_SUMMARY_MODEL=gemma4:31b to upgrade only
-    # summaries); on 24 GB or less the quality path for summaries is hosted
-    # (the hybrid setup), not local 31b. Local inference has no per-token cost,
-    # so the one-model-for-both-tracks design holds either way. gemma4 is
-    # Western-built (Google), permissively licensed, and text-capable — see
-    # docs/local-llms.md. Ollama is opt-in only (no API key to auto-detect
-    # from): select it with LLM_PROVIDER=ollama or a per-track override.
-    "ollama": "gemma4:e4b",
+    # Local inference via Ollama's OpenAI-compatible endpoint. The local default
+    # is gpt-oss:20b for BOTH tracks — chosen on measured benchmark accuracy, not
+    # only hardware fit: it is the best LOCAL extractor in the comparison
+    # (deviation 751, beating the prior gemma4:e4b default's 1119 AND three
+    # hosted models; 2nd overall behind only Gemini — see
+    # model-comparison/SCORECARD.md), and the cleanest local summarizer (no
+    # verdict fabrication or token leaks). It is also STABLE where most local
+    # thinking models are not: its reasoning is LEVEL-based (inherently bounded),
+    # so it completes cleanly, whereas the UNBOUNDED boolean-thinkers (qwen3,
+    # mistral, glm, granite) ran away / timed out on the same benchmark. It is
+    # OpenAI open-weights — Western-built and clean for adversary-nation cases.
+    # Size trade vs the older gemma4:e4b default: 13.8 GB (MXFP4) vs 9.6 GB.
+    # EXTRACTION (short context) still fits a 16 GB card; SUMMARIES at a large
+    # context window want ~24 GB — on a 16 GB card, lower OLLAMA_NUM_CTX or send
+    # summaries to a hosted provider (the hybrid setup). gemma4:e4b remains the
+    # smaller-card fallback (LLM_MODEL=gemma4:e4b). Ollama is opt-in only (no API
+    # key to auto-detect from): select it with LLM_PROVIDER=ollama or a per-track
+    # override. See docs/local-llms.md.
+    "ollama": "gpt-oss:20b",
 }
 
 # Every provider this layer can dispatch to. Used to validate the
@@ -184,12 +185,94 @@ def _detect_extraction_provider() -> Optional[str]:
     return _detect_provider(key_priority=_EXTRACTION_KEY_PRIORITY)
 
 
+# --- Structured output (schema-enforced JSON) ---------------------------------
+# Generic, domain-free: a caller passes a ``schema`` (a JSON Schema dict) and
+# each provider enforces it server-side. OpenAI, Gemini, and Ollama take a JSON
+# Schema natively; Anthropic has no response-format flag, so we force a single
+# tool call whose ``input_schema`` IS the schema and read the structured args
+# back. ``schema`` overrides ``json_mode`` (a schema already implies JSON). The
+# tool name is generic so this stays liftable into a standalone llmkit — the
+# library never needs to know what the schema means; the consumer supplies it.
+_STRUCTURED_OUTPUT_NAME = "structured_output"
+
+
+def _to_openai_strict_schema(schema: Any) -> Any:
+    """Transform a schema into OpenAI strict-mode form. OpenAI's strict mode
+    requires every object to set ``additionalProperties: false`` AND list EVERY
+    declared property in ``required`` (a 400 otherwise — verified empirically).
+    A schema that is minimal-required (only the discriminator) for the other
+    providers is filled out here: every object node gets ``required`` = all of
+    its ``properties`` keys and ``additionalProperties: false``. Pure / recursive
+    — returns NEW nodes, never mutates the input (the canonical ACTIONS_SCHEMA is
+    shared across providers and is deliberately minimal-required for them)."""
+    if isinstance(schema, list):
+        return [_to_openai_strict_schema(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out = {k: _to_openai_strict_schema(v) for k, v in schema.items()}
+    if out.get("type") == "object" and isinstance(out.get("properties"), dict):
+        out["required"] = list(out["properties"])
+        out["additionalProperties"] = False
+    return out
+
+
+def _openai_json_schema_format(schema: dict[str, Any]) -> dict[str, Any]:
+    """OpenAI-style ``response_format`` that pins output to a JSON Schema. Shared
+    by the OpenAI SDK and OpenAI-compatible local servers (LM Studio / vLLM /
+    llama.cpp) that implement the same field.
+
+    ``strict`` is True — hard grammar-enforced. OpenAI's strict mode requires a
+    CLOSED schema with every property in ``required``; an under-specified schema
+    is rejected 400 ("additionalProperties is required ... to be false") —
+    verified empirically. ``_to_openai_strict_schema`` fills that in, so a
+    canonical minimal-required schema (what the OTHER providers take, to avoid
+    the all-required recall hit) is accepted here too."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": _STRUCTURED_OUTPUT_NAME,
+            "schema": _to_openai_strict_schema(schema),
+            "strict": True,
+        },
+    }
+
+
+def _to_gemini_schema(schema: Any) -> Any:
+    """Transform a canonical JSON-Schema dict into Gemini's ``response_schema``
+    dialect (an OpenAPI 3.0 subset). Two rewrites: a nullable-union
+    ``{"type": [<t>, "null"]}`` becomes ``{"type": <t>, "nullable": true}``
+    (Gemini's ``type`` is a single value, never a union), and
+    ``additionalProperties`` is dropped (Gemini's schema has no such key and
+    rejects it). Pure and recursive — returns NEW nodes, never mutates the input,
+    because the canonical ACTIONS_SCHEMA is shared across providers. ``enum`` /
+    ``required`` / ``properties`` / ``items`` pass through (recursively), so a
+    schema with no unions and no ``additionalProperties`` round-trips to an equal
+    dict."""
+    if isinstance(schema, list):
+        return [_to_gemini_schema(x) for x in schema]
+    if not isinstance(schema, dict):
+        return schema
+    out: dict[str, Any] = {}
+    for key, value in schema.items():
+        if key == "additionalProperties":
+            continue
+        if key == "type" and isinstance(value, list):
+            non_null = [t for t in value if t != "null"]
+            out["type"] = non_null[0] if non_null else "string"
+            if "null" in value:
+                out["nullable"] = True
+            continue
+        out[key] = _to_gemini_schema(value)
+    return out
+
+
 def _call_anthropic(
     system: str,
     user: str,
     max_tokens: int,
     *,
     model: Optional[str] = None,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str = "llm",
     docket: Any = None,
     temperature: Optional[float] = None,
@@ -222,6 +305,18 @@ def _call_anthropic(
         ],
         "messages": [{"role": "user", "content": user}],
     }
+    if schema is not None:
+        # Anthropic has no response-format flag, so structured output is done by
+        # FORCING a single tool call whose input_schema IS the schema; the model
+        # returns the result as that tool's args, which we read back below.
+        create_kwargs["tools"] = [
+            {
+                "name": _STRUCTURED_OUTPUT_NAME,
+                "description": "Return the result as structured data per the schema.",
+                "input_schema": schema,
+            }
+        ]
+        create_kwargs["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_NAME}
     if temperature is not None:
         create_kwargs["temperature"] = temperature
     resp = client.messages.create(**create_kwargs)
@@ -232,6 +327,17 @@ def _call_anthropic(
         tokens=usage.from_anthropic(resp),
         docket=docket,
     )
+    truncated = getattr(resp, "stop_reason", None) == "max_tokens"
+    if schema is not None:
+        # Read the forced tool call's args (a dict) and return them as a JSON
+        # string, so the caller parses identically to the other providers.
+        for block in resp.content:
+            if getattr(block, "type", None) == "tool_use":
+                out = json.dumps(getattr(block, "input", {}))
+                if truncated:
+                    raise OutputTruncatedError("anthropic", out, max_tokens)
+                return out
+        raise ValueError("No tool_use block in Anthropic response")
     text: str | None = None
     for block in resp.content:
         if block.type == "text":
@@ -239,7 +345,7 @@ def _call_anthropic(
             break
     if text is None:
         raise ValueError("No text block in Anthropic response")
-    if getattr(resp, "stop_reason", None) == "max_tokens":
+    if truncated:
         raise OutputTruncatedError("anthropic", text, max_tokens)
     return text
 
@@ -251,6 +357,7 @@ def _call_openai(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str = "llm",
     docket: Any = None,
     temperature: Optional[float] = None,
@@ -276,7 +383,11 @@ def _call_openai(
             {"role": "user", "content": user},
         ],
     }
-    if json_mode:
+    # A schema pins output to that JSON Schema (server-enforced); plain json_mode
+    # only guarantees *valid* JSON. schema wins when both are set.
+    if schema is not None:
+        kwargs["response_format"] = _openai_json_schema_format(schema)
+    elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     if temperature is not None:
         kwargs["temperature"] = temperature
@@ -304,6 +415,7 @@ def _call_gemini(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str = "llm",
     docket: Any = None,
     temperature: Optional[float] = None,
@@ -317,7 +429,12 @@ def _call_gemini(
         "system_instruction": system,
         "max_output_tokens": max_tokens,
     }
-    if json_mode:
+    # response_schema pins the JSON shape; response_mime_type alone only forces
+    # valid JSON. Gemini takes a JSON Schema dict directly.
+    if schema is not None:
+        config_kwargs["response_mime_type"] = "application/json"
+        config_kwargs["response_schema"] = _to_gemini_schema(schema)
+    elif json_mode:
         config_kwargs["response_mime_type"] = "application/json"
     if temperature is not None:
         config_kwargs["temperature"] = temperature
@@ -668,6 +785,53 @@ def _ollama_requires_thinking_level(model: str) -> bool:
     return any(name in lowered for name in _OLLAMA_LEVEL_THINKING_MODELS)
 
 
+# Reasoning headroom (in tokens) added ON TOP of max_tokens for a thinking
+# model's output budget, so the budget covers the answer (max_tokens) PLUS a
+# bounded reasoning trace. This replaces an earlier UNBOUNDED budget
+# (``num_predict = -1``), which let runaway-prone models keep generating until
+# they filled the whole context window — surfacing as request timeouts or empty
+# "No content" responses, NOT the clean truncation the unbounded design assumed.
+# A bounded headroom makes a model that won't stop truncate here
+# (-> :class:`OutputTruncatedError` -> the caller skips the item) in seconds
+# rather than hanging. The default is deliberately generous: across a
+# structured-output extraction benchmark the disciplined thinkers' natural
+# trace+answer length stayed well under it (gemma ≤ ~3.3K tokens, gpt-oss
+# ≤ ~5.2K), so they are unaffected, while the models that ran away (qwen3,
+# mistral, glm, granite) are bounded. It is tuned for structured / short-answer
+# thinking; a long-form-generation consumer should raise ``OLLAMA_THINK_BUDGET``.
+# Because the cap raises ``OutputTruncatedError`` (which the caller logs), a
+# caseload that genuinely needs a longer trace reports itself rather than
+# failing silently.
+_DEFAULT_OLLAMA_THINK_BUDGET = 8192
+
+
+def _ollama_think_budget() -> int:
+    """Reasoning headroom in tokens added to ``max_tokens`` for a thinking model
+    (see :data:`_DEFAULT_OLLAMA_THINK_BUDGET`). ``OLLAMA_THINK_BUDGET`` overrides
+    the default; a missing or malformed value falls back to it. A non-negative
+    integer is required — ``0`` means "no headroom" (cap the trace at
+    ``max_tokens``)."""
+    raw = os.environ.get("OLLAMA_THINK_BUDGET", "").strip()
+    if raw:
+        try:
+            v = int(raw)
+        except ValueError:
+            logger.warning(
+                "OLLAMA_THINK_BUDGET=%r is not an integer; using default %d",
+                raw,
+                _DEFAULT_OLLAMA_THINK_BUDGET,
+            )
+        else:
+            if v >= 0:
+                return v
+            logger.warning(
+                "OLLAMA_THINK_BUDGET=%r is negative; using default %d",
+                raw,
+                _DEFAULT_OLLAMA_THINK_BUDGET,
+            )
+    return _DEFAULT_OLLAMA_THINK_BUDGET
+
+
 def _log_ollama_memory_hint(chosen: str, limit: Optional[int], detail: str) -> None:
     """Operator-actionable hint when Ollama can't allocate memory for the
     configured context window. The remedy is to LOWER the window (the opposite
@@ -691,6 +855,7 @@ def _call_ollama(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str = "llm",
     docket: Any = None,
     temperature: Optional[float] = None,
@@ -751,6 +916,7 @@ def _call_ollama(
         max_tokens,
         chosen=chosen,
         json_mode=json_mode,
+        schema=schema,
         purpose=purpose,
         docket=docket,
         temperature=temperature,
@@ -766,6 +932,7 @@ def _call_ollama_native(
     *,
     chosen: str,
     json_mode: bool,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str,
     docket: Any,
     temperature: Optional[float],
@@ -775,14 +942,18 @@ def _call_ollama_native(
     """Native ``/api/chat`` call with per-track thinking control.
 
     Thinking policy (for models reporting the ``thinking`` capability —
-    :func:`ollama_capabilities`): the model THINKS on every track, with an
-    UNBOUNDED output budget (``num_predict = -1``). Local inference has no
-    per-token cost, so the reasoning isn't capped to a guessed number — and
-    suppressing it (an earlier ``think = false`` on the high-volume tracks) made
-    weaker models re-emit the KNOWN hearings/deadlines they were shown as
-    spurious actions. gpt-oss is the one exception: its reasoning can't be turned
-    off, only tuned by LEVEL, so it gets the shortest level on the high-volume
-    tracks (its deepest is too slow there) and the deepest on summaries.
+    :func:`ollama_capabilities`): the model THINKS on every track, with a BOUNDED
+    output budget of ``max_tokens + _ollama_think_budget()`` (the answer
+    allowance plus a reasoning headroom, default 8192, ``OLLAMA_THINK_BUDGET``-
+    overridable). This replaced an earlier ``num_predict = -1`` (unbounded) that
+    let runaway-prone models generate until the request timed out. Suppressing
+    reasoning entirely is still wrong (an earlier ``think = false`` on the
+    high-volume tracks made weaker models re-emit the KNOWN hearings/deadlines
+    they were shown as spurious actions — that's what ``OLLAMA_FORCE_NO_THINK``
+    is for), but the bound keeps a non-stopping model truncating cleanly. gpt-oss
+    is the one exception: its reasoning can't be turned off, only tuned by LEVEL,
+    so it gets the shortest level on the high-volume tracks (its deepest is too
+    slow there) and the deepest on summaries.
 
     Non-thinking models are sent a plain request (no ``think`` field). Hosted
     thinking (Gemini) is handled separately by :func:`ensure_thinking_budget`.
@@ -793,27 +964,47 @@ def _call_ollama_native(
     # weaker models re-emit the KNOWN context they were shown).
     caps = ollama_capabilities(chosen)
     is_thinking = (not caps) or ("thinking" in caps)
+    # Escape hatch for a thinking model whose UNBOUNDED reasoning runs away
+    # (never emits a stop token, generates until the request times out) or is
+    # simply too slow to be practical. Setting OLLAMA_FORCE_NO_THINK to any
+    # non-empty value sends an explicit think=false and keeps the output budget
+    # bounded at max_tokens, so the model answers without a reasoning trace. It
+    # is OFF by default (the shipped policy is reasoning ON — suppressing it made
+    # weaker models re-emit their known context as spurious actions), and it is a
+    # NO-OP for the gpt-oss family, whose reasoning is level-based and cannot be
+    # disabled by a boolean (only lowered). Primarily a benchmarking control for
+    # the thinking-on-vs-off comparison; also a real operator lever for a runaway.
+    force_no_think = bool(os.environ.get("OLLAMA_FORCE_NO_THINK", "").strip())
     think: bool | str | None = None
     num_predict = max_tokens
     if is_thinking:
-        # A thinking model thinks on EVERY track, with an UNBOUNDED output
-        # budget. Local inference has no per-token cost, so there's no reason to
-        # cap the reasoning — and capping/suppressing it (the old per-track
-        # think=false + guessed budget) made weaker models regurgitate their
-        # KNOWN hearings/deadlines as spurious actions. Unbounded is safe: the
-        # reasoning is naturally capped by the context window, a finished model
-        # stops at its end-of-turn token, and a degenerate non-stopping
-        # generation surfaces as the ordinary OutputTruncatedError (the entry is
-        # skipped) rather than a GPU hang.
-        num_predict = -1
-        if _ollama_requires_thinking_level(chosen):
-            # gpt-oss is the exception: its reasoning can't be turned off, only
-            # tuned by LEVEL. Its "high" trace is too heavy for high-volume
-            # extraction, so it gets the shortest level there and the deepest
-            # for the synthesis-heavy summary track.
-            think = "high" if purpose == "summary" else "low"
+        if force_no_think and not _ollama_requires_thinking_level(chosen):
+            # Explicit disable: send think=false (NOT merely omitting the field,
+            # which would leave the model on its own default) and keep the output
+            # budget bounded so there's no unbounded trace.
+            think = False
         else:
-            think = True
+            # A thinking model thinks on EVERY track. Its output budget is the
+            # answer allowance (max_tokens) PLUS a bounded reasoning headroom
+            # (_ollama_think_budget) — NOT the old unbounded num_predict=-1.
+            # Suppressing reasoning entirely is still wrong (it made weaker models
+            # re-emit their known context as spurious actions — that is what
+            # force_no_think above is for); but letting it run UNbounded let
+            # runaway-prone models keep generating until they filled the whole
+            # context window, surfacing as request timeouts or empty "No content"
+            # responses rather than the clean truncation that design assumed. A
+            # generous bound leaves disciplined thinkers untouched while making a
+            # non-stopping model truncate cleanly (-> OutputTruncatedError, item
+            # skipped) in seconds. See _ollama_think_budget for the sizing.
+            num_predict = max_tokens + _ollama_think_budget()
+            if _ollama_requires_thinking_level(chosen):
+                # gpt-oss is the exception: its reasoning can't be turned off,
+                # only tuned by LEVEL. Its "high" trace is too heavy for
+                # high-volume extraction, so it gets the shortest level there and
+                # the deepest for the synthesis-heavy summary track.
+                think = "high" if purpose == "summary" else "low"
+            else:
+                think = True
 
     options: dict[str, Any] = {"num_predict": num_predict}
     if temperature is not None:
@@ -831,7 +1022,11 @@ def _call_ollama_native(
         "stream": False,
         "options": options,
     }
-    if json_mode:
+    # A JSON Schema in `format` constrains the output to that shape; the string
+    # "json" only forces valid JSON. Ollama takes the schema dict directly.
+    if schema is not None:
+        body["format"] = schema
+    elif json_mode:
         body["format"] = "json"
     if think is not None:
         body["think"] = think
@@ -881,6 +1076,7 @@ def _call_ollama_openai_compat(
     *,
     chosen: str,
     json_mode: bool,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str,
     docket: Any,
     temperature: Optional[float],
@@ -908,7 +1104,11 @@ def _call_ollama_openai_compat(
             {"role": "user", "content": user},
         ],
     }
-    if json_mode:
+    # Most OpenAI-compatible servers (LM Studio / vLLM / llama.cpp) also accept
+    # the json_schema response_format; fall back to plain json_object without one.
+    if schema is not None:
+        kwargs["response_format"] = _openai_json_schema_format(schema)
+    elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
     if temperature is not None:
         kwargs["temperature"] = temperature
@@ -954,6 +1154,7 @@ def _dispatch_llm_call(
     *,
     model: Optional[str] = None,
     json_mode: bool = True,
+    schema: Optional[dict[str, Any]] = None,
     purpose: str = "llm",
     docket: Any = None,
     temperature: Optional[float] = None,
@@ -989,13 +1190,15 @@ def _dispatch_llm_call(
     """
     try:
         if provider == "anthropic":
-            # Anthropic has no `json_mode` knob (no JSON mode flag in the
-            # SDK; we just rely on the prompt and validate the response).
+            # Anthropic has no `json_mode` knob (no JSON mode flag in the SDK; we
+            # rely on the prompt and validate). A `schema`, if given, is enforced
+            # via forced tool-use inside _call_anthropic.
             return _call_anthropic(
                 system,
                 user,
                 max_tokens,
                 model=model,
+                schema=schema,
                 purpose=purpose,
                 docket=docket,
                 temperature=temperature,
@@ -1007,6 +1210,7 @@ def _dispatch_llm_call(
                 max_tokens,
                 model=model,
                 json_mode=json_mode,
+                schema=schema,
                 purpose=purpose,
                 docket=docket,
                 temperature=temperature,
@@ -1018,6 +1222,7 @@ def _dispatch_llm_call(
                 max_tokens,
                 model=model,
                 json_mode=json_mode,
+                schema=schema,
                 purpose=purpose,
                 docket=docket,
                 temperature=temperature,
@@ -1028,6 +1233,7 @@ def _dispatch_llm_call(
             max_tokens,
             model=model,
             json_mode=json_mode,
+            schema=schema,
             purpose=purpose,
             docket=docket,
             temperature=temperature,

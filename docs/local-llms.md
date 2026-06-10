@@ -38,22 +38,27 @@ and the summarizer ask very different things of a model:
   Benefits from a more capable model and a large context window, and — for
   adversary-nation cases — a model you trust to describe the charges faithfully.
 
-The default local model — `gemma4:e4b` — runs **both** tracks. It's a 9.6 GB
-download (4.5B effective parameters, multimodal), so it wants a **16 GB** card
-to run comfortably at the recommended 128K window; a 12 GB card works at a
-reduced window, and an 8 GB card is too small — there, drop to the 7.2 GB
-`gemma4:e2b` at a modest window or run summaries hosted. On a card that fits it,
-the simplest setup is everything local. Summaries are the more demanding track,
-and there are two ways to improve their quality. The larger `gemma4:31b` is
-better, but its 20 GB of weights leave no room for a useful context window even
-on a 24 GB card — it runs out of memory (or spills to system RAM and crawls) at
-the windows summaries need — so it wants a **32 GB GPU**, which on the current
-consumer line means an RTX 5090 (the 5080 is only 16 GB) or the older route of
-two cards. On anything smaller the quality path is instead the **hybrid** setup:
-keep extraction local and send only summaries to a hosted (or Western-model)
-provider. Hybrid is also the answer for adversary-nation cases where you want a
-model you specifically trust. The two tracks are configured
-independently — see [Configure](#configure).
+The default local model — `gpt-oss:20b` — runs **both** tracks. It's \~13 GB
+resident (MXFP4 4-bit, 20B parameters, OpenAI open-weights), so it fits a
+**16 GB** card with room for a working context window, and it was the
+best-scoring *local* extractor in this project's benchmark (lowest aggregate
+deviation of the local models tested — see
+[the scorecard](../model-comparison/SCORECARD.md)). Its reasoning is level-based
+(it can't run away the way a boolean-thinking model can), which makes it stable
+under the bounded thinking budget. On a smaller card, drop to the 9.6 GB
+`gemma4:e4b` (4.5B effective params, multimodal) at 12 GB, or the 7.2 GB
+`gemma4:e2b` at 8 GB — set `LLM_MODEL` / `LLM_SUMMARY_MODEL` accordingly. On a
+card that fits the default, the simplest setup is everything local. Summaries
+are the more demanding track, and there are two ways to improve their quality.
+The larger `gemma4:31b` is better, but its \~20 GB of weights leave no room for a
+useful context window even on a 24 GB card — it runs out of memory (or spills to
+system RAM and crawls) at the windows summaries need — so it wants a **32 GB
+GPU**, which on the current consumer line means an RTX 5090 (the 5080 is only
+16 GB) or the older route of two cards. On anything smaller the quality path is
+instead the **hybrid** setup: keep extraction local and send only summaries to a
+hosted (or Western-model) provider. Hybrid is also the answer for
+adversary-nation cases where you want a model you specifically trust. The two
+tracks are configured independently — see [Configure](#configure).
 
 ## Choosing a model
 
@@ -71,22 +76,21 @@ LLM), so you never need a vision/multimodal variant.
 | **gpt-oss** (20B) | OpenAI | open weights | both | Fits 16 GB; adjustable reasoning effort. |
 | **Phi-4** (14B) | Microsoft | MIT | extraction | Small, strong instruction-following. |
 
-For a single recommendation: **Gemma 4** is the cleanest all-rounder — Western
-(Google), permissively licensed, good at the structured output extraction
-needs, and capable enough for summaries — and it comes in several sizes
-(`e2b` 7.2 GB / `e4b` 9.6 GB / `26b` 18 GB / `31b` 20 GB) so one fits your card.
-It's the built-in Ollama default: selecting `LLM_PROVIDER=ollama` with no model
-override runs **`gemma4:e4b` for both tracks** — the 9.6 GB default, which runs
-comfortably on a mainstream 16 GB card (12 GB at a reduced window; an 8 GB card
-needs the smaller `gemma4:e2b` or hosted summaries). On a **32 GB-or-larger**
-card, trade UP to the higher-quality `gemma4:31b` with `LLM_MODEL=gemma4:31b`
-(or `LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries, where the bigger
-model helps most). It does **not** fit a 24 GB card at the context window
-summaries need — its 20 GB of weights leave no room for the KV cache (see
-[Context window](#context-window)) — so on 24 GB or less, keep `gemma4:e4b`
-local and send summaries to a hosted provider if you want higher quality (the
-hybrid setup). The two tracks are configured separately — see
-[Configure](#configure).
+For a single recommendation: **`gpt-oss:20b`** is the built-in Ollama default —
+selecting `LLM_PROVIDER=ollama` with no model override runs it for **both
+tracks**. It earned that on the benchmark (best LOCAL extractor by a wide margin —
+[the scorecard](../model-comparison/SCORECARD.md)) and on hardware fit (\~13 GB,
+comfortable on a 16 GB card). On a smaller card, override to **Gemma 4** — the
+cleanest all-rounder, Western (Google), permissively licensed, in several sizes
+(`e2b` 7.2 GB / `e4b` 9.6 GB / `26b` 18 GB / `31b` 20 GB): `LLM_MODEL=gemma4:e4b`
+on a 12 GB card, `gemma4:e2b` on 8 GB. On a **32 GB-or-larger** card, trade UP to
+the higher-quality `gemma4:31b` with `LLM_MODEL=gemma4:31b` (or
+`LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries, where the bigger model
+helps most). `gemma4:31b` does **not** fit a 24 GB card at the context window
+summaries need — its \~20 GB of weights leave no room for the KV cache (see
+[Context window](#context-window)) — so on 24 GB or less, keep the default local
+and send summaries to a hosted provider if you want higher quality (the hybrid
+setup). The two tracks are configured separately — see [Configure](#configure).
 
 China-developed models (**Qwen3 / Qwen 3.6** from Alibaba, **DeepSeek-R1**,
 **Kimi**) are technically excellent — Qwen in particular is top-tier at
@@ -198,10 +202,10 @@ The VRAM tier is what matters; the cards are examples across vendors.
 
 | VRAM | Nvidia | AMD (ROCm) | Intel Arc | What runs |
 | --- | --- | --- | --- | --- |
-| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | too small for the default `gemma4:e4b` (9.6 GB) — use `gemma4:e2b` (7.2 GB) at a small window, or run summaries hosted |
-| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | runs the default `gemma4:e4b` at a reduced window; `gemma4:e2b` for the full 128K |
-| **16 GB** | RTX 4060 Ti 16GB / 5070 Ti / 5080 | RX 7800 XT / 9070 XT | Arc A770 | **runs the default `gemma4:e4b` at the full 128K window** — the recommended local setup; also Mistral Small 24B or `gpt-oss:20b` at reduced context |
-| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | runs the default `gemma4:e4b` for both tracks with room to spare, even at a 128K window. `gemma4:31b` does **not** fit a useful window here (its 20 GB of weights crowd out the KV cache) — for better summaries, use the hybrid setup (hosted summaries). See [Context window](#context-window) |
+| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | too small for the default `gpt-oss:20b` (\~13 GB) and for `gemma4:e4b` (9.6 GB) — use `gemma4:e2b` (7.2 GB) at a small window, or run summaries hosted |
+| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | tight for `gpt-oss:20b` — drop to `gemma4:e4b` at a reduced window (`gemma4:e2b` for the full 128K) |
+| **16 GB** | RTX 4060 Ti 16GB / 5070 Ti / 5080 | RX 7800 XT / 9070 XT | Arc A770 | **runs the default `gpt-oss:20b` with room for a working window** — the recommended local setup; `gemma4:e4b` is the lighter alternative |
+| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | runs the default `gpt-oss:20b` for both tracks with room to spare. `gemma4:31b` does **not** fit a useful window here (its \~20 GB of weights crowd out the KV cache) — for better summaries, use the hybrid setup (hosted summaries). See [Context window](#context-window) |
 | **32 GB** | RTX 5090 | — | — | the home for the `gemma4:31b` summary upgrade at a real window; or a 70B with minimal offload |
 
 A single consumer card tops out around **32B**, and only on the biggest one — a
@@ -251,29 +255,51 @@ from the `librocdxg` Quickstart — not the standard Linux ROCm packages. See AM
 [WSL how-to for Radeon and
 Ryzen](https://rocm.docs.amd.com/projects/radeon-ryzen/en/latest/docs/install/installryz/wsl/howto_wsl.html).
 
-**Measured on an RX 7900 XTX (24 GB), gemma4, June 2026 — on AMD, prefer
-native Windows over in-WSL2 ROCm.** Running Ollama *inside* WSL2 does work once
-you add the ROCm backend, which the stock Linux install omits: drop the matching
-`ollama-linux-amd64-rocm` bundle into `/usr/local/lib/ollama/` and set
-`HSA_ENABLE_DXG_DETECTION=1` on the service so the runtime enumerates the GPU
-through `/dev/dxg`. But on the same card, **native Windows was clearly better**
-on two counts:
+**Measured on an RX 7900 XTX (24 GB), June 2026 — on AMD, in-WSL2 ROCm works and
+is genuinely GPU-accelerated, but native Windows is faster.** Running Ollama *inside* WSL2 needs the ROCm backend the stock Linux install
+omits: drop the matching `ollama-linux-amd64-rocm` bundle into
+`/usr/local/lib/ollama/` and set `HSA_ENABLE_DXG_DETECTION=1` on the service so the
+runtime enumerates the GPU through `/dev/dxg`. Done right the model loads fully on
+the GPU (`ollama ps` shows 100% GPU) and inference runs at real GPU speed — *not* a
+CPU fallback. But a controlled `llama3.2:3b` batch (identical prompts, each config
+run **alone** on the card) puts native Windows ahead on every axis:
 
-- **\~40% faster** generation on the small model — `gemma4:e4b` ran at \~83
-  tok/s on native Windows vs \~58 tok/s in WSL2 (both at 100% GPU).
-- It could **load `gemma4:31b`'s weights entirely in VRAM at 100% GPU**, which
-  the WSL2 path could not — inside WSL2 the DXG/DXCore layer's memory overhead
-  leaves too little room even for the inference compute buffer, so a realistic
-  (10K+ token) prompt to the 31b failed with an out-of-memory HTTP 500 or a load
-  timeout though the weights themselves loaded. But loading the weights is not
-  the same as running summaries: either way, 24 GB has no room for a
-  summary-sized context window on top of 31b's 20 GB of weights (see
-  [Hardware](#hardware-requirements)) — WSL2 just hits the wall sooner. This is
-  why the local default is `gemma4:e4b`, with 31b reserved for a 32 GB+ card.
+| | in-WSL2 ROCm-dxg | native Windows |
+| --- | ---: | ---: |
+| Extraction latency (9.3K-token prompt → JSON) | 3.8 s/call | **3.4 s/call** (\~12% faster) |
+| Generation throughput | 122 tok/s | **150 tok/s** (\~23% faster) |
 
-Net: on AMD, run Ollama natively on Windows and point Case Calendar at it from
-WSL2 (the `OLLAMA_BASE_URL` line above). Reserve in-WSL2 ROCm for small models
-where the extra setup and the VRAM overhead are acceptable.
+The penalty is **metric-dependent**. Prompt processing (one big batched pass) is
+barely affected, so *extraction* — prompt-heavy with tiny outputs — is only \~12%
+slower in WSL2. **Generation** suffers more (\~20–23% here; an earlier `gemma4:e4b`
+read showed closer to \~40%), consistent with the WSL2 GPU path adding per-call
+overhead: each token is a separate GPU kernel launch routed through the `/dev/dxg`
+paravirtualization layer, so a generation-heavy workload pays that cost once per
+token. (Caveat on measurement: run each config **alone** and confirm no leftover
+process is mid-inference — a shared GPU or a stray client produces contention
+artifacts that *look* like a property of the path but aren't. In this benchmark an
+apparent sustained high-CPU pin turned out to be exactly that — a stray client left
+running by the harness, not the WSL2 path — so the in-WSL2 **host-CPU overhead is not
+characterized here**, and a one-off 6 tok/s reading was likewise contention, not the
+real \~122 tok/s rate.)
+
+A second native-only advantage is memory headroom: native Windows could **load
+`gemma4:31b`'s weights entirely in VRAM**, which the WSL2 path could not — the
+DXG/DXCore layer's memory overhead leaves too little room for the compute buffer, so
+a realistic (10K+ token) prompt to the 31b failed with an out-of-memory HTTP 500 or a
+load timeout though the weights themselves loaded. Either way, 24 GB has no room for
+a summary-sized context window on top of 31b's 20 GB of weights (see
+[Hardware](#hardware-requirements)) — WSL2 just hits the wall sooner. This is why the
+local default (`gpt-oss:20b`, or `gemma4:e4b` on a smaller card) stays well under
+that ceiling, with 31b reserved for a 32 GB+ card.
+
+Net: on AMD, **native Windows is the faster host**, especially for the
+generation-heavy summary track. But in-WSL2 ROCm is a perfectly usable fallback for
+the **extraction track** (the local half of the recommended hybrid), where the
+penalty is only \~12%. Point Case Calendar at whichever you run via `OLLAMA_BASE_URL`
+(the line above for native Windows; `http://127.0.0.1:11434` for an in-WSL2 server).
+The cleanest AMD numbers of all — native ROCm on **Linux**, with no WSL layer at
+all — are a separate measurement this Windows-host section doesn't cover.
 
 **Intel Arc** is the roughest path here: possible via Intel's tooling but layered
 on already-experimental Ollama support. (Multi-GPU tensor parallelism via NCCL
@@ -296,13 +322,14 @@ Ollama is **opt-in only**. The hosted providers auto-detect from their API
 keys; Ollama has no key, so you select it explicitly in `.env`. No
 `config.yaml` change is needed.
 
-**Everything local** — both tracks. The default model is `gemma4:e4b` for
+**Everything local** — both tracks. The default model is `gpt-oss:20b` for
 extraction *and* summaries, so the minimal config is one line:
 
 ```bash
 LLM_PROVIDER=ollama
-# Defaults to gemma4:e4b for both tracks (fits common consumer GPUs). If you
-# have the VRAM, upgrade to the higher-quality 31B model — for both tracks
+# Defaults to gpt-oss:20b for both tracks (~13 GB, fits a 16 GB card). On a
+# smaller card override with LLM_MODEL=gemma4:e4b. If you have a 32 GB+ card,
+# upgrade to the higher-quality 31B model — for both tracks
 # (LLM_MODEL=gemma4:31b) or just summaries, where it helps most:
 # LLM_SUMMARY_MODEL=gemma4:31b
 ```
@@ -325,7 +352,8 @@ confirm the wiring at a glance.
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull gemma4:e4b      # the default — both tracks
+ollama pull gpt-oss:20b     # the default — both tracks (~13 GB, fits a 16 GB card)
+ollama pull gemma4:e4b      # lighter alternative for a smaller card
 ollama pull gemma4:31b      # optional quality upgrade (summaries), if you have the VRAM
 ollama serve                # usually already running as a service
 ```
@@ -350,8 +378,8 @@ within the model's configured context window" message on the index. Each refusal
 logs a `WARNING` naming the remedy. So the fix below is about *avoiding* the
 refusal, not preventing silent corruption.
 
-**Set the window to 128K (`131072`) — the full window of the default
-`gemma4:e4b`.** Ollama's own defaults are too small for summaries (4K under
+**Set the window to 128K (`131072`) — the full window the default models
+(`gpt-oss:20b`, `gemma4:e4b`) support.** Ollama's own defaults are too small for summaries (4K under
 24 GB of VRAM, 32K on 24–48 GB; it [recommends at least 64K](https://docs.ollama.com/context-length)
 for large-context work), so you have to raise it. 128K comfortably covers
 Case Calendar's summary prompts — the per-document char budgets bound how large
@@ -423,8 +451,11 @@ Some open models (**Qwen3**, **DeepSeek**, **Gemma**, **GLM**) are *thinking*
 models: they emit a hidden chain of reasoning before the answer. On real Ollama
 (the native `/api/chat` endpoint, the only one that exposes the `think` control),
 Case Calendar **lets a thinking model think on every track** — extraction, verify,
-dedupe, and summaries alike — with an **unbounded** output budget. No
-configuration; it keys off the model's reported `thinking` capability.
+dedupe, and summaries alike — with a **bounded** output budget (`max_tokens` plus a
+reasoning headroom, default 8192, set by `OLLAMA_THINK_BUDGET`). No configuration;
+it keys off the model's reported `thinking` capability. (The budget was originally
+unbounded, but that let runaway-prone models hang on large inputs — the runaways
+described below are why it's now bounded.)
 
 This reverses an earlier design that turned thinking **off** for the high-volume
 tracks to save time. That was a mistake: suppressing a weak model's reasoning made
@@ -435,13 +466,32 @@ reason fixes that and is measurably **more accurate** (in the benchmark,
 [`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)).
 
 The budget is unbounded because local inference has **no per-token cost**, so
-there's no reason to cap reasoning to a guessed number. It's safe: the reasoning
-is naturally bounded by the context window, a finished model stops on its own, and
-a degenerate runaway surfaces as the ordinary truncation error (the entry is
-skipped), not a hang. The only cost is **wall-clock** — a thinking model is slower
-per call (gemma \~20s, qwen3.5:9b \~41s, vs \~7s not thinking). For a free local
-model that's an accepted trade for accuracy; a *heavy* thinker like qwen is simply
-slow on big backfills.
+there's no reason to cap reasoning to a guessed number. Usually it's self-limiting:
+the reasoning is bounded by the context window and a finished model stops on its
+own. The cost is **wall-clock** — a thinking model is slower per call (gemma \~20s,
+qwen3.5:9b \~41s, vs \~7s not thinking), and a *heavy* thinker is simply slow on
+big backfills.
+
+**Watch for runaways on large inputs.** A thinking model can occasionally fail to
+stop — it keeps generating until the request hits Case Calendar's per-call timeout,
+so that one entry or summary is left incomplete *and* the call spent the full
+timeout doing it. It is worst on the **largest** thinking models (≈30B) writing a
+**summary** of a busy docket at a 128K window on a 24 GB card, where the model is
+also near the VRAM ceiling — there it can time out on *most* calls, which makes it
+impractical for that track on that hardware (in this project's benchmark a 30B
+thinker timed out on every summary this way; a 29.9B one on half). Smaller thinkers
+(≤ \~9–20B) and the level-based `gpt-oss` complete cleanly. Per-entry *extraction*
+is usually safe because each input is small, but a single unusually dense entry can
+trigger the same stall.
+
+**Escape hatch — `OLLAMA_FORCE_NO_THINK`.** Set it to any non-empty value to force
+reasoning **off** for the run: Case Calendar sends an explicit `think=false` and a
+bounded output budget, so the model answers without a reasoning trace — much faster,
+and no runaway. The trade is accuracy: this is the very suppression that made weak
+models re-emit known context (above), so reach for it only when a thinking model is
+too slow or unstable on your hardware, and check the result against your own
+dockets. It is a **no-op for `gpt-oss`**, whose reasoning is level-based and can't
+be disabled by a boolean (see the note just below).
 
 **`gpt-oss` is the exception:** its reasoning can't be turned off — Ollama
 [ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) and
@@ -474,6 +524,9 @@ LLM_MODEL=gemma-4-e4b
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Where the server listens. Point it at LM Studio, a remote box, etc. |
 | `OLLAMA_NUM_CTX` | *(unset)* | Context window in tokens (see above). |
+| `OLLAMA_FORCE_NO_THINK` | *(unset)* | Force reasoning OFF on a real-Ollama thinking model (sends `think=false`, bounded budget) — the escape hatch for a runaway or too-slow thinker, at an accuracy cost. No-op on `gpt-oss` and on non-Ollama servers. See [Thinking models](#thinking-models). |
+| `OLLAMA_THINK_BUDGET` | `8192` | Reasoning headroom (tokens) added on top of the answer allowance for a thinking model on real Ollama. It's a runaway GUARD, not a cost lever (local inference is free); raise it only if a model's reasoning is being cut off mid-thought. |
+| `LLM_STRUCTURED_OUTPUT` | *(on)* | Schema-enforced JSON extraction, **default on**. On real Ollama it uses the native `format` field (a hard GBNF grammar) — this happens automatically once real Ollama is detected (via `/api/show`), whether or not `OLLAMA_BASE_URL` carries a `/v1` suffix. It measurably improved `gpt-oss:20b` extraction accuracy in the benchmark. Set to a falsy value to opt out — e.g. on a non-Ollama OpenAI-compatible server whose strict `json_schema` is unverified. |
 
 ## Cost reporting
 

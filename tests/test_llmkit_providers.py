@@ -330,15 +330,16 @@ class TestDispatchLLMCall:
             max_tokens,
             *,
             model=None,
+            schema=None,
             purpose="llm",
             docket=None,
             temperature=None,
         ):
             captured["model"] = model
-            # purpose/docket/temperature are expected (token telemetry + the
-            # one common sampling knob plumbed through dispatch); json_mode
-            # is NOT — this signature has no json_mode param, so a leak
-            # would raise.
+            captured["schema"] = schema
+            # model/schema/purpose/docket/temperature are expected (schema drives
+            # Anthropic's tool-use structured output); json_mode is NOT — this
+            # signature has no json_mode param, so a leak would raise.
             return "ok"
 
         monkeypatch.setattr(providers, "_call_anthropic", fake)
@@ -346,6 +347,7 @@ class TestDispatchLLMCall:
             "anthropic", "s", "u", 100, model="claude-sonnet-4-6", json_mode=False
         )
         assert captured["model"] == "claude-sonnet-4-6"
+        assert captured["schema"] is None  # none passed -> threaded through as None
 
 
 # --- Provider call functions (per-provider SDK wrappers) ---
@@ -984,13 +986,15 @@ class TestCallOllama:
         providers._call_ollama("s", "u", 10, temperature=0.0)
         assert cap["body"]["options"]["temperature"] == 0.0
 
-    # --- thinking policy: local thinking models think fully, unbounded ---
+    # --- thinking policy: local thinking models think on every track, bounded budget ---
 
-    def test_thinking_model_thinks_on_every_track_unbounded(self, monkeypatch):
-        # A thinking model thinks on EVERY track (no more think=false on the
+    def test_thinking_model_thinks_on_every_track_bounded_budget(self, monkeypatch):
+        # A thinking model thinks on EVERY track (no think=false on the
         # high-volume tracks, which made weak models re-emit known context), with
-        # an UNBOUNDED output budget (num_predict=-1 — local inference is free, so
-        # the reasoning isn't capped to a guessed number).
+        # a BOUNDED output budget = max_tokens + the reasoning headroom — NOT the
+        # old unbounded -1, which let runaway models fill the whole context window.
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
+        budget = providers._DEFAULT_OLLAMA_THINK_BUDGET
         for purpose in (
             "extract",
             "verify_hearing",
@@ -998,14 +1002,16 @@ class TestCallOllama:
             "llm",
             "summary",
         ):
+            # gemma4:e4b is a BOOLEAN-thinker (the default model is now the
+            # level-thinker gpt-oss, which would take the level branch instead).
             cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
-            providers._call_ollama("s", "u", 8192, purpose=purpose)
+            providers._call_ollama("s", "u", 8192, model="gemma4:e4b", purpose=purpose)
             assert cap["body"]["think"] is True, purpose
-            assert cap["body"]["options"]["num_predict"] == -1, purpose
+            assert cap["body"]["options"]["num_predict"] == 8192 + budget, purpose
 
     def test_nonthinking_model_omits_think_field(self, monkeypatch):
         # A model without the thinking capability gets a plain request — no think
-        # field, and the requested max_tokens as the budget (NOT unbounded).
+        # field, and exactly the requested max_tokens as the budget (no headroom).
         cap = self._fake_ollama(monkeypatch, caps=frozenset({"completion"}))
         providers._call_ollama("s", "u", 10, purpose="summary")
         assert "think" not in cap["body"]
@@ -1013,29 +1019,116 @@ class TestCallOllama:
 
     def test_unknown_caps_treated_as_thinking(self, monkeypatch):
         # An unconfirmable capability lookup (empty set) is treated AS thinking
-        # — the safe default — so the model still thinks (unbounded).
+        # — the safe default — so the model still thinks (bounded budget).
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
         cap = self._fake_ollama(monkeypatch, caps=frozenset())
-        providers._call_ollama("s", "u", 10, purpose="extract")
+        # gemma4:e4b: a boolean-thinker (the default is now level-based gpt-oss).
+        providers._call_ollama("s", "u", 10, model="gemma4:e4b", purpose="extract")
         assert cap["body"]["think"] is True
-        assert cap["body"]["options"]["num_predict"] == -1
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == 10 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+        )
 
     # --- gpt-oss level-based thinking (think=false is ignored; can't disable) ---
 
-    def test_level_thinking_extract_uses_low_level_unbounded(self, monkeypatch):
+    def test_level_thinking_extract_uses_low_level_bounded(self, monkeypatch):
         # gpt-oss can't turn reasoning OFF — a boolean is ignored. Its deepest
         # trace is too slow for high-volume work, so it gets the SHORTEST level
-        # ("low") there, with the same unbounded budget as other thinkers.
+        # ("low") there, with the same bounded budget as other thinkers.
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
+        budget = providers._DEFAULT_OLLAMA_THINK_BUDGET
         for purpose in ("extract", "verify_hearing", "dedupe_hearings", "llm"):
             cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
             providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose=purpose)
             assert cap["body"]["think"] == "low", purpose
-            assert cap["body"]["options"]["num_predict"] == -1, purpose
+            assert cap["body"]["options"]["num_predict"] == 4096 + budget, purpose
 
-    def test_level_thinking_summary_uses_high_level_unbounded(self, monkeypatch):
+    def test_level_thinking_summary_uses_high_level_bounded(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
         cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
         providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="summary")
         assert cap["body"]["think"] == "high"
-        assert cap["body"]["options"]["num_predict"] == -1
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == 4096 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+        )
+
+    # --- OLLAMA_THINK_BUDGET: bounded reasoning headroom, env-overridable ---
+
+    def test_think_budget_default_is_max_tokens_plus_headroom(self, monkeypatch):
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 512, purpose="extract")
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == 512 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+        )
+
+    def test_think_budget_env_override_and_zero(self, monkeypatch):
+        # Override raises/lowers the headroom; 0 caps the trace at max_tokens.
+        monkeypatch.setenv("OLLAMA_THINK_BUDGET", "20000")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 512, purpose="extract")
+        assert cap["body"]["options"]["num_predict"] == 512 + 20000
+        monkeypatch.setenv("OLLAMA_THINK_BUDGET", "0")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 512, purpose="extract")
+        assert cap["body"]["options"]["num_predict"] == 512
+
+    def test_think_budget_malformed_falls_back_to_default(self, monkeypatch):
+        # Malformed / negative -> default headroom (never crashes the call).
+        for bad in ("abc", "-5", ""):
+            monkeypatch.setenv("OLLAMA_THINK_BUDGET", bad)
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama("s", "u", 512, purpose="extract")
+            assert (
+                cap["body"]["options"]["num_predict"]
+                == 512 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+            ), bad
+
+    # --- OLLAMA_FORCE_NO_THINK escape hatch (runaway / too-slow thinker) ---
+
+    def test_force_no_think_disables_reasoning_for_boolean_thinker(self, monkeypatch):
+        # The override sends an EXPLICIT think=false (not merely omitting the
+        # field, which would leave the model on its own default) and keeps the
+        # output budget BOUNDED at max_tokens — so no unbounded reasoning trace.
+        monkeypatch.setenv("OLLAMA_FORCE_NO_THINK", "1")
+        for purpose in ("extract", "summary"):
+            # gemma4:e4b is a boolean-thinker (think=false works); the default
+            # model is now level-based gpt-oss, for which the override is a no-op.
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama("s", "u", 256, model="gemma4:e4b", purpose=purpose)
+            assert cap["body"]["think"] is False, purpose
+            assert cap["body"]["options"]["num_predict"] == 256, purpose
+
+    def test_force_no_think_is_noop_for_gpt_oss_level_thinker(self, monkeypatch):
+        # gpt-oss reasoning is level-based and a boolean is ignored by Ollama, so
+        # the override can't disable it: it still gets its level + bounded budget.
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
+        monkeypatch.setenv("OLLAMA_FORCE_NO_THINK", "1")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="extract")
+        assert cap["body"]["think"] == "low"
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == 4096 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+        )
+
+    def test_force_no_think_unset_leaves_thinking_on(self, monkeypatch):
+        # Default (env unset / empty) is unchanged: the thinker still reasons,
+        # with the bounded budget. Guards against the override flipping the default.
+        monkeypatch.delenv("OLLAMA_FORCE_NO_THINK", raising=False)
+        monkeypatch.delenv("OLLAMA_THINK_BUDGET", raising=False)
+        # boolean-thinker so the assertion is think=True (the default model is
+        # now the level-thinker gpt-oss, which would take the level branch).
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 256, model="gemma4:e4b", purpose="extract")
+        assert cap["body"]["think"] is True
+        assert (
+            cap["body"]["options"]["num_predict"]
+            == 256 + providers._DEFAULT_OLLAMA_THINK_BUDGET
+        )
 
     def test_requires_thinking_level_matches_gpt_oss_variants(self):
         assert providers._ollama_requires_thinking_level("gpt-oss:20b")
@@ -1213,18 +1306,21 @@ class TestEnsureThinkingBudget:
 
 
 class TestOllamaModelDefaults:
-    """The local-inference default is `gemma4:e4b` for BOTH tracks — chosen for
-    hardware fit (it runs on common consumer GPUs), with `gemma4:31b` as the
-    opt-in quality upgrade. Pins the 0.16 flip; see AGENTS.md's Ollama
-    default-model design decision and docs/local-llms.md. Don't flip it back up."""
+    """The local-inference default is `gpt-oss:20b` for BOTH tracks — chosen on
+    measured benchmark accuracy (best local extractor at 751, beating gemma4:e4b
+    and three hosted models; cleanest local summarizer) AND stability (level-based
+    reasoning completes where the unbounded boolean-thinkers ran away). It is
+    larger than the prior gemma4:e4b default (13.8 GB vs 9.6 GB), which stays the
+    smaller-card fallback. See AGENTS.md's Ollama default-model design decision,
+    model-comparison/SCORECARD.md, and docs/local-llms.md."""
 
-    def test_extraction_default_is_e4b(self):
-        assert providers._DEFAULT_MODELS["ollama"] == "gemma4:e4b"
+    def test_extraction_default_is_gpt_oss(self):
+        assert providers._DEFAULT_MODELS["ollama"] == "gpt-oss:20b"
 
-    def test_summary_default_is_e4b(self):
+    def test_summary_default_is_gpt_oss(self):
         from case_calendar import llm
 
-        assert llm._DEFAULT_SUMMARY_MODELS["ollama"] == "gemma4:e4b"
+        assert llm._DEFAULT_SUMMARY_MODELS["ollama"] == "gpt-oss:20b"
 
     def test_both_tracks_share_one_local_model(self):
         # Zero-config local install pulls and runs ONE model for both tracks.
@@ -1712,3 +1808,239 @@ class TestCallOllamaOpenAICompatFallback:
 
 
 # --- verify_deadline (parallel to verify_hearing) ---
+
+
+class TestStructuredOutput:
+    """Schema-enforced JSON output (the llmkit-extractable structured-output
+    mechanism). OpenAI/Gemini/Ollama take a JSON Schema natively; Anthropic has
+    no response-format flag, so it FORCES a single tool call whose input_schema
+    IS the schema and reads the structured args back. A ``schema`` overrides
+    ``json_mode`` (a schema already implies JSON)."""
+
+    SCHEMA = {
+        "type": "object",
+        "properties": {"actions": {"type": "array", "items": {"type": "object"}}},
+        "required": ["actions"],
+    }
+
+    # --- Anthropic: forced tool-use ---
+
+    @staticmethod
+    def _fake_anthropic(monkeypatch, *, block, stop_reason="tool_use"):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        resp = fake_client.messages.create.return_value
+        resp.content = [block]
+        resp.stop_reason = stop_reason
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+        return fake_client
+
+    def test_anthropic_forces_tool_use_and_returns_args(self, monkeypatch):
+        import json
+        from unittest.mock import MagicMock
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.input = {"actions": [{"type": "IGNORE"}]}
+        client = self._fake_anthropic(monkeypatch, block=block)
+
+        out = providers._call_anthropic("s", "u", 100, schema=self.SCHEMA)
+        assert json.loads(out) == {"actions": [{"type": "IGNORE"}]}
+        kw = client.messages.create.call_args.kwargs
+        assert kw["tools"][0]["input_schema"] == self.SCHEMA
+        assert kw["tools"][0]["name"] == providers._STRUCTURED_OUTPUT_NAME
+        assert kw["tool_choice"] == {
+            "type": "tool",
+            "name": providers._STRUCTURED_OUTPUT_NAME,
+        }
+
+    def test_anthropic_truncated_tool_use_raises(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.input = {"actions": []}
+        self._fake_anthropic(monkeypatch, block=block, stop_reason="max_tokens")
+        with pytest.raises(providers.OutputTruncatedError):
+            providers._call_anthropic("s", "u", 5, schema=self.SCHEMA)
+
+    def test_anthropic_missing_tool_use_block_raises(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        block = MagicMock()
+        block.type = "text"
+        block.text = "plain prose instead of a tool call"
+        self._fake_anthropic(monkeypatch, block=block)
+        with pytest.raises(ValueError, match="No tool_use block"):
+            providers._call_anthropic("s", "u", 10, schema=self.SCHEMA)
+
+    def test_anthropic_without_schema_unchanged(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        block = MagicMock()
+        block.type = "text"
+        block.text = "plain"
+        client = self._fake_anthropic(monkeypatch, block=block, stop_reason="end_turn")
+        assert providers._call_anthropic("s", "u", 10) == "plain"
+        assert "tools" not in client.messages.create.call_args.kwargs
+
+    # --- OpenAI: json_schema response_format ---
+
+    def test_openai_uses_json_schema_response_format(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        choice = MagicMock()
+        choice.message.content = '{"actions": []}'
+        choice.finish_reason = "stop"
+        fake_client.chat.completions.create.return_value.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+
+        out = providers._call_openai("s", "u", 100, schema=self.SCHEMA)
+        assert out == '{"actions": []}'
+        rf = fake_client.chat.completions.create.call_args.kwargs["response_format"]
+        assert rf["type"] == "json_schema"
+        # the schema is run through the strict-mode adapter (required filled in)
+        assert rf["json_schema"]["schema"] == providers._to_openai_strict_schema(
+            self.SCHEMA
+        )
+        # strict=True: hard grammar enforcement (the adapter makes any closed
+        # minimal-required schema satisfy strict mode's all-required rule).
+        assert rf["json_schema"]["strict"] is True
+
+    def test_to_openai_strict_schema_fills_required(self):
+        # OpenAI strict needs every property in `required` + additionalProperties:false;
+        # a minimal-required schema is filled out; input is not mutated.
+        src = {
+            "type": "object",
+            "properties": {
+                "actions": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string"},
+                            "k": {"type": "string"},
+                        },
+                        "required": ["type"],
+                    },
+                }
+            },
+            "required": ["actions"],
+        }
+        import copy
+
+        before = copy.deepcopy(src)
+        out = providers._to_openai_strict_schema(src)
+        assert src == before  # pure
+        item = out["properties"]["actions"]["items"]
+        assert item["required"] == ["type", "k"]  # all properties now required
+        assert item["additionalProperties"] is False
+        assert out["additionalProperties"] is False
+
+    # --- Gemini: response_schema ---
+
+    def test_gemini_uses_response_schema(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock(name="google.genai")
+        fake_types = MagicMock(name="google.genai.types")
+
+        class _Cfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        fake_types.GenerateContentConfig = _Cfg
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        resp = fake_client.models.generate_content.return_value
+        resp.text = '{"actions": []}'
+        resp.candidates = []
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+
+        out = providers._call_gemini("s", "u", 100, schema=self.SCHEMA)
+        assert out == '{"actions": []}'
+        cfg = fake_client.models.generate_content.call_args.kwargs["config"]
+        # the schema is passed through the Gemini dialect transform; this clean
+        # SCHEMA (no nullable unions, no additionalProperties) round-trips equal
+        assert cfg.kw["response_schema"] == providers._to_gemini_schema(self.SCHEMA)
+        assert cfg.kw["response_schema"] == self.SCHEMA
+        assert cfg.kw["response_mime_type"] == "application/json"
+
+    def test_to_gemini_schema_transform(self):
+        # nullable union -> single type + nullable:true; additionalProperties dropped;
+        # enum / required / nested structure preserved; input not mutated.
+        src = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "type": {"type": "string", "enum": ["A", "B"]},
+                "key": {"type": ["string", "null"]},
+                "n": {"type": ["integer", "null"]},
+            },
+            "required": ["type", "key", "n"],
+        }
+        import copy
+
+        before = copy.deepcopy(src)
+        out = providers._to_gemini_schema(src)
+        assert src == before  # pure: input untouched
+        assert "additionalProperties" not in out
+        assert out["properties"]["type"] == {"type": "string", "enum": ["A", "B"]}
+        assert out["properties"]["key"] == {"type": "string", "nullable": True}
+        assert out["properties"]["n"] == {"type": "integer", "nullable": True}
+        assert out["required"] == ["type", "key", "n"]
+        # a clean schema (no unions / no additionalProperties) is an identity
+        clean = {"type": "object", "properties": {"x": {"type": "string"}}}
+        assert providers._to_gemini_schema(clean) == clean
+
+    # --- Ollama native: format = the schema dict ---
+
+    def test_ollama_native_format_is_schema(self, monkeypatch):
+        captured = {}
+
+        def fake_request(body, *, timeout=600.0):
+            captured["body"] = body
+            return {
+                "message": {"content": '{"actions": []}'},
+                "done_reason": "stop",
+                "prompt_eval_count": 5,
+                "eval_count": 3,
+            }
+
+        monkeypatch.setattr(providers, "_ollama_chat_request", fake_request)
+        monkeypatch.setattr(
+            providers, "ollama_capabilities", lambda m: frozenset({"completion"})
+        )
+        monkeypatch.setattr(
+            providers, "_ollama_show", lambda m: {"capabilities": ["completion"]}
+        )
+        providers._call_ollama("s", "u", 50, schema=self.SCHEMA)
+        assert captured["body"]["format"] == self.SCHEMA
+
+    # --- dispatch threads the schema to every provider ---
+
+    def test_dispatch_threads_schema_to_each_provider(self, monkeypatch):
+        for prov in ("anthropic", "openai", "gemini", "ollama"):
+            seen = {}
+
+            def fake_call(*a, schema=None, **k):
+                seen["schema"] = schema
+                return "{}"
+
+            monkeypatch.setattr(providers, f"_call_{prov}", fake_call)
+            providers._dispatch_llm_call(prov, "s", "u", 10, schema=self.SCHEMA)
+            assert seen["schema"] == self.SCHEMA, prov
