@@ -32,13 +32,10 @@ adheres to [Semantic Versioning][semver].
   tuned, not disabled) takes `OLLAMA_THINK_LEVEL` (`low` / `medium` / `high`).
   Reasoning measurably helps extraction but harms long-context summaries — force
   it off for local summaries (see [the scorecard](model-comparison/SCORECARD.md)).
-- **Schema-enforced structured output, always on**, for every provider:
-  OpenAI `response_format` json_schema (strict), Gemini `response_schema`, Ollama
+- **Schema-enforced structured output** for every provider: OpenAI
+  `response_format` json_schema (strict), Gemini `response_schema`, Ollama
   native `format` (a hard grammar), Anthropic forced tool-use. It improves
-  local-model accuracy and cuts tokens on hosted models. There is no opt-out:
-  the current vLLM and LM Studio releases both enforce the schema over their
-  `json_schema` response format, so a fallback for OpenAI-compatible servers
-  isn't needed.
+  local-model accuracy and cuts tokens on hosted models.
 
 ### Changed
 

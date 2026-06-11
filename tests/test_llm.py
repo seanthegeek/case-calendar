@@ -476,10 +476,9 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
 
 class TestStructuredOutput:
     """``extract_actions`` passes ``schema=ACTIONS_SCHEMA`` to the dispatch
-    UNCONDITIONALLY — there is no opt-out (the former ``LLM_STRUCTURED_OUTPUT``
-    escape hatch was removed once vLLM and LM Studio were verified to enforce
-    the closed schema). The schema is validated on all four providers, so there
-    is no per-provider skip. The default _run_capture provider is anthropic."""
+    UNCONDITIONALLY — there is no opt-out. The schema is validated on all four
+    providers, so there is no per-provider skip. The default _run_capture
+    provider is anthropic."""
 
     @staticmethod
     def _run_capture(monkeypatch):
@@ -506,13 +505,6 @@ class TestStructuredOutput:
         return captured
 
     def test_schema_always_passed(self, monkeypatch):
-        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
-
-    def test_no_env_opt_out(self, monkeypatch):
-        # The former LLM_STRUCTURED_OUTPUT opt-out is gone: a falsy value that
-        # used to disable schema enforcement is ignored and the schema still
-        # rides on the dispatch.
-        monkeypatch.setenv("LLM_STRUCTURED_OUTPUT", "0")
         assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
 
     def test_actions_schema_is_closed_minimal_required(self):

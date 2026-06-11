@@ -768,9 +768,8 @@ _ACTION_PROPERTIES: dict[str, Any] = {
 # per-entry, recall preserved) while cutting tokens (input -4%, output -23%), a
 # measurable WIN on the local gpt-oss model (731->694 per-entry, -5%, by
 # suppressing its spurious over-emission), and Anthropic / OpenAI
-# validation-clean (0 degenerate). An earlier ``LLM_STRUCTURED_OUTPUT`` opt-out
-# existed as a fallback for an OpenAI-compatible server lacking ``json_schema``
-# support; it was removed once vLLM and LM Studio's llama.cpp engine were both
+# validation-clean (0 degenerate). No opt-out exists, even for generic
+# OpenAI-compatible servers: vLLM and LM Studio's llama.cpp engine were both
 # verified (from source, June 2026) to accept and enforce this exact closed
 # schema. CLOSED (``additionalProperties: false`` on every
 # object) with every field DECLARED — Gemini's ``response_schema`` grammar emits
