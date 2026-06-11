@@ -81,11 +81,11 @@ on the local GPU (hosted models run against their APIs, so no comparable figure)
 | ollama/gpt-oss:20b (thinking MEDIUM) | local | 728 | 420 | 2:59 |
 | anthropic/claude-haiku-4-5 | hosted | 784 | 476 | — |
 | openai/gpt-5.4-mini | hosted | 879 | 551 | — |
-| ollama/qwen3.5:9b (thinking-OFF) | local | 930 | 700 | 1:24 |
+| ollama/qwen3.5:9b (thinking OFF) | local | 930 | 700 | 1:24 |
 | openai/gpt-5.4-nano | hosted | 967 | 697 | — |
-| ollama/gemma4:e4b (thinking-ON) | local | 1241 | 985 | 3:24 |
+| ollama/gemma4:e4b (thinking ON) | local | 1241 | 985 | 3:24 |
 | ollama/granite4.1:8b | local | 1869 | 1609 | 1:16 |
-| ollama/gemma4:e4b (thinking-OFF) | local | 1945 | 1681 | 1:12 |
+| ollama/gemma4:e4b (thinking OFF) | local | 1945 | 1681 | 1:12 |
 | ollama/llama3.2:3b | local | 2367 | 2001 | 0:43 |
 
 `Hs/Hr/Hh/Hc` = hearings scheduled/rescheduled/held/cancelled; `Ds/Dr/Df/Dc` =
