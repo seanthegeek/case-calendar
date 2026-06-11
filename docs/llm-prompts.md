@@ -696,7 +696,7 @@ entries.
 
 ## Row verify pass — `VERIFY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1104)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1091)
 
 The end-of-sync per-row confidence pass. One unified prompt handles BOTH hearings AND filing deadlines — the user message labels which kind ("CANDIDATE HEARING" or "CANDIDATE DEADLINE") and the system prompt has type-tagged action types (HEARING-ONLY: `MARK_HELD`, `REINSTATE`; DEADLINE-ONLY: `MARK_FILED`; common to both: `CONFIRM` / `RESCHEDULE_HEARING` / `CANCEL_HEARING` / `DELETE_HALLUCINATION` / `UNCLEAR`). Before 0.11.0 this was two separate prompts (`VERIFY_SYSTEM_PROMPT` + `VERIFY_DEADLINE_SYSTEM_PROMPT`); the merge consolidates them into one prompt. The stated goal was to clear Anthropic's Haiku 4.5 prompt-cache token floor, but that floor is 4096 tokens (the 2048 figure cited at the time is the *retired* Haiku 3.5's floor), and the merged prompt is only ~2000 tokens — so it does NOT cache on Haiku 4.5. See the changelog's "Known limitations" note and AGENTS.md's cache-threshold design note.
 
@@ -870,7 +870,7 @@ explanation.
 
 ## Duplicate-hearing resolver — `DEDUPE_HEARING_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1526)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1513)
 
 The duplicate-hearing resolver. Receives a cluster of two or more hearings on the same logical docket that are at or near the same slot — either the exact same start time, the same court-local date at different times, or the same once-only proceeding (sentencing, arraignment, etc.) for the same defendant at drifted dates — plus recent entries, and returns `MERGE_INTO` (pick a target; the caller folds the others' source entries onto it and DELETEs them) / `KEEP_BOTH` (genuinely distinct proceedings) / `UNCLEAR`. This resolver backs the two LLM-gated end-of-sync sweeps — the exact-slot scheduled sweep and the near-slot sweep added in 0.13.0 to collapse the duplicates the extractor proliferates on messy multi-proceeding dockets. (The third sweep, for exact-slot `held` clusters, is a separate deterministic merge that needs no LLM call — a court cannot have held two hearings at the same instant, so same-slot held rows are unambiguously a key-drift duplicate.)
 
@@ -934,7 +934,7 @@ no explanation.
 
 ## Case summary — `SUMMARY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1782)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1769)
 
 The higher-tier case-summary prompt (Sonnet / GPT-5.4 / Gemini Pro by default). Synthesizes the primary document, dispositions, and a structured hearings/deadlines scaffold into 2-4 sentences of prose. This is where the documents-only, absence-silence, custody-omit, speculative-outcome, and figure-grounding invariants live, as well as the `INLINE LINKS` rule that turns action phrases into newspaper-style links to the supporting documents (each document carries a prompt-only `[D1]`/`[D2]` reference token; the model links a phrase to a token and the pipeline resolves it to the document's URL).
 

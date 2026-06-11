@@ -831,9 +831,11 @@ def test_llm_cache_none_arg_equals_explicit_resolved_model(tmp_path, monkeypatch
 
 def test_llm_cache_keys_on_schema(tmp_path, monkeypatch):
     """A structured-output call (schema set) and the same call without a schema
-    build DIFFERENT requests and must not collide — otherwise a
-    LLM_STRUCTURED_OUTPUT OFF-vs-ON comparison would replay the wrong response.
-    The schema is also threaded through to the base dispatch on a miss."""
+    build DIFFERENT requests and must not collide — otherwise a schema-less
+    verify/dedupe/summary call could replay a schema-enforced extraction
+    response (or a stale pre-schema cache entry could replay for a
+    schema-enforced call). The schema is also threaded through to the base
+    dispatch on a miss."""
     monkeypatch.delenv("LLM_MODEL", raising=False)
     cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
     base, calls = _make_counting_base()

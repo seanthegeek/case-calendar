@@ -294,7 +294,7 @@ step-by-step walkthrough is in
 | `LLM_SUMMARY_PROVIDER` | no | Pin the summary track's provider only. The `case_summaries.provider` YAML key takes precedence over this. Accepts `ollama` for local summaries. |
 | `LLM_MODEL` | no | Override the extraction track's model (default: the per-provider small/fast tier). |
 | `LLM_SUMMARY_MODEL` | no | Override the summary track's model. The `case_summaries.model` YAML key takes precedence over this. |
-| `OLLAMA_BASE_URL` | no (default `http://localhost:11434/v1`) | Where the local [Ollama](local-llms.md) server listens. Only consulted when a track resolves to the `ollama` provider. |
+| `OLLAMA_BASE_URL` | no (default `http://localhost:11434`) | Where the local [Ollama](local-llms.md) server listens — the host root (Ollama's native endpoint). Only consulted when a track resolves to the `ollama` provider. |
 | `OLLAMA_NUM_CTX` | no | Context window (tokens) for Ollama requests. Local models default to a small window and silently truncate longer prompts — raise it for the summary track. See [Local models](local-llms.md). |
 | `LOG_LEVEL` | no (default `INFO`) | Python logging level — `DEBUG`, `INFO`, `WARNING`, etc. |
 

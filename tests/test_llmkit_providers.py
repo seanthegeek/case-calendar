@@ -962,6 +962,19 @@ class TestCallOllama:
         assert exc_info.value.provider == "ollama"
         assert exc_info.value.max_tokens == 2048
 
+    def test_empty_content_with_length_is_truncation_not_no_content(self, monkeypatch):
+        # A thinking model that spends its ENTIRE output budget on reasoning emits
+        # EMPTY content with done_reason="length" — the qwen runaway signature.
+        # That's a clean truncation (caller skips the item), NOT a "No content"
+        # error, so it logs as an OutputTruncatedError like the OpenAI/Gemini paths
+        # rather than a bare ValueError traceback. Regression guard for the
+        # log-cleanliness fix.
+        self._fake_ollama(monkeypatch, content="", done_reason="length")
+        with pytest.raises(providers.OutputTruncatedError) as exc_info:
+            providers._call_ollama("s", "u", 2048)
+        assert exc_info.value.provider == "ollama"
+        assert exc_info.value.max_tokens == 2048
+
     def test_records_usage_under_ollama_provider(self, monkeypatch):
         # Telemetry must bucket the call under provider="ollama" (so cost
         # estimation can zero it) — via the native usage path (from_ollama).
@@ -1053,6 +1066,57 @@ class TestCallOllama:
             cap["body"]["options"]["num_predict"]
             == 4096 + providers._DEFAULT_OLLAMA_THINK_BUDGET
         )
+
+    # --- OLLAMA_THINK_LEVEL: explicit level override for gpt-oss (operator knob
+    #     for tuning reasoning depth + the level-sweep benchmark control) ---
+
+    def test_think_level_override_forces_level_on_extract(self, monkeypatch):
+        # Extract defaults to "low"; the override forces any valid level so the
+        # level sweep can compare low / medium / high on one track.
+        for level in ("low", "medium", "high"):
+            monkeypatch.setenv("OLLAMA_THINK_LEVEL", level)
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama(
+                "s", "u", 4096, model="gpt-oss:20b", purpose="extract"
+            )
+            assert cap["body"]["think"] == level, level
+
+    def test_think_level_override_forces_level_on_summary(self, monkeypatch):
+        # Overrides the summary track's "high" default too (e.g. force it down).
+        monkeypatch.setenv("OLLAMA_THINK_LEVEL", "low")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="summary")
+        assert cap["body"]["think"] == "low"
+
+    def test_think_level_override_is_case_insensitive(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_THINK_LEVEL", "HIGH")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gpt-oss:20b", purpose="extract")
+        assert cap["body"]["think"] == "high"
+
+    def test_think_level_malformed_falls_back_to_per_track_default(self, monkeypatch):
+        # Unknown / blank -> the per-track default (low=extract, high=summary),
+        # never a crash.
+        for bad in ("ultra", "", "  ", "true"):
+            monkeypatch.setenv("OLLAMA_THINK_LEVEL", bad)
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama(
+                "s", "u", 4096, model="gpt-oss:20b", purpose="extract"
+            )
+            assert cap["body"]["think"] == "low", repr(bad)
+            cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+            providers._call_ollama(
+                "s", "u", 4096, model="gpt-oss:20b", purpose="summary"
+            )
+            assert cap["body"]["think"] == "high", repr(bad)
+
+    def test_think_level_override_ignored_for_boolean_thinker(self, monkeypatch):
+        # A boolean-thinker (gemma) never takes the level branch, so the override
+        # has no effect — it still receives think=True.
+        monkeypatch.setenv("OLLAMA_THINK_LEVEL", "high")
+        cap = self._fake_ollama(monkeypatch, caps=frozenset({"thinking"}))
+        providers._call_ollama("s", "u", 4096, model="gemma4:e4b", purpose="extract")
+        assert cap["body"]["think"] is True
 
     # --- OLLAMA_THINK_BUDGET: bounded reasoning headroom, env-overridable ---
 
@@ -1743,6 +1807,33 @@ class TestCallOllamaOpenAICompatFallback:
         assert "think" not in kw
         assert "think" not in kw.get("extra_body", {})
 
+    def test_compat_appends_v1_to_root_base_url(self, monkeypatch):
+        # OLLAMA_BASE_URL is the host root; the OpenAI-compatible API lives under
+        # /v1, so the compat path appends it when absent (the mirror of the
+        # native helpers stripping a /v1). A bare-root URL is safe on every path.
+        import sys
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434")
+        self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert (
+            sys.modules["openai"].OpenAI.call_args.kwargs["base_url"]
+            == "http://gpu-box:11434/v1"
+        )
+
+    def test_compat_keeps_existing_v1_suffix(self, monkeypatch):
+        # An operator who already put /v1 on OLLAMA_BASE_URL (the historical
+        # form, or LM Studio's own /v1 endpoint) is not double-suffixed.
+        import sys
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://localhost:1234/v1")
+        self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert (
+            sys.modules["openai"].OpenAI.call_args.kwargs["base_url"]
+            == "http://localhost:1234/v1"
+        )
+
     def test_compat_records_usage_as_ollama(self, monkeypatch):
         from case_calendar.llmkit import usage
 
@@ -1768,6 +1859,14 @@ class TestCallOllamaOpenAICompatFallback:
         self._fake_openai(monkeypatch, content="")
         with pytest.raises(ValueError, match="No content in Ollama"):
             providers._call_ollama("s", "u", 10)
+
+    def test_compat_empty_content_with_length_is_truncation(self, monkeypatch):
+        # Compat sibling of the native empty+length case: a budget-exhausted
+        # thinking model on an OpenAI-compatible server returns empty content with
+        # finish_reason="length" -> clean truncation, not "No content".
+        self._fake_openai(monkeypatch, content="", finish_reason="length")
+        with pytest.raises(providers.OutputTruncatedError):
+            providers._call_ollama("s", "u", 128)
 
     def test_compat_memory_error_logs_hint(self, monkeypatch, caplog):
         import logging
@@ -1853,6 +1952,10 @@ class TestStructuredOutput:
         kw = client.messages.create.call_args.kwargs
         assert kw["tools"][0]["input_schema"] == self.SCHEMA
         assert kw["tools"][0]["name"] == providers._STRUCTURED_OUTPUT_NAME
+        # We must NOT send Anthropic's strict:true — a live check (2026-06-11)
+        # returned 400 "Schema is too complex" for ACTIONS_SCHEMA under strict
+        # mode, so we stay on best-effort forced tool-use. Guard re-introduction.
+        assert "strict" not in kw["tools"][0]
         assert kw["tool_choice"] == {
             "type": "tool",
             "name": providers._STRUCTURED_OUTPUT_NAME,

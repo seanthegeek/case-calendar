@@ -99,7 +99,7 @@ _DEFAULT_MODELS = {
     # Local inference via Ollama's OpenAI-compatible endpoint. The local default
     # is gpt-oss:20b for BOTH tracks — chosen on measured benchmark accuracy, not
     # only hardware fit: it is the best LOCAL extractor in the comparison
-    # (deviation 751, beating the prior gemma4:e4b default's 1119 AND three
+    # (deviation 710, beating the prior gemma4:e4b default's 1241 AND three
     # hosted models; 2nd overall behind only Gemini — see
     # model-comparison/SCORECARD.md), and the cleanest local summarizer (no
     # verdict fabrication or token leaks). It is also STABLE where most local
@@ -188,9 +188,11 @@ def _detect_extraction_provider() -> Optional[str]:
 # --- Structured output (schema-enforced JSON) ---------------------------------
 # Generic, domain-free: a caller passes a ``schema`` (a JSON Schema dict) and
 # each provider enforces it server-side. OpenAI, Gemini, and Ollama take a JSON
-# Schema natively; Anthropic has no response-format flag, so we force a single
-# tool call whose ``input_schema`` IS the schema and read the structured args
-# back. ``schema`` overrides ``json_mode`` (a schema already implies JSON). The
+# Schema natively; for Anthropic we force a single tool call whose
+# ``input_schema`` IS the schema and read the structured args back (best-effort —
+# Anthropic's ``strict: true`` guarantee, GA 2026, rejects ACTIONS_SCHEMA as
+# "too complex"; see _call_anthropic). ``schema`` overrides ``json_mode`` (a
+# schema already implies JSON). The
 # tool name is generic so this stays liftable into a standalone llmkit — the
 # library never needs to know what the schema means; the consumer supplies it.
 _STRUCTURED_OUTPUT_NAME = "structured_output"
@@ -306,9 +308,30 @@ def _call_anthropic(
         "messages": [{"role": "user", "content": user}],
     }
     if schema is not None:
-        # Anthropic has no response-format flag, so structured output is done by
-        # FORCING a single tool call whose input_schema IS the schema; the model
-        # returns the result as that tool's args, which we read back below.
+        # Structured output via a FORCED single tool call whose input_schema IS
+        # the schema; the model returns the result as that tool's args, read back
+        # below. We deliberately do NOT set Anthropic's ``strict: true`` (its
+        # native structured-output guarantee, GA 2026): live checks on 2026-06-11
+        # returned 400 for ACTIONS_SCHEMA under strict ("Schema is too complex",
+        # or "Grammar compilation timed out" after ~3 minutes) even though the
+        # schema sits within every documented strict limit — 16 union-typed
+        # params exactly AT the 16 cap, 16 optional params under the 24 cap.
+        # Anthropic support confirmed the cause: an internal compiled-grammar
+        # complexity ceiling beyond the documented caps, dominated by OPTIONAL
+        # parameters (each one roughly doubles part of the grammar state space).
+        # Measured the same day: the all-required variant (16 unions, 0 optional
+        # — exactly what _to_openai_strict_schema produces) compiles and works,
+        # while minimal-required fails even at 14 unions (a hearing-only split)
+        # and only compiles at 9 (deadline-only). We stay on plain forced
+        # tool-use anyway: all-required is the exact shape that halved Gemini's
+        # recall in the benchmark and it inflates output tokens (every action
+        # emits all 17 fields, mostly null), and splitting the schema doubles
+        # per-entry calls and breaks the single hearing-vs-deadline decision (a
+        # forced deadline-only probe relabeled a sentencing hearing
+        # ADD_DEADLINE). Plain forced tool-use handles this schema and was
+        # validation-clean (0 degenerate) in the benchmark. Do NOT re-add
+        # ``strict: true`` as-is; revisit only with a re-benchmark of the
+        # all-required form or after Anthropic raises the compilation ceiling.
         create_kwargs["tools"] = [
             {
                 "name": _STRUCTURED_OUTPUT_NAME,
@@ -476,7 +499,7 @@ def _ollama_show(model: str) -> Optional[dict[str, Any]]:
     """Fetch (and cache) the model's ``/api/show`` payload, or ``None`` on any
     failure (server down, old Ollama, unknown model). Shared by
     :func:`ollama_capabilities` and :func:`ollama_context_window`."""
-    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434")
     cache_key = (base_url, model)
     if cache_key in _OLLAMA_SHOW_CACHE:
         return _OLLAMA_SHOW_CACHE[cache_key]
@@ -484,8 +507,8 @@ def _ollama_show(model: str) -> Optional[dict[str, Any]]:
     import json
     import urllib.request
 
-    # /api/show is Ollama's native endpoint; the OpenAI-compat base_url carries a
-    # trailing /v1 that has to come off first.
+    # /api/show is Ollama's native endpoint at the host root; strip a trailing
+    # /v1 if the operator left the OpenAI-compatible path on OLLAMA_BASE_URL.
     root = base_url.rstrip("/")
     if root.endswith("/v1"):
         root = root[:-3].rstrip("/")
@@ -708,12 +731,13 @@ def ensure_thinking_budget(
 def _ollama_native_base() -> str:
     """Native API base URL derived from ``OLLAMA_BASE_URL``.
 
-    ``OLLAMA_BASE_URL`` points at the OpenAI-compatible path (``…/v1``), but
+    ``OLLAMA_BASE_URL`` is the host root (e.g. ``http://localhost:11434``), but an
+    operator may leave a trailing ``/v1`` (the OpenAI-compatible path) on it;
     per-request thinking control (the ``think`` field) is only available on
     Ollama's NATIVE ``/api/chat`` endpoint, which lives at the host root — so
     strip a trailing ``/v1`` segment. Default ``http://localhost:11434``.
     """
-    base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1").rstrip("/")
+    base = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
     if base.endswith("/v1"):
         base = base[: -len("/v1")]
     return base.rstrip("/")
@@ -830,6 +854,33 @@ def _ollama_think_budget() -> int:
                 _DEFAULT_OLLAMA_THINK_BUDGET,
             )
     return _DEFAULT_OLLAMA_THINK_BUDGET
+
+
+# Reasoning LEVELS for a level-thinking model (gpt-oss family). Unlike the
+# boolean thinkers, gpt-oss can't have reasoning disabled — only tuned by level.
+_OLLAMA_VALID_LEVELS = ("low", "medium", "high")
+
+
+def _ollama_think_level(purpose: str) -> str:
+    """Reasoning LEVEL ("low" / "medium" / "high") for a level-thinking model
+    (gpt-oss family — see :func:`_ollama_requires_thinking_level`). The default
+    picks the deepest level for the synthesis-heavy summary track and the
+    shortest for the high-volume extract / verify / dedupe tracks (gpt-oss's
+    "high" trace is too slow for per-entry work). ``OLLAMA_THINK_LEVEL``
+    overrides BOTH with an explicit level — the operator knob for tuning
+    reasoning depth, and the control the level-sweep benchmark uses to compare
+    low / medium / high on one track. A missing or malformed value falls back to
+    the per-track default."""
+    override = os.environ.get("OLLAMA_THINK_LEVEL", "").strip().lower()
+    if override:
+        if override in _OLLAMA_VALID_LEVELS:
+            return override
+        logger.warning(
+            "OLLAMA_THINK_LEVEL=%r is not one of %s; using the per-track default",
+            override,
+            ", ".join(_OLLAMA_VALID_LEVELS),
+        )
+    return "high" if purpose == "summary" else "low"
 
 
 def _log_ollama_memory_hint(chosen: str, limit: Optional[int], detail: str) -> None:
@@ -999,10 +1050,11 @@ def _call_ollama_native(
             num_predict = max_tokens + _ollama_think_budget()
             if _ollama_requires_thinking_level(chosen):
                 # gpt-oss is the exception: its reasoning can't be turned off,
-                # only tuned by LEVEL. Its "high" trace is too heavy for
-                # high-volume extraction, so it gets the shortest level there and
-                # the deepest for the synthesis-heavy summary track.
-                think = "high" if purpose == "summary" else "low"
+                # only tuned by LEVEL. The default gets the shortest level on the
+                # high-volume tracks (its "high" trace is too heavy for per-entry
+                # extraction) and the deepest for summaries; OLLAMA_THINK_LEVEL
+                # overrides both (see _ollama_think_level).
+                think = _ollama_think_level(purpose)
             else:
                 think = True
 
@@ -1062,9 +1114,16 @@ def _call_ollama_native(
     )
     message = resp.get("message") or {}
     text = message.get("content")
+    truncated = resp.get("done_reason") == "length"
     if not text:
+        # A thinking model that filled its whole output budget with reasoning and
+        # emitted no answer reports done_reason="length" with empty content. Treat
+        # that as the clean truncation it is (the caller skips the item), the same
+        # as the OpenAI/Gemini paths — not a bare "No content" traceback.
+        if truncated:
+            raise OutputTruncatedError("ollama", "", max_tokens)
         raise ValueError("No content in Ollama response")
-    if resp.get("done_reason") == "length":
+    if truncated:
         raise OutputTruncatedError("ollama", text, max_tokens)
     return text
 
@@ -1093,7 +1152,14 @@ def _call_ollama_openai_compat(
     the SDK requires one)."""
     import openai
 
-    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434/v1")
+    # OLLAMA_BASE_URL is the host root (e.g. http://localhost:11434); the
+    # OpenAI-compatible API lives under /v1, so append it when absent — the
+    # mirror of the native helpers stripping a /v1, so a bare-root URL is safe on
+    # every path. A base that already ends in /v1 (the historical form, or LM
+    # Studio's own /v1 endpoint) is kept as-is.
+    base_url = os.environ.get("OLLAMA_BASE_URL", "http://localhost:11434").rstrip("/")
+    if not base_url.endswith("/v1"):
+        base_url += "/v1"
     api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
     client = openai.OpenAI(base_url=base_url, api_key=api_key, timeout=600.0)
     kwargs: dict[str, Any] = {
@@ -1139,9 +1205,14 @@ def _call_ollama_openai_compat(
     )
     choice = resp.choices[0]
     text = choice.message.content
+    truncated = getattr(choice, "finish_reason", None) == "length"
     if not text:
+        # Same as the native path: a budget-exhausted thinking model returns empty
+        # content with finish_reason="length" — a clean truncation, not "No content".
+        if truncated:
+            raise OutputTruncatedError("ollama", "", max_tokens)
         raise ValueError("No content in Ollama response")
-    if getattr(choice, "finish_reason", None) == "length":
+    if truncated:
         raise OutputTruncatedError("ollama", text, max_tokens)
     return text
 
@@ -1190,9 +1261,10 @@ def _dispatch_llm_call(
     """
     try:
         if provider == "anthropic":
-            # Anthropic has no `json_mode` knob (no JSON mode flag in the SDK; we
-            # rely on the prompt and validate). A `schema`, if given, is enforced
-            # via forced tool-use inside _call_anthropic.
+            # Anthropic has no boolean `json_mode` flag; without a schema we rely
+            # on the prompt for JSON. A `schema`, if given, is applied via a
+            # forced tool-call inside _call_anthropic (best-effort — strict mode
+            # rejects our schema as too complex).
             return _call_anthropic(
                 system,
                 user,

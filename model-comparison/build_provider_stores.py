@@ -903,8 +903,10 @@ class _LLMCache:
     ) -> str:
         # schema is part of the request: a structured-output call (schema set) and
         # the same call without it build different requests and must NOT collide —
-        # otherwise a `LLM_STRUCTURED_OUTPUT` OFF-vs-ON comparison would replay the
-        # wrong cached response. It is appended ONLY when present so the common
+        # otherwise a schema-less verify/dedupe/summary call could replay a
+        # schema-enforced extraction response (or a historical pre-schema cache
+        # entry could replay for today's schema-enforced extraction, or vice
+        # versa). It is appended ONLY when present so the common
         # schema=None call keeps its historical key — adding a trailing `null`
         # unconditionally would re-hash (and orphan) every existing cache entry,
         # the vast majority of which are schema-less verify/dedupe/summary calls.

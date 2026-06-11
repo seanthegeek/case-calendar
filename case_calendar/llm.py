@@ -761,9 +761,18 @@ _ACTION_PROPERTIES: dict[str, Any] = {
     "conditional": _nullable("boolean"),
 }
 
-# JSON Schema for the ``extract_actions`` output, fed to the provider's
-# structured-output mechanism (``schema=`` on the llmkit dispatch) when
-# structured output is enabled. CLOSED (``additionalProperties: false`` on every
+# JSON Schema for the ``extract_actions`` output, fed UNCONDITIONALLY to the
+# provider's structured-output mechanism (``schema=`` on the llmkit dispatch) —
+# there is no opt-out. Always-on because the benchmark pass came back
+# neutral-or-positive everywhere: accuracy-NEUTRAL on Gemini (645->636
+# per-entry, recall preserved) while cutting tokens (input -4%, output -23%), a
+# measurable WIN on the local gpt-oss model (731->694 per-entry, -5%, by
+# suppressing its spurious over-emission), and Anthropic / OpenAI
+# validation-clean (0 degenerate). An earlier ``LLM_STRUCTURED_OUTPUT`` opt-out
+# existed as a fallback for an OpenAI-compatible server lacking ``json_schema``
+# support; it was removed once vLLM and LM Studio's llama.cpp engine were both
+# verified (from source, June 2026) to accept and enforce this exact closed
+# schema. CLOSED (``additionalProperties: false`` on every
 # object) with every field DECLARED — Gemini's ``response_schema`` grammar emits
 # only the fields the schema declares, so an under-declared schema makes it emit
 # typeless / empty objects and run away (the 2026-06-09 envelope-schema run: 5/8
@@ -797,28 +806,6 @@ ACTIONS_SCHEMA: dict[str, Any] = {
     },
     "required": ["actions"],
 }
-
-
-def _structured_output_enabled() -> bool:
-    """Whether to enforce ``ACTIONS_SCHEMA`` on the extraction call via the
-    provider's structured-output mechanism. **Default ON** — set
-    ``LLM_STRUCTURED_OUTPUT`` to a falsy value (``0`` / ``false`` / ``no`` /
-    ``off``) to opt OUT; any other value (or unset) leaves it on.
-
-    On-by-default because the benchmark pass came back neutral-or-positive across
-    the board: the CLOSED minimal-required ACTIONS_SCHEMA is accuracy-NEUTRAL on
-    Gemini (645->636 per-entry, recall preserved) while cutting tokens (input
-    -4%, output -23%), and a measurable WIN on the local gpt-oss model (731->694
-    per-entry, -5%, by suppressing its spurious over-emission), with Anthropic /
-    OpenAI validation-clean (0 degenerate). The opt-out exists mainly for a
-    non-Ollama OpenAI-compatible server (LM Studio / vLLM) whose strict
-    ``json_schema`` support is untested here."""
-    return os.environ.get("LLM_STRUCTURED_OUTPUT", "").strip().lower() not in {
-        "0",
-        "false",
-        "no",
-        "off",
-    }
 
 
 def build_user_message(
@@ -1044,7 +1031,7 @@ def extract_actions(
             purpose="extract",
             docket=docket_id,
             temperature=0.0,
-            schema=ACTIONS_SCHEMA if _structured_output_enabled() else None,
+            schema=ACTIONS_SCHEMA,
         )
     except ContextWindowExceededError as exc:
         logger.warning(

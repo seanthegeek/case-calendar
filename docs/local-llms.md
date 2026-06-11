@@ -78,12 +78,12 @@ LLM), so you never need a vision/multimodal variant.
 
 For a single recommendation: **`gpt-oss:20b`** is the built-in Ollama default —
 selecting `LLM_PROVIDER=ollama` with no model override runs it for **both
-tracks**. It earned that on the benchmark (best LOCAL extractor by a wide margin —
+tracks**. It earned that on the benchmark (best local extractor by a wide margin —
 [the scorecard](../model-comparison/SCORECARD.md)) and on hardware fit (\~13 GB,
 comfortable on a 16 GB card). On a smaller card, override to **Gemma 4** — the
 cleanest all-rounder, Western (Google), permissively licensed, in several sizes
 (`e2b` 7.2 GB / `e4b` 9.6 GB / `26b` 18 GB / `31b` 20 GB): `LLM_MODEL=gemma4:e4b`
-on a 12 GB card, `gemma4:e2b` on 8 GB. On a **32 GB-or-larger** card, trade UP to
+on a 12 GB card, `gemma4:e2b` on 8 GB. On a **32 GB-or-larger** card, trade up to
 the higher-quality `gemma4:31b` with `LLM_MODEL=gemma4:31b` (or
 `LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries, where the bigger model
 helps most). `gemma4:31b` does **not** fit a 24 GB card at the context window
@@ -245,7 +245,7 @@ Ollama in WSL2 too.
 **AMD**'s simplest path is the opposite: run Ollama
 **natively on Windows**, where its ROCm/Vulkan build already drives recent Radeon
 GPUs, and point Case Calendar at it from WSL2 with
-`OLLAMA_BASE_URL=http://WINDOWS_HOST_IP:11434/v1` (the WSL default-gateway IP).
+`OLLAMA_BASE_URL=http://WINDOWS_HOST_IP:11434` (the WSL default-gateway IP).
 Running Ollama *inside* WSL2 on AMD is officially supported too, but takes an
 extra step the Nvidia path doesn't: AMD's **ROCDXG** (`librocdxg`) runtime, which
 reaches the Windows GPU driver through Microsoft's DXCore interface (`/dev/dxg`)
@@ -465,10 +465,15 @@ reason fixes that and is measurably **more accurate** (in the benchmark,
 `gemma4:e4b` scored a deviation of 541 thinking vs 614 not — see
 [`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)).
 
-The budget is unbounded because local inference has **no per-token cost**, so
-there's no reason to cap reasoning to a guessed number. Usually it's self-limiting:
-the reasoning is bounded by the context window and a finished model stops on its
-own. The cost is **wall-clock** — a thinking model is slower per call (gemma \~20s,
+The budget is a **runaway guard, not a cost lever** — local inference has no
+per-token cost, so the bound exists only to make a model that *won't stop*
+truncate cleanly (the entry is skipped) in seconds, rather than generating until
+the per-call timeout. It's sized generously (default 8192 tokens of headroom on
+top of the answer allowance): a disciplined thinker finishes well under it and is
+never touched — measured on this project's benchmark, gemma and gpt-oss top out
+around 1,500–1,900 generated tokens per extraction call, far below the cap. Raise
+`OLLAMA_THINK_BUDGET` only if a model's reasoning is genuinely cut off mid-thought.
+The real cost is **wall-clock** — a thinking model is slower per call (gemma \~20s,
 qwen3.5:9b \~41s, vs \~7s not thinking), and a *heavy* thinker is simply slow on
 big backfills.
 
@@ -497,7 +502,11 @@ be disabled by a boolean (see the note just below).
 [ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) and
 tunes the trace by **level** (`low` / `medium` / `high`) instead. Its deepest
 trace is too slow for high-volume extraction, so Case Calendar sends `low` on the
-extract/verify/dedupe tracks and `high` for summaries (both unbounded).
+extract/verify/dedupe tracks and `high` for summaries (both bounded by the same
+output budget as any other thinker). Override the level with
+**`OLLAMA_THINK_LEVEL`** (`low` / `medium` / `high`) to set gpt-oss's reasoning
+depth on every track at once — to trade speed against accuracy, or to compare the
+levels on your own dockets.
 
 On a *non-Ollama* OpenAI-compatible server there is no `think` control at all, so a
 heavy thinker can still overrun on extraction — prefer a non-thinking model there,
@@ -522,11 +531,19 @@ LLM_MODEL=gemma-4-e4b
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Where the server listens. Point it at LM Studio, a remote box, etc. |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Where the server listens — the host root (Ollama's native endpoint). Point it at a remote box, or a non-Ollama OpenAI-compatible server like LM Studio (`http://host:1234/v1`). |
 | `OLLAMA_NUM_CTX` | *(unset)* | Context window in tokens (see above). |
 | `OLLAMA_FORCE_NO_THINK` | *(unset)* | Force reasoning OFF on a real-Ollama thinking model (sends `think=false`, bounded budget) — the escape hatch for a runaway or too-slow thinker, at an accuracy cost. No-op on `gpt-oss` and on non-Ollama servers. See [Thinking models](#thinking-models). |
-| `OLLAMA_THINK_BUDGET` | `8192` | Reasoning headroom (tokens) added on top of the answer allowance for a thinking model on real Ollama. It's a runaway GUARD, not a cost lever (local inference is free); raise it only if a model's reasoning is being cut off mid-thought. |
-| `LLM_STRUCTURED_OUTPUT` | *(on)* | Schema-enforced JSON extraction, **default on**. On real Ollama it uses the native `format` field (a hard GBNF grammar) — this happens automatically once real Ollama is detected (via `/api/show`), whether or not `OLLAMA_BASE_URL` carries a `/v1` suffix. It measurably improved `gpt-oss:20b` extraction accuracy in the benchmark. Set to a falsy value to opt out — e.g. on a non-Ollama OpenAI-compatible server whose strict `json_schema` is unverified. |
+| `OLLAMA_THINK_BUDGET` | `8192` | Reasoning headroom (tokens) added on top of the answer allowance for a thinking model on real Ollama. It's a runaway guard, not a cost lever (local inference is free); raise it only if a model's reasoning is being cut off mid-thought. |
+
+Schema-enforced JSON extraction is always on — there is no toggle. On real
+Ollama it uses the native `format` field (a hard GBNF grammar), automatically
+once real Ollama is detected (via `/api/show`), whether or not
+`OLLAMA_BASE_URL` carries a `/v1` suffix; it measurably improved `gpt-oss:20b`
+extraction accuracy in the benchmark. On a non-Ollama OpenAI-compatible server
+it rides the `json_schema` response format, which vLLM and LM Studio's
+llama.cpp engine both accept and enforce at current versions (verified from
+source, June 2026).
 
 ## Cost reporting
 
