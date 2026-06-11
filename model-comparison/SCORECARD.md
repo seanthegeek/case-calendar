@@ -77,8 +77,8 @@ on the local GPU (hosted models run against their APIs, so no comparable figure)
 | model | host | per-entry | aggregate | runtime |
 | --- | --- | ---: | ---: | ---: |
 | **gemini/gemini-3.1-flash-lite** | hosted | **636** | **376** | — |
-| **ollama/gpt-oss:20b** (low) | local | **710** | **396** | 1:15 |
-| ollama/gpt-oss:20b (medium) | local | 728 | 420 | 2:59 |
+| **ollama/gpt-oss:20b** (thinking LOW) | local | **710** | **396** | 1:15 |
+| ollama/gpt-oss:20b (thinking MEDIUM) | local | 728 | 420 | 2:59 |
 | anthropic/claude-haiku-4-5 | hosted | 784 | 476 | — |
 | openai/gpt-5.4-mini | hosted | 879 | 551 | — |
 | ollama/qwen3.5:9b (thinking-OFF) | local | 930 | 700 | 1:24 |
@@ -235,13 +235,13 @@ What the grades mean:
 | --- | --- | :---: | --- |
 | **anthropic/claude-sonnet-4-6** | hosted | **A** | accurate, most detailed, clean — the reference |
 | gemini/gemini-2.5-pro | hosted | A− | accurate + clean, a touch less detail; omits China on ding |
-| ollama/gpt-oss:20b | low | C | accurate figures + clean-ish, but **thin** (strips case context); one duplicated clause |
-| ollama/gemma4:e4b | thinking-OFF | C | accurate + the **most detailed** local, but **clunky** ("convicted at a plea hearing", repetitive parentheticals) |
-| ollama/qwen3.5:9b | thinking-OFF | C− | detailed, but a **fabricated** "convicted at trial" on the Anthropic *civil* docket + one fully **duplicated** summary; also drops China (the Chinese-model watch) |
-| ollama/glm-4.7-flash | thinking-OFF | C− | accurate + clean but **thin**, and **slow** (\~2:10/docket) |
-| ollama/gemma4:e4b | thinking-ON | D | **broken markup** — 12 prompt-only `[D1]` / `[doc:D7]` reference tokens leaked into the prose — plus trial-vs-plea errors |
-| ollama/qwen3.5:9b | thinking-ON | F | reasoning ran away (cancelled) |
-| ollama/glm-4.7-flash | thinking-ON | F | hung 9+ min on the first docket |
+| ollama/gpt-oss:20b | thinking LOW | C | accurate figures + clean-ish, but **thin** (strips case context); one duplicated clause |
+| ollama/gemma4:e4b | thinking OFF | C | accurate + the **most detailed** local, but **clunky** ("convicted at a plea hearing", repetitive parentheticals) |
+| ollama/qwen3.5:9b | thinking OFF | C− | detailed, but a **fabricated** "convicted at trial" on the Anthropic *civil* docket + one fully **duplicated** summary; also drops China (the Chinese-model watch) |
+| ollama/glm-4.7-flash | thinking OFF | C− | accurate + clean but **thin**, and **slow** (\~2:10/docket) |
+| ollama/gemma4:e4b | thinking ON | D | **broken markup** — 12 prompt-only `[D1]` / `[doc:D7]` reference tokens leaked into the prose — plus trial-vs-plea errors |
+| ollama/qwen3.5:9b | thinking ON | F | reasoning ran away (cancelled) |
+| ollama/glm-4.7-flash | thinking ON | F | hung 9+ min on the first docket |
 
 **Two findings:**
 
