@@ -87,7 +87,7 @@ deadlines: set / rescheduled / met-filed / cancelled
 
 Two design choices make this honest:
 
-- **Complete-text inputs.** The benchmark snapshot carries every entry's FULL
+- **Complete-text inputs.** The benchmark snapshot carries every entry's full
   text (description + extracted PDF), not the operational store's regex-filtered
   stubs. A date hidden in a stubbed entry would be invisible to *both* the models
   and the human — so a real date the regex pre-filter dropped shows up as a
@@ -118,6 +118,7 @@ scoreable entries, 421 human-counted actions, 10 logical dockets.
 | `build_scoring_page.py` | Generates the offline HTML scoring page (`ground_truth_scoring.html`) for filling `ground_truth.csv` blind. |
 | `snapshot_benchmark.py` | Builds the frozen, full-text benchmark snapshot (`snapshots/benchmark-store.sqlite`, committed via Git LFS). |
 | `build_provider_stores.py` | Rebuilds every comparison model from the same court data. Needs API keys; costs money. |
+| `summarize_phase.py` | Regenerates the per-docket case **summaries** on a chosen store with a chosen summary provider/model (via `summary.refresh_stale`, copying the store first so the source is never mutated) and dumps the prose to a text file. This is the qualitative complement to the deterministic *extraction* scoring above — summary quality (accuracy / readability / provenance such as a China or DPRK nexus) is read and graded by hand, not scored by `score_models.py`. Point every model at the same top-extractor scaffold for an apples-to-apples summary comparison, or run each on its own extraction. |
 | `snapshots/` | The committed benchmark snapshot + its `.manifest.json` (date, row counts, sha256). Fetch the `.sqlite` with `git lfs pull`. |
 
 ## Re-score with the committed data — no API keys, no rebuild
@@ -152,7 +153,7 @@ browser's localStorage (keyed by `entry_id`), so a refresh can't lose work.
 
 ### How to count each entry
 
-Put a number in each of the eight boxes for **what THIS entry does** (not the
+Put a number in each of the eight boxes for **what this entry does** (not the
 cumulative docket state), counting **every** hearing and deadline regardless of
 whether it would surface on the calendar (major) or not (minor). The page's help
 block has the full conventions; the ones that trip people up:
@@ -220,6 +221,35 @@ calendars stay under the gitignored `data/provider-stores/`.
 > (with a live Ollama) to keep them. Re-*scoring* the committed CSV needs none of
 > this.
 
+### Compare summary quality
+
+`build_provider_stores.py` / `score_models.py` measure the *extraction* track. The
+**summary** track is compared separately with `summarize_phase.py`, which
+regenerates the per-docket case summaries on a chosen store with a chosen summary
+provider/model (via `summary.refresh_stale`, copying the store first so the source
+is untouched) and dumps the prose to a text file for **hand-grading** — there is no
+automated summary scorer, because summary quality is provenance and readability,
+not countable actions.
+
+```bash
+# every model summarizes the same top-extractor scaffold (apples-to-apples):
+GEM=data/provider-stores/gemini/gemini-3.1-flash-lite/case-calendar.sqlite
+uv run python model-comparison/summarize_phase.py \
+    --store "$GEM" --provider anthropic --model claude-sonnet-4-6 \
+    --out /tmp/sum_sonnet.txt
+#   --case <id>     limit to one case (e.g. a quick feasibility check)
+# A local model needs a running Ollama server; OLLAMA_NUM_CTX=131072 fits the big
+# dockets on a 24 GB card. Thinking is A/B-tested with flags: --no-think (force a
+# boolean-thinker's reasoning off), --think-level low|medium|high (gpt-oss level),
+# --think-budget N (reasoning headroom). The script also flags a ⚠️ RUNAWAY (huge
+# output) or ⚠️ HUNG model (no progress in 240s) live, with SUM_ABORT_ON_HANG=1 to
+# auto-curtail — local thinking models can run away or stall on the summary task.
+```
+
+Read the dumped files side by side. Run each model on the **same** scaffold to
+isolate summary quality, or on its **own** extraction store to grade the full
+per-model pipeline.
+
 ## Reproducible benchmarking: the frozen snapshot
 
 By default the build reads the **live** prod store (`store_path`), which
@@ -244,7 +274,7 @@ time, so truth and inputs stay captured from one point in time:
 
 ```bash
 uv run python model-comparison/snapshot_benchmark.py --force   # full rebuild
-# or pick up a new filing on ONE case without re-pulling the whole benchmark:
+# or pick up a new filing on one case without re-pulling the whole benchmark:
 uv run python model-comparison/snapshot_benchmark.py --case us-v-ding
 # -> commits a new LFS object; re-run build_scoring_page.py + re-score
 ```
