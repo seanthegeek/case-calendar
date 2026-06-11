@@ -404,6 +404,17 @@ def _normalize_action_category(action: dict[str, Any]) -> dict[str, Any]:
 def _local_to_utc(
     date_str: Optional[str], time_str: Optional[str], tz: str
 ) -> Optional[str]:
+    # Untrusted LLM output: ``local_date`` / ``local_time`` are typed as strings
+    # in the schema, but a weak model occasionally emits a non-string — llama3.2
+    # wrote ``local_date`` as the integer ``2024``, which crashed the ``.strip()``
+    # below with ``AttributeError: 'int' object has no attribute 'strip'``. A
+    # non-string date is malformed, so store the row date-less; a non-string time
+    # is treated as no-time. Same safe degrade as the ``"null"`` / ``"none"``
+    # handling just below — never let untrusted output crash the pipeline.
+    if date_str is not None and not isinstance(date_str, str):
+        return None
+    if time_str is not None and not isinstance(time_str, str):
+        time_str = None
     # Some LLMs emit the literal string ``"null"`` / ``"None"`` for a missing
     # date instead of JSON null — observed on a conditional ADD_DEADLINE where
     # the model wrote ``"local_date": "null"`` and crashed the column with

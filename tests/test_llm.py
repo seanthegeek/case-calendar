@@ -471,6 +471,71 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     assert "Hearing types: arraignment" in captured["system"]
 
 
+# --- structured output (schema enforcement on the extraction call, always on) ---
+
+
+class TestStructuredOutput:
+    """``extract_actions`` passes ``schema=ACTIONS_SCHEMA`` to the dispatch
+    UNCONDITIONALLY — there is no opt-out. The schema is validated on all four
+    providers, so there is no per-provider skip. The default _run_capture
+    provider is anthropic."""
+
+    @staticmethod
+    def _run_capture(monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+        captured = {}
+
+        def fake_dispatch(provider, system, user, max_tokens, **kw):
+            captured["schema"] = kw.get("schema")
+            return '{"actions": [{"type": "IGNORE"}]}'
+
+        monkeypatch.setattr(providers, "_dispatch_llm_call", fake_dispatch)
+        llm.extract_actions(
+            case_name="US v. Z",
+            court_id="mad",
+            court_tz="America/New_York",
+            entry={
+                "id": 1,
+                "description": "Sentencing set for 4/14",
+                "recap_documents": [],
+            },
+            pdf_texts=[],
+            known_hearings=[],
+        )
+        return captured
+
+    def test_schema_always_passed(self, monkeypatch):
+        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
+
+    def test_actions_schema_is_closed_minimal_required(self):
+        # Pins the CLOSED, MINIMAL-required shape: every object
+        # additionalProperties:false (Gemini needs every field declared), but only
+        # `type` required (forcing all fields required depressed Gemini recall —
+        # see the 2026-06 parity). type is a non-null enum; all others nullable.
+        s = llm.ACTIONS_SCHEMA
+        assert s["required"] == ["actions"]
+        assert s["additionalProperties"] is False
+        item = s["properties"]["actions"]["items"]
+        assert item["additionalProperties"] is False
+        # only the discriminator is required (NOT all properties)
+        assert item["required"] == ["type"]
+        props = item["properties"]
+        assert props["type"] == {"type": "string", "enum": llm._ACTION_TYPES}
+        assert set(llm._ACTION_TYPES) >= {"ADD_HEARING", "ADD_DEADLINE", "IGNORE"}
+        # every non-type field is a nullable union so the model can emit null
+        for name, sub in props.items():
+            if name == "type":
+                continue
+            assert "null" in sub["type"], name
+
+    def test_schema_passed_for_any_provider(self, monkeypatch):
+        # The closed ACTIONS_SCHEMA is validated on all four providers, so there is
+        # no per-provider skip: gemini gets the schema same as anthropic/openai.
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        monkeypatch.setenv("GEMINI_API_KEY", "x")
+        assert self._run_capture(monkeypatch)["schema"] is llm.ACTIONS_SCHEMA
+
+
 # --- verify_hearing ---
 
 

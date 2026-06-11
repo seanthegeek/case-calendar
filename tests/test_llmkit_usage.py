@@ -109,6 +109,15 @@ class TestExtractors:
     def test_from_gemini_missing_metadata(self):
         assert from_gemini(SimpleNamespace()) == TokenUsage()
 
+    def test_from_ollama(self):
+        # Ollama's eval_count includes any reasoning tokens; no prompt cache.
+        resp = {"prompt_eval_count": 10, "eval_count": 4}
+        assert usage.from_ollama(resp) == TokenUsage(input=10, output=4)
+
+    def test_from_ollama_non_dict(self):
+        # a malformed body / test double coerces to all-zero rather than raising
+        assert usage.from_ollama("not a dict") == TokenUsage()
+
 
 class TestTokenLedger:
     def _seed(self) -> TokenLedger:

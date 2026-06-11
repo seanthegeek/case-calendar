@@ -708,6 +708,105 @@ SYSTEM_PROMPT = SYSTEM_PROMPT.replace(
 ).replace("__DEADLINE_SIGNIFICANCE_RULES__", DEADLINE_SIGNIFICANCE_RULES)
 
 
+# Every action ``type`` the extractor may emit (the discriminator field). Hearing
+# actions, deadline actions, and the universal IGNORE. Kept in sync with the
+# dispatch in ``sync`` (``CaseSyncer`` applies actions by this field).
+_ACTION_TYPES = [
+    "ADD_HEARING",
+    "RESCHEDULE_HEARING",
+    "UPDATE_DETAILS",
+    "CANCEL_HEARING",
+    "MARK_HELD",
+    "ADD_DEADLINE",
+    "RESCHEDULE_DEADLINE",
+    "CANCEL_DEADLINE",
+    "MARK_FILED",
+    "IGNORE",
+]
+
+
+def _nullable(json_type: str) -> dict[str, Any]:
+    """A fresh ``{"type": [<t>, "null"]}`` schema node. Fresh (not a shared
+    constant) so the per-provider Gemini dialect transform can rewrite nodes
+    without aliasing surprises."""
+    return {"type": [json_type, "null"]}
+
+
+# Per-action property schema. Only ``type`` is non-null + enum-constrained (it's
+# the discriminator and is always present); EVERY other field is nullable so the
+# model emits ``null`` when it doesn't apply to this action type — preserving the
+# current behavior where, e.g., a date-less deadline carries ``local_date: null``
+# (``sync`` already treats a non-string date as missing). No ``enum`` on
+# ``significance`` on purpose: the prompt constrains it to major/minor, and an
+# ``enum`` + null union is represented inconsistently across provider dialects —
+# keeping it a plain nullable string sidesteps that with no loss (the parser
+# defaults a bad value to major anyway).
+_ACTION_PROPERTIES: dict[str, Any] = {
+    "type": {"type": "string", "enum": _ACTION_TYPES},
+    "hearing_key": _nullable("string"),
+    "deadline_key": _nullable("string"),
+    "target_key": _nullable("string"),
+    "title": _nullable("string"),
+    "hearing_type": _nullable("string"),
+    "deadline_type": _nullable("string"),
+    "local_date": _nullable("string"),
+    "local_time": _nullable("string"),
+    "significance": _nullable("string"),
+    "duration_minutes": _nullable("integer"),
+    "judge": _nullable("string"),
+    "dial_in": _nullable("string"),
+    "location": _nullable("string"),
+    "notes": _nullable("string"),
+    "reason": _nullable("string"),
+    "conditional": _nullable("boolean"),
+}
+
+# JSON Schema for the ``extract_actions`` output, fed UNCONDITIONALLY to the
+# provider's structured-output mechanism (``schema=`` on the llmkit dispatch) —
+# there is no opt-out. Always-on because the benchmark pass came back
+# neutral-or-positive everywhere: accuracy-NEUTRAL on Gemini (645->636
+# per-entry, recall preserved) while cutting tokens (input -4%, output -23%), a
+# measurable WIN on the local gpt-oss model (731->694 per-entry, -5%, by
+# suppressing its spurious over-emission), and Anthropic / OpenAI
+# validation-clean (0 degenerate). No opt-out exists, even for generic
+# OpenAI-compatible servers: vLLM and LM Studio's llama.cpp engine were both
+# verified (from source, June 2026) to accept and enforce this exact closed
+# schema. CLOSED (``additionalProperties: false`` on every
+# object) with every field DECLARED — Gemini's ``response_schema`` grammar emits
+# only the fields the schema declares, so an under-declared schema makes it emit
+# typeless / empty objects and run away (the 2026-06-09 envelope-schema run: 5/8
+# degenerate + 3 runaways). But only ``type`` (the discriminator) and the
+# top-level ``actions`` are REQUIRED; every other field is an optional nullable
+# union, because which fields apply depends on the action type. This minimal
+# required-set is deliberate: forcing every field required (the first closed
+# draft) measurably depressed Gemini's recall on the benchmark — it emitted
+# actions on half as many entries (2026-06-09 parity: action-bearing entries
+# 371→184, misses +99) — by making each action carry all 18 fields. OpenAI's
+# strict mode is the one mechanism that DOES require every property in
+# ``required``; ``llmkit.providers._to_openai_strict_schema`` fills that in for
+# the OpenAI path only, so the canonical schema stays minimal-required for the
+# providers (Gemini especially) that don't need it. Gemini's dialect differs
+# (single ``type`` + ``nullable: true`` vs the ``[t, "null"]`` union, no
+# ``additionalProperties``); ``_to_gemini_schema`` adapts that at call time. One
+# canonical definition; llmkit adapts it to each provider's mechanism.
+ACTIONS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "actions": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": _ACTION_PROPERTIES,
+                "required": ["type"],
+            },
+        }
+    },
+    "required": ["actions"],
+}
+
+
 def build_user_message(
     *,
     case_name: str,
@@ -931,6 +1030,7 @@ def extract_actions(
             purpose="extract",
             docket=docket_id,
             temperature=0.0,
+            schema=ACTIONS_SCHEMA,
         )
     except ContextWindowExceededError as exc:
         logger.warning(
@@ -1603,17 +1703,18 @@ _DEFAULT_SUMMARY_MODELS = {
     "anthropic": "claude-sonnet-4-6",
     "openai": "gpt-5.4",
     "gemini": "gemini-2.5-pro",
-    # Local inference via Ollama. gemma4:e4b — the same 9.6 GB all-rounder the
-    # extraction track defaults to locally (see providers._DEFAULT_MODELS), so a
-    # zero-config local install pulls and runs ONE model for both tracks that
-    # fits a mainstream 16 GB card (24 GB with headroom). Summaries benefit most
-    # from a bigger model: on a 32 GB card (RTX 5090) upgrade just this track
-    # with LLM_SUMMARY_MODEL=gemma4:31b. The 31b (20 GB of weights) does NOT fit
-    # a 24 GB card at a summary-sized context window (no room left for the KV
-    # cache), so there the quality path is a hosted summary provider. Raise
-    # OLLAMA_NUM_CTX either way since summaries feed tens of thousands of tokens
-    # of legal prose. See docs/local-llms.md.
-    "ollama": "gemma4:e4b",
+    # Local inference via Ollama. gpt-oss:20b — the same model the extraction
+    # track defaults to locally (see providers._DEFAULT_MODELS), so a zero-config
+    # local install runs ONE model for both tracks. It was the cleanest local
+    # summarizer in the comparison (no verdict fabrication or token leaks; see
+    # model-comparison/SCORECARD.md) and, being level-thinking, completes
+    # reliably where the unbounded boolean-thinkers ran away. VRAM: 13.8 GB
+    # (MXFP4); summaries need a large OLLAMA_NUM_CTX (tens of thousands of tokens
+    # of legal prose), so this track wants ~24 GB — on a 16 GB card, lower the
+    # window or send summaries to a hosted provider (the hybrid setup). The
+    # smaller gemma4:e4b (9.6 GB) is the fit-a-16-GB-card fallback
+    # (LLM_SUMMARY_MODEL=gemma4:e4b). See docs/local-llms.md.
+    "ollama": "gpt-oss:20b",
 }
 
 
@@ -2550,10 +2651,12 @@ def generate_docket_summary(
     # Thinking models draw reasoning tokens from the same output budget as the
     # answer, so the small summary ceiling can starve the answer (an empty
     # "No content" response that would crash the refresh). ensure_thinking_budget
-    # raises the ceiling for those models — Gemini always; a thinking-capable
-    # Ollama model per /api/show — and leaves non-thinking providers (Anthropic /
-    # OpenAI, and plain local models) at the requested budget. The provider/budget
-    # logic lives in llmkit; see that function for the full rationale.
+    # raises the ceiling for those models — Gemini always; an OpenAI gpt-5 /
+    # o-series reasoning model (its reasoning is billed against
+    # max_completion_tokens); a thinking-capable Ollama model per /api/show — and
+    # leaves non-thinking providers (Anthropic, non-reasoning OpenAI, plain local
+    # models) at the requested budget. The provider/budget logic lives in llmkit;
+    # see that function for the full rationale.
     effective_max_tokens = providers.ensure_thinking_budget(
         chosen_provider, chosen_model, max_tokens
     )

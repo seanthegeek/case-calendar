@@ -43,8 +43,8 @@ to reproduce or extend it.
 Case Calendar can run on any of three providers (Gemini / OpenAI / Anthropic;
 one line in `config.yaml`). To pick a default we rebuild every tracked case's
 extraction from the **same** frozen court data with several model configurations
-and compare cost and accuracy. Each configuration is one **column**: by default
-one per provider at its out-of-the-box models, plus an extra column that varies
+and compare cost and accuracy. Each configuration is one **model**: by default
+one per provider at its out-of-the-box models, plus an extra model that varies
 the *extraction* model within a provider to test whether a pricier tier earns
 its keep (`gpt-5.4-mini` against the OpenAI default `gpt-5.4-nano`). This folder
 holds the tooling, the model-output data, and a scoring method designed so you
@@ -66,7 +66,7 @@ it's only honest to say so plainly.
    written by Anthropic's Claude, and the comparison runs those *same* prompts for
    every model. A model may simply respond better to prompts written by its own
    family. **Nothing here neutralizes this**: blind scoring can't, because the
-   prompts don't change between columns. It's a home-field advantage baked into
+   prompts don't change between models. It's a home-field advantage baked into
    the comparison itself.
 
 So scope the result accordingly. This measures **which model is most accurate at
@@ -87,7 +87,7 @@ deadlines: set / rescheduled / met-filed / cancelled
 
 Two design choices make this honest:
 
-- **Complete-text inputs.** The benchmark snapshot carries every entry's FULL
+- **Complete-text inputs.** The benchmark snapshot carries every entry's full
   text (description + extracted PDF), not the operational store's regex-filtered
   stubs. A date hidden in a stubbed entry would be invisible to *both* the models
   and the human — so a real date the regex pre-filter dropped shows up as a
@@ -117,7 +117,8 @@ scoreable entries, 421 human-counted actions, 10 logical dockets.
 | `SCORECARD.md` | The written analysis + current numbers backing the default-provider choice. |
 | `build_scoring_page.py` | Generates the offline HTML scoring page (`ground_truth_scoring.html`) for filling `ground_truth.csv` blind. |
 | `snapshot_benchmark.py` | Builds the frozen, full-text benchmark snapshot (`snapshots/benchmark-store.sqlite`, committed via Git LFS). |
-| `build_provider_stores.py` | Rebuilds every comparison column from the same court data. Needs API keys; costs money. |
+| `build_provider_stores.py` | Rebuilds every comparison model from the same court data. Needs API keys; costs money. |
+| `summarize_phase.py` | Regenerates the per-docket case **summaries** on a chosen store with a chosen summary provider/model (via `summary.refresh_stale`, copying the store first so the source is never mutated) and dumps the prose to a text file. This is the qualitative complement to the deterministic *extraction* scoring above — summary quality (accuracy / readability / provenance such as a China or DPRK nexus) is read and graded by hand, not scored by `score_models.py`. Point every model at the same top-extractor scaffold for an apples-to-apples summary comparison, or run each on its own extraction. |
 | `snapshots/` | The committed benchmark snapshot + its `.manifest.json` (date, row counts, sha256). Fetch the `.sqlite` with `git lfs pull`. |
 
 ## Re-score with the committed data — no API keys, no rebuild
@@ -152,7 +153,7 @@ browser's localStorage (keyed by `entry_id`), so a refresh can't lose work.
 
 ### How to count each entry
 
-Put a number in each of the eight boxes for **what THIS entry does** (not the
+Put a number in each of the eight boxes for **what this entry does** (not the
 cumulative docket state), counting **every** hearing and deadline regardless of
 whether it would surface on the calendar (major) or not (minor). The page's help
 block has the full conventions; the ones that trip people up:
@@ -172,17 +173,17 @@ entries (unreadable source — not the model's fault) are excluded entirely.
 
 ## Run your own comparison (other cases or models)
 
-`build_provider_stores.py` rebuilds every column at once. It copies the source
+`build_provider_stores.py` rebuilds every model at once. It copies the source
 store, clears only the AI-derived tables, and replays the real extraction
 pipeline against identical cached court data, so the only thing that differs
-between columns is the model. Point it at your own `config.yaml` to compare on
-other cases, or add a column with `--extra-variant provider:extract[,summary]`.
+between runs is the model. Point it at your own `config.yaml` to compare on
+other cases, or add a model with `--extra-variant provider:extract[,summary]`.
 Requires `COURTLISTENER_TOKEN` + an API key for each provider in play, and
 re-spends the LLM cost (see [SCORECARD.md](SCORECARD.md#cost) /
 [docs/cost.md](../docs/cost.md)).
 
 ```bash
-# rebuild every column into data/provider-stores/ (gitignored), capture the
+# rebuild every model into data/provider-stores/ (gitignored), capture the
 # per-entry model counts, and write a cost report:
 uv run python model-comparison/build_provider_stores.py \
     --source model-comparison/snapshots/benchmark-store.sqlite --frozen \
@@ -192,8 +193,8 @@ uv run python model-comparison/build_provider_stores.py \
 python3 model-comparison/score_models.py
 
 # narrower runs:
-#   one provider's columns only:   --variants openai
-#   one specific column:           --variants openai/gpt-5.4-mini
+#   one provider's models only:   --variants openai
+#   one specific model:           --variants openai/gpt-5.4-mini
 #   an ad-hoc model not in the set: --extra-variant gemini:gemini-3.1-pro-preview
 ```
 
@@ -205,6 +206,49 @@ summaries.) The `--entry-actions-csv` tap records every entry's counts even on a
 LLM-cache hit, so a warm-cache rebuild still produces a complete CSV. The large
 stores, their `build.log`s (with the per-entry DECISION trace), and the rendered
 calendars stay under the gitignored `data/provider-stores/`.
+
+> **The committed `model_actions.csv` now also carries two local models
+> (`ollama/gemma4:e4b` and `ollama/llama3.2:3b`)** (see
+> [SCORECARD.md](SCORECARD.md#local-models--gemma4e4b-recommended-and-llama323b)).
+> They are measured under the shipping `think:true` policy (gemma reasons rather
+> than being suppressed — the fix that moved its deviation from 1471 to 1090).
+> They are opt-in — building them needs a running Ollama server, and because 11
+> benchmark entries have no usable PDF text in the snapshot they must run
+> **non-frozen** (a live PDF fetch + OCR, the same text the hosted models saw),
+> e.g. `--extra-variant ollama:gemma4:e4b` with `OLLAMA_BASE_URL` set and **no**
+> `--frozen`. A default rebuild of the CSV (hosted models only) will overwrite
+> the file and **drop the local rows** — re-add the `--extra-variant` flags
+> (with a live Ollama) to keep them. Re-*scoring* the committed CSV needs none of
+> this.
+
+### Compare summary quality
+
+`build_provider_stores.py` / `score_models.py` measure the *extraction* track. The
+**summary** track is compared separately with `summarize_phase.py`, which
+regenerates the per-docket case summaries on a chosen store with a chosen summary
+provider/model (via `summary.refresh_stale`, copying the store first so the source
+is untouched) and dumps the prose to a text file for **hand-grading** — there is no
+automated summary scorer, because summary quality is provenance and readability,
+not countable actions.
+
+```bash
+# every model summarizes the same top-extractor scaffold (apples-to-apples):
+GEM=data/provider-stores/gemini/gemini-3.1-flash-lite/case-calendar.sqlite
+uv run python model-comparison/summarize_phase.py \
+    --store "$GEM" --provider anthropic --model claude-sonnet-4-6 \
+    --out /tmp/sum_sonnet.txt
+#   --case <id>     limit to one case (e.g. a quick feasibility check)
+# A local model needs a running Ollama server; OLLAMA_NUM_CTX=131072 fits the big
+# dockets on a 24 GB card. Thinking is A/B-tested with flags: --no-think (force a
+# boolean-thinker's reasoning off), --think-level low|medium|high (gpt-oss level),
+# --think-budget N (reasoning headroom). The script also flags a ⚠️ RUNAWAY (huge
+# output) or ⚠️ HUNG model (no progress in 240s) live, with SUM_ABORT_ON_HANG=1 to
+# auto-curtail — local thinking models can run away or stall on the summary task.
+```
+
+Read the dumped files side by side. Run each model on the **same** scaffold to
+isolate summary quality, or on its **own** extraction store to grade the full
+per-model pipeline.
 
 ## Reproducible benchmarking: the frozen snapshot
 
@@ -230,7 +274,7 @@ time, so truth and inputs stay captured from one point in time:
 
 ```bash
 uv run python model-comparison/snapshot_benchmark.py --force   # full rebuild
-# or pick up a new filing on ONE case without re-pulling the whole benchmark:
+# or pick up a new filing on one case without re-pulling the whole benchmark:
 uv run python model-comparison/snapshot_benchmark.py --case us-v-ding
 # -> commits a new LFS object; re-run build_scoring_page.py + re-score
 ```

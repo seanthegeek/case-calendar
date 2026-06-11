@@ -410,6 +410,23 @@ def test_variant_dispatch_respects_explicit_model():
     assert seen["model"] == "pinned"
 
 
+def test_variant_dispatch_forwards_schema():
+    # Regression: extract_actions passes schema= (structured output); the variant
+    # wrapper must thread it through, else every extract TypeErrors -> IGNORE.
+    seen = {}
+
+    def base(provider, system, user, max_tokens, *, model=None, schema=None, **kw):
+        seen["schema"] = schema
+        return "ok"
+
+    dispatch = mod._make_variant_dispatch(base)
+    schema = {"type": "object"}
+    dispatch("gemini", "s", "u", 100, purpose="extract", schema=schema)
+    assert seen["schema"] == schema
+    dispatch("gemini", "s", "u", 100, purpose="extract")  # default None still works
+    assert seen["schema"] is None
+
+
 # --------------------------------------------------------------------------- #
 # _capturing_record + build_report bucket by column label, not provider
 # --------------------------------------------------------------------------- #
@@ -504,6 +521,7 @@ def test_variant_dispatch_records_latency_and_injects_model():
         *,
         model=None,
         json_mode=True,
+        schema=None,
         purpose="llm",
         docket=None,
         temperature=None,
@@ -532,6 +550,7 @@ def test_variant_dispatch_leaves_summary_model_untouched():
         *,
         model=None,
         json_mode=True,
+        schema=None,
         purpose="llm",
         docket=None,
         temperature=None,
@@ -576,12 +595,13 @@ def _make_counting_base():
         *,
         model=None,
         json_mode=True,
+        schema=None,
         purpose="llm",
         docket=None,
         temperature=None,
     ):
         calls.append(
-            (provider, model, system, user, max_tokens, json_mode, temperature)
+            (provider, model, system, user, max_tokens, json_mode, temperature, schema)
         )
         return f"resp::{provider}::{model}::{system}::{user}"
 
@@ -664,6 +684,7 @@ def test_llm_cache_does_not_cache_errors(tmp_path):
         *,
         model=None,
         json_mode=True,
+        schema=None,
         purpose="llm",
         docket=None,
         temperature=None,
@@ -716,6 +737,7 @@ def test_llm_cache_forwards_all_kwargs(tmp_path):
         *,
         model=None,
         json_mode=True,
+        schema=None,
         purpose="llm",
         docket=None,
         temperature=None,
@@ -723,6 +745,7 @@ def test_llm_cache_forwards_all_kwargs(tmp_path):
         seen.update(
             model=model,
             json_mode=json_mode,
+            schema=schema,
             purpose=purpose,
             docket=docket,
             temperature=temperature,
@@ -736,6 +759,7 @@ def test_llm_cache_forwards_all_kwargs(tmp_path):
         99,
         model="gpt",
         json_mode=False,
+        schema={"type": "object"},
         purpose="summary",
         docket=123,
         temperature=0.0,
@@ -743,6 +767,7 @@ def test_llm_cache_forwards_all_kwargs(tmp_path):
     assert seen == {
         "model": "gpt",
         "json_mode": False,
+        "schema": {"type": "object"},
         "purpose": "summary",
         "docket": 123,
         "temperature": 0.0,
@@ -801,6 +826,37 @@ def test_llm_cache_none_arg_equals_explicit_resolved_model(tmp_path, monkeypatch
 
     assert len(calls) == 1  # second served from cache
     assert sum(cache.hits.values()) == 1
+    cache.close()
+
+
+def test_llm_cache_keys_on_schema(tmp_path, monkeypatch):
+    """A structured-output call (schema set) and the same call without a schema
+    build DIFFERENT requests and must not collide — otherwise a schema-less
+    verify/dedupe/summary call could replay a schema-enforced extraction
+    response (or a stale pre-schema cache entry could replay for a
+    schema-enforced call). The schema is also threaded through to the base
+    dispatch on a miss."""
+    monkeypatch.delenv("LLM_MODEL", raising=False)
+    cache = mod._LLMCache(str(tmp_path / "c.sqlite"))
+    base, calls = _make_counting_base()
+    wrapped = cache.wrap(base)
+
+    schema = {"type": "object", "required": ["actions"]}
+    wrapped("anthropic", "sys", "usr", 512, model="m", temperature=0.0)  # no schema
+    wrapped("anthropic", "sys", "usr", 512, model="m", temperature=0.0, schema=schema)
+    wrapped("anthropic", "sys", "usr", 512, model="m", temperature=0.0)  # repeat: HIT
+
+    assert len(calls) == 2  # the third (no-schema) repeat is served from cache
+    assert calls[0][-1] is None  # base received schema=None on the first call
+    assert calls[1][-1] == schema  # and the real schema on the second
+    # backward compat: a schema=None call keys identically to the historical
+    # (schema-less) form, so adding the param does not orphan the warm cache
+    assert mod._LLMCache._key("p", "m", "s", "u", 1, True, 0.0) == mod._LLMCache._key(
+        "p", "m", "s", "u", 1, True, 0.0, None
+    )
+    assert mod._LLMCache._key("p", "m", "s", "u", 1, True, 0.0) != mod._LLMCache._key(
+        "p", "m", "s", "u", 1, True, 0.0, {"a": 1}
+    )
     cache.close()
 
 

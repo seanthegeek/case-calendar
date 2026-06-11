@@ -2,309 +2,327 @@
 
 Scored **992** docket entries (every `reviewed`, non-`bad_ocr` entry across the
 benchmark) carrying **421** human-counted actions, across **10** logical dockets
-in **6** cases. Lower deviation = closer to the human-read truth.
+in **6** cases. Lower deviation = closer to the human-read truth. All numbers
+below are measured under the shipping policy: **structured output ON** (the
+schema-enforced JSON default) and, for local thinking models, the **bounded
+reasoning budget** with thinking ON.
 
 The shipped default is a **split**: **Gemini** (`gemini-3.1-flash-lite`) for
-extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. Gemini wins this
-benchmark on both metrics below, and the 0.16.0 recall fix (reading order PDFs,
-plus catching bare "due `<date>`" / filed-brief entries the regex pre-filter
-dropped) *widened* its lead rather than narrowing it. The summary track stays
-Anthropic for the case-distinguishing detail Sonnet captures (see **Summary
-track**).
+extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. The benchmark ran
+in four phases:
+
+- **Phase 0 — extraction accuracy**: every model extracts hearings/deadlines from
+  the same frozen dockets; a human-blind deviation score ranks them.
+- **Phases 1 & 2 — summary generation**: each candidate summary model regenerates
+  the per-docket case summaries, on the top extractor's scaffold (Phase 1) and on
+  its own extraction (Phase 2).
+- **Phase 3 — summary grading**: the summaries are read by hand and graded for
+  accuracy, readability, and the China / DPRK / Russia provenance these cases turn
+  on (there is no automated summary scorer — see `summarize_phase.py`).
+
+The headline results:
+
+- **Extraction**: Gemini wins (636 per-entry). The best **local** model,
+  `gpt-oss:20b`, is a close 2nd at **710 — ahead of hosted Anthropic, OpenAI-mini,
+  and OpenAI-nano** — so a free local model rivals the paid hosted tier on
+  extraction.
+- **Summaries**: no local summary is publication-ready — each is accurate on the
+  figures but too thin (gpt-oss, glm) or too clunky/defective (gemma, qwen), the
+  best reaching only a **C**. **Summaries need the higher hosted tier** — the
+  opposite of extraction.
+- **Thinking helps extraction but harms summaries** — a clean inversion (see the
+  thinking notes in each phase).
 
 ## Methodology — per-entry, blind, against complete-text inputs
 
-This is a different (stronger) method than earlier SCORECARDs, which counted
-final hearing/deadline rows per docket against counts read off the CourtListener
-web UI. Two problems drove the change: the web UI is **incomplete** relative to
-the v4 API ([freelawproject/courtlistener#7429](https://github.com/freelawproject/courtlistener/issues/7429)),
-so it under-reported real actions and penalized a correct extractor; and a
-per-docket final-row count can't see *where* a model went wrong or whether the
-**regex pre-filter** (not the model) dropped an event before any LLM saw it.
-
-The current method:
+This counts each entry's action counts against a human's, not final per-docket
+rows against the CourtListener web UI (which is incomplete relative to the v4 API,
+[freelawproject/courtlistener#7429](https://github.com/freelawproject/courtlistener/issues/7429),
+and can't see *where* a model erred or whether the **regex pre-filter** dropped an
+event before any LLM saw it).
 
 1. **Freeze a complete-text snapshot** (`snapshot_benchmark.py`) — every entry's
    full `description` + extracted PDF text, not the operational store's
    regex-filtered stubs. A date hidden in a stubbed entry would be invisible to
-   *both* the models and the human; with full text it's scoreable.
+   *both* the models and the human; with full text it's update agent.
 2. **Human scores blind** (`build_scoring_page.py` → `ground_truth.csv`) — one
-   offline HTML page, one card per entry showing the COMPLETE text the extractor
-   saw + document links, beside the eight action-count boxes the extractor emits
-   (hearings scheduled / rescheduled / held / cancelled; deadlines set /
-   rescheduled / met-filed / cancelled). No model output is ever shown.
-3. **Replay every provider** (`build_provider_stores.py --entry-actions-csv`)
-   over the same frozen snapshot, capturing each provider's per-entry action
-   counts to `model_actions.csv`.
+   offline HTML page, one card per entry showing the complete text the extractor
+   saw, beside the eight action-count boxes the extractor emits. No model output
+   is shown.
+3. **Replay every model** (`build_provider_stores.py --entry-actions-csv`) over the
+   same frozen snapshot, capturing per-entry action counts to `model_actions.csv`.
 4. **Score deterministically** (`score_models.py`) — join human × model on
    `entry_id`; no model and no opinion in the scoring loop.
 
-Two biases are worth naming. **Evaluation bias** (an AI judging AI) is removed —
-a human reads the dockets, a dumb script measures deviation. **Prompt-fit bias**
-is NOT: the prompts were authored by Claude and run unchanged for every model, a
+Two biases are worth naming. **Evaluation bias** (an AI judging AI) is removed — a
+human reads the dockets, a dumb script measures deviation. **Prompt-fit bias** is
+**not**: the prompts were authored by Claude and run unchanged for every model, a
 home-field advantage no blind scoring can neutralize. So this measures *which
 model is most accurate at running Case Calendar's actual, Claude-authored
-prompts* — the question that matters for this project, because those are the
-prompts you'd deploy — not a neutral model-capability claim.
+prompts* — not a neutral model-capability claim.
 
 The benchmark is a stratified 6-case sample frozen for reproducibility (see
-[README.md](README.md)): us-v-ding (421 entries), anthropic-v-dow (3 dockets:
-cadc / ca9 / cand), us-v-knoot, us-v-gholinejad, us-v-mcgonigal, us-v-schmitz.
+[README.md](README.md)): us-v-ding, anthropic-v-dow (3 dockets: cadc / ca9 /
+cand), us-v-knoot, us-v-gholinejad, us-v-mcgonigal, us-v-schmitz.
 
-## Totals — per-entry deviation (lower is better)
+## Phase 0 — extraction accuracy
 
-Sum over the 8 action categories of |model count − human count|, summed over
-all 992 entries. `over` = the model counted MORE than the human (duplicate keys
-/ hallucination); `under` = FEWER (missed).
+### Totals — per-entry deviation (lower is better)
 
-| provider | total | over | under | Hs | Hr | Hh | Hc | Ds | Dr | Df | Dc |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **gemini/gemini-3.1-flash-lite** | **653** | 456 | 197 | 94 | 60 | 62 | 15 | 207 | 77 | 130 | 8 |
-| anthropic/claude-haiku-4-5 | 799 | 602 | 197 | 99 | 75 | 74 | 23 | 236 | 99 | 147 | 46 |
-| openai/gpt-5.4-nano | 867 | 665 | 202 | 130 | 89 | 77 | 8 | 299 | 101 | 150 | 13 |
-| openai/gpt-5.4-mini | 925 | 735 | 190 | 138 | 93 | 62 | 7 | 315 | 129 | 165 | 16 |
+Sum over the 8 action categories of |model count − human count|, over all 992
+entries. `over` = model counted more than the human (duplicate keys /
+hallucination); `under` = fewer (missed). Runtime is wall-clock for all 6 cases
+on the local GPU (hosted models run against their APIs, so no comparable figure).
+
+| model | host | per-entry | aggregate | runtime |
+| --- | --- | ---: | ---: | ---: |
+| **gemini/gemini-3.1-flash-lite** | hosted | **636** | **376** | — |
+| **ollama/gpt-oss:20b** (low) | local | **710** | **396** | 1:15 |
+| ollama/gpt-oss:20b (medium) | local | 728 | 420 | 2:59 |
+| anthropic/claude-haiku-4-5 | hosted | 784 | 476 | — |
+| openai/gpt-5.4-mini | hosted | 879 | 551 | — |
+| ollama/qwen3.5:9b (thinking-OFF) | local | 930 | 700 | 1:24 |
+| openai/gpt-5.4-nano | hosted | 967 | 697 | — |
+| ollama/gemma4:e4b (thinking-ON) | local | 1241 | 985 | 3:24 |
+| ollama/granite4.1:8b | local | 1869 | 1609 | 1:16 |
+| ollama/gemma4:e4b (thinking-OFF) | local | 1945 | 1681 | 1:12 |
+| ollama/llama3.2:3b | local | 2367 | 2001 | 0:43 |
 
 `Hs/Hr/Hh/Hc` = hearings scheduled/rescheduled/held/cancelled; `Ds/Dr/Df/Dc` =
-deadlines set/rescheduled/met-filed/cancelled. Most of the deviation is
-`over` — every provider over-extracts relative to a human counting the *final*
-state, with the OpenAI columns the noisiest (the `Hs`/`Ds` over-counts: they
-allocate more distinct scheduled hearings + set-deadlines than the human folds
-into one). Anthropic's `Dc` 46 is spurious deadline cancellations the human
-didn't count.
+deadlines set/rescheduled/met-filed/cancelled (per-category columns are in
+`score_models.py`'s output). Most deviation is `over` — every model over-extracts
+relative to a human counting the *final* state.
 
-## What a deviation of 653 means for the calendar (it is not a count of calendar errors)
+**Two results stand out.** Gemini leads at 636. But the **best local model,
+`gpt-oss:20b`, is 2nd at 710 — ahead of hosted Anthropic (784) and both OpenAI
+models** — and within run-to-run noise of Gemini on the aggregate metric (396 vs
+376). It generates roughly half the output tokens of the other hosted models
+(more concise) and runs at \~118 tok/s locally despite being a 20B model (its
+MXFP4 4-bit quant), so it is both the best local extractor *and* fast. This is why
+`gpt-oss:20b` is the recommended local default.
 
-Read in isolation, "best model: 653" suggests a calendar full of mistakes. It
-isn't, and the reason is structural: **this score counts raw per-entry extractor
-*actions*, captured before any cleanup the live pipeline runs.** The calendar
-renders *final* events, after three stages this score never sees — the
-significance gate (drops `minor` rows), the per-row verify pass (deletes
-hallucinations, confirms holds), and the same-slot dedupe sweeps (collapse
-duplicate keys). The score and the calendar are measured at opposite ends of the
-pipeline, so a deviation in the hundreds and a clean calendar are consistent.
+### Hosted models — Gemini leads, Anthropic is the costliest
 
-Traced through the Gemini default on this benchmark, the funnel collapses fast:
+Gemini is the most accurate and among the cheapest (see [Cost](#cost)). Anthropic
+Haiku is 2nd on accuracy (784) but the **most expensive** hosted extractor — a
+poor trade for the extraction track, which is why the default routes extraction to
+Gemini. The OpenAI models are the noisiest (`Ds` over-counts: they allocate more
+distinct set-deadlines than the human folds into one).
 
-| stage | count |
-| --- | ---: |
-| raw actions the scorer counts (the 653 / 421 human-counted) | 719 |
-| logical rows those actions create or maintain (one per key) | 342 |
-| rows the renderer actually writes to the `.ics` (`major`, not cancelled or filed, dated) | 195 |
-| of those, duplicate rows that leaked past the sweeps (all in the past) | 8 |
+### Local models — `gpt-oss:20b` leads; thinking *helps* extraction
 
-### Where the 456 over-count goes
+Beyond gpt-oss, the local field spreads wide:
 
-Gemini's 653 deviation is 456 `over` plus 197 `under` — the `over` and `under`
-columns of the totals table above. Only an `ADD` action can put a *new* event on
-the calendar, and only when it is tagged `major`. Splitting just the 456 `over`
-by what each action *does* (the `over` slice of each category; the totals table
-adds the `under` slice):
+- **`gpt-oss:20b` (710)** — best local, 2nd overall. Level-based reasoning; see the
+  level sweep below.
+- **`gemma4:e4b` thinking-ON (1241)** — 2nd local. Over-extracts harder than any
+  hosted model (`over` 1030), mostly spurious deadlines.
+- **`granite4.1:8b` (1869)** — does not report the `thinking` capability (so its
+  on/off runs are byte-identical); over-emits *held* hearings heavily (`Hh` 565).
+- **`llama3.2:3b` (2367)** — weakest; non-thinking; heavy deadline hallucination.
 
-| over bucket | over | share | effect on the calendar |
-| --- | ---: | ---: | --- |
-| `ADD` (Hs 45 + Ds 190) | 235 | 52% | adds an event — only if `major` |
-| lifecycle (Hr 34 + Hh 58 + Dr 59 + Df 47) | 198 | 43% | patches a row that already exists |
-| cancellations (Hc 15 + Dc 8) | 23 | 5% | removes an event |
-| **total** | **456** | **100%** | the `over` column of the totals table |
+**Thinking ON is better than OFF for extraction.** The one clean ON/OFF pair —
+`gemma4:e4b` — scores **1241 thinking vs 1945 not** (a 36% improvement). Suppressing
+a weak model's reasoning makes it **re-emit the known deadlines it was shown** as
+spurious actions (`Ds` jumps 493 → 1155 with thinking OFF). This is why the
+shipping policy lets a local thinking model reason on the extraction track. (Note
+this **reverses** for summaries — see Phase 3.)
 
-So 48% of the over-count cannot add calendar clutter by construction — it acts
-on rows keyed by `hearing_key` / `deadline_key` that already exist, so it patches
-or removes. Two more effects keep most of the remaining `ADD` over off the
-calendar:
+#### gpt-oss reasoning levels — `low` is the sweet spot
 
-- **The significance gate.** 78 of the 339 events Gemini newly creates (23%) are
-  tagged `minor` — 71 of them procedural deadlines. Most are transcript
-  redaction-request windows (`minor` by the project's transcript rules); the rest
-  are amicus-brief response/reply dates and procedural filings (mediation
-  questionnaire, entry of appearance). The renderer drops every `minor` row, so
-  roughly a quarter of what the extractor proposes is structurally invisible.
-  Note this is the *procedural* tail: dispositive briefing (MTD/MSJ
-  response/reply) and recurring joint status reports are classed `major` and are
-  NOT in this set.
-- **Repeated firing across related entries (a scoring artifact).** One
-  reschedule often shows up across several entries — on us-v-ding, a stipulation
-  to continue the status conference, the order granting it, and the clerk's
-  `Set/Reset Hearing` notice all reference the same move of that conference to
-  2024-05-08. The human ground-truth convention is *count what this entry does*,
-  so the reschedule is logged once — on the notice that operatively sets the new
-  date (`h_rescheduled`: human 1, Gemini 3 across the trio). The extractor instead
-  fires it on each entry; those repeats all upsert onto one key — one stored row —
-  but the per-entry scorer charges every extra one as an over. This benchmark carries 98 such repeat
-  firings; **88 are lifecycle re-confirmations and only 2 are `ADD`s**, so they
-  almost never add a visible event. Collapsing the model's output to
-  one-per-`(key, date, action)` — the way the human counted it — removes 68 of
-  the 456 over (deviation 653 → 607). Both the per-entry and the per-docket
-  aggregate carry this inflation — collapsing the repeats drops the aggregate
-  399 → 335 too; the aggregate neutralizes only pure attribution drift (the same
-  action pinned to a neighboring entry), not a model firing on both copies.
+gpt-oss's reasoning can't be turned off, only tuned by level (`OLLAMA_THINK_LEVEL`
+low/medium/high). More reasoning did **not** help extraction:
 
-### What actually reaches the rendered calendar
-
-After the gate, verify, and dedupe: the dedupe sweeps leave **zero duplicate
-hearing slots**, and the verify pass deleted 3 hallucinations (2 hearing, 1
-deadline). The one place raw over-extraction does leak through is the deadline
-side, which has **no dedupe sweep** (only hearings do): **8 duplicate deadline
-rows survive** on this benchmark — all transcript-release key-drift on one docket
-(us-v-ding), all in the past, so they sit muted at the bottom of the agenda.
-Closing that gap needs a deterministic same-slot merge for deadlines, the
-analogue of the hearing sweep `_dedupe_concurrent_held_hearings`.
-
-The takeaway: 653 is the right number for **ranking models on the identical
-extraction task** — which is what this page exists to do — but it is NOT a count
-of calendar errors. The duplicate over-extraction that survives onto the rendered
-calendar is 8 rows, all in the past. (The over buckets are
-computable from the committed `model_actions.csv` × `ground_truth.csv`; the
-funnel, significance split, and duplicate-firing counts come from the Gemini
-benchmark build's decision trace and final store.)
-
-## Per-docket-aggregate deviation
-
-The same |model − human|, but counts are summed per logical docket *first* —
-robust to the model and human pinning the same action to a slightly different
-entry (the docket total is identical either way).
-
-| provider | aggregate deviation |
-| --- | ---: |
-| **gemini/gemini-3.1-flash-lite** | **399** |
-| anthropic/claude-haiku-4-5 | 519 |
-| openai/gpt-5.4-nano | 579 |
-| openai/gpt-5.4-mini | 619 |
-
-Gemini leads on both metrics, by a wider margin on the attribution-robust
-aggregate (399 vs 519) than on per-entry (653 vs 799) — i.e. some of Anthropic's
-per-entry penalty is attribution drift, but Gemini still leads after that's
-factored out.
-
-## The regex pre-filter recall gap — and the 0.16.0 fix
-
-The complete-text method surfaces a class no per-docket count could: entries the
-human counted but **every** provider scored 0, because `extractor.is_extractable`
-(the cheap regex pre-filter) dropped them before any LLM ran. That's a
-provider-independent recall gap — a hole no model choice can fix.
-
-| | entries | actions | % of all human actions |
+| level | per-entry | aggregate | runtime |
 | --- | ---: | ---: | ---: |
-| before 0.16.0 | 37 | 47 | 11.2% |
-| **after 0.16.0** | 23 | 23 | **5.5%** |
+| **low** (default) | **710** | **396** | 1:15 |
+| medium | 728 | 420 | 2:59 |
+| high | — | — | cancelled (\~6:00 projected) |
 
-0.16.0 halved it by naming two forms the regex couldn't express (new
-`_DEADLINE_EXTRA_HINTS`): bare **"`<noun>` due `<date>`"** (the old regex only
-matched "due by/on" — one D.C. Circuit clerk order set ELEVEN deadlines this
-way, all lost), and a **filing that meets a deadline** (a brief / response /
-reply at the entry head, or any appellate submission carrying the
-`[Service Date: …]` stamp). Both are anchored so "due process" and an order that
-merely *mentions* a response don't match. The remaining 23 are the long tail
-deliberately not chased: sealing orders that set deadlines only inside the PDF
-with no vocabulary in the description, and bare `NOTICE`-type filings
-("`NOTICE`" is \~44% attorney-appearance noise, too weak a signal to widen the
-filter for).
+Medium is marginally *worse* than low (within noise) at **2.4× the wall-clock**;
+high was cancelled once the diminishing-returns pattern was clear. This is the
+measured basis for the code sending `low` on the high-volume extract/verify/dedupe
+tracks.
 
-Separately, 0.16.0 makes the extractor **read every order's PDF** (an order's
-operative dates often live only in a schedule table the one-line description
-doesn't echo) and **stop fetching transcript bodies** (a transcript is testimony
-with no forward-looking scheduling; its held-date / redaction / release
-deadlines are already in the description).
+#### Models too slow or unstable to benchmark on 24 GB
 
-## Why the recall fix widened Gemini's lead
+Four local models could not produce a usable extraction on a 24 GB card (RX 7900
+XTX). They are documented findings, not scored rows:
 
-The order-PDF + recall fixes added \~90 newly-extractable entries (\~14%). The
-effect split by model quality: **Gemini and Anthropic improved** (per-entry
-675→653 and 825→799 vs the pre-fix build) — they turned the recovered entries
-into correct extractions, lowering `under`. **The OpenAI columns regressed**
-(836→867, 869→925) — their `over` count rose (nano 614→665, mini 659→735): given
-the extra entries they produce *more* spurious actions than the human counted.
-So the extra recall is signal for accurate models and noise for over-eager ones,
-which sharpens rather than blurs the ranking.
+- **`qwen3.5:9b` thinking-ON** — *runaway*: \~47% of entries exhausted the entire
+  reasoning budget producing no answer (\~580 s each). Its thinking-OFF run completes
+  (930, in the table) but over-emits so hard that \~22% of entries truncate. A poor
+  extractor either way.
+- **`glm-4.7-flash:q4_K_M`** — *too slow*: \~62 s/entry, timed out at 230/660
+  entries in 4:00. Not a runaway, just slow.
+- **`mistral-small3.2:24b`** (\~2:54/case) and **`granite4.1:30b`** (\~24.6 tok/s)
+  — dense 24B/30B models that crawl on a 24 GB card. **The verdict on "are larger
+  local models worth it?" is no on this hardware** — they spill the KV cache and
+  run 3-6× slower than gpt-oss while scoring no better.
 
-## Why deviation alone doesn't pick the provider
+The bounded reasoning budget (`num_predict = max_tokens + OLLAMA_THINK_BUDGET`)
+keeps a runaway model truncating cleanly to an `OutputTruncatedError` (entry
+skipped) instead of hanging; it is a runaway *guard*, not a throttle — disciplined
+thinkers (gemma, gpt-oss) top out around 1,500–1,900 generated tokens per call,
+far below the cap, so they are never touched.
 
-Deviation is one number, and it deliberately does NOT distinguish "missed a
-substantive event the human counted" from "extracted a noisy procedural event
-the human didn't" — both move the score equally. That's why a *good* Gemini
-deviation score coexisted, in earlier releases, with Gemini silently dropping a
-long tail of substantive federal-procedure deadline classes (PSR windows, Speedy
-Trial Act exclusions, surrender for service of sentence, civil-forfeiture
-claim/answer, substantive sealing motion practice, exhibit-filing deadlines,
-certified administrative record) when it relied on its training priors — those
-dropped off subscriber calendars entirely, and the score never penalized them
-hard enough.
+### The regex pre-filter recall gap
 
-0.13.0 closed that gap **in the prompt, for every provider**: a structured
-`DEADLINE_SIGNIFICANCE_RULES` block enumerates those classes explicitly and
-biases the default toward `major`, so Gemini classifies them as substantive from
-the same instructions Anthropic gets rather than from intrinsic priors. The
-honest caveat survives: the ruleset names the classes the project currently
-knows about; an operator whose caseload carries substantive classes it doesn't
-name should verify against their own dockets and can pin Anthropic via
-`LLM_EXTRACTION_PROVIDER`. The decision to ship Gemini extraction rests on that
-coverage gap being addressed in-prompt — the deviation lead is corroborating
-evidence, not the sole basis.
+**20** scored entries carried **21** actions that **every** model missed with a 0 —
+the `is_extractable` regex dropped them before any LLM ran (**5.0%** of all human
+actions; by category Hs 1, Hr 1, Hh 1, Ds 5, Dr 2, Df 11). This is the
+provider-independent recall floor the over-inclusive-regex design is measured
+against — a model can't be blamed for an entry it never saw, and the regex
+deliberately errs toward over-inclusion (a false positive costs one LLM call; a
+false negative loses an event).
 
-## Summary track — stays Anthropic
+### Generation speed (RX 7900 XTX, Ollama for Windows)
 
-The summary track is the one place the comparison favors Anthropic, on a
-different basis than extraction. Both run a higher tier (Sonnet 4.6 vs Gemini
-2.5 Pro), and Gemini 2.5 Pro writes detailed, case-distinct summaries — it names
-defendants, imposed sentences, dollar figures. It is not the weak link the cheap
-extraction tier was. Anthropic's remaining edge is narrower and specific: longer
-summaries (\~62% more characters) that carry a few categories Gemini's drop —
-**statutory citations** (Anthropic cites `41 U.S.C. § 4713` etc.; Gemini cites
-none, and it's exactly what distinguishes the three DOW dockets), **count-by-
-number enumeration**, and **cancelled/vacated schedule** flags (material on a
-docket-watching calendar). The summary track is rare (one call per docket, only
-when a primary document or disposition lands), so keeping the higher-detail
-provider costs little — see Cost — and the default stays Anthropic on that
-margin.
+| model | gen tok/s |
+| --- | ---: |
+| llama3.2:3b | 146 |
+| **gpt-oss:20b** | **118** |
+| gemma4:e4b | 89 |
+| granite4.1:8b | 85 |
+| qwen3.5:9b | 83 |
+| glm-4.7-flash:q4_K_M | 73 |
+| mistral-small3.2:24b | 36 |
+| granite4.1:30b | 25 |
+
+gpt-oss:20b runs **faster than every 8–9B model** despite being 20B (MXFP4 4-bit),
+while also scoring best — the dense 24B/30B models crawl at 36 and 25 tok/s, which
+is exactly why they're impractical.
+
+## Phases 1 & 2 — summary generation
+
+Each candidate summary model regenerated the 10 per-docket case summaries with
+`summarize_phase.py`:
+
+- **Phase 1** — on the **top extractor's scaffold** (Gemini's extracted
+  hearings/deadlines), so every model summarizes the **same** events (isolates summary
+  quality from extraction quality).
+- **Phase 2** — on each model's **own extraction**, for the fast local models.
+
+Hosted top models (`claude-sonnet-4-6`, `gemini-2.5-pro`) summarized all 10 dockets at
+their native context windows. Local models ran at a 128K window
+(`OLLAMA_NUM_CTX=131072`), which fits even the largest docket on a 24 GB card. Each
+local thinking model was run both with thinking ON and OFF.
+
+## Phase 3 — summary quality (blind read + grade)
+
+Summary quality isn't a countable action, so each model's 10 summaries were read
+by hand and graded on three things, in order of importance: **accuracy** (do the
+facts match the documents — charges, dispositions, dollar figures, dates),
+**detail** (are the case-distinguishing specifics present, not just bare charges),
+and **grammar** (clean, publishable prose and links). A *secondary* watch: whether
+a model omits the **foreign nexus** a case turns on (China/PRC for ding, DPRK for
+knoot, Russia / Deripaska for mcgonigal) — flagged mainly because a Chinese model
+(qwen) quietly dropping the China connection would be a bias worth catching.
+
+What the grades mean:
+
+- **A** — accurate on every fact, richly detailed, grammatically clean.
+  Publication-ready.
+- **B** — accurate and clean, but a notch thinner on detail or one trivial
+  blemish; usable with a light edit.
+- **C** — accurate on the core facts, but with a clear weakness (clunky grammar,
+  thin detail, or a small slip) an editor would have to fix.
+- **D** — a disqualifying defect a reader would catch (broken markup, or a factual
+  error like reporting a trial where the defendant pled guilty). Not usable as-is.
+- **F** — produced no usable summary at all (reasoning ran away or hung).
+
+| model | mode | grade | notes |
+| --- | --- | :---: | --- |
+| **anthropic/claude-sonnet-4-6** | hosted | **A** | accurate, most detailed, clean — the reference |
+| gemini/gemini-2.5-pro | hosted | A− | accurate + clean, a touch less detail; omits China on ding |
+| ollama/gpt-oss:20b | low | C | accurate figures + clean-ish, but **thin** (strips case context); one duplicated clause |
+| ollama/gemma4:e4b | thinking-OFF | C | accurate + the **most detailed** local, but **clunky** ("convicted at a plea hearing", repetitive parentheticals) |
+| ollama/qwen3.5:9b | thinking-OFF | C− | detailed, but a **fabricated** "convicted at trial" on the Anthropic *civil* docket + one fully **duplicated** summary; also drops China (the Chinese-model watch) |
+| ollama/glm-4.7-flash | thinking-OFF | C− | accurate + clean but **thin**, and **slow** (\~2:10/docket) |
+| ollama/gemma4:e4b | thinking-ON | D | **broken markup** — 12 prompt-only `[D1]` / `[doc:D7]` reference tokens leaked into the prose — plus trial-vs-plea errors |
+| ollama/qwen3.5:9b | thinking-ON | F | reasoning ran away (cancelled) |
+| ollama/glm-4.7-flash | thinking-ON | F | hung 9+ min on the first docket |
+
+**Two findings:**
+
+**1. Summaries need the hosted tier.** No local summary cleared a C — each is
+accurate on the figures but fails on detail or grammar: gpt-oss and glm strip a
+case to bare charges; gemma is consistently clunky ("convicted at a plea hearing");
+qwen fabricates a conviction on a civil docket and duplicates a whole summary. Only
+the hosted models are publication-ready. This is the mirror image of extraction
+(where a local model rivals the hosted tier) and vindicates the project's separate,
+higher-tier hosted summary track.
+
+**2. Thinking harms local summaries — the inversion.** OFF beat ON for *all three*
+local thinking models: gemma C (OFF) vs D (ON, broken markup); qwen C− (OFF) vs F
+(ON, runaway — \~8K-token reasoning trace per 2-4 sentence summary); glm C− (OFF)
+vs F (ON, hung 9+ min on one docket). Reasoning aids per-entry structured
+*extraction* but, on long-context *synthesis*, runs away (qwen), hangs (glm), or
+injects formatting/accuracy defects (gemma). **For local summaries: force thinking
+off** (`--no-think`).
+
+A **secondary** note on the foreign nexus: among the locals, only qwen — a Chinese
+model — named the DPRK and Russia connections while dropping the China one. A
+single benchmark can't separate a deliberate bias from the same thinness the other
+locals also show, but it's exactly the case where a Chinese model omitting China is
+worth flagging.
+
+`summarize_phase.py` carries built-in **runaway** (large `out=`) and **hung** (no
+progress in 240 s) detection, plus `--no-think` / `--think-level` / `--think-budget`
+controls, so these failure modes surface live rather than after a manual check.
+
+## Hardware and software environment
+
+The local sweep ran on:
+
+- **GPU**: AMD Radeon RX 7900 XTX (24 GB, RDNA 3)
+- **Runtime**: Ollama for Windows (native), version 0.30.6
+- **Driver**: AMD Adrenalin 26.6.1
+- **Client**: WSL2, calling the Windows Ollama over `OLLAMA_BASE_URL`
+
+The 24 GB ceiling is the binding constraint on the local findings — `gpt-oss:20b`
+(\~13 GB resident) fits with room for a working context window, while the dense
+24B/30B models spill. A 32 GB+ card would change the "larger models" verdict.
+
+## Structured output (schema-enforced JSON) — default ON
+
+Extraction output is hard-constrained to a closed, minimal-required JSON Schema by
+each provider's structured-output mechanism. Benchmarked OFF-vs-ON, it was
+neutral-or-positive across the board (accuracy-neutral on Gemini while cutting its
+output tokens \~23%; a measurable accuracy win on the local `gpt-oss:20b` by
+suppressing its spurious over-emission with the hard grammar), so it ships on. All
+Phase 0 numbers above are with it on.
 
 ## Cost
 
-LLM cost scales with caseload, so the SCORECARD doesn't restate absolute dollars
-for the 6-case benchmark — the canonical, full-caseload measured figures live on
-the [Cost](../docs/cost.md#llm-cost) page and stay in one place. The shape that
-matters for the default:
-
-- On the **extract + verify** pair (the constant load that runs on every sync
-  with summaries off), Anthropic costs **\~3.75× what Gemini costs**; OpenAI nano
-  is cheapest on raw price but loses on accuracy above. Gemini is also \~1.9×
-  faster per call than Anthropic.
-- The **summary** upgrade from Gemini 2.5 Pro to Sonnet 4.6 is roughly **$0.04
-  per ongoing summary** (rare), worth the case-distinguishing detail for a
-  docket-watching audience.
-- 0.16.0's order-PDF reading **modestly raises extraction cost** (more PDFs sent
-  to the LLM) — on this benchmark \~+$0.06 for the Gemini default across a full
-  re-sync, one-time (fingerprint dedup → \~0 steady state), all on the cheap
-  small/fast tier. The transcript-exclusion change claws some of that back.
-
-To measure your own, pass `--out model-comparison/cost.md` to
-`build_provider_stores.py`; it reports per-provider, per-track cost, wall-clock,
-and CourtListener usage for whatever caseload you point it at.
+Extraction is the cost-dominant track (one call per entry, thousands of entries).
+Gemini is both the most accurate and near-cheapest; Anthropic Haiku is the most
+expensive hosted extractor (\~4.8× Gemini for worse accuracy). Local inference has
+no per-token cost — the trade is wall-clock and the operator's hardware/electricity.
+Full token + dollar figures are in [docs/cost.md](../docs/cost.md); the live
+per-run `llm-tokens` / `cost_est` log lines are the source of truth.
 
 ## Configuring the tracks
 
-Zero-config (set the API keys, no `LLM_*` env vars) auto-detects the split:
-extraction → Gemini, summaries → Anthropic.
-
 ```bash
-# .env — zero-config default (Gemini extraction + Anthropic summaries)
-ANTHROPIC_API_KEY=sk-ant-...
+# .env — zero-config default (Gemini extraction + Anthropic summaries):
 GEMINI_API_KEY=...
+ANTHROPIC_API_KEY=...
+
+# all-local (recommended local default for both tracks):
+LLM_PROVIDER=ollama
+LLM_MODEL=gpt-oss:20b
+# extraction is competitive; summaries are weaker — see Phase 3.
 ```
-
-To pin explicitly, or run a single provider on both tracks:
-
-```bash
-LLM_EXTRACTION_PROVIDER=gemini       # extraction track
-LLM_SUMMARY_PROVIDER=anthropic       # summary track
-# or force one provider for both tracks:
-LLM_PROVIDER=anthropic
-```
-
-The global `LLM_PROVIDER` applies to both tracks; the per-track override vars
-take precedence over it on their own track.
 
 ## Reproduce this
 
-The benchmark snapshot + `ground_truth.csv` ship with the repo, so anyone can
-reproduce these numbers or score their own model against the identical inputs —
-no rebuild needed to re-score, and no API keys to re-score the committed
-`model_actions.csv`. See [README.md](README.md) for the full workflow.
+```bash
+git lfs pull   # fetch the frozen snapshot
+## Phase 0 — re-score the committed numbers (no API keys, no rebuild):
+python3 model-comparison/score_models.py
+## Phase 3 — regenerate summaries on the Gemini scaffold with any model:
+uv run python model-comparison/summarize_phase.py \
+    --store data/provider-stores/gemini/gemini-3.1-flash-lite/case-calendar.sqlite \
+    --provider anthropic --model claude-sonnet-4-6 --out /tmp/sum_sonnet.txt
+```

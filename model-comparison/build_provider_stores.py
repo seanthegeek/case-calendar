@@ -455,6 +455,7 @@ def _make_variant_dispatch(base: Any) -> Any:
         *,
         model: Optional[str] = None,
         json_mode: bool = True,
+        schema: Optional[dict] = None,
         purpose: str = "llm",
         docket: Any = None,
         temperature: Optional[float] = None,
@@ -471,6 +472,7 @@ def _make_variant_dispatch(base: Any) -> Any:
                 max_tokens,
                 model=model,
                 json_mode=json_mode,
+                schema=schema,
                 purpose=purpose,
                 docket=docket,
                 temperature=temperature,
@@ -897,12 +899,29 @@ class _LLMCache:
         max_tokens: int,
         json_mode: bool,
         temperature: Optional[float],
+        schema: Optional[dict] = None,
     ) -> str:
-        payload = json.dumps(
-            [provider, model, system, user, max_tokens, json_mode, temperature],
-            sort_keys=True,
-            ensure_ascii=False,
-        )
+        # schema is part of the request: a structured-output call (schema set) and
+        # the same call without it build different requests and must NOT collide —
+        # otherwise a schema-less verify/dedupe/summary call could replay a
+        # schema-enforced extraction response (or a historical pre-schema cache
+        # entry could replay for today's schema-enforced extraction, or vice
+        # versa). It is appended ONLY when present so the common
+        # schema=None call keeps its historical key — adding a trailing `null`
+        # unconditionally would re-hash (and orphan) every existing cache entry,
+        # the vast majority of which are schema-less verify/dedupe/summary calls.
+        parts: list[Any] = [
+            provider,
+            model,
+            system,
+            user,
+            max_tokens,
+            json_mode,
+            temperature,
+        ]
+        if schema is not None:
+            parts.append(schema)
+        payload = json.dumps(parts, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     def wrap(self, base: Any) -> Any:
@@ -920,6 +939,7 @@ class _LLMCache:
             *,
             model: Optional[str] = None,
             json_mode: bool = True,
+            schema: Optional[dict] = None,
             purpose: str = "llm",
             docket: Any = None,
             temperature: Optional[float] = None,
@@ -928,7 +948,14 @@ class _LLMCache:
             # the (possibly None) dispatch arg — see _effective_model.
             eff_model = self._effective_model(provider, model)
             key = self._key(
-                provider, eff_model, system, user, max_tokens, json_mode, temperature
+                provider,
+                eff_model,
+                system,
+                user,
+                max_tokens,
+                json_mode,
+                temperature,
+                schema,
             )
             label = _tl_label() or provider
             with self._lock:
@@ -948,6 +975,7 @@ class _LLMCache:
                 max_tokens,
                 model=model,
                 json_mode=json_mode,
+                schema=schema,
                 purpose=purpose,
                 docket=docket,
                 temperature=temperature,
