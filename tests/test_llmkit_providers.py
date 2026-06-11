@@ -1880,6 +1880,47 @@ class TestCallOllamaOpenAICompatFallback:
                 providers._call_ollama("s", "u", 10)
         assert "LOWER the context window" in caplog.text
 
+    def test_compat_schema_uses_json_schema_response_format(self, monkeypatch):
+        # A schema on the compat path rides the OpenAI json_schema response
+        # format (most OpenAI-compatible servers enforce it), not json_object.
+        client = self._fake_openai(monkeypatch, content='{"actions": []}')
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {"actions": {"type": "array", "items": {"type": "string"}}},
+            "required": ["actions"],
+        }
+        providers._call_ollama("s", "u", 64, schema=schema)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert kw["response_format"] == providers._openai_json_schema_format(schema)
+
+    def test_compat_plain_text_sends_no_response_format(self, monkeypatch):
+        # json_mode=False with no schema (the summary track's shape): the
+        # request carries no response_format at all.
+        client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 64, json_mode=False)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert "response_format" not in kw
+
+    def test_compat_temperature_forwarded(self, monkeypatch):
+        # temp=0.0 is falsy but not None — the `is not None` check must forward it
+        client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 64, temperature=0.0)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert kw["temperature"] == 0.0
+
+    def test_compat_non_memory_error_propagates_without_hint(self, monkeypatch, caplog):
+        # Only a memory-shaped failure earns the lower-the-context-window hint;
+        # any other error propagates silently.
+        import logging
+
+        client = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = RuntimeError("connection refused")
+        with caplog.at_level(logging.WARNING):
+            with pytest.raises(RuntimeError, match="connection refused"):
+                providers._call_ollama("s", "u", 10)
+        assert "LOWER the context window" not in caplog.text
+
     def test_force_compat_env_overrides_native_on_real_ollama(self, monkeypatch):
         # OLLAMA_USE_OPENAI_COMPAT routes to /v1 even when /api/show SUCCEEDS
         # (real Ollama) — the parity/diagnostic override. If it didn't win, the
@@ -1904,6 +1945,51 @@ class TestCallOllamaOpenAICompatFallback:
         )
         providers._call_ollama("s", "u", 10, purpose="extract")
         assert called.get("native")
+
+
+class TestOllamaChatRequestTransport:
+    """The real urllib transport behind the native /api/chat path (everything
+    above monkeypatches it away as a seam), plus the error-detail extractor
+    that reads an HTTPError body."""
+
+    def test_posts_json_to_api_chat_and_parses_response(self, monkeypatch):
+        import io
+        import json
+        import urllib.request
+
+        seen: dict[str, Any] = {}
+
+        def fake_urlopen(req, timeout=None):
+            seen["url"] = req.full_url
+            seen["timeout"] = timeout
+            seen["body"] = json.loads(req.data.decode("utf-8"))
+            seen["content_type"] = req.get_header("Content-type")
+            return io.BytesIO(b'{"message": {"content": "ok"}}')
+
+        monkeypatch.setenv("OLLAMA_BASE_URL", "http://gpu-box:11434")
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        out = providers._ollama_chat_request({"model": "m"}, timeout=12)
+        assert out == {"message": {"content": "ok"}}
+        assert seen["url"] == "http://gpu-box:11434/api/chat"
+        assert seen["timeout"] == 12
+        assert seen["body"] == {"model": "m"}
+        assert seen["content_type"] == "application/json"
+
+    def test_http_error_detail_read_raises_falls_back_to_str(self):
+        # detail extraction must never raise: a body read that blows up falls
+        # back to str(exc)
+        class _Exc(Exception):
+            def read(self):
+                raise ValueError("stream gone")
+
+        assert providers._http_error_detail(_Exc("HTTP Error 500")) == "HTTP Error 500"
+
+    def test_http_error_detail_empty_body_falls_back_to_str(self):
+        class _Exc(Exception):
+            def read(self):
+                return b""
+
+        assert providers._http_error_detail(_Exc("HTTP Error 502")) == "HTTP Error 502"
 
 
 # --- verify_deadline (parallel to verify_hearing) ---
@@ -2109,6 +2195,11 @@ class TestStructuredOutput:
         # a clean schema (no unions / no additionalProperties) is an identity
         clean = {"type": "object", "properties": {"x": {"type": "string"}}}
         assert providers._to_gemini_schema(clean) == clean
+
+    def test_to_gemini_schema_type_list_without_null(self):
+        # a list-typed `type` with no "null" member collapses to the bare type
+        # WITHOUT setting nullable — only a "null" union member implies nullable
+        assert providers._to_gemini_schema({"type": ["string"]}) == {"type": "string"}
 
     # --- Ollama native: format = the schema dict ---
 
