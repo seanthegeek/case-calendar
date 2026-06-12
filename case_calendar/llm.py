@@ -1705,15 +1705,16 @@ _DEFAULT_SUMMARY_MODELS = {
     "gemini": "gemini-2.5-pro",
     # Local inference via Ollama. gpt-oss:20b — the same model the extraction
     # track defaults to locally (see providers._DEFAULT_MODELS), so a zero-config
-    # local install runs ONE model for both tracks. It was the cleanest local
-    # summarizer in the comparison (no verdict fabrication or token leaks; see
+    # local install runs ONE model for both tracks. Among the locals it avoided
+    # the disqualifying defects (no verdict fabrication or token leaks; see
     # model-comparison/SCORECARD.md) and, being level-thinking, completes
-    # reliably where the unbounded boolean-thinkers ran away. VRAM: 13.8 GB
-    # (MXFP4); summaries need a large OLLAMA_NUM_CTX (tens of thousands of tokens
-    # of legal prose), so this track wants ~24 GB — on a 16 GB card, lower the
-    # window or send summaries to a hosted provider (the hybrid setup). The
-    # smaller gemma4:e4b (9.6 GB) is the fit-a-16-GB-card fallback
-    # (LLM_SUMMARY_MODEL=gemma4:e4b). See docs/local-llms.md.
+    # reliably where the unbounded boolean-thinkers ran away — but no local
+    # summary cleared the Phase 3 publication bar (best grade C), so this
+    # default serves testing / private use; production summaries belong on a
+    # hosted provider (the hybrid setup). VRAM: 13.8 GB (MXFP4); summaries need
+    # a large OLLAMA_NUM_CTX (tens of thousands of tokens of legal prose), so
+    # this track wants ~24 GB — on a 16 GB card, lower the window or, better,
+    # send summaries hosted. See docs/local-llms.md.
     "ollama": "gpt-oss:20b",
 }
 

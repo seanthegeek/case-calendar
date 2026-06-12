@@ -30,9 +30,11 @@ and the summarizer ask very different things of a model:
 
 - **Extraction** — reads one docket entry at a time and emits structured JSON
   (date, key, significance). Short context, high volume, no opinions about the
-  *subject* of the case. The limiting factor is **JSON reliability**, which a
-  solid small/mid model already handles. This is the track whose per-token cost
-  adds up on a hosted API, so it's the one most worth moving to your GPU.
+  *subject* of the case. JSON shape is grammar-enforced on every backend
+  (structured output is always on), so the limiting factor the benchmark
+  measured is extraction **discipline** — how much a model over-extracts — not
+  JSON validity. This is the track whose per-token cost adds up on a hosted
+  API, so it's the one most worth moving to your GPU.
 - **Summaries** — low volume (one call per docket) but **long context** (tens of
   thousands of tokens of indictment / judgment text) and synthesis-heavy.
   Benefits from a more capable model and a large context window, and — for
@@ -110,10 +112,12 @@ Case Calendar only ever sends **text** (docket text + text extracted from
 PDFs — OCR happens before the LLM), so you never need a vision/multimodal
 variant.
 
-China-developed models (**Qwen3 / Qwen 3.6** from Alibaba, **DeepSeek-R1**,
-**Kimi**) are technically excellent — Qwen in particular is top-tier at
-structured output — but carry a provenance caveat for this project's caseload.
-Read the next section before using one on the summary track.
+China-developed open models (**Qwen** from Alibaba, **DeepSeek-R1**, **Kimi**)
+carry a provenance caveat for this project's caseload — and don't assume their
+reputation transfers to this task either: the one this project benchmarked,
+`qwen3.5:9b`, was unstable on it (the table above), whatever its standing on
+general leaderboards. Read the next section before using any of them on the
+summary track.
 
 ### Model provenance and honesty
 
@@ -177,9 +181,10 @@ parts:
   to do, so you always want the `-it` variant. A bare tag like `gemma4:31b` is
   an alias that already resolves to the instruction-tuned, Q4_K_M build.
 - **`-q4_K_M`** — the **quantization**: 4-bit, k-quant, Medium. The common,
-  well-balanced default. If a small model gives shaky JSON or thin summaries, a
-  heavier quant (`q5_K_M`, `q6_K`, `q8_0`) buys quality for more RAM/less speed —
-  often the cheapest fix before reaching for a bigger model.
+  well-balanced default. A heavier quant (`q5_K_M`, `q6_K`, `q8_0`) trades more
+  RAM and less speed for model quality. (This project's benchmark ran every
+  local model at its tag's default quant — it hasn't measured quant levels
+  against each other.)
 - **`-mlx`** — an Apple-Silicon-optimized build (see [Apple
   Silicon](#apple-silicon-macs)). Text-only, which suits this project.
 
@@ -620,11 +625,13 @@ Western model states plainly.
 These aren't blockers, but they're where local differs from hosted — and exactly
 what you'd want to measure when tuning:
 
-- **JSON reliability for extraction.** Small local models adhere to structured
-  output less reliably than the hosted small/fast tier. There's a cushion — the
-  parser strips markdown fences and digs JSON out of chatter, and the request
-  asks for JSON mode — but expect this to be the main accuracy variable. A
-  heavier quant or a larger model helps.
+- **Over-extraction, not JSON validity.** Schema-enforced structured output is
+  always on (the native `format` grammar on real Ollama), so a local model
+  can't hand back malformed JSON. What the benchmark measured instead is local
+  models over-emitting *plausible* actions — spurious deadlines, known events
+  re-emitted as new ones. The grammar reduces it (it measurably improved
+  gpt-oss) but doesn't eliminate it; this, not parse failures, is the main
+  accuracy variable.
 - **Context window for summaries.** Covered above; the most common way a local
   setup produces wrong-looking output.
 - **Model provenance.** Covered under [honesty](#model-provenance-and-honesty);

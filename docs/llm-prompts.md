@@ -934,7 +934,7 @@ no explanation.
 
 ## Case summary — `SUMMARY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1768)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1769)
 
 The higher-tier case-summary prompt (Sonnet / GPT-5.4 / Gemini Pro by default). Synthesizes the primary document, dispositions, and a structured hearings/deadlines scaffold into 2-4 sentences of prose. This is where the documents-only, absence-silence, custody-omit, speculative-outcome, and figure-grounding invariants live, as well as the `INLINE LINKS` rule that turns action phrases into newspaper-style links to the supporting documents (each document carries a prompt-only `[D1]`/`[D2]` reference token; the model links a phrase to a token and the pipeline resolves it to the document's URL).
 

@@ -152,15 +152,18 @@ important framing: the prompt carries knowledge for every provider; this is
 not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
-extraction. On the full caseload (see the
+extraction. On the frozen benchmark (see the
 [SCORECARD](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
-`D met/pass` in the table and far fewer spurious cancellations than Anthropic
-(`D canc` 9 vs 28), and its aggregate deviation (305) is the best overall —
-ahead of Anthropic's `claude-haiku-4-5` (349). Gemini is also roughly 3.75×
-cheaper and roughly 1.9× faster per call on the extraction track. The summary
-track stays Anthropic because Sonnet still adds a few categories of detail the
-higher-tier Gemini summary model drops — statutory citations, count numbers,
-cross-docket statutory distinctions, and cancelled-schedule notes.
+`D met/pass` among the hosted extractors (129 vs Anthropic's 143) and far
+fewer spurious cancellations than Anthropic (`D canc` 4 vs 43), and both its
+per-entry deviation (636 vs 784) and its aggregate deviation (376 vs 476) are
+the best overall. Gemini is also roughly 3.7× cheaper on a full-caseload
+backfill (see the [cost page](cost.md)) and about 2× faster per call (median
+1.5 s vs 3.1 s). The summary track stays Anthropic on the blind Phase 3
+grading: Sonnet graded A — accurate, the most detailed, clean — while Gemini
+2.5 Pro graded A−, accurate and clean with a touch less detail, and it omitted
+the China nexus on us-v-ding, exactly the kind of case-distinguishing fact
+this caseload turns on.
 
 One honest caveat survives the change: RULE 2 enumerates the substantive classes
 the project currently knows about, and RULE 5 is the safety net for the rest. An
@@ -174,10 +177,10 @@ dropping it.
 | --- | --- | --- |
 | Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-4-6`) |
 | Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
-| Anthropic cost (full backfill) | \~$6.72 | \~$2.30 |
-| Gemini cost (full backfill) | \~$1.82 | \~$1.11 |
-| Aggregate deviation (lower is better) | Gemini **305** (best in table) vs Anthropic 349 | — |
-| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best `D met/pass` in the table and far fewer spurious cancellations than Anthropic, \~3.75× cheaper, \~1.9× faster per call | a few extra detail categories over Gemini 2.5 Pro's already-detailed summaries — statutory citations, count numbers, cross-docket statutory distinctions, cancelled-schedule notes — plus \~62% more length |
+| Anthropic cost (full backfill) | \~$6.99 | \~$2.51 |
+| Gemini cost (full backfill) | \~$1.87 | \~$1.16 |
+| Per-entry / aggregate deviation (lower is better) | Gemini **636 / 376** (best overall) vs Anthropic 784 / 476 | — |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best hosted `D met/pass` (129 vs 143) and far fewer spurious cancellations than Anthropic (4 vs 43), \~3.7× cheaper, \~2× faster per call | graded **A** in the blind Phase 3 read (accurate, most detailed, clean — the reference) vs Gemini 2.5 Pro's A− (a touch less detail; omitted the China nexus on us-v-ding) |
 
 The full deviation breakdown — measured against a human-scored ground-truth
 worksheet over the whole caseload — is in the
@@ -190,16 +193,13 @@ case-distinguishing detail earns the higher tier. An operator who prefers a
 single provider can still set `LLM_PROVIDER`, or pin either track with
 `LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
 
-The [SCORECARD's Summary track section](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)
-walks the comparison with side-by-side examples. Gemini 2.5 Pro is *not* the
-weak link the cheap extraction tier was — it names the defendants, the imposed
-sentences, the dollar figures, the aliases, and the custody status. Anthropic's
-edge is the narrower detail above plus length, clearest on the DOW litigation
-group: Anthropic names the distinct statutory authority each of the three
-proceedings targets (the § 4713 challenge in the D.C. Circuit, the § 3252
-challenge in the Northern District of California), while Gemini collapses all
-three to "supply-chain risk under different statutes" — losing the axis that
-explains why they are separate proceedings.
+The [SCORECARD's Phase 3 section](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-3--summary-quality-blind-read--grade)
+carries the blind summary grading. Gemini 2.5 Pro is *not* the weak link the
+cheap extraction tier was — it graded A−, accurate and clean. Anthropic's edge
+is detail: Sonnet's A is the grading's reference for the case-distinguishing
+specifics, and the one defect logged against Gemini 2.5 Pro — omitting the
+China nexus on us-v-ding — is exactly the class of specific this caseload
+exists to surface.
 
 Visit the [Cost page](cost.md) for more cost details.
 
