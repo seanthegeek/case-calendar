@@ -72,7 +72,9 @@ cand), us-v-knoot, us-v-gholinejad, us-v-mcgonigal, us-v-schmitz.
 Sum over the 8 action categories of |model count − human count|, over all 992
 entries. `over` = model counted more than the human (duplicate keys /
 hallucination); `under` = fewer (missed). Runtime is wall-clock for all 6 cases
-on the local GPU (hosted models run against their APIs, so no comparable figure).
+on the local GPU (hosted models run against their APIs, so no comparable figure —
+their per-call API latency is compared under
+[Hosted models](#hosted-models--gemini-leads-anthropic-is-the-costliest) instead).
 
 | model | host | per-entry | aggregate | runtime |
 | --- | --- | ---: | ---: | ---: |
@@ -103,11 +105,25 @@ MXFP4 4-bit quant), so it is both the best local extractor *and* fast. This is w
 
 ### Hosted models — Gemini leads, Anthropic is the costliest
 
-Gemini is the most accurate and among the cheapest (see [Cost](#cost)). Anthropic
-Haiku is 2nd on accuracy (784) but the **most expensive** hosted extractor — a
-poor trade for the extraction track, which is why the default routes extraction to
-Gemini. The OpenAI models are the noisiest (`Ds` over-counts: they allocate more
-distinct set-deadlines than the human folds into one).
+Gemini is the most accurate, among the cheapest (see [Cost](#cost)), and the
+fastest per call. Per-call extraction latency, measured from the timestamped
+`llm-tokens` lines of this scorecard's own build log (median / mean wall-clock
+between consecutive live extraction calls within one provider's sequential
+build; gaps over two minutes dropped as case boundaries):
+
+| model | median s/call | mean s/call |
+| --- | ---: | ---: |
+| **gemini/gemini-3.1-flash-lite** | **1.5** | **1.7** |
+| openai/gpt-5.4-mini | 1.7 | 2.2 |
+| openai/gpt-5.4-nano | 2.0 | 2.7 |
+| anthropic/claude-haiku-4-5 | 3.1 | 3.7 |
+
+Anthropic Haiku is 2nd on accuracy (784) but the **most expensive** hosted
+extractor *and* the slowest — roughly 2× Gemini's per-call latency on top of
+\~4.8× its cost — a poor trade for the extraction track, which is why the
+default routes extraction to Gemini. The OpenAI models are the noisiest (`Ds`
+over-counts: they allocate more distinct set-deadlines than the human folds
+into one).
 
 ### Local models — `gpt-oss:20b` leads; thinking *helps* extraction
 
