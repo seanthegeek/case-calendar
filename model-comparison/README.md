@@ -114,6 +114,7 @@ scoreable entries, 421 human-counted actions, 10 logical dockets.
 | `ground_truth.csv` | **The human truth** — one row per scored entry, the eight per-entry counts, `reviewed` / `bad_ocr` flags. Ships filled, so you can re-score without re-reading anything. |
 | `model_actions.csv` | **Model output** — one row per (provider column, entry) with the same eight counts, captured by `build_provider_stores.py --entry-actions-csv`. The `provider` column is the label `provider/extraction-model` (e.g. `gemini/gemini-3.1-flash-lite`). |
 | `score_models.py` | The deterministic scorer. Joins the two CSVs on `entry_id` and reports per-provider deviation. Pure stdlib — no API keys, no rebuild. |
+| `funnel_analysis.py` | Traces one model's deviation down to its rendered calendar — over/under buckets, significance-gate and repeat-firing effects, verify/dedupe cleanup, and the duplicate candidates left in the final store. CSV math needs nothing beyond the two committed CSVs; the store/log/ICS sections need that model's `build_provider_stores.py` output on disk. Backs the SCORECARD's "what a deviation means for the calendar" section. |
 | `SCORECARD.md` | The written analysis + current numbers backing the default-provider choice. |
 | `build_scoring_page.py` | Generates the offline HTML scoring page (`ground_truth_scoring.html`) for filling `ground_truth.csv` blind. |
 | `snapshot_benchmark.py` | Builds the frozen, full-text benchmark snapshot (`snapshots/benchmark-store.sqlite`, committed via Git LFS). |

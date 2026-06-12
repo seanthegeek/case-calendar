@@ -44,7 +44,8 @@ event before any LLM saw it).
 1. **Freeze a complete-text snapshot** (`snapshot_benchmark.py`) — every entry's
    full `description` + extracted PDF text, not the operational store's
    regex-filtered stubs. A date hidden in a stubbed entry would be invisible to
-   *both* the models and the human; with full text it's update agent.
+   *both* the models and the human; with full text it becomes a
+   provider-independent miss the scorer can count.
 2. **Human scores blind** (`build_scoring_page.py` → `ground_truth.csv`) — one
    offline HTML page, one card per entry showing the complete text the extractor
    saw, beside the eight action-count boxes the extractor emits. No model output
@@ -53,6 +54,50 @@ event before any LLM saw it).
    same frozen snapshot, capturing per-entry action counts to `model_actions.csv`.
 4. **Score deterministically** (`score_models.py`) — join human × model on
    `entry_id`; no model and no opinion in the scoring loop.
+
+### How the human counted — the ground-truth conventions
+
+The deviation numbers only mean something relative to the counting rules the
+human applied (the scoring page's help block carries the same text). The human
+counts **what this entry does**, not the cumulative docket state, and counts
+**every** hearing and deadline regardless of significance — redaction-request,
+response, status-report, and housekeeping deadlines all count even though the
+calendar's significance gate would hide them. One entry often has several
+non-zero counts: a minute entry can record a hearing held, schedule the next
+one, and set deadlines.
+
+| count | rule |
+| --- | --- |
+| `Hs` (hearing scheduled) | a new hearing this entry sets |
+| `Hr` (rescheduled) | an existing hearing moved to a new date/time — a continuance counts here |
+| `Hh` (held) | a minute entry recording / discussing a proceeding or held hearing |
+| `Hc` (cancelled) | an explicit cancellation / vacatur with no replacement date |
+| `Ds` (deadline set) | a new filing deadline this entry sets |
+| `Dr` (rescheduled) | an existing deadline moved to a new date |
+| `Df` (met / filed) | the filing the deadline required was made / deadline satisfied |
+| `Dc` (cancelled) | a deadline cancelled / withdrawn / mooted, with no new date |
+
+The edge rules that decide most close calls:
+
+- **A continuance is a reschedule** (`Hr` 1), never a cancel plus a new
+  schedule. **Cancel is only an explicit cancellation / vacatur** with no
+  replacement date.
+- **One slot is one hearing** — a single proceeding that disposes of several
+  motions at one date+time counts once, never once per motion; only genuinely
+  distinct proceedings at *different times* on the same day count separately.
+- **Dark trial days are non-events** — a day the trial is not in session is
+  neither a hearing nor a deadline.
+- **An amended minute entry supersedes the original** — count the event(s)
+  once on the amended entry, 0 on the superseded one.
+- **Repeated across entries — count once**: when more than one entry states
+  the same action (a stipulation and the order granting it; a notice
+  re-issued; the same logical PACER entry mirrored on two CourtListener
+  records), the action is counted once, on the entry that operatively does it,
+  and 0 on the restatements. (This convention is why the funnel section below
+  charges a model's repeat firings as over-counts.)
+- **`bad_ocr` entries are set aside** — unreadable source text means neither
+  model nor human could fairly extract, so those entries are excluded from
+  scoring rather than counted against any model.
 
 Two biases are worth naming. **Evaluation bias** (an AI judging AI) is removed — a
 human reads the dockets, a dumb script measures deviation. **Prompt-fit bias** is
@@ -71,29 +116,25 @@ cand), us-v-knoot, us-v-gholinejad, us-v-mcgonigal, us-v-schmitz.
 
 Sum over the 8 action categories of |model count − human count|, over all 992
 entries. `over` = model counted more than the human (duplicate keys /
-hallucination); `under` = fewer (missed). Runtime is wall-clock for all 6 cases
-on the local GPU (hosted models run against their APIs, so no comparable figure —
-their per-call API latency is compared under
-[Hosted models](#hosted-models--gemini-leads-anthropic-is-the-costliest) instead).
+hallucination); `under` = fewer (missed).
 
-| model | host | per-entry | aggregate | runtime |
-| --- | --- | ---: | ---: | ---: |
-| **gemini/gemini-3.1-flash-lite** | hosted | **636** | **376** | — |
-| **ollama/gpt-oss:20b** (thinking LOW) | local | **710** | **396** | 1:15 |
-| ollama/gpt-oss:20b (thinking MEDIUM) | local | 728 | 420 | 2:59 |
-| anthropic/claude-haiku-4-5 | hosted | 784 | 476 | — |
-| openai/gpt-5.4-mini | hosted | 879 | 551 | — |
-| ollama/qwen3.5:9b (thinking OFF) | local | 930 | 700 | 1:24 |
-| openai/gpt-5.4-nano | hosted | 967 | 697 | — |
-| ollama/gemma4:e4b (thinking ON) | local | 1241 | 985 | 3:24 |
-| ollama/granite4.1:8b | local | 1869 | 1609 | 1:16 |
-| ollama/gemma4:e4b (thinking OFF) | local | 1945 | 1681 | 1:12 |
-| ollama/llama3.2:3b | local | 2367 | 2001 | 0:43 |
+| model | host | per-entry | over | under | Hs | Hr | Hh | Hc | Ds | Dr | Df | Dc | aggregate |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| **gemini/gemini-3.1-flash-lite** | hosted | **636** | 438 | 198 | 109 | 51 | 61 | 10 | 211 | 61 | 129 | 4 | **376** |
+| **ollama/gpt-oss:20b** (thinking LOW) | local | **710** | 476 | 234 | 115 | 65 | 58 | 7 | 228 | 81 | 135 | 21 | **396** |
+| ollama/gpt-oss:20b (thinking MEDIUM) | local | 728 | 508 | 220 | 149 | 60 | 44 | 4 | 234 | 83 | 139 | 15 | 420 |
+| anthropic/claude-haiku-4-5 | hosted | 784 | 590 | 194 | 105 | 66 | 84 | 16 | 232 | 95 | 143 | 43 | 476 |
+| openai/gpt-5.4-mini | hosted | 879 | 676 | 203 | 113 | 92 | 62 | 4 | 322 | 107 | 173 | 6 | 551 |
+| ollama/qwen3.5:9b (thinking OFF) | local | 930 | 676 | 254 | 142 | 56 | 54 | 13 | 490 | 36 | 115 | 24 | 700 |
+| openai/gpt-5.4-nano | hosted | 967 | 760 | 207 | 146 | 99 | 83 | 7 | 366 | 131 | 132 | 3 | 697 |
+| ollama/gemma4:e4b (thinking ON) | local | 1241 | 1030 | 211 | 140 | 181 | 143 | 13 | 493 | 147 | 112 | 12 | 985 |
+| ollama/granite4.1:8b | local | 1869 | 1670 | 199 | 178 | 125 | 565 | 33 | 708 | 109 | 126 | 25 | 1609 |
+| ollama/gemma4:e4b (thinking OFF) | local | 1945 | 1740 | 205 | 115 | 181 | 176 | 8 | 1155 | 178 | 116 | 16 | 1681 |
+| ollama/llama3.2:3b | local | 2367 | 2110 | 257 | 182 | 414 | 153 | 10 | 972 | 454 | 170 | 12 | 2001 |
 
 `Hs/Hr/Hh/Hc` = hearings scheduled/rescheduled/held/cancelled; `Ds/Dr/Df/Dc` =
-deadlines set/rescheduled/met-filed/cancelled (per-category columns are in
-`score_models.py`'s output). Most deviation is `over` — every model over-extracts
-relative to a human counting the *final* state.
+deadlines set/rescheduled/met-filed/cancelled. Most deviation is `over` — every
+model over-extracts relative to a human counting the *final* state.
 
 **Two results stand out.** Gemini leads at 636. But the **best local model,
 `gpt-oss:20b`, is 2nd at 710 — ahead of hosted Anthropic (784) and both OpenAI
@@ -102,6 +143,103 @@ models** — and within run-to-run noise of Gemini on the aggregate metric (396 
 (more concise) and runs at \~118 tok/s locally despite being a 20B model (its
 MXFP4 4-bit quant), so it is both the best local extractor *and* fast. This is why
 `gpt-oss:20b` is the recommended local default.
+
+### What a deviation of 636 means for the calendar (it is not a count of calendar errors)
+
+Read in isolation, "best model: 636" suggests a calendar full of mistakes. It
+isn't, and the reason is structural: **this score counts raw per-entry
+extractor *actions*, captured before any cleanup the live pipeline runs.** The
+calendar renders *final* events, after three stages this score never sees —
+the significance gate (drops `minor` rows), the per-row verify pass (catches
+hallucinations, confirms holds), and the same-slot dedupe sweeps (collapse
+duplicate keys). The score and the calendar are measured at opposite ends of
+the pipeline, so a deviation in the hundreds and a calendar that serves
+day-to-day docket-watching fine are consistent.
+
+Traced through the Gemini default on this benchmark, the funnel collapses fast
+(recompute any of it with
+`python3 model-comparison/funnel_analysis.py gemini/gemini-3.1-flash-lite`,
+which reads the committed `model_actions.csv` × `ground_truth.csv` plus the
+model's provider-store build output):
+
+| stage | count |
+| --- | ---: |
+| raw extractor actions the scorer counts (the human counted 421) | 661 |
+| logical rows those actions create or maintain (one per key) | 304 |
+| rows the renderer writes to the `.ics` (`major`, dated, not cancelled or filed) | 178 |
+| of those, duplicate or stale rows that leaked past the sweeps (all in the past) | 5 |
+
+#### Where the 438 over-count goes
+
+Gemini's 636 deviation is 438 `over` plus 198 `under` — the `over` and `under`
+columns of the totals table above. Only an add-class action (`ADD_HEARING` /
+`ADD_DEADLINE`) can put a *new* event on the calendar, and only when tagged
+`major`. Splitting the 438 `over` by what each action *does*:
+
+| over bucket | over | share | effect on the calendar |
+| --- | ---: | ---: | --- |
+| add (`Hs` 66 + `Ds` 194) | 260 | 59% | adds an event — only if `major` |
+| lifecycle (`Hr` 22 + `Hh` 55 + `Dr` 41 + `Df` 47) | 165 | 38% | patches a row that already exists |
+| cancellations (`Hc` 10 + `Dc` 3) | 13 | 3% | removes an event |
+| **total** | **438** | 100% | the `over` column of the totals table |
+
+So 41% of the over-count cannot add calendar clutter by construction — it acts
+on rows keyed by `hearing_key` / `deadline_key` that already exist, so it
+patches or removes. Two more effects keep most of the remaining add-class over
+off the calendar:
+
+- **The significance gate.** 64 of the 304 events Gemini creates on this
+  benchmark (21%) are tagged `minor` — 63 of them deadlines: 35 transcript
+  redaction-request windows (`minor` by the project's transcript rules), 14
+  amicus response / reply dates, and the rest procedural filings (mediation
+  questionnaire, entry of appearance, a CJA 23 financial affidavit). The
+  renderer drops every `minor` row, so roughly a fifth of what the extractor
+  proposes is structurally invisible. Note this is the *procedural* tail:
+  dispositive briefing and recurring joint status reports are classed `major`
+  and are not in this set.
+- **Repeated firing across related entries (a scoring artifact).** One court
+  event often shows up across several entries — on us-v-knoot, the July 30,
+  2025 telephonic status conference is confirmed by an order referencing the
+  call, the minute entry recording it, and the transcript filed afterward. The
+  human ground-truth convention is *count what this entry does*, so the hold
+  is logged once, on the minute entry (`Hh`: human 1, Gemini 3 across the
+  trio). The extractor instead fires `MARK_HELD` on each; those repeats all
+  upsert onto one key — one stored row — but the per-entry scorer charges
+  every extra one as an over. This benchmark carries 83 such repeat firings;
+  **68 are lifecycle re-confirmations and only 11 are add-class**, so they
+  almost never add a visible event. Collapsing the model's output to
+  one-per-(key, date, action) — the way the human counted it — removes 63 of
+  the 438 over (deviation 636 → 593). Both metrics carry this inflation:
+  collapsing the repeats also drops the per-docket aggregate 376 → 323,
+  because the aggregate neutralizes only pure attribution drift (the same
+  action pinned to a neighboring entry), not a model firing on both copies.
+
+#### What actually reaches the rendered calendar
+
+After the gate, verify, and dedupe: the dedupe sweeps absorbed 11 duplicate
+hearing keys the extractor allocated (8 by the deterministic same-slot held
+merge, 3 by the LLM near-slot resolver), leaving zero same-slot hearing
+duplicates, and the verify pass caught one hallucinated hearing — a
+preliminary-injunction hearing invented from an anthropic-v-dow order that
+only set a status conference — and cancelled it off the calendar. What leaks
+through is on the deadline side: **5 duplicate or stale deadline rows
+survive** — two exact-slot key splits on the us-v-gholinejad district docket
+(`motions-deadline` / `-2`, `response-to-motions-deadline` / `-2`), one
+us-v-mcgonigal transcript public-release date recorded a day apart under two
+keys, and two us-v-knoot pretrial-filing deadlines whose June 2025 dates were
+superseded by the continued October trial under fresh keys instead of a
+reschedule, leaving the stale June rows standing. All five are in the past, so
+they sit muted at the bottom of the agenda preview. Deadlines deliberately
+have no same-slot dedupe sweep: one date legitimately carries many genuinely
+distinct deadlines (on us-v-ding, three different trial transcripts'
+public-release deadlines share May 1, 2026 alone), so a deterministic merge
+would delete real deadlines to clean up these five — see the matching design
+note in [AGENTS.md](../AGENTS.md).
+
+The takeaway: 636 is the right number for **ranking models on the identical
+extraction task** — which is what this page exists to do — but it is *not* a
+count of calendar errors. The over-extraction that survives onto the rendered
+calendar is 5 rows, all in the past.
 
 ### Hosted models — Gemini leads, Anthropic is the costliest
 
@@ -136,6 +274,21 @@ Beyond gpt-oss, the local field spreads wide:
 - **`granite4.1:8b` (1869)** — does not report the `thinking` capability (so its
   on/off runs are byte-identical); over-emits *held* hearings heavily (`Hh` 565).
 - **`llama3.2:3b` (2367)** — weakest; non-thinking; heavy deadline hallucination.
+
+Runtime — wall-clock for the full 6-case benchmark build on the local GPU
+(hosted models run against their APIs, so they have no comparable figure;
+their per-call latency is compared under
+[Hosted models](#hosted-models--gemini-leads-anthropic-is-the-costliest)):
+
+| model | runtime |
+| --- | ---: |
+| ollama/gpt-oss:20b (thinking LOW) | 1:15 |
+| ollama/gpt-oss:20b (thinking MEDIUM) | 2:59 |
+| ollama/qwen3.5:9b (thinking OFF) | 1:24 |
+| ollama/gemma4:e4b (thinking ON) | 3:24 |
+| ollama/gemma4:e4b (thinking OFF) | 1:12 |
+| ollama/granite4.1:8b | 1:16 |
+| ollama/llama3.2:3b | 0:43 |
 
 **Thinking ON is better than OFF for extraction.** The one clean ON/OFF pair —
 `gemma4:e4b` — scores **1241 thinking vs 1945 not** (a 36% improvement). Suppressing
@@ -337,6 +490,8 @@ LLM_MODEL=gpt-oss:20b
 git lfs pull   # fetch the frozen snapshot
 ## Phase 0 — re-score the committed numbers (no API keys, no rebuild):
 python3 model-comparison/score_models.py
+## Phase 0 — trace a model's deviation down to its rendered calendar:
+python3 model-comparison/funnel_analysis.py gemini/gemini-3.1-flash-lite
 ## Phase 3 — regenerate summaries on the Gemini scaffold with any model:
 uv run python model-comparison/summarize_phase.py \
     --store data/provider-stores/gemini/gemini-3.1-flash-lite/case-calendar.sqlite \
