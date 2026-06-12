@@ -21,31 +21,25 @@ adheres to [Semantic Versioning][semver].
   On real Ollama the native `/api/chat` endpoint is used (per-request thinking
   control and native schema-enforced output); a non-Ollama OpenAI-compatible
   server (LM Studio / vLLM / llama.cpp) is auto-detected and driven over its
-  `/v1` endpoint. Full walkthrough in [docs/local-llms.md](docs/local-llms.md).
+  `/v1` endpoint. `OLLAMA_BASE_URL` (default `http://localhost:11434`) points at
+  the server's host root; a trailing `/v1` is also accepted. Full walkthrough in
+  [docs/local-llms.md](docs/local-llms.md).
 - **Thinking control for local reasoning models.** A model that reports the
   `thinking` capability reasons on every track with a bounded output budget
   (`num_predict = max_tokens + OLLAMA_THINK_BUDGET`, default 8192) — a runaway
   guard sized so a disciplined thinker is untouched while a degenerate,
   non-stopping generation truncates cleanly (the entry is skipped and retried)
-  instead of hanging to the request timeout. `OLLAMA_FORCE_NO_THINK=1` disables a
-  boolean-thinker's reasoning; the gpt-oss family (whose reasoning can only be
-  tuned, not disabled) takes `OLLAMA_THINK_LEVEL` (`low` / `medium` / `high`).
+  instead of hanging to the request timeout — including a thinker that spends
+  its whole budget on reasoning and returns empty content.
+  `OLLAMA_FORCE_NO_THINK=1` disables a boolean-thinker's reasoning; the gpt-oss
+  family (whose reasoning can only be tuned, not disabled) takes
+  `OLLAMA_THINK_LEVEL` (`low` / `medium` / `high`).
   Reasoning measurably helps extraction but harms long-context summaries — force
   it off for local summaries (see [the scorecard](model-comparison/SCORECARD.md)).
 - **Schema-enforced structured output** for every provider: OpenAI
   `response_format` json_schema (strict), Gemini `response_schema`, Ollama
   native `format` (a hard grammar), Anthropic forced tool-use. It improves
   local-model accuracy and cuts tokens on hosted models.
-
-### Changed
-
-- **`OLLAMA_BASE_URL` is now the host root** (e.g. `http://localhost:11434`,
-  Ollama's native endpoint). A trailing `/v1` is still accepted, and the
-  OpenAI-compatible path appends `/v1` automatically, so existing configurations
-  keep working unchanged.
-- Budget-exhausted local thinking — a model that spends its whole budget
-  reasoning and returns empty content — now truncates cleanly and skips the entry
-  instead of raising a bare "No content" error.
 
 ### Fixed
 
