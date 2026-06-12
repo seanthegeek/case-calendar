@@ -353,27 +353,36 @@ high was cancelled once the diminishing-returns pattern was clear. This is the
 measured basis for the code sending `low` on the high-volume extract/verify/dedupe
 tracks.
 
-#### Models too slow or unstable to benchmark on 24 GB
+#### `qwen3.5:9b` is unstable on this task, on any hardware
 
-Four local models could not produce a usable extraction on a 24 GB card (RX 7900
-XTX). They are documented findings, not scored rows:
-
-- **`qwen3.5:9b` thinking-ON** — *runaway*: \~47% of entries exhausted the entire
-  reasoning budget producing no answer (\~580 s each). Its thinking-OFF run completes
-  (930, in the table) but over-emits so hard that \~22% of entries truncate. A poor
-  extractor either way.
-- **`glm-4.7-flash:q4_K_M`** — *too slow*: \~62 s/entry, timed out at 230/660
-  entries in 4:00. Not a runaway, just slow.
-- **`mistral-small3.2:24b`** (\~2:54/case) and **`granite4.1:30b`** (\~24.6 tok/s)
-  — dense 24B/30B models that crawl on a 24 GB card. **The verdict on "are larger
-  local models worth it?" is no on this hardware** — they spill the KV cache and
-  run 3-6× slower than gpt-oss while scoring no better.
+This is a model finding, not a hardware one. Models can  **run away**, a generation that never stops on its own: the model keeps emitting
+tokens (typically its reasoning) until something external cuts it off — the
+bounded reasoning budget, or without one the request timeout — and ends with
+no usable answer. It is distinct from *slow* (steady progress at a low
+token rate) and *hung* (no output at all). With thinking on, qwen ran away on
+\~47% of entries — each exhausted the entire reasoning budget producing no
+answer (\~580 s each), truncated cleanly, and was skipped. With thinking off it
+completes (930, in the table) but over-emits so hard that \~22% of entries
+truncate. A poor extractor either way — a faster card would only make the
+runaways fail sooner, not stop them.
 
 The bounded reasoning budget (`num_predict = max_tokens + OLLAMA_THINK_BUDGET`)
 keeps a runaway model truncating cleanly to an `OutputTruncatedError` (entry
 skipped) instead of hanging; it is a runaway *guard*, not a throttle — disciplined
 thinkers (gemma, gpt-oss) top out around 1,500–1,900 generated tokens per call,
 far below the cap, so they are never touched.
+
+#### Models too slow to benchmark on 24 GB
+
+Three local models could not finish a usable extraction run on a 24 GB card
+(RX 7900 XTX). They are hardware findings, not scored rows:
+
+- **`glm-4.7-flash:q4_K_M`** — *too slow*: \~62 s/entry, timed out at 230/660
+  entries in 4:00. Not a runaway, just slow.
+- **`mistral-small3.2:24b`** (\~2:54/case) and **`granite4.1:30b`** (\~24.6 tok/s)
+  — dense 24B/30B models that crawl on a 24 GB card. **The verdict on "are larger
+  local models worth it?" is no on this hardware** — they spill the KV cache and
+  run 3-6× slower than gpt-oss while scoring no better.
 
 ### The regex pre-filter recall gap
 
