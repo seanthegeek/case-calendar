@@ -102,6 +102,35 @@ class TestDeviationMath:
         assert sum(over.values()) + sum(under.values()) == 2
         assert funnel.aggregate_deviation(human, model, docket_of) == 0
 
+    def test_aggregate_split_keeps_real_misses(self):
+        # Drifted h_scheduled nets out; the unmarked d_met_filed survives as
+        # a docket-level under, and a docket-level surplus shows as over.
+        zero = {c: 0 for c in funnel.CATS}
+        human = {
+            "1": {**zero, "h_scheduled": 1, "d_met_filed": 1},
+            "2": dict(zero),
+        }
+        model = {
+            "1": dict(zero),
+            "2": {**zero, "h_scheduled": 1, "d_set": 1},
+        }
+        docket_of = {"1": ("a", "d", "c"), "2": ("a", "d", "c")}
+        over, under = funnel.aggregate_split(human, model, docket_of)
+        assert under["h_scheduled"] == 0
+        assert under["d_met_filed"] == 1
+        assert over["d_set"] == 1
+        assert funnel.aggregate_deviation(human, model, docket_of) == 2
+
+    def test_aggregate_split_does_not_net_across_dockets(self):
+        # The same drift split across two different dockets must NOT net out.
+        zero = {c: 0 for c in funnel.CATS}
+        human = {"1": {**zero, "h_scheduled": 1}, "2": dict(zero)}
+        model = {"1": dict(zero), "2": {**zero, "h_scheduled": 1}}
+        docket_of = {"1": ("a", "d1", "c"), "2": ("a", "d2", "c")}
+        over, under = funnel.aggregate_split(human, model, docket_of)
+        assert under["h_scheduled"] == 1
+        assert over["h_scheduled"] == 1
+
 
 _LOG_LINE = (
     "2026-06-10 11:10:19,453 INFO provider_stores.decisions extract "

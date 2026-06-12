@@ -7,8 +7,10 @@ the per-row verify pass, and the dedupe sweeps. This script quantifies that
 funnel for one model so the SCORECARD's "a deviation in the hundreds and a
 clean calendar are consistent" claim stays backed by current numbers:
 
-  * raw actions vs the human ground truth (deviation, over / under, and the
-    over-count split by what each action does: add / lifecycle / cancel);
+  * raw actions vs the human ground truth (deviation, over / under, the
+    over-count split by what each action does — add / lifecycle / cancel —
+    and the under-count re-checked at the docket-aggregate level, where
+    attribution drift nets out and only real misses survive);
   * the logical rows those actions left in the model's provider store, and
     how many the significance gate hides (``minor``, bucketed by key pattern);
   * the events actually rendered into the provider store's ``out/*.ics``;
@@ -149,12 +151,16 @@ def bucket_split(over: Counts) -> Counts:
     return out
 
 
-def aggregate_deviation(
+def aggregate_split(
     human: dict[str, Counts],
     model: dict[str, Counts],
     docket_of: dict[str, tuple[str, ...]],
-) -> int:
-    """Counts summed per logical docket before the |model − human| compare."""
+) -> tuple[Counts, Counts]:
+    """Per-category over / under with counts summed per logical docket first.
+
+    A per-entry over+under pair nets out here when the model logged the same
+    event from a neighboring entry (attribution drift); what survives is a
+    docket-level surplus or miss."""
     agg_h: dict[tuple[str, ...], Counts] = defaultdict(_zero)
     agg_m: dict[tuple[str, ...], Counts] = defaultdict(_zero)
     for eid, h in human.items():
@@ -162,7 +168,25 @@ def aggregate_deviation(
         for c in CATS:
             agg_h[docket_of[eid]][c] += h[c]
             agg_m[docket_of[eid]][c] += m[c]
-    return sum(abs(agg_m[dk][c] - agg_h[dk][c]) for dk in agg_h for c in CATS)
+    over, under = _zero(), _zero()
+    for dk in agg_h:
+        for c in CATS:
+            d = agg_m[dk][c] - agg_h[dk][c]
+            if d > 0:
+                over[c] += d
+            else:
+                under[c] += -d
+    return over, under
+
+
+def aggregate_deviation(
+    human: dict[str, Counts],
+    model: dict[str, Counts],
+    docket_of: dict[str, tuple[str, ...]],
+) -> int:
+    """Counts summed per logical docket before the |model − human| compare."""
+    over, under = aggregate_split(human, model, docket_of)
+    return sum(over.values()) + sum(under.values())
 
 
 def parse_decision_log(log_text: str, scored: set[str]) -> dict[str, list[ActionSig]]:
@@ -303,6 +327,23 @@ def report(args: argparse.Namespace) -> None:
     print(f"| **total** | **{n_over}** | 100% |\n")
     print("over by category:", "  ".join(f"{c}={over[c]}" for c in CATS))
     print("under by category:", "  ".join(f"{c}={under[c]}" for c in CATS))
+
+    print("\n## Where the under-count goes\n")
+    print(
+        "Per-entry under vs what survives with counts summed per docket first —"
+        " a per-entry miss nets out there when the model logged the same event"
+        " from a neighboring entry (attribution drift).\n"
+    )
+    agg_over, agg_under = aggregate_split(human, model, docket_of)
+    print("| category | per-entry under | survives at docket level |")
+    print("| --- | ---: | ---: |")
+    for c in CATS:
+        print(f"| {c} | {under[c]} | {agg_under[c]} |")
+    print(f"| **total** | **{n_under}** | **{sum(agg_under.values())}** |")
+    print(
+        "\naggregate over by category:",
+        "  ".join(f"{c}={agg_over[c]}" for c in CATS),
+    )
 
     store_dir = args.store_dir or Path("data/provider-stores") / args.model
     db_path = store_dir / "case-calendar.sqlite"

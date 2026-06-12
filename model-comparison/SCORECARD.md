@@ -167,7 +167,7 @@ model's provider-store build output):
 | raw extractor actions the scorer counts (the human counted 421) | 661 |
 | logical rows those actions create or maintain (one per key) | 304 |
 | rows the renderer writes to the `.ics` (`major`, dated, not cancelled or filed) | 178 |
-| of those, duplicate or stale rows that leaked past the sweeps (all in the past) | 5 |
+| of those, duplicate or stale rows that leaked past the sweeps | 5 |
 
 #### Where the 438 over-count goes
 
@@ -214,6 +214,47 @@ off the calendar:
   because the aggregate neutralizes only pure attribution drift (the same
   action pinned to a neighboring entry), not a model firing on both copies.
 
+#### Where the 198 under-count goes
+
+The under side has the same structural story with the opposite calendar
+effect. Re-checking each category with counts summed per docket first — where
+a per-entry "miss" nets out if the model logged the same event from a
+neighboring entry (the human pinned the action to the stipulation, the model
+fired it on the clerk's notice, or vice versa):
+
+| category | per-entry under | survives at docket level |
+| --- | ---: | ---: |
+| `Hs` hearings scheduled | 43 | 0 |
+| `Hr` hearings rescheduled | 29 | 12 |
+| `Hh` hearings held | 6 | 0 |
+| `Hc` hearings cancelled | 0 | 0 |
+| `Ds` deadlines set | 17 | 0 |
+| `Dr` deadlines rescheduled | 20 | 3 |
+| `Df` deadlines met / filed | 82 | 52 |
+| `Dc` deadlines cancelled | 1 | 1 |
+| **total** | **198** | **68** |
+
+- **Nothing is missing at the event-discovery level.** The two categories
+  that put new events on the calendar — `Hs` and `Ds` — drop to zero at the
+  docket aggregate: every hearing and deadline the human counted, Gemini also
+  created somewhere on the docket. 130 of the 198 under is attribution drift,
+  not lost events.
+- **The dominant real miss leaves residue, not absence.** 52 of the surviving
+  68 are `Df` — the model failing to mark a deadline satisfied when the
+  responsive filing lands. The deadline stays on the calendar as a stale
+  passed row rather than disappearing, so the symptom is bookkeeping lag a
+  subscriber sees as extra history, never as a missing event. (The regex
+  pre-filter is complicit: 11 of the 21 provider-independent regex misses are
+  `Df` too — a "RESPONSE to Motion …" filing that satisfies a deadline is the
+  hardest class for the vocabulary pre-filter.)
+- **Missed reschedules are the one under-class that could bite.** `Hr` 12 and
+  `Dr` 3 survive at the docket level, and a miss that sticks shows up as a
+  wrong date rather than a missing event. Two safety nets shrink it: courts
+  re-state a continuance across several entries (the stipulation, the order,
+  the Set/Reset notice), so a reschedule missed on one entry usually re-fires
+  from a sibling, and the end-of-sync verify pass exists precisely to catch a
+  scheduled row whose docket context shows a different date.
+
 #### What actually reaches the rendered calendar
 
 After the gate, verify, and dedupe: the dedupe sweeps absorbed 11 duplicate
@@ -228,8 +269,7 @@ survive** — two exact-slot key splits on the us-v-gholinejad district docket
 us-v-mcgonigal transcript public-release date recorded a day apart under two
 keys, and two us-v-knoot pretrial-filing deadlines whose June 2025 dates were
 superseded by the continued October trial under fresh keys instead of a
-reschedule, leaving the stale June rows standing. All five are in the past, so
-they sit muted at the bottom of the agenda preview. Deadlines deliberately
+reschedule, leaving the stale June rows standing. Deadlines deliberately
 have no same-slot dedupe sweep: one date legitimately carries many genuinely
 distinct deadlines (on us-v-ding, three different trial transcripts'
 public-release deadlines share May 1, 2026 alone), so a deterministic merge
@@ -239,7 +279,7 @@ note in [AGENTS.md](../AGENTS.md).
 The takeaway: 636 is the right number for **ranking models on the identical
 extraction task** — which is what this page exists to do — but it is *not* a
 count of calendar errors. The over-extraction that survives onto the rendered
-calendar is 5 rows, all in the past.
+calendar is 5 rows.
 
 ### Hosted models — Gemini leads, Anthropic is the costliest
 
