@@ -38,59 +38,77 @@ and the summarizer ask very different things of a model:
   Benefits from a more capable model and a large context window, and — for
   adversary-nation cases — a model you trust to describe the charges faithfully.
 
-The default local model — `gpt-oss:20b` — runs **both** tracks. It's \~13 GB
-resident (MXFP4 4-bit, 20B parameters, OpenAI open-weights), so it fits a
-**16 GB** card with room for a working context window, and it was the
-best-scoring *local* extractor in this project's benchmark (lowest aggregate
-deviation of the local models tested — see
-[the scorecard](../model-comparison/SCORECARD.md)). Its reasoning is level-based
-(it can't run away the way a boolean-thinking model can), which makes it stable
-under the bounded thinking budget. On a smaller card, drop to the 9.6 GB
-`gemma4:e4b` (4.5B effective params, multimodal) at 12 GB, or the 7.2 GB
-`gemma4:e2b` at 8 GB — set `LLM_MODEL` / `LLM_SUMMARY_MODEL` accordingly. On a
-card that fits the default, the simplest setup is everything local. Summaries
-are the more demanding track, and there are two ways to improve their quality.
-The larger `gemma4:31b` is better, but its \~20 GB of weights leave no room for a
-useful context window even on a 24 GB card — it runs out of memory (or spills to
-system RAM and crawls) at the windows summaries need — so it wants a **32 GB
-GPU**, which on the current consumer line means an RTX 5090 (the 5080 is only
-16 GB) or the older route of two cards. On anything smaller the quality path is
-instead the **hybrid** setup: keep extraction local and send only summaries to a
-hosted (or Western-model) provider. Hybrid is also the answer for
-adversary-nation cases where you want a model you specifically trust. The two
-tracks are configured independently — see [Configure](#configure).
+The project's benchmark (see [the scorecard](../model-comparison/SCORECARD.md))
+returned opposite verdicts for the two tracks, and the recommendations below
+follow it:
+
+- **Extraction: one local model is genuinely competitive.** `gpt-oss:20b`
+  scored 2nd overall on the extraction benchmark — ahead of hosted Anthropic
+  and both hosted OpenAI models, within run-to-run noise of the hosted Gemini
+  default on the per-docket aggregate metric. It is the **only** local model
+  the benchmark recommends for extraction: the next-best local
+  (`gemma4:e4b`) deviated nearly twice as much, and the rest trailed far
+  behind or couldn't complete the run.
+- **Summaries: no local model is good enough for production.** In the blind
+  grading, the best local summaries reached only a **C** — accurate on the
+  figures but too thin or too clunky to publish — while the hosted models
+  graded A / A−. A public calendar should keep its summaries on the hosted
+  tier.
+
+`gpt-oss:20b` is \~13 GB resident (MXFP4 4-bit, 20B parameters, OpenAI
+open-weights), so it fits a **16 GB** card with room for a working context
+window. Its reasoning is level-based (it can't run away the way a
+boolean-thinking model can), which makes it stable under the bounded thinking
+budget. The recommended production setup is therefore the **hybrid**: run
+extraction on `gpt-oss:20b` and send only summaries to a hosted provider —
+which is also the answer for adversary-nation cases where you want a model you
+specifically trust. An all-local setup still works (it's the default when you
+select `LLM_PROVIDER=ollama`) and is fine for testing or a private calendar;
+just know its summaries won't be publication quality. The two tracks are
+configured independently — see [Configure](#configure).
 
 ## Choosing a model
 
 ### Recommended models
 
-All of these are text-capable open models on Ollama. Case Calendar only ever
-sends **text** (docket text + text extracted from PDFs — OCR happens before the
-LLM), so you never need a vision/multimodal variant.
+The short answer: **`gpt-oss:20b`, for extraction only.** It is the built-in
+Ollama default — selecting `LLM_PROVIDER=ollama` with no model override runs it
+for both tracks — and it earned that on the benchmark (2nd overall on
+extraction, ahead of three of the four hosted models) and on hardware fit
+(\~13 GB, comfortable on a 16 GB card). No other local model earned a
+recommendation. The measured extraction results
+([the scorecard](../model-comparison/SCORECARD.md) has the full tables;
+per-entry deviation vs the human ground truth, lower is better, hosted Gemini
+leads at 636):
 
-| Model (family) | By | License | Best track | Notes |
-| --- | --- | --- | --- | --- |
-| **Gemma 4** (`e2b` / `e4b` / `26b` / `31b`) | Google | Apache 2.0 | both | Strong structured output + tool calling; sizes from phone-class to 31B. A good default that runs the whole pipeline. |
-| **Mistral Small** (24B) | Mistral AI (France) | Apache 2.0 | summaries | Efficient; fits a 16 GB card at Q4. |
-| **Llama 4 Scout** / Llama 3.x | Meta | Llama Community License | both | Long-context; widely supported. (License restricts only at >700M monthly users — irrelevant here.) |
-| **gpt-oss** (20B) | OpenAI | open weights | both | Fits 16 GB; adjustable reasoning effort. |
-| **Phi-4** (14B) | Microsoft | MIT | extraction | Small, strong instruction-following. |
+| Model | By | Per-entry deviation | Verdict |
+| --- | --- | ---: | --- |
+| **gpt-oss:20b** | OpenAI | **710** | best local, 2nd overall — **the recommendation** |
+| gemma4:e4b | Google | 1241 | nearly twice gpt-oss's deviation; over-extracts harder than any hosted model |
+| granite4.1:8b | IBM | 1869 | heavy spurious held-hearing emission |
+| llama3.2:3b | Meta | 2367 | weakest scored; heavy deadline hallucination |
+| qwen3.5:9b | Alibaba | (930)¹ | unstable — reasoning ran away on \~47% of entries with thinking on |
+| glm-4.7-flash, mistral-small3.2:24b, granite4.1:30b | — | — | too slow to complete a run on a 24 GB card |
 
-For a single recommendation: **`gpt-oss:20b`** is the built-in Ollama default —
-selecting `LLM_PROVIDER=ollama` with no model override runs it for **both
-tracks**. It earned that on the benchmark (best local extractor by a wide margin —
-[the scorecard](../model-comparison/SCORECARD.md)) and on hardware fit (\~13 GB,
-comfortable on a 16 GB card). On a smaller card, override to **Gemma 4** — the
-cleanest all-rounder, Western (Google), permissively licensed, in several sizes
-(`e2b` 7.2 GB / `e4b` 9.6 GB / `26b` 18 GB / `31b` 20 GB): `LLM_MODEL=gemma4:e4b`
-on a 12 GB card, `gemma4:e2b` on 8 GB. On a **32 GB-or-larger** card, trade up to
-the higher-quality `gemma4:31b` with `LLM_MODEL=gemma4:31b` (or
-`LLM_SUMMARY_MODEL=gemma4:31b` to upgrade only summaries, where the bigger model
-helps most). `gemma4:31b` does **not** fit a 24 GB card at the context window
-summaries need — its \~20 GB of weights leave no room for the KV cache (see
-[Context window](#context-window)) — so on 24 GB or less, keep the default local
-and send summaries to a hosted provider if you want higher quality (the hybrid
-setup). The two tracks are configured separately — see [Configure](#configure).
+¹ scored with thinking forced off, where \~22% of entries still truncated.
+
+For **summaries**, no local model is recommended for production at all. Every
+local summary in the blind grading topped out at a C (accurate figures, but too
+thin or too clunky to publish) or failed outright; only the hosted models were
+publication-ready. Run production summaries hosted (the hybrid setup —
+see [Configure](#configure)); a bigger local model is not the fix — the dense
+24–30B models ran 3–6× slower than gpt-oss on a 24 GB card while scoring no
+better, and nothing larger has been benchmarked to recommend.
+
+On a card too small for `gpt-oss:20b`, the honest recommendation is to keep
+extraction hosted too — the Gemini extraction default is both the most accurate
+and among the cheapest. The smaller `gemma4:e4b` (9.6 GB) and `gemma4:e2b`
+(7.2 GB) do run on 12 GB / 8 GB cards, but they're a measured accuracy
+downgrade, not a recommendation.
+
+Case Calendar only ever sends **text** (docket text + text extracted from
+PDFs — OCR happens before the LLM), so you never need a vision/multimodal
+variant.
 
 China-developed models (**Qwen3 / Qwen 3.6** from Alibaba, **DeepSeek-R1**,
 **Kimi**) are technically excellent — Qwen in particular is top-tier at
@@ -138,12 +156,14 @@ fully grounded in the document text, so it sails straight past them. The guards
 don't neutralize this concern.
 
 **Recommendation:** don't put a China-developed model on the **summary** track
-for an adversary-nation caseload. Use a Western open model there (Gemma 4,
-Mistral, Llama, gpt-oss) or keep summaries on a hosted Western model; use
-whatever you like for extraction. And verify it yourself rather than taking
-anyone's word — that's what the [benchmark harness](#benchmarking-a-local-model)
-is for: run a real China-nexus indictment through two models and read the
-summaries side by side.
+for an adversary-nation caseload. For production that question is already
+settled the same way for every local model — keep summaries on a hosted
+Western model (no local summary cleared the benchmark's publication bar) — and
+if you run local summaries anyway for testing or a private calendar, use a
+Western open model (gpt-oss, Gemma). Use whatever you like for extraction. And
+verify it yourself rather than taking anyone's word — that's what the
+[benchmark harness](#benchmarking-a-local-model) is for: run a real China-nexus
+indictment through two models and read the summaries side by side.
 
 ### Reading a model tag
 
@@ -202,26 +222,27 @@ The VRAM tier is what matters; the cards are examples across vendors.
 
 | VRAM | Nvidia | AMD (ROCm) | Intel Arc | What runs |
 | --- | --- | --- | --- | --- |
-| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | too small for the default `gpt-oss:20b` (\~13 GB) and for `gemma4:e4b` (9.6 GB) — use `gemma4:e2b` (7.2 GB) at a small window, or run summaries hosted |
-| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | tight for `gpt-oss:20b` — drop to `gemma4:e4b` at a reduced window (`gemma4:e2b` for the full 128K) |
-| **16 GB** | RTX 4060 Ti 16GB / 5070 Ti / 5080 | RX 7800 XT / 9070 XT | Arc A770 | **runs the default `gpt-oss:20b` with room for a working window** — the recommended local setup; `gemma4:e4b` is the lighter alternative |
-| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | runs the default `gpt-oss:20b` for both tracks with room to spare. `gemma4:31b` does **not** fit a useful window here (its \~20 GB of weights crowd out the KV cache) — for better summaries, use the hybrid setup (hosted summaries). See [Context window](#context-window) |
-| **32 GB** | RTX 5090 | — | — | the home for the `gemma4:31b` summary upgrade at a real window; or a 70B with minimal offload |
+| **8 GB** | RTX 4060 / 5060 | RX 7600 | Arc A750 | too small for the recommended `gpt-oss:20b` (\~13 GB) — run extraction hosted; `gemma4:e2b` (7.2 GB) fits at a small window but is an unmeasured last resort |
+| **12 GB** | RTX 3060 12GB / 5070 | RX 7700 XT | Arc B580 | tight for `gpt-oss:20b` — prefer hosted extraction; `gemma4:e4b` (9.6 GB) fits but measured at nearly twice gpt-oss's deviation |
+| **16 GB** | RTX 4060 Ti 16GB / 5070 Ti / 5080 | RX 7800 XT / 9070 XT | Arc A770 | **runs `gpt-oss:20b` with room for a working window** — the recommended local setup |
+| **24 GB** | RTX 3090 / 4090 | RX 7900 XTX | — | runs `gpt-oss:20b` with room to spare — and that's still the right model: the dense 24–30B models crawl here (3–6× slower, no better scores), and `gemma4:31b`'s \~20 GB of weights crowd out the KV cache at a summary-sized window. See [Context window](#context-window) |
+| **32 GB** | RTX 5090 | — | — | fits `gemma4:31b` (or a 70B with minimal offload) at a real window — but no model this size has been benchmarked here, so there is no measured recommendation to upgrade |
 
 A single consumer card tops out around **32B**, and only on the biggest one — a
-32 GB **RTX 5090**. Mind the NVIDIA gap: 24 GB was the previous-gen flagship
-(RTX 3090 / 4090), but the current line jumps from the 16 GB **RTX 5080**
-straight to the 32 GB 5090, so on NVIDIA the `gemma4:31b` upgrade effectively
-means a 5090. AMD has **no 32 GB consumer card at all** — the line tops out at
-the 24 GB **RX 7900 XTX** (RDNA4's RX 9070 XT is 16 GB), which runs the default
-`gemma4:e4b` well but is still short for a 31b summary at a real window. So on
-AMD the 31b upgrade isn't a single-card option — use the hybrid (hosted) path or
-two cards. 70B-class models likewise want 32 GB with offload, or two cards.
+32 GB **RTX 5090** (the current NVIDIA line jumps from the 16 GB RTX 5080
+straight to the 5090; AMD has no 32 GB consumer card at all — the line tops out
+at the 24 GB **RX 7900 XTX**, the card the local benchmark ran on). More VRAM
+is currently *not* a recommended spend for this project, on the measured
+evidence: extraction is already best-served by `gpt-oss:20b` (which fits
+16 GB), and for summaries the verdict that no local model is production-ready
+was reached at the quality level, not the VRAM level — the hybrid (hosted
+summaries) path is the quality upgrade. A 32 GB+ card would reopen the
+larger-models question, but reopening it means benchmarking, not assuming.
 
 **Software support varies by vendor — VRAM is necessary but not sufficient.**
 Nvidia (CUDA) is the most plug-and-play. AMD (ROCm) works well on recent Radeon
 cards — the 24 GB RX 7900 XTX is a strong-value pick for running the default
-`gemma4:e4b` locally — but doesn't cover every card. It's smoothest on bare Linux; on Windows, native
+`gpt-oss:20b` locally — but doesn't cover every card. It's smoothest on bare Linux; on Windows, native
 Ollama already drives the Radeon GPU directly, while running ROCm *inside* WSL2
 needs a WSL-specific runtime (see below). Intel Arc runs local models (through `llama.cpp`'s Vulkan backend or
 Intel's own tooling) but native Ollama support is still experimental in 2026 and
@@ -289,9 +310,9 @@ DXG/DXCore layer's memory overhead leaves too little room for the compute buffer
 a realistic (10K+ token) prompt to the 31b failed with an out-of-memory HTTP 500 or a
 load timeout though the weights themselves loaded. Either way, 24 GB has no room for
 a summary-sized context window on top of 31b's 20 GB of weights (see
-[Hardware](#hardware-requirements)) — WSL2 just hits the wall sooner. This is why the
-local default (`gpt-oss:20b`, or `gemma4:e4b` on a smaller card) stays well under
-that ceiling, with 31b reserved for a 32 GB+ card.
+[Hardware](#hardware-requirements)) — WSL2 just hits the wall sooner. This is why
+the recommended local model (`gpt-oss:20b`) stays well under that ceiling; the
+dense 31b would need a 32 GB+ card, and nothing that size has been benchmarked.
 
 Net: on AMD, **native Windows is the faster host**, especially for the
 generation-heavy summary track. But in-WSL2 ROCm is a perfectly usable fallback for
@@ -322,26 +343,27 @@ Ollama is **opt-in only**. The hosted providers auto-detect from their API
 keys; Ollama has no key, so you select it explicitly in `.env`. No
 `config.yaml` change is needed.
 
-**Everything local** — both tracks. The default model is `gpt-oss:20b` for
-extraction *and* summaries, so the minimal config is one line:
+**Hybrid** — local extraction, hosted summaries. This is the **recommended
+production setup**: local extraction is benchmark-competitive, local summaries
+are not (no local model cleared the publication bar — see
+[Recommended models](#recommended-models)), and it's also the answer to the
+honesty concern above:
+
+```bash
+LLM_EXTRACTION_PROVIDER=ollama   # local extraction — defaults to gpt-oss:20b
+# summary track left to its hosted default (e.g. Anthropic Sonnet)
+```
+
+**Everything local** — both tracks. Fine for testing or a private calendar;
+the summary prose won't be publication quality. The default model is
+`gpt-oss:20b` for extraction *and* summaries, so the minimal config is one
+line:
 
 ```bash
 LLM_PROVIDER=ollama
-# Defaults to gpt-oss:20b for both tracks (~13 GB, fits a 16 GB card). On a
-# smaller card override with LLM_MODEL=gemma4:e4b. If you have a 32 GB+ card,
-# upgrade to the higher-quality 31B model — for both tracks
-# (LLM_MODEL=gemma4:31b) or just summaries, where it helps most:
-# LLM_SUMMARY_MODEL=gemma4:31b
-```
-
-**Hybrid** — local extraction, hosted (or Western-model) summaries. This is the
-recommended setup for most consumer GPUs *and* the answer to the honesty
-concern above:
-
-```bash
-LLM_EXTRACTION_PROVIDER=ollama   # local extraction
-LLM_MODEL=gemma4:e4b
-# summary track left to its hosted default (e.g. Anthropic Sonnet)
+# Defaults to gpt-oss:20b for both tracks (~13 GB, fits a 16 GB card) — the
+# only local model the benchmark recommends. Cards too small for it are
+# better served by hosted extraction (see Recommended models).
 ```
 
 On startup, `sync` / `serve` / `summarize` log which model each track resolved
@@ -352,9 +374,8 @@ confirm the wiring at a glance.
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull gpt-oss:20b     # the default — both tracks (~13 GB, fits a 16 GB card)
-ollama pull gemma4:e4b      # lighter alternative for a smaller card
-ollama pull gemma4:31b      # optional quality upgrade (summaries), if you have the VRAM
+ollama pull gpt-oss:20b     # the default and only benchmark-recommended local
+                            # model (~13 GB, fits a 16 GB card)
 ollama serve                # usually already running as a service
 ```
 
@@ -378,8 +399,8 @@ within the model's configured context window" message on the index. Each refusal
 logs a `WARNING` naming the remedy. So the fix below is about *avoiding* the
 refusal, not preventing silent corruption.
 
-**Set the window to 128K (`131072`) — the full window the default models
-(`gpt-oss:20b`, `gemma4:e4b`) support.** Ollama's own defaults are too small for summaries (4K under
+**Set the window to 128K (`131072`) — the full window the default model
+(`gpt-oss:20b`) supports.** Ollama's own defaults are too small for summaries (4K under
 24 GB of VRAM, 32K on 24–48 GB; it [recommends at least 64K](https://docs.ollama.com/context-length)
 for large-context work), so you have to raise it. 128K comfortably covers
 Case Calendar's summary prompts — the per-document char budgets bound how large
@@ -414,19 +435,19 @@ There are three places to set it; any one works:
    derived model and use that name:
 
    ```text
-   FROM gemma4:e4b
+   FROM gpt-oss:20b
    PARAMETER num_ctx 131072
    ```
 
    ```bash
-   ollama create casecal-gemma -f ./Modelfile
-   # then: LLM_MODEL=casecal-gemma
+   ollama create casecal-gptoss -f ./Modelfile
+   # then: LLM_MODEL=casecal-gptoss
    ```
 
 Confirm it took effect with `ollama ps`, which shows each loaded model's
 allocated context and whether it's running on GPU or CPU. A bigger window costs
 more VRAM (the KV cache in [Hardware](#hardware-requirements)): 128K fits a
-24 GB card running `gemma4:e4b` comfortably; on a smaller card, drop it (64K is
+24 GB card running `gpt-oss:20b` comfortably; on a smaller card, drop it (64K is
 the floor Ollama recommends for large-context work). Don't exceed what your
 hardware can hold — see the warning below.
 
@@ -461,9 +482,14 @@ This reverses an earlier design that turned thinking **off** for the high-volume
 tracks to save time. That was a mistake: suppressing a weak model's reasoning made
 it **re-emit the known hearings/deadlines it was shown** back as spurious actions
 — a single dense entry could dump twenty-plus phantom deadlines. Letting the model
-reason fixes that and is measurably **more accurate** (in the benchmark,
-`gemma4:e4b` scored a deviation of 541 thinking vs 614 not — see
-[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)).
+reason fixes that and is measurably **more accurate** for extraction (in the
+benchmark, `gemma4:e4b` scored a deviation of 1241 thinking vs 1945 not, a 36%
+improvement — see
+[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)). Note this
+**inverts for summaries**: in the blind grading, thinking made every local
+boolean-thinker's summaries *worse* (gemma's markup broke, qwen's reasoning ran
+away, glm hung) — one more reason local summaries aren't the production path,
+and a reason to set `OLLAMA_FORCE_NO_THINK` if you generate them anyway.
 
 The budget is a **runaway guard, not a cost lever** — local inference has no
 per-token cost, so the bound exists only to make a model that *won't stop*
@@ -492,11 +518,14 @@ trigger the same stall.
 **Escape hatch — `OLLAMA_FORCE_NO_THINK`.** Set it to any non-empty value to force
 reasoning **off** for the run: Case Calendar sends an explicit `think=false` and a
 bounded output budget, so the model answers without a reasoning trace — much faster,
-and no runaway. The trade is accuracy: this is the very suppression that made weak
-models re-emit known context (above), so reach for it only when a thinking model is
-too slow or unstable on your hardware, and check the result against your own
-dockets. It is a **no-op for `gpt-oss`**, whose reasoning is level-based and can't
-be disabled by a boolean (see the note just below).
+and no runaway. On the *extraction* track the trade is accuracy: this is the very
+suppression that made weak models re-emit known context (above), so reach for it
+there only when a thinking model is too slow or unstable on your hardware, and check
+the result against your own dockets. For *summaries* the benchmark found the
+opposite — thinking made every local boolean-thinker's summaries worse — so if a
+run is summary-only, forcing thinking off is the better setting. It is a **no-op
+for `gpt-oss`**, whose reasoning is level-based and can't be disabled by a boolean
+(see the note just below).
 
 **`gpt-oss` is the exception:** its reasoning can't be turned off — Ollama
 [ignores a boolean `think`](https://docs.ollama.com/capabilities/thinking) and
@@ -603,10 +632,12 @@ what you'd want to measure when tuning:
 - **Speed.** Local throughput depends entirely on your hardware. A backfill
   `sync` over many dockets runs the extractor once per relevant entry, which can
   be slow on a CPU-only box.
-- **Quality vs. the hosted defaults.** The hosted defaults were chosen against a
-  measured scorecard (see [Cost](cost.md) and the comparison harness). A local
-  model may match them on your caseload or may not — benchmark before relying on
-  it for a public calendar.
+- **Quality vs. the hosted defaults.** This is measured, not speculative (see
+  [the scorecard](../model-comparison/SCORECARD.md)): on extraction,
+  `gpt-oss:20b` rivals the hosted tier and every other local model tested does
+  not; on summaries, no local model produced publication-quality prose. Treat
+  those as the priors for a public calendar, and re-benchmark on your own
+  caseload before deviating from them.
 
 ## See also
 

@@ -208,11 +208,15 @@ LLM-cache hit, so a warm-cache rebuild still produces a complete CSV. The large
 stores, their `build.log`s (with the per-entry DECISION trace), and the rendered
 calendars stay under the gitignored `data/provider-stores/`.
 
-> **The committed `model_actions.csv` now also carries two local models
-> (`ollama/gemma4:e4b` and `ollama/llama3.2:3b`)** (see
-> [SCORECARD.md](SCORECARD.md#local-models--gemma4e4b-recommended-and-llama323b)).
-> They are measured under the shipping `think:true` policy (gemma reasons rather
-> than being suppressed — the fix that moved its deviation from 1471 to 1090).
+> **The committed `model_actions.csv` also carries the local models**
+> (`ollama/gpt-oss:20b` at thinking low and `-medium`, `ollama/gemma4:e4b`
+> thinking on and `-nothink`, `ollama/qwen3.5:9b`, `ollama/granite4.1:8b`,
+> `ollama/llama3.2:3b` — see
+> [SCORECARD.md](SCORECARD.md#local-models--gpt-oss20b-leads-thinking-helps-extraction)).
+> They are measured under the shipping policy (bounded thinking on, structured
+> output on) except where the variant suffix says otherwise — the on/off pairs
+> exist because thinking measurably helps extraction (gemma4:e4b 1241 thinking
+> vs 1945 not).
 > They are opt-in — building them needs a running Ollama server, and because 11
 > benchmark entries have no usable PDF text in the snapshot they must run
 > **non-frozen** (a live PDF fetch + OCR, the same text the hosted models saw),
