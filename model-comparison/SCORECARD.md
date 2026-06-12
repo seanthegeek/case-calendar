@@ -128,6 +128,7 @@ hallucination); `under` = fewer (missed).
 | ollama/qwen3.5:9b (thinking OFF) | local | 930 | 676 | 254 | 142 | 56 | 54 | 13 | 490 | 36 | 115 | 24 | 700 |
 | openai/gpt-5.4-nano | hosted | 967 | 760 | 207 | 146 | 99 | 83 | 7 | 366 | 131 | 132 | 3 | 697 |
 | ollama/gemma4:e4b (thinking ON) | local | 1241 | 1030 | 211 | 140 | 181 | 143 | 13 | 493 | 147 | 112 | 12 | 985 |
+| ollama/granite3.3:8b | local | 1461 | 1232 | 229 | 203 | 101 | 56 | 15 | 818 | 141 | 115 | 12 | 1181 |
 | ollama/granite4.1:8b | local | 1869 | 1670 | 199 | 178 | 125 | 565 | 33 | 708 | 109 | 126 | 25 | 1609 |
 | ollama/gemma4:e4b (thinking OFF) | local | 1945 | 1740 | 205 | 115 | 181 | 176 | 8 | 1155 | 178 | 116 | 16 | 1681 |
 | ollama/llama3.2:3b | local | 2367 | 2110 | 257 | 182 | 414 | 153 | 10 | 972 | 454 | 170 | 12 | 2001 |
@@ -311,6 +312,11 @@ Beyond gpt-oss, the local field spreads wide:
   level sweep below.
 - **`gemma4:e4b` thinking-ON (1241)** — 2nd local. Over-extracts harder than any
   hosted model (`over` 1030), mostly spurious deadlines.
+- **`granite3.3:8b` (1461)** — 3rd local, and notably **better than its newer
+  sibling `granite4.1:8b`** (1461 vs 1869). Non-thinking; fast and stable in the
+  build (\~5–7 s/call, zero errors), but it floods set-deadlines (`Ds` 818 of its
+  1232 over) — the granite-family over-emission failure mode, relocated from
+  granite4.1's held-hearings to deadlines.
 - **`granite4.1:8b` (1869)** — does not report the `thinking` capability (so its
   on/off runs are byte-identical); over-emits *held* hearings heavily (`Hh` 565).
 - **`llama3.2:3b` (2367)** — weakest; non-thinking; heavy deadline hallucination.
@@ -327,6 +333,7 @@ their per-call latency is compared under
 | ollama/qwen3.5:9b (thinking OFF) | 1:24 |
 | ollama/gemma4:e4b (thinking ON) | 3:24 |
 | ollama/gemma4:e4b (thinking OFF) | 1:12 |
+| ollama/granite3.3:8b | 1:17 |
 | ollama/granite4.1:8b | 1:16 |
 | ollama/llama3.2:3b | 0:43 |
 
@@ -374,8 +381,8 @@ far below the cap, so they are never touched.
 
 #### Models too slow to benchmark on 24 GB
 
-Three local models could not finish a usable extraction run on a 24 GB card
-(RX 7900 XTX). They are hardware findings, not scored rows:
+Five local models could not finish a usable extraction run on a 24 GB card
+(RX 7900 XTX). They are hardware/behavior findings, not scored rows:
 
 - **`glm-4.7-flash:q4_K_M`** — *too slow*: \~62 s/entry, timed out at 230/660
   entries in 4:00. Not a runaway, just slow.
@@ -383,6 +390,19 @@ Three local models could not finish a usable extraction run on a 24 GB card
   — dense 24B/30B models that crawl on a 24 GB card. **The verdict on "are larger
   local models worth it?" is no on this hardware** — they spill the KV cache and
   run 3-6× slower than gpt-oss while scoring no better.
+- **`deepseek-r1:8b`** — *output-volume degenerate in both thinking modes*, a
+  different failure than the dense crawlers: its raw generation speed is normal
+  (86 tok/s probed, same rig), but it writes thousands of tokens per small-JSON
+  answer. Thinking ON: \~102 s/call with 8% of calls exhausting the bounded
+  reasoning budget (first 36 calls of us-v-ding; cancelled at a projected \~19 h
+  per column). Thinking OFF: \~75 s/call, **27% of 137 calls saturated the
+  8,192-token output cap** (truncated → entry skipped) with a median 4,729
+  output tokens per call — so the qwen "score it thinking-OFF" route doesn't
+  transfer; the OFF run was cancelled at a projected \~14 h per column with a
+  quarter of its entries zeroed by truncation. (These runs used Ollama 0.30.7.)
+- **`deepseek-r1:14b`** — not attempted beyond a speed probe: it generates at
+  49 tok/s (57% of the 8b's rate, same rig), so with the 8b already disqualified
+  on output volume, the 14b projects past 25 h per column.
 
 ### The regex pre-filter recall gap
 
@@ -401,9 +421,12 @@ false negative loses an event).
 | llama3.2:3b | 146 |
 | **gpt-oss:20b** | **118** |
 | gemma4:e4b | 89 |
+| deepseek-r1:8b | 86 |
 | granite4.1:8b | 85 |
 | qwen3.5:9b | 83 |
+| granite3.3:8b | 83 |
 | glm-4.7-flash:q4_K_M | 73 |
+| deepseek-r1:14b | 49 |
 | mistral-small3.2:24b | 36 |
 | granite4.1:30b | 25 |
 
@@ -494,7 +517,8 @@ controls, so these failure modes surface live rather than after a manual check.
 The local sweep ran on:
 
 - **GPU**: AMD Radeon RX 7900 XTX (24 GB, RDNA 3)
-- **Runtime**: Ollama for Windows (native), version 0.30.6
+- **Runtime**: Ollama for Windows (native), version 0.30.6 (the later
+  `granite3.3:8b` and `deepseek-r1` additions were measured on 0.30.7)
 - **Driver**: AMD Adrenalin 26.6.1
 - **Client**: WSL2, calling the Windows Ollama over `OLLAMA_BASE_URL`
 

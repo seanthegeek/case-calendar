@@ -210,8 +210,8 @@ calendars stay under the gitignored `data/provider-stores/`.
 
 > **The committed `model_actions.csv` also carries the local models**
 > (`ollama/gpt-oss:20b` at thinking low and `-medium`, `ollama/gemma4:e4b`
-> thinking on and `-nothink`, `ollama/qwen3.5:9b`, `ollama/granite4.1:8b`,
-> `ollama/llama3.2:3b` — see
+> thinking on and `-nothink`, `ollama/qwen3.5:9b`, `ollama/granite3.3:8b`,
+> `ollama/granite4.1:8b`, `ollama/llama3.2:3b` — see
 > [SCORECARD.md](SCORECARD.md#local-models--gpt-oss20b-leads-thinking-helps-extraction)).
 > They are measured under the shipping policy (bounded thinking on, structured
 > output on) except where the variant suffix says otherwise — the on/off pairs

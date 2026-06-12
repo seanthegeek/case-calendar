@@ -87,9 +87,11 @@ leads at 636):
 | --- | --- | ---: | --- |
 | **gpt-oss:20b** | OpenAI | **710** | best local, 2nd overall — **the recommendation** |
 | gemma4:e4b | Google | 1241 | nearly twice gpt-oss's deviation; over-extracts harder than any hosted model |
+| granite3.3:8b | IBM | 1461 | beats its newer sibling granite4.1, but floods spurious set-deadlines |
 | granite4.1:8b | IBM | 1869 | heavy spurious held-hearing emission |
 | llama3.2:3b | Meta | 2367 | weakest scored; heavy deadline hallucination |
 | qwen3.5:9b | Alibaba | (930)¹ | unstable — reasoning ran away on \~47% of entries with thinking on |
+| deepseek-r1 (8b / 14b) | DeepSeek | — | unusable in *both* thinking modes — even with thinking off it writes thousands of tokens per entry (27% of calls hit the output cap); cancelled |
 | glm-4.7-flash, mistral-small3.2:24b, granite4.1:30b | — | — | too slow to complete a run on a 24 GB card |
 
 ¹ scored with thinking forced off, where \~22% of entries still truncated.
