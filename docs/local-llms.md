@@ -625,13 +625,10 @@ Western model states plainly.
 These aren't blockers, but they're where local differs from hosted — and exactly
 what you'd want to measure when tuning:
 
-- **Over-extraction, not JSON validity.** Schema-enforced structured output is
-  always on (the native `format` grammar on real Ollama), so a local model
-  can't hand back malformed JSON. What the benchmark measured instead is local
-  models over-emitting *plausible* actions — spurious deadlines, known events
-  re-emitted as new ones. The grammar reduces it (it measurably improved
-  gpt-oss) but doesn't eliminate it; this, not parse failures, is the main
-  accuracy variable.
+- **Over-extraction.** Among other things, the benchmark measured local models over-emitting
+*plausible* actions — spurious deadlines, known events
+re-emitted as new ones. The JSON formatting grammar reduces it (it measurably improved
+  `gpt-oss`) but doesn't eliminate it.
 - **Context window for summaries.** Covered above; the most common way a local
   setup produces wrong-looking output.
 - **Model provenance.** Covered under [honesty](#model-provenance-and-honesty);
