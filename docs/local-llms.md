@@ -49,7 +49,7 @@ follow it:
   and both hosted OpenAI models, within run-to-run noise of the hosted Gemini
   default on the per-docket aggregate metric. It is the **only** local model
   the benchmark recommends for extraction: the next-best local
-  (`gemma4:e4b`) deviated nearly twice as much, and the rest trailed far
+  (`gemma4:e4b`) deviated from human results nearly twice as much, and the rest trailed far
   behind or couldn't complete the run.
 - **Summaries: no local model is good enough for production.** In the blind
   grading, the best local summaries reached only a **C** — accurate on the
@@ -61,10 +61,8 @@ follow it:
 open-weights), so it fits a **16 GB** card with room for a working context
 window. Its reasoning is level-based (it can't run away the way a
 boolean-thinking model can), which makes it stable under the bounded thinking
-budget. The recommended production setup is therefore the **hybrid**: run
-extraction on `gpt-oss:20b` and send only summaries to a hosted provider —
-which is also the answer for adversary-nation cases where you want a model you
-specifically trust. An all-local setup still works (it's the default when you
+budget. The recommended production setup when using local models  is therefore the **hybrid**: run
+extraction on `gpt-oss:20b` and send only summaries to a hosted provider — or don't enable summaries at all. An all-local setup still works (it's the default when you
 select `LLM_PROVIDER=ollama`) and is fine for testing or a private calendar;
 just know its summaries won't be publication quality. The two tracks are
 configured independently — see [Configure](#configure).
@@ -97,7 +95,7 @@ leads at 636):
 ¹ scored with thinking forced off, where \~22% of entries still truncated.
 
 For **summaries**, no local model is recommended for production at all. Every
-local summary in the blind grading topped out at a C (accurate figures, but too
+local summary in the blind grading topped out at a C grade (accurate figures, but too
 thin or too clunky to publish) or failed outright; only the hosted models were
 publication-ready. Run production summaries hosted (the hybrid setup —
 see [Configure](#configure)); a bigger local model is not the fix — the dense
@@ -116,8 +114,8 @@ variant.
 
 China-developed open models (**Qwen** from Alibaba, **DeepSeek-R1**, **Kimi**)
 carry a provenance caveat for this project's caseload — and don't assume their
-reputation transfers to this task either: the one this project benchmarked,
-`qwen3.5:9b`, was unstable on it (the table above), whatever its standing on
+reputation transfers to this task either: the ones this project benchmarked,
+`qwen3.5:9b` and `DeepSeek-R1`, were unstable on it (see the table above), whatever its standing on
 general leaderboards. Read the next section before using any of them on the
 summary track.
 
