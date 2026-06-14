@@ -11,15 +11,25 @@ Case Calendar is a Python CLI. You'll need:
 - A **CourtListener API token** — sign up for a free account at
   [courtlistener.com](https://www.courtlistener.com/) and copy the token from
   the user-profile page.
-- An **LLM API key** for one of: Anthropic, Google (Gemini), or OpenAI.
-  Pick whichever you already use. The extractor pipeline uses the cheap /
-  small-model tier of each provider; expect cents per case per day on a
-  busy docket. The recommended default is a **split**: Gemini
-  (`gemini-3.1-flash-lite`) for extraction and Anthropic
-  (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
-  for you when you provide keys for both. For *why* the default splits the
-  two tracks across providers, see
-  [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
+- **An LLM** — either a hosted API key or a local model:
+  - **A hosted API key** for one of: Anthropic, Google (Gemini), or
+    OpenAI. Pick whichever you already use. The extractor pipeline uses
+    the cheap / small-model tier of each provider; expect cents per case
+    per day on a busy docket. The recommended default is a **split**:
+    Gemini (`gemini-3.1-flash-lite`) for extraction and Anthropic
+    (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
+    for you when you provide keys for both. For *why* the default splits
+    the two tracks across providers, see
+    [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
+  - **A local model via [Ollama](local-llms.md)** — no API key, no
+    per-token cost, and docket text never leaves your machine. The
+    trade-offs are real: it needs a GPU (16 GB of VRAM for the recommended
+    `gpt-oss:20b`), and while local extraction is benchmark-competitive,
+    no local model is good enough for production case summaries — so the
+    recommended setup is a hybrid (local extraction, hosted summaries).
+    See [Local LLMs](local-llms.md) for hardware requirements, model
+    choices, and the provenance caveats that matter for adversary-nation
+    cases.
 
 [← Back to docs](index.md)
 
