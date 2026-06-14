@@ -260,5 +260,5 @@ cases:
   - id: us-v-wei
     name: "United States v. Wei"
     calendar: natsec
-    dockets: [67661286, 67661185]
+    dockets: [67661286, 67661185, 73482014]
     tags: [PRC, China, espionage, defense]
