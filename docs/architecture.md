@@ -152,8 +152,8 @@ important framing: the prompt carries knowledge for every provider; this is
 not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
-extraction. On the frozen benchmark (see the
-[SCORECARD](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
+extraction. On the frozen benchmark (see [the
+scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
 `D met/pass` among the hosted extractors (129 vs Anthropic's 143) and far
 fewer spurious cancellations than Anthropic (`D canc` 4 vs 43), and both its
 per-entry deviation (636 vs 784) and its aggregate deviation (376 vs 476) are
@@ -183,8 +183,8 @@ dropping it.
 | Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best hosted `D met/pass` (129 vs 143) and far fewer spurious cancellations than Anthropic (4 vs 43), \~3.7× cheaper, \~2× faster per call | graded **A** in the blind Phase 3 read (accurate, most detailed, clean — the reference) vs Gemini 2.5 Pro's A− (a touch less detail; omitted the China nexus on us-v-ding) |
 
 The full deviation breakdown — measured against a human-scored ground-truth
-worksheet over the whole caseload — is in the
-[SCORECARD](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). The split exists because the two
+worksheet over the whole caseload — is in [the
+scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). The split exists because the two
 tracks optimize for different things: extraction is high-volume classification
 where cost and latency multiply over thousands of calls, and the substantive
 deadline classes are now enumerated in the prompt so Gemini handles them as

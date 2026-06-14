@@ -491,8 +491,8 @@ it **re-emit the known hearings/deadlines it was shown** back as spurious action
 — a single dense entry could dump twenty-plus phantom deadlines. Letting the model
 reason fixes that and is measurably **more accurate** for extraction (in the
 benchmark, `gemma4:e4b` scored a deviation of 1241 thinking vs 1945 not, a 36%
-improvement — see
-[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)). Note this
+improvement — see [the
+scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). Note this
 **inverts for summaries**: in the blind grading, thinking made every local
 boolean-thinker's summaries *worse* (gemma's markup broke, qwen's reasoning ran
 away, glm hung) — one more reason local summaries aren't the production path,
@@ -639,7 +639,7 @@ re-emitted as new ones. The JSON formatting grammar reduces it (it measurably im
   `sync` over many dockets runs the extractor once per relevant entry, which can
   be slow on a CPU-only box.
 - **Quality vs. the hosted defaults.** This is measured, not speculative (see
-  [the scorecard](../model-comparison/SCORECARD.md)): on extraction,
+  [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) on extraction,
   `gpt-oss:20b` rivals the hosted tier and every other local model tested does
   not; on summaries, no local model produced publication-quality prose. Treat
   those as the priors for a public calendar, and re-benchmark on your own
