@@ -485,8 +485,7 @@ and each one is reproduced **verbatim** on the
 [LLM prompts](llm-prompts.md) page so you can read exactly what the model
 is told without opening the source:
 
-- [`HEARING_SIGNIFICANCE_RULES` and `DEADLINE_SIGNIFICANCE_RULES`](llm-prompts.md#hearing--deadline-extraction--system_prompt) — the two major-vs-minor classification rubrics (one per event family), each interpolated into and reproduced inline within the main extractor prompt.
-- [`SYSTEM_PROMPT`](llm-prompts.md#hearing--deadline-extraction--system_prompt) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in).
+- [`SYSTEM_PROMPT`](llm-prompts.md#hearing--deadline-extraction--system_prompt) — per-entry hearing AND filing-deadline extraction; a single merged prompt that runs on every docket (no per-case opt-in). Interpolates in the two major-vs-minor classification rubrics, `HEARING_SIGNIFICANCE_RULES` and `DEADLINE_SIGNIFICANCE_RULES`, which are reproduced inline within it.
 - [`VERIFY_SYSTEM_PROMPT`](llm-prompts.md#row-verify-pass--verify_system_prompt) — the end-of-sync verify pass; one merged prompt handles BOTH hearings AND filing deadlines (since 0.11.0).
 - [`DEDUPE_HEARING_SYSTEM_PROMPT`](llm-prompts.md#duplicate-hearing-resolver--dedupe_hearing_system_prompt) — same-docket same-slot duplicate resolver.
 - [`SUMMARY_SYSTEM_PROMPT`](llm-prompts.md#case-summary--summary_system_prompt) — the higher-tier case-summary prompt.
