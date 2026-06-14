@@ -40,7 +40,7 @@ and the summarizer ask very different things of a model:
   Benefits from a more capable model and a large context window, and — for
   adversary-nation cases — a model you trust to describe the charges faithfully.
 
-The project's benchmark (see [the scorecard](../model-comparison/SCORECARD.md))
+The project's benchmark (see [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md))
 returned opposite verdicts for the two tracks, and the recommendations below
 follow it:
 
