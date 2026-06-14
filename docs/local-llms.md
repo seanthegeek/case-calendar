@@ -15,9 +15,7 @@ Why you might want it:
   head-to-head against the hosted providers with the same pipeline and the same
   dockets — see [Benchmarking](#benchmarking-a-local-model).
 
-The trade-offs are real and worth reading before you rely on it — see
-[Choosing a model](#choosing-a-model) (including the honesty note for
-adversary-nation cases) and [Caveats](#caveats).
+The trade-offs are real and worth reading before you rely on it.
 
 > Model names and hardware move fast. The families, sizes, and VRAM figures
 > below were checked in June 2026; treat specific version numbers as examples
@@ -40,7 +38,7 @@ and the summarizer ask very different things of a model:
   Benefits from a more capable model and a large context window, and — for
   adversary-nation cases — a model you trust to describe the charges faithfully.
 
-The project's benchmark (see [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md))
+The project's benchmark, [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)
 returned opposite verdicts for the two tracks, and the recommendations below
 follow it:
 
@@ -67,43 +65,7 @@ select `LLM_PROVIDER=ollama`) and is fine for testing or a private calendar;
 just know its summaries won't be publication quality. The two tracks are
 configured independently — see [Configure](#configure).
 
-## Choosing a model
-
-### Recommended model
-
-The only recommended local model for this project at this time is **`gpt-oss:20b`, for extraction only.** It is the built-in
-Ollama default for this project — selecting `LLM_PROVIDER=ollama` with no model override runs it
-for both tracks — and it earned that on the benchmark (2nd overall on
-extraction, ahead of three of the four hosted models) and on hardware fit
-(\~13 GB, comfortable on a 16 GB card). No other local model earned a recommendation.
-
-Full benchmark details, including methodology and comparisons to hosted models can be found on [the scorecard page](../model-comparison/SCORECARD.md).
-
-For **summaries**, no local model is recommended for production at all. At best, a local model's summary would produce accurate figures, but would be too
-thin or too clunky to publish; others failed outright. Only the hosted models were
-publication-ready. Run production summaries hosted (the hybrid setup —
-see [Configure](#configure)); a bigger local model is not the fix — the dense
-24–30B models ran 3–6× slower than gpt-oss on a 24 GB card while scoring no
-better, and nothing larger has been benchmarked to recommend.
-
-On a card too small for `gpt-oss:20b`, the honest recommendation is to keep
-extraction hosted too — the Gemini extraction default is both the most accurate
-and among the cheapest. The smaller `gemma4:e4b` (9.6 GB) and `gemma4:e2b`
-(7.2 GB) do run on 12 GB / 8 GB cards, but they're a measured accuracy
-downgrade, not a recommendation.
-
-Case Calendar only ever sends **text** (docket text + text extracted from
-PDFs — OCR happens before the LLM), so you never need a vision/multimodal
-variant.
-
-China-developed open models (**Qwen** from Alibaba, **DeepSeek-R1**, **Kimi**)
-carry a provenance caveat for this project's caseload — and don't assume their
-reputation transfers to this task either: the ones this project benchmarked,
-`qwen3.5:9b` and `DeepSeek-R1`, were unstable on it (see the table above), whatever its standing on
-general leaderboards. Read the next section before using any of them on the
-summary track.
-
-### Model provenance and honesty
+## Model provenance and honesty
 
 This matters specifically because Case Calendar is often used to track
 cybercrime and espionage prosecutions — including cases that name foreign
@@ -153,7 +115,7 @@ verify it yourself rather than taking anyone's word — that's what the
 [benchmark harness](#benchmarking-a-local-model) is for: run a real China-nexus
 indictment through two models and read the summaries side by side.
 
-### Reading a model tag
+## Reading a model tag
 
 Ollama tags look like `gemma4:31b` or, spelled out, `gemma4:31b-it-q4_K_M`. The
 parts:
