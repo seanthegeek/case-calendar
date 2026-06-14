@@ -27,6 +27,7 @@ instead.
 
   ```bash
   sudo apt install poppler-utils tesseract-ocr   # Debian / Ubuntu
+  sudo dnf install epel-release && sudo dnf install poppler-utils tesseract   # RHEL / CentOS / Rocky (tesseract is in EPEL)
   brew install poppler tesseract                 # macOS
   ```
 

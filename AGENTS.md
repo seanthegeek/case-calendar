@@ -217,10 +217,12 @@ uv run case-calendar show             # dump current state
 # 4. Subscribe to docket alerts in CourtListener for each docket in your config.yaml.
 ```
 
-Optional system dependencies for OCR fallback (only needed when CourtListener hasn't OCR'd a PDF yet):
+Optional system dependencies for OCR fallback (only needed when CourtListener's `plain_text` is empty or garbled, so the project OCRs the PDF itself):
 
 ```bash
-sudo apt install poppler-utils tesseract-ocr   # or: brew install poppler tesseract
+sudo apt install poppler-utils tesseract-ocr                                 # Debian / Ubuntu
+sudo dnf install epel-release && sudo dnf install poppler-utils tesseract     # RHEL / CentOS / Rocky (tesseract is in EPEL)
+brew install poppler tesseract                                                # macOS
 ```
 
 Without these, the tool still works — it skips PDFs CourtListener hasn't processed and retries on each subsequent sync.

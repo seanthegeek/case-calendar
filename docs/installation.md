@@ -115,6 +115,10 @@ itself, so the AI summary pipeline sees usable text instead of an explicit
 # Debian / Ubuntu
 sudo apt install poppler-utils tesseract-ocr
 
+# RHEL / CentOS / Rocky (tesseract lives in EPEL)
+sudo dnf install epel-release
+sudo dnf install poppler-utils tesseract
+
 # macOS
 brew install poppler tesseract
 ```
