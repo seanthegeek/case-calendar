@@ -382,6 +382,13 @@ header {
 }
 header h1 { font-size: 1.5rem; margin: 0; font-weight: 600; }
 header .meta { color: var(--muted); font-size: 0.9rem; }
+@media (max-width: 600px) {
+  header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.4rem;
+  }
+}
 .search-bar {
   padding: 0.9rem 1.6rem;
   border-bottom: 1px solid var(--border);

@@ -8,6 +8,16 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.17.1] - 2026-06-14
+
+### Fixed
+
+- **Index header no longer collides on narrow screens.** The page header laid
+  the site title and the "Generated …" timestamp + theme toggle out on a single
+  `space-between` row, so on phone-width viewports the timestamp overlapped the
+  title. A `max-width: 600px` media query now stacks the timestamp/toggle under
+  the title; wider screens are unchanged.
+
 ## [0.17.0] - 2026-06-11
 
 ### Added
