@@ -296,8 +296,7 @@ keys; Ollama has no key, so you select it explicitly in `.env`. No
 
 **Hybrid** — local extraction, hosted summaries. This is the **recommended
 production setup**: local extraction is benchmark-competitive, local summaries
-are not (no local model cleared the publication bar — see
-[Recommended model](#recommended-model)), and it's also the answer to the
+are not no local model cleared the publication bar, and it's also the answer to the
 honesty concern above:
 
 ```bash
