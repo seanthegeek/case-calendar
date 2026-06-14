@@ -3,8 +3,9 @@ title: Real-time webhooks
 ---
 
 By default Case Calendar polls CourtListener on a cron. That works, but
-CourtListener throttles the free tier (125 requests per day; 300/day on the paid Tier 1) and a polling
-schedule means the ICS file is only refreshed at each cron tick —
+CourtListener throttles the free tier (125 requests per day; 300/day on the
+paid Tier 1 — see the [full tier table](cost.md#courtlistener-api-limits)) and
+a polling schedule means the ICS file is only refreshed at each cron tick —
 minutes or hours after CourtListener has the entry, depending on how
 often the cron runs.
 
@@ -249,9 +250,8 @@ journalctl -u case-calendar-reconcile.service -f      # follow reconcile logs
 Keep a full `sync` as an infrequent catch-all for anything `reconcile`
 doesn't cover. Copy the two units above to `case-calendar-sync.service` /
 `.timer`, swap the `ExecStart` to `... case-calendar sync` and the timer to
-`OnCalendar=daily`. Mind your CourtListener request budget: a full `sync`
-spends roughly one request per docket every run, while `reconcile` spends
-one per pending placeholder — so the full sync is the one to keep
+`OnCalendar=daily`. See [Polling, webhooks, and reconcile](#polling-webhooks-and-reconcile)
+for how the three fit together and why the full sync is the one to keep
 infrequent as the caseload grows.
 
 ## 3. Put it behind HTTPS with Caddy

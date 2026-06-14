@@ -98,24 +98,23 @@ knowing before you rely on it:
   extension uploads what you fetched into CourtListener as a
   side effect, so the next sync sees it.
 - **Calendar-client refresh delays.** [Subscribed ICS feeds](subscribing.md)
-  refresh on the calendar app's own schedule, not yours. Apple
-  Calendar defaults to roughly hourly and is user-configurable (5
-  minutes to weekly). Google Calendar runs every 8–24 hours, or
-  longer, on an undocumented schedule, with no user setting and
-  no manual refresh button. Proton Calendar runs every 4–16
-  hours per its own documentation. Two ways to eliminate this
-  lag: subscribe in a calendar app that lets you set the refresh
-  interval (Apple Calendar, Thunderbird, Fastmail), or configure
-  Case Calendar to push directly to
-  [Google Calendar or Microsoft 365](calendars.md) —
-  direct push lands the event in your calendar in
-  the same emit cycle that writes the ICS file.
+  refresh on the calendar app's own schedule, not yours —
+  anywhere from minutes (Apple Calendar, Thunderbird, Fastmail,
+  which let you set the interval) to many hours with no user
+  setting (Google Calendar, Proton). The
+  [per-app intervals](subscribing.md#a-note-on-refresh-frequency)
+  are documented under Subscribing. Two ways to eliminate this
+  lag: subscribe in a client that lets you set the refresh
+  interval, or configure Case Calendar to push directly to
+  [Google Calendar or Microsoft 365](calendars.md) — direct
+  push lands the event in the same emit cycle that writes the
+  ICS file.
 - **Extraction errors.** The cheap regex pre-filter and the
   small/fast LLM the extractor uses can miss an atypical clerk
   notation, misread a date from a garbled PDF, or fail to
-  recognize a reschedule tan event. The end-of-sync verify
-  pass catches many of these, not all. Audit against the
-  source docket before relying on a date for anything
+  recognize a reschedule the first time it sees one. The
+  end-of-sync verify pass catches many of these, not all. Audit
+  against the source docket before relying on a date for anything
   consequential.
 
 With the first two latencies mitigated — the webhook receiver

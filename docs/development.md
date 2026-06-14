@@ -23,13 +23,9 @@ instead.
   [Installation](installation.md) for why.
 - Optional but recommended: **poppler** and **tesseract** for the local OCR
   fallback. Without them the pipeline still runs — it just skips PDFs whose
-  text it can't extract any other way and retries them on a later sync.
-
-  ```bash
-  sudo apt install poppler-utils tesseract-ocr   # Debian / Ubuntu
-  sudo dnf install epel-release && sudo dnf install poppler-utils tesseract   # RHEL / CentOS / Rocky (tesseract is in EPEL)
-  brew install poppler tesseract                 # macOS
-  ```
+  text it can't extract any other way and retries them on a later sync. See
+  [Installation → local OCR tools](installation.md#highly-recommended-local-ocr-tools)
+  for the install commands.
 
 ## Get the code
 
@@ -82,11 +78,10 @@ You have two starting points:
 
 - **`config.dev.yaml`** — a checked-in dev config covering only the cases that
   have driven a documented regression in one of the LLM-driven layers
-  (extractor, verify pass, dedupe sweeps, summary pipeline). Each case is
-  annotated with the failure mode it exercises. This is the fast inner loop
-  for prompt and model work — it touches every documented failure mode for a
-  fraction of a full-caseload run. Use it with `-c config.dev.yaml` on any
-  command.
+  (extractor, verify pass, dedupe sweeps, summary pipeline), each annotated
+  with the failure mode it exercises. Use it with `-c config.dev.yaml` on any
+  command; it's the fast inner loop for prompt and model work (see
+  [Iterating on prompts and models cheaply](#iterating-on-prompts-and-models-cheaply)).
 
 `config.yaml` is gitignored (it's your personal caseload). `config.dev.yaml`
 is tracked, because the dockets in it are public CourtListener records and the
@@ -174,9 +169,10 @@ expensive, so the project gives you three levers, cheapest first.
 
 ### 1. The dev config
 
-Run any command with `-c config.dev.yaml` to exercise only the ~18 regression
-cases instead of a full caseload. A prompt change that's meant to fix one of
-those failure modes can be checked against exactly the cases that surfaced it.
+The [dev config](#pick-what-to-track) is the cheapest lever: `-c config.dev.yaml`
+exercises only the ~18 regression cases instead of a full caseload, so a prompt
+change meant to fix one of those failure modes is checked against exactly the
+cases that surfaced it.
 
 ### 2. The provider-comparison harness
 

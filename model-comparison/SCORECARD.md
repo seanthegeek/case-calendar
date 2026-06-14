@@ -141,9 +141,10 @@ model over-extracts relative to a human counting the *final* state.
 `gpt-oss:20b`, is 2nd at 710 — ahead of hosted Anthropic (784) and both OpenAI
 models** — and within run-to-run noise of Gemini on the aggregate metric (396 vs
 376). It generates roughly half the output tokens of the other hosted models
-(more concise) and runs at \~118 tok/s locally despite being a 20B model (its
-MXFP4 4-bit quant), so it is both the best local extractor *and* fast. This is why
-`gpt-oss:20b` is the recommended local default.
+(more concise) and is fast despite its 20B size (see
+[Generation speed](#generation-speed-rx-7900-xtx-ollama-for-windows)) — both the
+best local extractor *and* a quick one. This is why `gpt-oss:20b` is the
+recommended local default.
 
 ### What a deviation of 636 means for the calendar (it is not a count of calendar errors)
 
@@ -298,9 +299,9 @@ build; gaps over two minutes dropped as case boundaries):
 | anthropic/claude-haiku-4-5 | 3.1 | 3.7 |
 
 Anthropic Haiku is 2nd on accuracy (784) but the **most expensive** hosted
-extractor *and* the slowest — roughly 2× Gemini's per-call latency on top of
-\~4.8× its cost — a poor trade for the extraction track, which is why the
-default routes extraction to Gemini. The OpenAI models are the noisiest (`Ds`
+extractor (see [Cost](#cost)) *and* the slowest — roughly 2× Gemini's per-call
+latency — a poor trade for the extraction track, which is why the default
+routes extraction to Gemini. The OpenAI models are the noisiest (`Ds`
 over-counts: they allocate more distinct set-deadlines than the human folds
 into one).
 

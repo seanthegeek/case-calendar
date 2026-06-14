@@ -177,31 +177,16 @@ dropping it.
 | --- | --- | --- |
 | Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-4-6`) |
 | Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
-| Anthropic cost (full backfill) | \~$6.99 | \~$2.51 |
-| Gemini cost (full backfill) | \~$1.87 | \~$1.16 |
 | Per-entry / aggregate deviation (lower is better) | Gemini **636 / 376** (best overall) vs Anthropic 784 / 476 | — |
 | Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best hosted `D met/pass` (129 vs 143) and far fewer spurious cancellations than Anthropic (4 vs 43), \~3.7× cheaper, \~2× faster per call | graded **A** in the blind Phase 3 read (accurate, most detailed, clean — the reference) vs Gemini 2.5 Pro's A− (a touch less detail; omitted the China nexus on us-v-ding) |
 
 The full deviation breakdown — measured against a human-scored ground-truth
-worksheet over the whole caseload — is in [the
-scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). The split exists because the two
-tracks optimize for different things: extraction is high-volume classification
-where cost and latency multiply over thousands of calls, and the substantive
-deadline classes are now enumerated in the prompt so Gemini handles them as
-well as Anthropic; summaries are low-volume synthesis where Sonnet's
-case-distinguishing detail earns the higher tier. An operator who prefers a
-single provider can still set `LLM_PROVIDER`, or pin either track with
+worksheet over the whole caseload, including the
+[blind Phase 3 summary grading](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-3--summary-quality-blind-read--grade)
+— is in [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md);
+measured dollar figures are on the [Cost page](cost.md). An operator who prefers
+a single provider can still set `LLM_PROVIDER`, or pin either track with
 `LLM_EXTRACTION_PROVIDER` / `LLM_SUMMARY_PROVIDER`.
-
-The [SCORECARD's Phase 3 section](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-3--summary-quality-blind-read--grade)
-carries the blind summary grading. Gemini 2.5 Pro is *not* the weak link the
-cheap extraction tier was — it graded A−, accurate and clean. Anthropic's edge
-is detail: Sonnet's A is the grading's reference for the case-distinguishing
-specifics, and the one defect logged against Gemini 2.5 Pro — omitting the
-China nexus on us-v-ding — is exactly the class of specific this caseload
-exists to surface.
-
-Visit the [Cost page](cost.md) for more cost details.
 
 ## Why LLM-driven extraction, not regex?
 

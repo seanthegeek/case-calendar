@@ -298,13 +298,12 @@ step-by-step walkthrough is in
 | `LOG_LEVEL` | no (default `INFO`) | Python logging level — `DEBUG`, `INFO`, `WARNING`, etc. |
 
 When no provider is pinned, each track auto-detects from whichever API keys are
-set, in its own priority order: extraction prefers **gemini > anthropic >
-openai**, summaries prefer **anthropic > gemini > openai**. With all three keys
-present that lands a zero-config operator on the recommended split — Gemini for
-extraction, Anthropic for summaries. The reasoning is in
-[Architecture → why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries);
-the full precedence walkthrough is in
-[Installation](installation.md#configure-secrets).
+set, in its own priority order — landing a zero-config operator with all three
+keys on the recommended split (Gemini for extraction, Anthropic for summaries).
+The [full precedence walkthrough](installation.md#configure-secrets) gives the
+per-track key order, and the
+[reasoning for the split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
+is in Architecture.
 
 ## Next steps
 

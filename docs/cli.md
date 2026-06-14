@@ -205,17 +205,10 @@ config file and the running daemon.
 
 ## Environment variables
 
-| Variable | Purpose |
-| --- | --- |
-| `COURTLISTENER_TOKEN` | Required. Your CourtListener API token. |
-| `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` | Set at least one for the extractor pipeline. The tool auto-detects which provider to use. |
-| `LLM_PROVIDER` | Optional. Force a specific extractor provider (`anthropic` / `openai` / `gemini`). |
-| `LLM_MODEL` | Optional. Override the extractor model. |
-| `LLM_SUMMARY_PROVIDER` | Optional. Force a specific summary-pipeline provider. |
-| `LLM_SUMMARY_MODEL` | Optional. Override the summary model. |
-| `CASE_CALENDAR_WEBHOOK_SECRET` | Required for `serve` and `webhook-url`. A long random string included in the webhook URL — CourtListener has no signing mechanism, so the URL secret is the auth model. |
-| `M365_CLIENT_ID` | Alternative to `m365_client_id` in `config.yaml`. |
-| `LOG_LEVEL` | Optional. `DEBUG` for verbose output; default `INFO`. |
-
-Environment variables are read from `.env` in the project root via
-`python-dotenv` before any module touches the environment.
+The commands above read their secrets and provider settings —
+`COURTLISTENER_TOKEN`, the `*_API_KEY` keys, `LLM_PROVIDER` / `LLM_MODEL` and
+the per-track overrides, `CASE_CALENDAR_WEBHOOK_SECRET`, `M365_CLIENT_ID`,
+`LOG_LEVEL`, and the Ollama settings — from `.env` in the project root, loaded
+automatically via `python-dotenv` before any module touches the environment.
+See [Configuration → Environment variables](configuration.md#environment-variables)
+for the complete table.

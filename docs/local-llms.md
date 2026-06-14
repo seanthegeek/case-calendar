@@ -298,8 +298,8 @@ keys; Ollama has no key, so you select it explicitly in `.env`. No
 
 **Hybrid** — local extraction, hosted summaries. This is the **recommended
 production setup**: local extraction is benchmark-competitive, local summaries
-are not no local model cleared the publication bar, and it's also the answer to the
-honesty concern above:
+are not (no local model cleared the publication bar), and it's also the answer
+to the honesty concern above:
 
 ```bash
 LLM_EXTRACTION_PROVIDER=ollama   # local extraction — defaults to gpt-oss:20b
@@ -326,8 +326,7 @@ confirm the wiring at a glance.
 
 ```bash
 # Install Ollama: https://ollama.com/download
-ollama pull gpt-oss:20b     # the default and only benchmark-recommended local
-                            # model (~13 GB, fits a 16 GB card)
+ollama pull gpt-oss:20b     # the default, benchmark-recommended local model
 ollama serve                # usually already running as a service
 ```
 
@@ -352,9 +351,9 @@ logs a `WARNING` naming the remedy. So the fix below is about *avoiding* the
 refusal, not preventing silent corruption.
 
 **Set the window to 128K (`131072`) — the full window the default model
-(`gpt-oss:20b`) supports.** Ollama's own defaults are too small for summaries (4K under
-24 GB of VRAM, 32K on 24–48 GB; it [recommends at least 64K](https://docs.ollama.com/context-length)
-for large-context work), so you have to raise it. 128K comfortably covers
+(`gpt-oss:20b`) supports.** Ollama's own defaults (above) are too small for
+summaries — it [recommends at least 64K](https://docs.ollama.com/context-length)
+for large-context work — so you have to raise it. 128K comfortably covers
 Case Calendar's summary prompts — the per-document char budgets bound how large
 one gets — and the context-overflow guard cleanly refuses anything that still
 wouldn't fit, so there's no downside to using the model's full window.
@@ -434,11 +433,10 @@ This reverses an earlier design that turned thinking **off** for the high-volume
 tracks to save time. That was a mistake: suppressing a weak model's reasoning made
 it **re-emit the known hearings/deadlines it was shown** back as spurious actions
 — a single dense entry could dump twenty-plus phantom deadlines. Letting the model
-reason fixes that and is measurably **more accurate** for extraction (in the
-benchmark, `gemma4:e4b` scored a deviation of 1241 thinking vs 1945 not, a 36%
-improvement — see [the
-scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). Note this
-**inverts for summaries**: in the blind grading, thinking made every local
+reason fixes that and is measurably **more accurate** for extraction — in the
+benchmark, letting `gemma4:e4b` think cut its deviation by 36%
+(see [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)).
+Note this **inverts for summaries**: in the blind grading, thinking made every local
 boolean-thinker's summaries *worse* (gemma's markup broke, qwen's reasoning ran
 away, glm hung) — one more reason local summaries aren't the production path,
 and a reason to set `OLLAMA_FORCE_NO_THINK` if you generate them anyway.
@@ -584,11 +582,11 @@ re-emitted as new ones. The JSON formatting grammar reduces it (it measurably im
   `sync` over many dockets runs the extractor once per relevant entry, which can
   be slow on a CPU-only box.
 - **Quality vs. the hosted defaults.** This is measured, not speculative (see
-  [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) on extraction,
-  `gpt-oss:20b` rivals the hosted tier and every other local model tested does
-  not; on summaries, no local model produced publication-quality prose. Treat
-  those as the priors for a public calendar, and re-benchmark on your own
-  caseload before deviating from them.
+  [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)):
+  on extraction, `gpt-oss:20b` rivals the hosted tier and every other local
+  model tested does not; on summaries, no local model produced
+  publication-quality prose. Treat those as the priors for a public calendar,
+  and re-benchmark on your own caseload before deviating from them.
 
 ## See also
 
