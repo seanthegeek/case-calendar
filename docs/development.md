@@ -301,15 +301,16 @@ that catch newcomers most often:
 - **Spell "CourtListener" in full** everywhere — code, comments, commits, docs.
   The only allowed abbreviation is the lowercase `cl` parameter name for a
   client object.
-- **Plain language over jargon**, and **no unsupportable empirical claims** in
-  comments, docstrings, or prompts — cite the rule, statute, or specific
-  docket instead.
-- **Back up the SQLite store before any schema or migration change.** The
-  store holds operational history that isn't cheaply reconstructible. (Tests
-  use throwaway tmp-path stores and don't need this.)
-- **Commit and push are separate, explicit grants on `main`.** Finish the
-  change, run the checks, summarize the diff, then wait to be asked. Feature
-  branches you created yourself are exempt from the per-commit gate.
+- **Format and lint with the version-pinned Ruff, and type-check with
+  pyright.** CI runs both and fails on any deviation — see
+  [Lint, format, and type-check](#lint-format-and-type-check) for the exact
+  commands and why the version pins matter.
+- **Modern type annotations throughout**, with `TypedDict` for structured
+  results. The project supports every currently-supported Python version.
+- **Module-level loggers** (`logger = logging.getLogger(__name__)`, one per
+  module), and project-defined errors subclass `RuntimeError` — not bare
+  `Exception` — so callers can catch project failures without sweeping in
+  unrelated bugs.
 
 ## Next steps
 
