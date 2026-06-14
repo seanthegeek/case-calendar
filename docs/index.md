@@ -53,7 +53,7 @@ calendar already knows.
   appellate, parallel filings, cooperating co-defendants in the same
   conspiracy.
 
-  ## See it live
+## See it live
 
 A deployment of the [public index page](public-page.md) — running this
 code against real federal-court dockets, with AI case summaries enabled
