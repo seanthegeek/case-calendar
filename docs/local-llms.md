@@ -69,17 +69,19 @@ configured independently — see [Configure](#configure).
 
 ## Choosing a model
 
-### Recommended models
+### Recommended model
 
-The short answer: **`gpt-oss:20b`, for extraction only.** It is the built-in
-Ollama default — selecting `LLM_PROVIDER=ollama` with no model override runs it
+The only recommended local model for this project at this time is **`gpt-oss:20b`, for extraction only.** It is the built-in
+Ollama default for this project — selecting `LLM_PROVIDER=ollama` with no model override runs it
 for both tracks — and it earned that on the benchmark (2nd overall on
 extraction, ahead of three of the four hosted models) and on hardware fit
-(\~13 GB, comfortable on a 16 GB card). No other local model earned a
-recommendation. The measured extraction results
-([the scorecard](../model-comparison/SCORECARD.md) has the full tables;
-per-entry deviation vs the human ground truth, lower is better, hosted Gemini
-leads at 636):
+(\~13 GB, comfortable on a 16 GB card). No other local model earned a recommendation.
+
+### Local model extraction benchmark results
+
+Per-entry deviation vs the human ground truth, lower is better, hosted Gemini leads at 636.
+
+Full benchmark details, including methodology and comparisons to hosted models can be found on [the scorecard page](../model-comparison/SCORECARD.md).
 
 | Model | By | Per-entry deviation | Verdict |
 | --- | --- | ---: | --- |
@@ -351,7 +353,7 @@ keys; Ollama has no key, so you select it explicitly in `.env`. No
 **Hybrid** — local extraction, hosted summaries. This is the **recommended
 production setup**: local extraction is benchmark-competitive, local summaries
 are not (no local model cleared the publication bar — see
-[Recommended models](#recommended-models)), and it's also the answer to the
+[Recommended model](#recommended-model)), and it's also the answer to the
 honesty concern above:
 
 ```bash
