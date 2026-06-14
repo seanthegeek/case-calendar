@@ -30,11 +30,14 @@ higher tier.
 | Extraction + verify | Always | Claude Haiku 4.5 / **Gemini 3.1 Flash Lite** / GPT-5.4-nano |
 | Summaries | Opt-in (`case_summaries.enabled`) | **Claude Sonnet 4.6** / Gemini 2.5 Pro / GPT-5.4 |
 
-The **bold** model in each row is the zero-config default for that track —
-Gemini for extraction, Anthropic for summaries (the rest are what you get if
-you pin that provider). See [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
-
-As of 0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and **Claude Sonnet 4.6 for summaries** (see [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries) for why). Zero-config auto-detection (you set the API keys, no `LLM_*` env vars) wires up exactly this assignment — the numbers below let you decide whether a different provider fits your caseload.
+The **bold** model in each row is the zero-config default for that track. As of
+0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and
+**Claude Sonnet 4.6 for summaries** (the rest are what you get if you pin that
+provider). Zero-config auto-detection (you set the API keys, no `LLM_*` env
+vars) wires up exactly this assignment — the numbers below let you decide
+whether a different provider fits your caseload. See
+[Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
+for why.
 
 Cost scales with your caseload — the number of dockets, how many entries each
 has, and how long the documents are — so a single universal figure would
@@ -80,10 +83,6 @@ unchanged.
 These are **estimates**, and they
 reflect one specific caseload on one date — don't take them on faith; measure
 your own with the `llm-tokens` lines.
-
-### Why this split?
-
-> [Architecture: Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries)
 
 ## CourtListener API limits
 
