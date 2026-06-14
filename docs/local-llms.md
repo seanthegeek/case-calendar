@@ -15,9 +15,7 @@ Why you might want it:
   head-to-head against the hosted providers with the same pipeline and the same
   dockets — see [Benchmarking](#benchmarking-a-local-model).
 
-The trade-offs are real and worth reading before you rely on it — see
-[Choosing a model](#choosing-a-model) (including the honesty note for
-adversary-nation cases) and [Caveats](#caveats).
+The trade-offs are real and worth reading before you rely on it.
 
 > Model names and hardware move fast. The families, sizes, and VRAM figures
 > below were checked in June 2026; treat specific version numbers as examples
@@ -40,7 +38,7 @@ and the summarizer ask very different things of a model:
   Benefits from a more capable model and a large context window, and — for
   adversary-nation cases — a model you trust to describe the charges faithfully.
 
-The project's benchmark (see [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md))
+The project's benchmark, [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)
 returned opposite verdicts for the two tracks, and the recommendations below
 follow it:
 
@@ -61,67 +59,13 @@ follow it:
 open-weights), so it fits a **16 GB** card with room for a working context
 window. Its reasoning is level-based (it can't run away the way a
 boolean-thinking model can), which makes it stable under the bounded thinking
-budget. The recommended production setup when using local models  is therefore the **hybrid**: run
+budget. The recommended production setup when using local models is therefore the **hybrid**: run
 extraction on `gpt-oss:20b` and send only summaries to a hosted provider — or don't enable summaries at all. An all-local setup still works (it's the default when you
 select `LLM_PROVIDER=ollama`) and is fine for testing or a private calendar;
 just know its summaries won't be publication quality. The two tracks are
 configured independently — see [Configure](#configure).
 
-## Choosing a model
-
-### Recommended model
-
-The only recommended local model for this project at this time is **`gpt-oss:20b`, for extraction only.** It is the built-in
-Ollama default for this project — selecting `LLM_PROVIDER=ollama` with no model override runs it
-for both tracks — and it earned that on the benchmark (2nd overall on
-extraction, ahead of three of the four hosted models) and on hardware fit
-(\~13 GB, comfortable on a 16 GB card). No other local model earned a recommendation.
-
-### Local model extraction benchmark results
-
-Per-entry deviation vs the human ground truth, lower is better, hosted Gemini leads at 636.
-
-Full benchmark details, including methodology and comparisons to hosted models can be found on [the scorecard page](../model-comparison/SCORECARD.md).
-
-| Model | By | Per-entry deviation | Verdict |
-| --- | --- | ---: | --- |
-| **gpt-oss:20b** | OpenAI | **710** | best local, 2nd overall — **the recommendation** |
-| gemma4:e4b | Google | 1241 | nearly twice gpt-oss's deviation; over-extracts harder than any hosted model |
-| granite3.3:8b | IBM | 1461 | beats its newer sibling granite4.1, but floods spurious set-deadlines |
-| granite4.1:8b | IBM | 1869 | heavy spurious held-hearing emission |
-| llama3.2:3b | Meta | 2367 | weakest scored; heavy deadline hallucination |
-| qwen3.5:9b | Alibaba | (930)¹ | unstable — reasoning ran away on \~47% of entries with thinking on |
-| deepseek-r1 (8b / 14b) | DeepSeek | — | unusable in *both* thinking modes — even with thinking off it writes thousands of tokens per entry (27% of calls hit the output cap); cancelled |
-| glm-4.7-flash, mistral-small3.2:24b, granite4.1:30b | — | — | too slow to complete a run on a 24 GB card |
-
-¹ scored with thinking forced off, where \~22% of entries still truncated.
-
-For **summaries**, no local model is recommended for production at all. Every
-local summary in the blind grading topped out at a C grade (accurate figures, but too
-thin or too clunky to publish) or failed outright; only the hosted models were
-publication-ready. Run production summaries hosted (the hybrid setup —
-see [Configure](#configure)); a bigger local model is not the fix — the dense
-24–30B models ran 3–6× slower than gpt-oss on a 24 GB card while scoring no
-better, and nothing larger has been benchmarked to recommend.
-
-On a card too small for `gpt-oss:20b`, the honest recommendation is to keep
-extraction hosted too — the Gemini extraction default is both the most accurate
-and among the cheapest. The smaller `gemma4:e4b` (9.6 GB) and `gemma4:e2b`
-(7.2 GB) do run on 12 GB / 8 GB cards, but they're a measured accuracy
-downgrade, not a recommendation.
-
-Case Calendar only ever sends **text** (docket text + text extracted from
-PDFs — OCR happens before the LLM), so you never need a vision/multimodal
-variant.
-
-China-developed open models (**Qwen** from Alibaba, **DeepSeek-R1**, **Kimi**)
-carry a provenance caveat for this project's caseload — and don't assume their
-reputation transfers to this task either: the ones this project benchmarked,
-`qwen3.5:9b` and `DeepSeek-R1`, were unstable on it (see the table above), whatever its standing on
-general leaderboards. Read the next section before using any of them on the
-summary track.
-
-### Model provenance and honesty
+## Model provenance and honesty
 
 This matters specifically because Case Calendar is often used to track
 cybercrime and espionage prosecutions — including cases that name foreign
@@ -171,7 +115,7 @@ verify it yourself rather than taking anyone's word — that's what the
 [benchmark harness](#benchmarking-a-local-model) is for: run a real China-nexus
 indictment through two models and read the summaries side by side.
 
-### Reading a model tag
+## Reading a model tag
 
 Ollama tags look like `gemma4:31b` or, spelled out, `gemma4:31b-it-q4_K_M`. The
 parts:
@@ -352,8 +296,7 @@ keys; Ollama has no key, so you select it explicitly in `.env`. No
 
 **Hybrid** — local extraction, hosted summaries. This is the **recommended
 production setup**: local extraction is benchmark-competitive, local summaries
-are not (no local model cleared the publication bar — see
-[Recommended model](#recommended-model)), and it's also the answer to the
+are not no local model cleared the publication bar, and it's also the answer to the
 honesty concern above:
 
 ```bash
@@ -491,8 +434,8 @@ it **re-emit the known hearings/deadlines it was shown** back as spurious action
 — a single dense entry could dump twenty-plus phantom deadlines. Letting the model
 reason fixes that and is measurably **more accurate** for extraction (in the
 benchmark, `gemma4:e4b` scored a deviation of 1241 thinking vs 1945 not, a 36%
-improvement — see
-[`model-comparison/SCORECARD.md`](../model-comparison/SCORECARD.md)). Note this
+improvement — see [the
+scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md). Note this
 **inverts for summaries**: in the blind grading, thinking made every local
 boolean-thinker's summaries *worse* (gemma's markup broke, qwen's reasoning ran
 away, glm hung) — one more reason local summaries aren't the production path,
@@ -639,7 +582,7 @@ re-emitted as new ones. The JSON formatting grammar reduces it (it measurably im
   `sync` over many dockets runs the extractor once per relevant entry, which can
   be slow on a CPU-only box.
 - **Quality vs. the hosted defaults.** This is measured, not speculative (see
-  [the scorecard](../model-comparison/SCORECARD.md)): on extraction,
+  [the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) on extraction,
   `gpt-oss:20b` rivals the hosted tier and every other local model tested does
   not; on summaries, no local model produced publication-quality prose. Treat
   those as the priors for a public calendar, and re-benchmark on your own
