@@ -76,7 +76,7 @@ knowing before you rely on it:
   installed — PACER charges a few cents per page, and the
   extension uploads what you fetched into CourtListener as a
   side effect, so the next sync sees it.
-- **Calendar-client refresh delays.** Subscribed ICS feeds
+- **Calendar-client refresh delays.** [Subscribed ICS feeds](subscribing.md)
   refresh on the calendar app's own schedule, not yours. Apple
   Calendar defaults to roughly hourly and is user-configurable (5
   minutes to weekly). Google Calendar runs every 8–24 hours, or
@@ -86,8 +86,9 @@ knowing before you rely on it:
   lag: subscribe in a calendar app that lets you set the refresh
   interval (Apple Calendar, Thunderbird, Fastmail), or configure
   Case Calendar to push directly to
-  [Google Calendar or Microsoft 365](calendars.md) — direct push lands the event in your
-  calendar in the same emit cycle that writes the ICS file.
+  [Google Calendar or Microsoft 365](calendars.md) —
+  direct push lands the event in your calendar in
+  the same emit cycle that writes the ICS file.
 - **Extraction errors.** The cheap regex pre-filter and the
   small/fast LLM the extractor uses can miss an atypical clerk
   notation, misread a date from a garbled PDF, or fail to
