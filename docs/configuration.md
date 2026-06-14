@@ -198,9 +198,8 @@ v. DOW shape above).
 ### Deadline tracking
 
 Filing deadlines are tracked on every docket uniformly — civil, criminal,
-appellate, magistrate, specialty. There's no per-case opt-in or
-docket-number auto-detect. Significance (`major` vs `minor`, set by the
-LLM per the rules in `SYSTEM_PROMPT`) decides what reaches subscriber
+appellate, magistrate, specialty. Significance (`major` vs `minor`, set by the
+LLM per the rules in [`SYSTEM_PROMPT`](llm.promptx.md)) decides what reaches subscriber
 calendars: dispositive briefing, sentencing memos, PSR objections, and the
 amicus master filing window land as major and appear on the calendar;
 procedural shuffle (motion-for-leave responses/replies, redaction-request
