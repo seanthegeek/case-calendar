@@ -92,9 +92,9 @@ knowing before you rely on it:
 - **Extraction errors.** The cheap regex pre-filter and the
   small/fast LLM the extractor uses can miss an atypical clerk
   notation, misread a date from a garbled PDF, or fail to
-  recognize a reschedule the first time it sees one. The
-  end-of-sync verify pass catches many of these, not all. Audit
-  against the source docket before relying on a date for anything
+  recognize a reschedule tan event. The end-of-sync verify
+  pass catches many of these, not all. Audit against the
+  source docket before relying on a date for anything
   consequential.
 
 With the first two latencies mitigated — the webhook receiver
