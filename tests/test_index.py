@@ -692,6 +692,13 @@ class TestRenderIndex:
         html = render_index(calendars=calendars)
         assert "prefers-color-scheme: dark" in html
 
+    def test_header_stacks_on_narrow_screens(self, calendars):
+        # On phones the generated timestamp + toggle would otherwise collide
+        # with the site title; a narrow-screen media query stacks them under it.
+        html = render_index(calendars=calendars)
+        assert "max-width: 600px" in html
+        assert "flex-direction: column" in html
+
     def test_theme_toggle_button_present(self, calendars):
         html = render_index(calendars=calendars)
         assert 'id="theme-toggle"' in html
