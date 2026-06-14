@@ -60,9 +60,9 @@ for it. Three constraints are inherent to the design and worth
 knowing before you rely on it:
 
 - **PACER → RECAP → CourtListener latency.** Entries reach this
-  pipeline only after they appear in PACER *and* someone running
-  the [RECAP browser extension](https://free.law/recap/) pulls the
-  affected docket page, which is what feeds the entry into
+  pipeline only after they appear in [PACER](https://pacer.uscourts.gov/)
+  *and* someone running the [RECAP browser extension](https://free.law/recap/)
+  pulls the affected docket page, which is what feeds the entry into
   CourtListener. On a high-traffic docket with reporters and
   researchers refreshing it, that lag is usually minutes. On a
   docket no one else is watching, it can be **months**, if not longer — the
