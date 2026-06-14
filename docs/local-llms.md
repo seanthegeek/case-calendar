@@ -21,6 +21,8 @@ The trade-offs are real and worth reading before you rely on it.
 > below were checked in June 2026; treat specific version numbers as examples
 > and confirm current tags in the [Ollama library](https://ollama.com/library).
 
+[← Back to docs](index.md)
+
 ## The two tracks pull in different directions
 
 Everything on this page comes back to one distinction, because the extractor
