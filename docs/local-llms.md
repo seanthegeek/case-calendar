@@ -151,8 +151,8 @@ The risk is **not uniform across the two tracks**:
   exactly like a good one on its way to subscribers. A plausible-but-misleading
   summary erodes trust far more than a missing one, which is why the rest of the
   pipeline treats confident fabrication, not refusal, as its most dangerous
-  failure mode — see the truthfulness guards in [AI case
-  summaries](case-summaries.md).
+  failure mode — see the truthfulness guards in
+  [AI case summaries](case-summaries.md).
 
 Note what the project's own guards do and don't cover: the documents-only rule,
 the grounding guard, and the rest catch **fabrication** and ground dates /

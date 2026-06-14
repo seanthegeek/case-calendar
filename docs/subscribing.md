@@ -4,8 +4,8 @@ title: Subscribing to a feed
 
 Every Case Calendar calendar publishes an `.ics` URL — the universal
 iCalendar subscription format ([RFC 5545](https://www.rfc-editor.org/rfc/rfc5545)).
-Once that URL is reachable on the public web (see [the public index
-page](public-page.md) for one Caddy template), any modern calendar app
+Once that URL is reachable on the public web (see
+[the public index page](public-page.md) for one Caddy template), any modern calendar app
 can subscribe to it and pull updates on its own schedule.
 
 This page collects each major app's official subscribe-by-URL flow. The
@@ -32,8 +32,8 @@ intervals at the time of writing:
 
 If a hearing date moves and you can't wait for the next refresh, most
 apps let you remove and re-add the subscription to force an immediate
-fetch. For zero-lag updates on the same events, see the [Google
-Calendar / Microsoft 365 push backends](calendars.md), which write
+fetch. For zero-lag updates on the same events, see the
+[Google Calendar / Microsoft 365 push backends](calendars.md), which write
 events directly rather than waiting for the subscriber's pull.
 
 ## Apple Calendar — macOS
