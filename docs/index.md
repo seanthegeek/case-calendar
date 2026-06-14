@@ -114,8 +114,6 @@ or some other bug, please
 
 ## How the docs are organized
 
-These pages are short on purpose. Read the one you need, skip the rest.
-
 | Page | What it covers |
 | --- | --- |
 | [Installation](installation.md) | Python deps, API keys, and the optional but recommended local OCR tools. |
