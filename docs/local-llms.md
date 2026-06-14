@@ -61,7 +61,7 @@ follow it:
 open-weights), so it fits a **16 GB** card with room for a working context
 window. Its reasoning is level-based (it can't run away the way a
 boolean-thinking model can), which makes it stable under the bounded thinking
-budget. The recommended production setup when using local models  is therefore the **hybrid**: run
+budget. The recommended production setup when using local models is therefore the **hybrid**: run
 extraction on `gpt-oss:20b` and send only summaries to a hosted provider — or don't enable summaries at all. An all-local setup still works (it's the default when you
 select `LLM_PROVIDER=ollama`) and is fine for testing or a private calendar;
 just know its summaries won't be publication quality. The two tracks are
@@ -77,28 +77,10 @@ for both tracks — and it earned that on the benchmark (2nd overall on
 extraction, ahead of three of the four hosted models) and on hardware fit
 (\~13 GB, comfortable on a 16 GB card). No other local model earned a recommendation.
 
-### Local model extraction benchmark results
-
-Per-entry deviation vs the human ground truth, lower is better, hosted Gemini leads at 636.
-
 Full benchmark details, including methodology and comparisons to hosted models can be found on [the scorecard page](../model-comparison/SCORECARD.md).
 
-| Model | By | Per-entry deviation | Verdict |
-| --- | --- | ---: | --- |
-| **gpt-oss:20b** | OpenAI | **710** | best local, 2nd overall — **the recommendation** |
-| gemma4:e4b | Google | 1241 | nearly twice gpt-oss's deviation; over-extracts harder than any hosted model |
-| granite3.3:8b | IBM | 1461 | beats its newer sibling granite4.1, but floods spurious set-deadlines |
-| granite4.1:8b | IBM | 1869 | heavy spurious held-hearing emission |
-| llama3.2:3b | Meta | 2367 | weakest scored; heavy deadline hallucination |
-| qwen3.5:9b | Alibaba | (930)¹ | unstable — reasoning ran away on \~47% of entries with thinking on |
-| deepseek-r1 (8b / 14b) | DeepSeek | — | unusable in *both* thinking modes — even with thinking off it writes thousands of tokens per entry (27% of calls hit the output cap); cancelled |
-| glm-4.7-flash, mistral-small3.2:24b, granite4.1:30b | — | — | too slow to complete a run on a 24 GB card |
-
-¹ scored with thinking forced off, where \~22% of entries still truncated.
-
-For **summaries**, no local model is recommended for production at all. Every
-local summary in the blind grading topped out at a C grade (accurate figures, but too
-thin or too clunky to publish) or failed outright; only the hosted models were
+For **summaries**, no local model is recommended for production at all. At best, a local model's summary would produce accurate figures, but would be too
+thin or too clunky to publish; others failed outright. Only the hosted models were
 publication-ready. Run production summaries hosted (the hybrid setup —
 see [Configure](#configure)); a bigger local model is not the fix — the dense
 24–30B models ran 3–6× slower than gpt-oss on a 24 GB card while scoring no
