@@ -53,6 +53,27 @@ calendar already knows.
   appellate, parallel filings, cooperating co-defendants in the same
   conspiracy.
 
+  ## See it live
+
+A deployment of the [public index page](public-page.md) — running this
+code against real federal-court dockets, with AI case summaries enabled
+— is at [casecalendar.net](https://casecalendar.net/). Browse it to get
+a sense of what the rendered output looks like before installing
+anything.
+
+## Quick start
+
+If you'd rather just see it working locally:
+
+```bash
+git clone https://github.com/seanthegeek/case-calendar
+cd case-calendar
+uv sync
+cp .env.example .env       # add COURTLISTENER_TOKEN + one *_API_KEY
+cp config.example.yaml config.yaml   # list your cases
+uv run case-calendar sync
+```
+
 ## Limitations
 
 Case Calendar is a supplement to docket-watching, not a replacement
@@ -112,7 +133,7 @@ If you find an issue with event extraction, case summarization,
 or some other bug, please
 [report it](https://github.com/seanthegeek/case-calendar/issues/new/choose).
 
-## How the docs are organized
+## Complete documentation
 
 | Page | What it covers |
 | --- | --- |
@@ -129,31 +150,6 @@ or some other bug, please
 | [Architecture](architecture.md) | What's going on under the hood: pipeline shape, design choices, and the data model. |
 | [LLM prompts](llm-prompts.md) | The exact system prompt behind every extraction, verification, and summary call, reproduced verbatim. |
 | [Development](development.md) | Set up a dev environment, run the tests, and iterate on the prompts and models cheaply. |
-
-## See it live
-
-A deployment of the [public index page](public-page.md) — running this
-code against real federal-court dockets, with AI case summaries enabled
-— is at [casecalendar.net](https://casecalendar.net/). Browse it to get
-a sense of what the rendered output looks like before installing
-anything.
-
-## Quick start
-
-If you'd rather just see it working locally:
-
-```bash
-git clone https://github.com/seanthegeek/case-calendar
-cd case-calendar
-uv sync
-cp .env.example .env       # add COURTLISTENER_TOKEN + one *_API_KEY
-cp config.example.yaml config.yaml   # list your cases
-uv run case-calendar sync
-```
-
-After the first sync, `out/<your-calendar>.ics` is ready to subscribe to. The
-[installation](installation.md) and [configuration](configuration.md)
-pages explain each step.
 
 ## Project links
 
