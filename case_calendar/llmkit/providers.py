@@ -856,6 +856,49 @@ def _ollama_think_budget() -> int:
     return _DEFAULT_OLLAMA_THINK_BUDGET
 
 
+def _ollama_seed() -> Optional[int]:
+    """Fixed RNG seed for Ollama sampling, from ``OLLAMA_SEED``. Returns ``None``
+    (Ollama's own random seed) when unset or malformed.
+
+    A fixed seed is the determinism lever for LOCAL models. They run their best
+    (non-greedy) sampling per their Modelfile — see :func:`_call_ollama_native`
+    for why we no longer force ``temperature=0`` on them — and sampling is
+    non-deterministic by construction; pinning the seed makes a sampled run
+    byte-reproducible (and keeps the benchmark's LLM-cache sound). It is OFF by
+    default so production gets the model's intended fresh sampling; benchmarking /
+    reproducible runs set it. See the Ollama sampling design note in AGENTS.md."""
+    raw = os.environ.get("OLLAMA_SEED", "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        logger.warning("OLLAMA_SEED=%r is not an integer; ignoring (random seed)", raw)
+        return None
+
+
+def _ollama_temperature_override() -> Optional[float]:
+    """Explicit sampling temperature for Ollama, from ``OLLAMA_TEMPERATURE``.
+    Returns ``None`` when unset or malformed.
+
+    When ``None`` the Ollama path sends NO temperature, so the model's own
+    Modelfile default applies — deliberately NOT the domain layer's greedy
+    ``temperature=0`` pin, which is off-spec for local thinking models and drove
+    the reasoning runaways (see :func:`_call_ollama_native`). This is the
+    operator escape hatch to pin a specific temperature anyway."""
+    raw = os.environ.get("OLLAMA_TEMPERATURE", "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "OLLAMA_TEMPERATURE=%r is not a number; ignoring (Modelfile default)",
+            raw,
+        )
+        return None
+
+
 # Reasoning LEVELS for a level-thinking model (gpt-oss family). Unlike the
 # boolean thinkers, gpt-oss can't have reasoning disabled — only tuned by level.
 _OLLAMA_VALID_LEVELS = ("low", "medium", "high")
@@ -1059,8 +1102,28 @@ def _call_ollama_native(
                 think = True
 
     options: dict[str, Any] = {"num_predict": num_predict}
-    if temperature is not None:
-        options["temperature"] = temperature
+    # Greedy (temperature=0) is the DEFAULT for the Ollama path, the same as the
+    # hosted providers: the domain layer pins temperature=0 and we forward it.
+    # Greedy IS off-spec for local thinking models — the Qwen3 card forbids it ("DO
+    # NOT use greedy decoding ... endless repetitions") and it's below DeepSeek-R1's
+    # documented 0.5-0.7 range — and it is the documented trigger for their
+    # reasoning runaways. But greedy stays the default because (a) a June 2026
+    # benchmark found in-spec sampling NEUTRAL-to-slightly-worse for the RECOMMENDED
+    # local models (gpt-oss:20b within its run-to-run noise band, gemma4:e4b
+    # marginally worse — see model-comparison/SCORECARD.md), so switching buys no
+    # accuracy, and (b) keeping greedy preserves the SCORECARD (every local model
+    # was measured greedy) and the LLM-cache's byte-identical replay. In-spec
+    # sampling is therefore OPT-IN: OLLAMA_TEMPERATURE overrides the temperature
+    # (set it to a card value, e.g. 0.6, to escape a qwen/deepseek runaway) and
+    # OLLAMA_SEED pins the seed. See the Ollama-sampling-and-seed design note in
+    # AGENTS.md.
+    temp_override = _ollama_temperature_override()
+    effective_temp = temp_override if temp_override is not None else temperature
+    if effective_temp is not None:
+        options["temperature"] = effective_temp
+    seed = _ollama_seed()
+    if seed is not None:
+        options["seed"] = seed
     num_ctx = os.environ.get("OLLAMA_NUM_CTX", "").strip()
     if num_ctx:
         options["num_ctx"] = int(num_ctx)
@@ -1176,8 +1239,16 @@ def _call_ollama_openai_compat(
         kwargs["response_format"] = _openai_json_schema_format(schema)
     elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    if temperature is not None:
-        kwargs["temperature"] = temperature
+    # Same policy as the native path: forward the caller's temperature (greedy 0.0
+    # by default — scorecard-valid), with OLLAMA_TEMPERATURE / OLLAMA_SEED as opt-in
+    # overrides for the in-spec-sampling escape hatch. See _call_ollama_native.
+    temp_override = _ollama_temperature_override()
+    effective_temp = temp_override if temp_override is not None else temperature
+    if effective_temp is not None:
+        kwargs["temperature"] = effective_temp
+    seed = _ollama_seed()
+    if seed is not None:
+        kwargs["seed"] = seed
     num_ctx = os.environ.get("OLLAMA_NUM_CTX", "").strip()
     if num_ctx:
         # The OpenAI SDK forwards unknown body fields via `extra_body`; the

@@ -363,16 +363,53 @@ tracks.
 
 #### `qwen3.5:9b` is unstable on this task, on any hardware
 
-This is a model finding, not a hardware one. Models can  **run away**, a generation that never stops on its own: the model keeps emitting
-tokens (typically its reasoning) until something external cuts it off — the
-bounded reasoning budget, or without one the request timeout — and ends with
-no usable answer. It is distinct from *slow* (steady progress at a low
-token rate) and *hung* (no output at all). With thinking on, qwen ran away on
-\~47% of entries — each exhausted the entire reasoning budget producing no
-answer (\~580 s each), truncated cleanly, and was skipped. With thinking off it
-completes (930, in the table) but over-emits so hard that \~22% of entries
-truncate. A poor extractor either way — a faster card would only make the
-runaways fail sooner, not stop them.
+This is a model finding — with a config caveat that turned out to be partly our
+own fault (below). Models can **run away**: a generation that never stops on its
+own, where the model keeps emitting tokens (typically its reasoning) until
+something external cuts it off — the bounded reasoning budget, or without one the
+request timeout — and ends with no usable answer. It is distinct from *slow*
+(steady progress at a low token rate) and *hung* (no output at all).
+
+**The original runs used greedy decoding, which both Chinese models' cards advise
+against.** The benchmark ran every local model at `temperature=0` (greedy),
+pinned for the LLM-cache's byte-identical replay. But greedy is exactly what the
+[Qwen3 model card](https://huggingface.co/Qwen/Qwen3-8B) forbids — verbatim, "DO
+NOT use greedy decoding, as it can lead to performance degradation and endless
+repetitions" (it recommends temperature 0.6 / top-p 0.95 / top-k 20 for thinking
+mode) — and it sits below the
+[DeepSeek-R1 card](https://huggingface.co/deepseek-ai/DeepSeek-R1)'s documented
+0.5–0.7 range. So part of what reads here as inherent instability was an off-spec
+decoding setting we introduced. A controlled probe confirmed the mechanism: under
+greedy, qwen ran its reasoning to the full budget with an empty answer on
+substantive entries (e.g. 64–67K reasoning characters, 0 answer, on two entries);
+switching that same entry to in-spec sampling let it complete. Greedy nonetheless
+remains the **default** (it's what these scored numbers were measured under, and a
+re-benchmark of the recommended models found in-spec sampling no better — see
+[the in-spec-sampling attempt](#in-spec-sampling-attempt-why-greedy-stays-the-default)
+below); in-spec sampling is an opt-in escape hatch via `OLLAMA_TEMPERATURE` (set it
+to a card value like 0.6) and `OLLAMA_SEED`, for an operator running the
+runaway-prone models (see the Ollama sampling-and-seed design note in AGENTS.md).
+
+**But in-spec sampling does not rescue qwen — it only changes the runaway from
+constant to intermittent.** Re-probed without the greedy handicap, qwen completes
+many entries but still runs away unpredictably: at temperature 0.6 without a seed
+the *same* entry completed on one run and ran away on the next, and at its
+Modelfile default (temperature 1) it ran away deterministically on a stress entry.
+A fixed seed reproduced qwen's outcome run-to-run in the probe (the empty runaway
+and the short clean answer each repeated byte-for-byte), but a seed only pins
+*which* outcome you get — it can lock in a runaway as readily as a clean trace, and
+no temperature reliably stops it. (Seed reproducibility is itself not universal on
+GPU — it held for qwen's short outputs and gemma's schema-constrained extraction
+but not for gpt-oss extraction or free-text summaries; see the Ollama
+sampling-and-seed design note in AGENTS.md.) So qwen stays unreliable for this
+task: you cannot guarantee a clean extraction run.
+
+The scored numbers in this document are the *greedy-condition* measurement
+(thinking on: ran away on \~47% of entries, \~580 s each, truncated and skipped;
+thinking off: completes at 930 in the table but over-emits so hard \~22% of entries
+truncate), which remains the shipped default. The residual in-spec runaway rate is
+lower than 47% but non-zero and non-deterministic, which is still disqualifying. A faster card would
+only make the runaways fail sooner, not stop them.
 
 The bounded reasoning budget (`num_predict = max_tokens + OLLAMA_THINK_BUDGET`)
 keeps a runaway model truncating cleanly to an `OutputTruncatedError` (entry
@@ -401,9 +438,54 @@ Five local models could not finish a usable extraction run on a 24 GB card
   output tokens per call — so the qwen "score it thinking-OFF" route doesn't
   transfer; the OFF run was cancelled at a projected \~14 h per column with a
   quarter of its entries zeroed by truncation. (These runs used Ollama 0.30.7.)
+  Like qwen, these runs were greedy (`temperature=0`), which is below the
+  DeepSeek-R1 card's documented 0.5–0.7 range; in a controlled probe, switching to
+  in-spec sampling did fix the *infinite-reasoning* runaway (the greedy × schema
+  combination — drop either and it stops) and let entries complete. But the
+  *over-emission* persists in-spec: a one-hearing entry still drew 14,763
+  characters of JSON, and a dense entry at its 0.6 Modelfile default did not return
+  within a 400 s client timeout. Completing-but-over-emitting (to truncation, or
+  past any reasonable wall-clock) is still unusable — so the greedy fix does not
+  rescue deepseek either.
 - **`deepseek-r1:14b`** — not attempted beyond a speed probe: it generates at
   49 tok/s (57% of the 8b's rate, same rig), so with the 8b already disqualified
   on output volume, the 14b projects past 25 h per column.
+
+#### In-spec sampling attempt: why greedy stays the default
+
+Because greedy decoding is off-spec for the local thinking models (above), we
+tested whether switching the recommended local extractors to **in-spec sampling**
+(no forced temperature, inheriting each model's Modelfile values, plus a fixed
+`OLLAMA_SEED=42`) would improve their scores enough to justify changing the
+default. It does not, so **greedy remains the default** and in-spec sampling is an
+opt-in escape hatch (`OLLAMA_TEMPERATURE` / `OLLAMA_SEED`) for the runaway-prone
+models. The re-benchmark (same frozen snapshot, RX 7900 XTX, June 2026):
+
+| model | metric | greedy (default) | in-spec sampling |
+| --- | --- | ---: | ---: |
+| gemma4:e4b | per-entry deviation | 1241 | 1258 |
+| gemma4:e4b | aggregate deviation | 985 | 998 |
+| gpt-oss:20b | per-entry deviation | 710 | 690 / 701 |
+| gpt-oss:20b | aggregate deviation | 396 | 373 / 418 |
+
+`gemma4:e4b` is seed-deterministic on extraction, so its single in-spec run is a
+clean comparison: marginally **worse** (+1.4% per-entry, +1.3% aggregate).
+`gpt-oss:20b` is **not** seed-deterministic on extraction (see below), so it was run
+**twice** at the same seed; greedy's 710 / 396 sit inside the run-to-run band of
+both metrics (690–701, 373–418), i.e. **statistically unchanged**. Switching buys no
+accuracy on the models we actually recommend, while it would invalidate every
+greedy-measured row in this scorecard and the build harness's LLM-cache replay — so
+greedy stays the default.
+
+A second finding from the same runs: **a fixed seed is necessary but not sufficient
+for determinism on GPU.** With `OLLAMA_SEED=42`, two runs of the same entry were
+byte-identical for schema-constrained extraction on the non-reasoning gemma (and for
+qwen's short outputs), but **diverged** for gpt-oss extraction (which always emits a
+reasoning trace — one run even produced a different `deadline_key`) and for free-text
+summaries on both models. The inferred cause is GPU floating-point nondeterminism in
+the unconstrained reasoning/summary generation, which a grammar-pinned extraction is
+largely immune to. So the seed makes a non-reasoning model's extraction reproducible
+but does not guarantee reproducible summaries or reasoning-model output.
 
 ### The regex pre-filter recall gap
 
