@@ -463,7 +463,9 @@ impractical for that track on that hardware (in this project's benchmark a 30B
 thinker timed out on every summary this way; a 29.9B one on half). Smaller thinkers
 (≤ \~9–20B) and the level-based `gpt-oss` complete cleanly. Per-entry *extraction*
 is usually safe because each input is small, but a single unusually dense entry can
-trigger the same stall.
+trigger the same stall. Runaways are also far more likely under greedy decoding,
+which Case Calendar no longer sends to local models — see
+[Sampling and determinism](#sampling-and-determinism).
 
 **Escape hatch — `OLLAMA_FORCE_NO_THINK`.** Set it to any non-empty value to force
 reasoning **off** for the run: Case Calendar sends an explicit `think=false` and a
@@ -491,6 +493,51 @@ On a *non-Ollama* OpenAI-compatible server there is no `think` control at all, s
 heavy thinker can still overrun on extraction — prefer a non-thinking model there,
 or run thinking models on real Ollama.
 
+## Sampling and determinism
+
+Case Calendar runs every provider — hosted **and** local — at `temperature=0`
+(greedy decoding) by default, for reproducible output. Greedy is off-spec for local
+thinking models: the [Qwen3 model card](https://huggingface.co/Qwen/Qwen3-8B) says
+outright, "do not use greedy decoding, as it can lead to performance degradation and
+endless repetitions," and the
+[DeepSeek-R1 card](https://huggingface.co/deepseek-ai/DeepSeek-R1) recommends a
+temperature of 0.5–0.7 "to prevent endless repetitions" — and greedy is the main
+cause of the runaways above. Greedy is nonetheless the **default** because a
+re-benchmark of the recommended local models under in-spec sampling found it no
+better (gpt-oss:20b unchanged within its run-to-run noise, gemma4:e4b marginally
+worse — see the scorecard), so switching would buy no accuracy while invalidating
+every greedy-measured benchmark row. In-spec sampling is therefore an **opt-in**
+escape hatch — most useful if you insist on running one of the runaway-prone models
+(Qwen3, DeepSeek-R1) and want to escape its runaways:
+
+- **`OLLAMA_TEMPERATURE`** — pin a specific sampling temperature. Set it to the
+  model's card value (e.g. `0.6`) to take that model out of greedy decoding. Unset
+  means the default: forward Case Calendar's `temperature=0` (greedy). The official
+  Ollama tags ship the card sampling for when you do switch (Qwen3 temperature 1,
+  top-k 20, top-p 0.95, presence-penalty 1.5; DeepSeek-R1 temperature 0.6, top-p
+  0.95; Gemma temperature 1, top-k 64, top-p 0.95) — but a temperature you pin here
+  overrides the Modelfile temperature.
+- **`OLLAMA_SEED`** — pin the random seed to make a *sampled* run reproducible.
+  A seed is the prerequisite for determinism (any temperature above 0 samples, so
+  identical output comes from a fixed seed, not a low temperature) — but on a GPU
+  it is necessary, not sufficient. In a controlled probe a seed gave byte-identical
+  output for schema-constrained *extraction* on a non-reasoning model (gemma), but
+  *not* for a reasoning model's extraction (gpt-oss, which always emits a reasoning
+  trace) or for free-text *summaries* on either model: GPU floating-point
+  nondeterminism diverges the unconstrained parts of a generation even with the
+  same seed. So set it for the most reproducible sampled run available — reliable
+  for the extraction track on a non-reasoning model — but don't expect byte-identical
+  summaries. Unset means a fresh seed each run.
+
+What in-spec sampling does and doesn't fix: it removes a real cause of the runaways,
+but it does not make the unstable models reliable. Even fully in-spec, Qwen3 still
+runs away on this task intermittently (a fixed seed makes the outcome reproducible,
+but it can lock in a runaway just as easily as a clean answer), and DeepSeek-R1 still
+emits enormous JSON for tiny answers. `gpt-oss:20b`, whose reasoning is level-based
+and inherently bounded, remains the recommended local extractor — and it neither
+runs away under greedy nor improves under sampling, which is why greedy stays the
+default.
+
 ## Other OpenAI-compatible servers
 
 The provider is *named* `ollama`, but it also drives any local OpenAI-compatible
@@ -512,6 +559,8 @@ LLM_MODEL=gemma-4-e4b
 | --- | --- | --- |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Where the server listens — the host root (Ollama's native endpoint). Point it at a remote box, or a non-Ollama OpenAI-compatible server like LM Studio (`http://host:1234/v1`). |
 | `OLLAMA_NUM_CTX` | *(unset)* | Context window in tokens (see above). |
+| `OLLAMA_TEMPERATURE` | *(unset)* | Pin the sampling temperature. Unset = the default: greedy (`temperature=0`), same as the hosted providers. Set it (e.g. `0.6`) to take a runaway-prone model out of greedy — an opt-in escape hatch, not the default. See [Sampling and determinism](#sampling-and-determinism). |
+| `OLLAMA_SEED` | *(unset)* | Pin the RNG seed to make a sampled run reproducible (a low temperature alone is not deterministic). Necessary but not sufficient on GPU — reliable for schema-constrained extraction on a non-reasoning model, not guaranteed for summaries or a reasoning model. Unset = fresh random seed each run. See [Sampling and determinism](#sampling-and-determinism). |
 | `OLLAMA_FORCE_NO_THINK` | *(unset)* | Force reasoning OFF on a real-Ollama thinking model (sends `think=false`, bounded budget) — the escape hatch for a runaway or too-slow thinker, at an accuracy cost. No-op on `gpt-oss` and on non-Ollama servers. See [Thinking models](#thinking-models). |
 | `OLLAMA_THINK_BUDGET` | `8192` | Reasoning headroom (tokens) added on top of the answer allowance for a thinking model on real Ollama. It's a runaway guard, not a cost lever (local inference is free); raise it only if a model's reasoning is being cut off mid-thought. |
 

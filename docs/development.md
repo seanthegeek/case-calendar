@@ -198,10 +198,19 @@ analysis behind the current default-provider choice.
 ### 3. The persistent LLM-response cache
 
 The harness keeps a content-addressed cache of every LLM response on disk
-(`data/llm-cache.sqlite`), on by default. Because every domain call runs at
-`temperature=0`, a response is a pure function of its request, so the cache
-keys on the full request (provider, model, prompts, `max_tokens`,
-`temperature`) and replays any identical call for free.
+(`data/llm-cache.sqlite`), on by default. Because every hosted-provider call runs
+at `temperature=0` by default — including local (Ollama) models, which forward the
+same greedy pin — a response is a pure function of its request, so the cache keys on
+the full request (provider, model, prompts, `max_tokens`, `temperature`) and replays
+any identical call for free. The opt-in Ollama sampling knobs are the one wrinkle:
+if you set `OLLAMA_TEMPERATURE` / `OLLAMA_SEED` (see
+[Sampling and determinism](local-llms.md#sampling-and-determinism)), the cache key
+folds them in for the `ollama` provider so a sampled run re-keys rather than
+replaying a greedy entry — and you should set `OLLAMA_SEED` for the most reproducible
+sampled benchmark. Even then a seed is necessary but not sufficient on GPU: it
+reliably reproduces the extraction track on a non-reasoning model, but summaries and
+a reasoning model's output can still diverge run-to-run (the cache replays its own
+stored response, which just may not equal a fresh call).
 
 The payoff is automatic per-track scoping: after a first build warms the
 cache, a **second build following a single-track prompt tweak re-bills only

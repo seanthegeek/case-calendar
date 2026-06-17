@@ -289,7 +289,13 @@ docket entries that originally allocated it) — and returns one of:
 All domain-level LLM calls pin `temperature=0.0` (since 0.11.0) so the
 verify pass's decisions are deterministic given the inputs — same
 prompt + same context produces the same verdict every sync, no
-sampling coin flips on borderline rows.
+sampling coin flips on borderline rows. This is the default for local
+(Ollama) models too. Greedy decoding is off-spec for local thinking
+models (it triggered reasoning runaways), so for those an operator can
+opt into in-spec sampling via `OLLAMA_TEMPERATURE` / `OLLAMA_SEED` — a
+re-benchmark found it no better for the recommended models, so it isn't
+the default. See
+[Sampling and determinism](local-llms.md#sampling-and-determinism).
 
 This catches the classes of bug that per-entry extraction can't see:
 reschedules across multiple entries, trials that got mooted by a plea

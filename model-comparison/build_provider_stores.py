@@ -919,6 +919,18 @@ class _LLMCache:
             json_mode,
             temperature,
         ]
+        if provider == "ollama":
+            # Ollama defaults to greedy (forwards the domain temperature=0), so the
+            # `temperature` slot above already keys the default run — and leaving it
+            # alone keeps the key identical to a pre-knobs greedy entry (no cache
+            # orphaning). Only the OPT-IN in-spec sampling knobs (OLLAMA_SEED /
+            # OLLAMA_TEMPERATURE) change the request, so fold them in ONLY when set,
+            # so a seeded/overridden run re-keys (and an identical seed replays)
+            # while the common greedy run reuses its existing cache entry.
+            ollama_seed = providers._ollama_seed()
+            ollama_temp = providers._ollama_temperature_override()
+            if ollama_seed is not None or ollama_temp is not None:
+                parts.append(("ollama-sampling", ollama_seed, ollama_temp))
         if schema is not None:
             parts.append(schema)
         payload = json.dumps(parts, sort_keys=True, ensure_ascii=False)

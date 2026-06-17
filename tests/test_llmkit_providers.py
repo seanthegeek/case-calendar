@@ -989,15 +989,59 @@ class TestCallOllama:
         assert seen["tokens"].output == 7
 
     def test_temperature_omitted_when_none(self, monkeypatch):
+        # No env knob, no caller temperature -> no temperature sent (Modelfile/server
+        # default applies).
+        monkeypatch.delenv("OLLAMA_TEMPERATURE", raising=False)
+        monkeypatch.delenv("OLLAMA_SEED", raising=False)
         cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10)
         assert "temperature" not in cap["body"]["options"]
+        assert "seed" not in cap["body"]["options"]
 
-    def test_temperature_forwarded_when_zero(self, monkeypatch):
-        # 0.0 must survive the falsy-zero trap (the `is not None` check).
+    def test_caller_temperature_forwarded_by_default(self, monkeypatch):
+        # Greedy is the DEFAULT on the Ollama path: the caller's temperature (the
+        # domain layer's 0.0 pin) is forwarded unless OLLAMA_TEMPERATURE overrides.
+        # 0.0 is falsy but not None — the `is not None` check must forward it.
+        monkeypatch.delenv("OLLAMA_TEMPERATURE", raising=False)
         cap = self._fake_ollama(monkeypatch)
         providers._call_ollama("s", "u", 10, temperature=0.0)
         assert cap["body"]["options"]["temperature"] == 0.0
+
+    def test_temperature_override_beats_caller(self, monkeypatch):
+        # OLLAMA_TEMPERATURE is the opt-in override; it wins over the caller's value.
+        monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.6")
+        monkeypatch.delenv("OLLAMA_SEED", raising=False)
+        cap = self._fake_ollama(monkeypatch)
+        providers._call_ollama("s", "u", 10, temperature=0.0)
+        assert cap["body"]["options"]["temperature"] == 0.6
+
+    def test_temperature_override_zero_beats_caller(self, monkeypatch):
+        # The override's own 0.0 must survive the falsy-zero trap and beat a
+        # non-zero caller value.
+        monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.0")
+        cap = self._fake_ollama(monkeypatch)
+        providers._call_ollama("s", "u", 10, temperature=0.6)
+        assert cap["body"]["options"]["temperature"] == 0.0
+
+    def test_temperature_override_malformed_falls_back_to_caller(self, monkeypatch):
+        # A malformed override is ignored, falling back to the caller's temperature.
+        monkeypatch.setenv("OLLAMA_TEMPERATURE", "warm")
+        cap = self._fake_ollama(monkeypatch)
+        providers._call_ollama("s", "u", 10, temperature=0.0)
+        assert cap["body"]["options"]["temperature"] == 0.0
+
+    def test_seed_env_forwarded(self, monkeypatch):
+        # OLLAMA_SEED pins the RNG seed (opt-in) for a more-reproducible sampled run.
+        monkeypatch.setenv("OLLAMA_SEED", "42")
+        cap = self._fake_ollama(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert cap["body"]["options"]["seed"] == 42
+
+    def test_seed_env_malformed_ignored(self, monkeypatch):
+        monkeypatch.setenv("OLLAMA_SEED", "notanint")
+        cap = self._fake_ollama(monkeypatch)
+        providers._call_ollama("s", "u", 10)
+        assert "seed" not in cap["body"]["options"]
 
     # --- thinking policy: local thinking models think on every track, bounded budget ---
 
@@ -1902,12 +1946,27 @@ class TestCallOllamaOpenAICompatFallback:
         kw = client.chat.completions.create.call_args.kwargs
         assert "response_format" not in kw
 
-    def test_compat_temperature_forwarded(self, monkeypatch):
-        # temp=0.0 is falsy but not None — the `is not None` check must forward it
+    def test_compat_caller_temperature_forwarded_by_default(self, monkeypatch):
+        # Same policy as the native path: the caller's temperature (the domain greedy
+        # 0.0 pin) is forwarded by default; 0.0 must survive the falsy-zero trap.
+        monkeypatch.delenv("OLLAMA_TEMPERATURE", raising=False)
+        monkeypatch.delenv("OLLAMA_SEED", raising=False)
         client = self._fake_openai(monkeypatch)
         providers._call_ollama("s", "u", 64, temperature=0.0)
         kw = client.chat.completions.create.call_args.kwargs
         assert kw["temperature"] == 0.0
+        assert "seed" not in kw
+
+    def test_compat_temperature_override_and_seed_forwarded(self, monkeypatch):
+        # OLLAMA_TEMPERATURE / OLLAMA_SEED are the opt-in overrides on the compat
+        # path too; the override 0.0 must beat the caller and survive falsy-zero.
+        monkeypatch.setenv("OLLAMA_TEMPERATURE", "0.0")
+        monkeypatch.setenv("OLLAMA_SEED", "7")
+        client = self._fake_openai(monkeypatch)
+        providers._call_ollama("s", "u", 64, temperature=0.6)
+        kw = client.chat.completions.create.call_args.kwargs
+        assert kw["temperature"] == 0.0
+        assert kw["seed"] == 7
 
     def test_compat_non_memory_error_propagates_without_hint(self, monkeypatch, caplog):
         # Only a memory-shaped failure earns the lower-the-context-window hint;
