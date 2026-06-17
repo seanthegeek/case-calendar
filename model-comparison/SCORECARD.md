@@ -442,11 +442,12 @@ Five local models could not finish a usable extraction run on a 24 GB card
   DeepSeek-R1 card's documented 0.5–0.7 range; in a controlled probe, switching to
   in-spec sampling did fix the *infinite-reasoning* runaway (the greedy × schema
   combination — drop either and it stops) and let entries complete. But the
-  *over-emission* persists in-spec: a one-hearing entry still drew 14,763
-  characters of JSON, and a dense entry at its 0.6 Modelfile default did not return
-  within a 400 s client timeout. Completing-but-over-emitting (to truncation, or
-  past any reasonable wall-clock) is still unusable — so the greedy fix does not
-  rescue deepseek either.
+  **over-emission persists even at its card-recommended temperature (0.6)**: a
+  one-hearing entry still drew 14,763 characters of JSON, and a dense entry did not
+  return within a 400 s client timeout. So in-spec sampling does *not* make deepseek
+  usable — it stops the hang but not the verbosity; completing-but-over-emitting (to
+  truncation, or past any reasonable wall-clock) is still unusable. deepseek is
+  disqualified on output volume at every temperature tested, greedy or in-spec.
 - **`deepseek-r1:14b`** — not attempted beyond a speed probe: it generates at
   49 tok/s (57% of the 8b's rate, same rig), so with the 8b already disqualified
   on output volume, the 14b projects past 25 h per column.
@@ -476,6 +477,15 @@ both metrics (690–701, 373–418), i.e. **statistically unchanged**. Switching
 accuracy on the models we actually recommend, while it would invalidate every
 greedy-measured row in this scorecard and the build harness's LLM-cache replay — so
 greedy stays the default.
+
+The re-benchmark covered only the recommended extractors (gemma, gpt-oss). The two
+runaway-prone models were **not** re-scored because in-spec sampling does not make
+either usable, so their ranking can't change: `qwen3.5:9b` still runs away
+intermittently even sampled (no temperature reliably stops it), and `deepseek-r1:8b`
+still **over-emits even at its card-recommended 0.6** (a one-hearing entry drew
+14,763 characters of JSON; a dense entry exceeded a 400 s timeout) — its
+output-volume failure is temperature-independent. See the `qwen3.5:9b` and
+`deepseek-r1:8b` sections above.
 
 A second finding from the same runs: **a fixed seed is necessary but not sufficient
 for determinism on GPU.** With `OLLAMA_SEED=42`, two runs of the same entry were
