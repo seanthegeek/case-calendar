@@ -580,6 +580,36 @@ class TestDockets:
         )
         assert must(store.get_docket_meta(7))["date_last_filing"] == "2026-05-08"
 
+    def test_docket_group_ids_returns_all_records_with_stable_canonical(
+        self, store: Store
+    ):
+        # CourtListener can split one logical PACER docket across several
+        # docket_id rows (bug #7345). The group is every docket_id sharing
+        # (docket_number, court_id); min(group) is the stable canonical the
+        # extractor normalizes to (independent of date_modified ordering).
+        for did, mod in (
+            (73510620, "2026-06-20T09:00:00Z"),
+            (71820111, "2026-06-20T09:01:00Z"),
+        ):
+            store.upsert_docket_meta(
+                did,
+                {
+                    "court_id": "tnmd",
+                    "docket_number": "3:23-cr-00088",
+                    "case_name": "X",
+                },
+            )
+            store.set_docket_last_modified(did, mod)
+        # A genuinely-distinct docket (different number) is NOT in the group.
+        store.upsert_docket_meta(
+            999,
+            {"court_id": "tnmd", "docket_number": "3:23-cr-99999", "case_name": "Y"},
+        )
+        group = store.get_docket_group_ids("3:23-cr-00088", "tnmd")
+        assert set(group) == {71820111, 73510620}
+        assert min(group) == 71820111
+        assert store.get_docket_group_ids("3:23-cr-99999", "tnmd") == [999]
+
     def test_bump_last_filing_advances_forward(self, store: Store):
         # process_entry calls this with entry.date_filed so webhook-only
         # deployments can keep the index date current without refetching

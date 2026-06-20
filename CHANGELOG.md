@@ -8,6 +8,32 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.18.0] - 2026-06-20
+
+### Fixed
+
+- **Hearings on a split CourtListener docket no longer show a stray number in
+  their title (the "Sentencing Lytvynenko 2" bug).** When CourtListener stores
+  one logical PACER docket as several records (its reconciler does this when a
+  docket's upstream `pacer_case_id` changes mid-life), the extractor treated the
+  records as different dockets and minted a fresh `-2` key for an event the
+  sibling record already had. The end-of-sync deduplication then collapsed the
+  duplicate but kept the `-2` key, and the title — derived from the key when the
+  model gives none — read "Sentencing Lytvynenko 2". The extractor now presents
+  every record of one logical docket as a single docket, so it reuses the
+  existing key instead of minting a drifted one; and when deduplication does
+  collapse a `base` / `base-2` pair, it keeps the clean `base` key and title.
+  A meaningful trailing number (a second status conference, trial day 2, a
+  date) is never affected — only a number that duplicates a same-slot event is.
+
+### Added
+
+- **`scripts/heal_drifted_keys.py`** — a one-time, read-only-by-default
+  maintenance sweep that repairs hearings already stored with a drifted `-N`
+  key (the rows the fix above prevents going forward, but which a re-sync can't
+  re-collapse). It renames or merges only rows it can prove are drift — leaving
+  genuine sequences untouched — and writes changes with `--apply`.
+
 ## [0.17.1] - 2026-06-14
 
 ### Fixed

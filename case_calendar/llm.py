@@ -818,7 +818,27 @@ def build_user_message(
     docket_id: int | None = None,
     referenced_entries: list[dict[str, Any]] | None = None,
     known_deadlines: list[dict[str, Any]] | None = None,
+    group_docket_ids: set[int] | None = None,
+    canonical_docket_id: int | None = None,
 ) -> str:
+    # Multi-record collapse: CourtListener can split ONE logical PACER docket
+    # across several docket_id rows (the pacer_case_id reconciler, bug #7345).
+    # Those rows are the SAME docket, but the cross-docket rule keys on
+    # docket_id and would otherwise force the model to allocate a fresh,
+    # drift-suffixed key (the "sentencing-lytvynenko-2" bug) instead of
+    # reusing the existing one. Render every in-group docket_id AS the
+    # canonical id so the entry and its same-docket known rows read alike and
+    # the model reuses the key. Only the PROMPT view is normalized; the stored
+    # docket_id (and the telemetry docket=) stay the real CourtListener id.
+    def _view(did: int | None) -> int | None:
+        if (
+            canonical_docket_id is not None
+            and group_docket_ids
+            and did in group_docket_ids
+        ):
+            return canonical_docket_id
+        return did
+
     rdoc_lines = []
     for rd in entry.get("recap_documents", []) or []:
         d = rd.get("description") or ""
@@ -831,7 +851,7 @@ def build_user_message(
         known_lines.append(
             f"  - key={h['hearing_key']!r} status={h['status']} "
             f"title={h['title']!r} starts_utc={h.get('starts_at_utc')} "
-            f"location={h.get('location')!r} docket_id={h.get('docket_id')}"
+            f"location={h.get('location')!r} docket_id={_view(h.get('docket_id'))}"
         )
     known_block = "\n".join(known_lines) or "  (no hearings known yet)"
 
@@ -840,7 +860,7 @@ def build_user_message(
         d_lines.append(
             f"  - key={d['deadline_key']!r} status={d['status']} "
             f"title={d['title']!r} due_utc={d.get('due_at_utc')} "
-            f"type={d.get('deadline_type')!r} docket_id={d.get('docket_id')}"
+            f"type={d.get('deadline_type')!r} docket_id={_view(d.get('docket_id'))}"
         )
     d_block = "\n".join(d_lines) or "  (no deadlines known yet)"
     deadlines_block = f"\n\nKNOWN DEADLINES:\n{d_block}"
@@ -883,7 +903,7 @@ KNOWN HEARINGS:
 NEW DOCKET ENTRY:
   entry_id    : {entry.get("id")}
   entry_number: {entry.get("entry_number")}
-  docket_id   : {docket_id}
+  docket_id   : {_view(docket_id)}
   date_filed  : {entry.get("date_filed")}
   short_desc  : {entry.get("short_description") or ""}
   description :
@@ -985,6 +1005,8 @@ def extract_actions(
     docket_id: int | None = None,
     referenced_entries: list[dict[str, Any]] | None = None,
     known_deadlines: list[dict[str, Any]] | None = None,
+    group_docket_ids: set[int] | None = None,
+    canonical_docket_id: int | None = None,
     max_tokens: int = 8192,
 ) -> list[dict[str, Any]]:
     """Run the configured LLM against one docket entry and return actions.
@@ -1012,6 +1034,8 @@ def extract_actions(
         docket_id=docket_id,
         referenced_entries=referenced_entries,
         known_deadlines=known_deadlines,
+        group_docket_ids=group_docket_ids,
+        canonical_docket_id=canonical_docket_id,
     )
     logger.debug(
         "llm input entry=%s known_hearings=%d known_deadlines=%d user=%s",
