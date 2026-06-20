@@ -196,7 +196,7 @@ cases:
   - id: us-v-lytvynenko
     name: "United States v. Lytvynenko"
     calendar: cybercrime
-    dockets: [71820111]
+    dockets: [71820111, 73510620]
     tags: [ransomware, Conti]
 
   # Hedged absence-of-record claims: "no disposition documents have been filed",
