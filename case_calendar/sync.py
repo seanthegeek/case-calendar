@@ -676,6 +676,83 @@ def _best_proceeding_notes(
     return best.get("notes")
 
 
+# A trailing "-<digits>" on a hearing_key. It is a key-drift artifact ONLY when
+# the suffix-free base is ALSO present in the same dedupe cluster (the cross-
+# record / vocabulary drift the sweeps collapse). A lone trailing number is
+# usually MEANINGFUL (sequential status conferences, trial days), so we never
+# strip it outside a base/base-N pairing.
+_DRIFT_SUFFIX_RE = re.compile(r"-\d+$")
+
+
+def _drift_base(key: Optional[str]) -> Optional[str]:
+    """The suffix-free base of a ``base-<digits>`` key, else None."""
+    if not key:
+        return None
+    m = _DRIFT_SUFFIX_RE.search(key)
+    return key[: m.start()] if m else None
+
+
+def _canonical_drift_key(keys: list[str]) -> Optional[str]:
+    """The canonical survivor key when a cluster holds both ``base`` and
+    ``base-<digits>``.
+
+    Returns the suffix-free ``base`` — the ``-<digits>`` row is the drift
+    artifact. Returns None when no base/base-N pair is present, so a meaningful
+    trailing number (which never shares a same-slot cluster with its own base)
+    is left to the caller's normal survivor selection.
+    """
+    keyset = set(keys)
+    bases = [b for k in keys if (b := _drift_base(k)) and b in keyset]
+    # Shortest base wins on the rare nested case (base, base-2, base-2-3).
+    return min(bases, key=lambda b: (len(b), b)) if bases else None
+
+
+def _key_to_title(key: Optional[str]) -> str:
+    """The fallback title derived from a hearing key: kebab → Title Case.
+
+    Mirrors the ``key.replace("-", " ").title()`` fallback used wherever the
+    LLM omits an explicit title.
+    """
+    return (key or "").replace("-", " ").title()
+
+
+def _title_is_key_derived(row: dict[str, Any]) -> bool:
+    """True when the row's title is just its key title-cased — i.e. the LLM
+    supplied no explicit title, so the title carries nothing the key doesn't."""
+    return (row.get("title") or "") == _key_to_title(row.get("hearing_key"))
+
+
+def _best_dedupe_title(
+    target: dict[str, Any], cluster: list[dict[str, Any]]
+) -> Optional[str]:
+    """Choose a clean title for a dedupe survivor, or None to leave it alone.
+
+    A drift survivor's title is usually key-derived (the LLM rarely titles
+    these), so off a ``-2`` key it reads "Sentencing Lytvynenko 2". When the
+    survivor's own title is explicit, keep it (None). Otherwise prefer an
+    absorbed sibling's explicit (non-key-derived) title — the same reasoning as
+    :func:`_best_proceeding_notes`. When every cluster title is key-derived,
+    return None: choosing the suffix-free base as the survivor already yields a
+    clean key-derived title, and a surviving ``-N`` whose suffix is meaningful
+    must NOT be stripped.
+    """
+    if not _title_is_key_derived(target):
+        return None
+    target_key = target.get("hearing_key")
+    explicit = [
+        h
+        for h in cluster
+        if h.get("hearing_key") != target_key and not _title_is_key_derived(h)
+    ]
+    if not explicit:
+        return None
+    best = min(
+        explicit,
+        key=lambda h: (-len(h.get("title") or ""), h.get("hearing_key") or ""),
+    )
+    return best.get("title")
+
+
 # Trailing clerk / court-staff metadata PACER appends to a docket entry's text
 # — "(afm, COURT STAFF)", "(Date Filed: 3/24/2026)", "(Entered: 03/24/2026)",
 # "(This is a text-only entry ... There is no document associated ...)". Useful
@@ -936,6 +1013,162 @@ def heal_proceeding_notes(store: Store, *, apply: bool = False) -> list[dict[str
     if apply and changes:
         store.conn.commit()
     return changes
+
+
+# An end-of-sync dedupe sweep records which sibling keys it absorbed onto the
+# survivor's audit_notes, e.g. "Absorbed sibling key(s) sentencing-lytvynenko:
+# <reason>" or "...key(s) detention-hearing-lytvynenko at same UTC slot <ts>".
+# The heal sweep reads it back to recover the suffix-free base of an
+# already-collapsed survivor (the base row was deleted at merge time).
+_ABSORBED_RE = re.compile(
+    r"Absorbed sibling key\(s\)\s+(?P<keys>.+?)(?::| at same UTC slot|\n|$)"
+)
+
+
+def _absorbed_sibling_keys(audit_notes: Optional[str]) -> set[str]:
+    """The hearing keys a dedupe sweep recorded as absorbed onto this row."""
+    out: set[str] = set()
+    for m in _ABSORBED_RE.finditer(audit_notes or ""):
+        for k in m.group("keys").split(","):
+            k = k.strip()
+            if k:
+                out.add(k)
+    return out
+
+
+def heal_drifted_keys(store: Store, *, apply: bool = False) -> list[dict[str, Any]]:
+    """Retroactively canonicalize hearing keys left as ``base-<digits>`` drift.
+
+    Deterministic, no LLM, no CourtListener. The end-of-sync dedupe sweeps
+    collapse cross-record / vocabulary key drift, but historically kept the
+    ``-N`` row as the survivor (it carried more source_entry_ids), leaving the
+    drift suffix in the key — which the key-derived title fallback then renders
+    to subscribers as "Sentencing Lytvynenko 2". Re-running sync can't fix an
+    already-collapsed survivor (its suffix-free sibling was deleted, so there's
+    no cluster to re-merge). This sweep repairs them by two PROVABLE-drift
+    signals; anything else is left alone, so a MEANINGFUL trailing number
+    (sequential status conferences, trial days) is never touched.
+
+    Signal 1 — absorption audit (the user-visible case): the row's
+    ``audit_notes`` records it absorbed its own suffix-free base, and that base
+    is no longer a row (the merge deleted it). RENAME ``base-N`` → ``base``,
+    clearing the gcal/m365 ids so the next emit re-creates cleanly, and
+    recomputing a key-derived title from the canonical key.
+
+    Signal 2 — same-slot coexistence (store hygiene, usually cancelled rows the
+    sweeps don't cover): the suffix-free ``base`` still exists in the same
+    logical PACER group at the same ``starts_at_utc``. DELETE ``base-N`` after
+    folding its source_entry_ids onto ``base`` — the same merge the dedupe
+    sweeps do, extended to statuses they skip.
+
+    Returns one dict per changed row (``case_id`` / ``hearing_key`` /
+    ``action`` / ``new_key`` / ``old_title`` / ``new_title``) so a dry run can
+    report what it would do. When ``apply`` is True the changes are written and
+    committed in a single transaction.
+    """
+    rows = store.conn.execute("SELECT * FROM hearings").fetchall()
+    changes: list[dict[str, Any]] = []
+    for row in rows:
+        h = Store._row_to_hearing(row)
+        key = h.get("hearing_key") or ""
+        base = _drift_base(key)
+        if not base:
+            continue
+        case_id = h["case_id"]
+        base_row = store.get_hearing(case_id, base)
+        absorbed = _absorbed_sibling_keys(h.get("audit_notes"))
+
+        if base_row is None and base in absorbed:
+            # Signal 1: rename base-N -> base (base is provably free).
+            new_title = (
+                _key_to_title(base) if _title_is_key_derived(h) else h.get("title")
+            )
+            changes.append(
+                {
+                    "case_id": case_id,
+                    "hearing_key": key,
+                    "action": "rename",
+                    "new_key": base,
+                    "old_title": h.get("title"),
+                    "new_title": new_title,
+                }
+            )
+            if apply:
+                new_row = dict(h)
+                new_row["hearing_key"] = base
+                new_row["title"] = new_title
+                # Fresh key: re-derive the gcal id from it and force a clean
+                # M365 re-create. gcal_event_id is re-derived at emit;
+                # m365_event_id is not written by upsert_hearing, so the new
+                # row starts NULL (the old key's Graph event orphans — the
+                # one-time cost of a rename).
+                new_row["gcal_event_id"] = None
+                store.conn.execute(
+                    "DELETE FROM hearings WHERE case_id=? AND hearing_key=?",
+                    (case_id, key),
+                )
+                store.upsert_hearing(new_row)
+        elif base_row is not None and _same_logical_slot(store, h, base_row):
+            # Signal 2: base coexists at the same slot -> fold sources into
+            # base and delete the -N row (mirrors the dedupe merge).
+            merged_sources: list[Any] = list(base_row.get("source_entry_ids") or [])
+            seen: set[Any] = set(merged_sources)
+            for sid in h.get("source_entry_ids") or []:
+                if sid not in seen:
+                    seen.add(sid)
+                    merged_sources.append(sid)
+            changes.append(
+                {
+                    "case_id": case_id,
+                    "hearing_key": key,
+                    "action": "delete",
+                    "new_key": base,
+                    "old_title": h.get("title"),
+                    "new_title": base_row.get("title"),
+                }
+            )
+            if apply:
+                base_row["source_entry_ids"] = merged_sources
+                better_notes = _best_proceeding_notes(base_row, [base_row, h])
+                if better_notes is not None:
+                    base_row["notes"] = better_notes
+                better_title = _best_dedupe_title(base_row, [base_row, h])
+                if better_title is not None:
+                    base_row["title"] = better_title
+                base_row["audit_notes"] = _append_audit_line(
+                    base_row.get("audit_notes"),
+                    "heal-drift",
+                    f"Absorbed drift sibling key {key} at same UTC slot "
+                    f"{base_row.get('starts_at_utc')}",
+                )
+                store.upsert_hearing(base_row)
+                store.conn.execute(
+                    "DELETE FROM hearings WHERE case_id=? AND hearing_key=?",
+                    (case_id, key),
+                )
+    if apply and changes:
+        store.conn.commit()
+    return changes
+
+
+def _same_logical_slot(store: Store, a: dict[str, Any], b: dict[str, Any]) -> bool:
+    """True when two hearings share a starts_at_utc AND the same logical PACER
+    docket group (same docket_number + court_id), so a base/base-N pair across
+    them is unambiguous key drift rather than two distinct proceedings."""
+    if a.get("starts_at_utc") != b.get("starts_at_utc") or not a.get("starts_at_utc"):
+        return False
+    did_a, did_b = a.get("docket_id"), b.get("docket_id")
+    if did_a == did_b:
+        return True
+    if did_a is None or did_b is None:
+        return False
+    ma = store.get_docket_meta(did_a) or {}
+    mb = store.get_docket_meta(did_b) or {}
+    return (
+        ma.get("docket_number") is not None
+        and ma.get("docket_number") == mb.get("docket_number")
+        and ma.get("court_id") == mb.get("court_id")
+    )
 
 
 def _default_duration(hearing_type: str | None, time_set: bool) -> int:
@@ -1706,6 +1939,7 @@ class CaseSyncer:
         action: dict[str, Any],
         *,
         source: str = "dedupe",
+        prefer_canonical: bool = True,
     ) -> int:
         """Apply one MERGE_INTO / KEEP_BOTH / UNCLEAR action to a cluster.
 
@@ -1713,6 +1947,14 @@ class CaseSyncer:
         row ("dedupe" for the exact-slot scheduled sweep, "dedupe-nearslot"
         for the near-slot sweep) so a future reader can tell which sweep
         absorbed the siblings.
+
+        ``prefer_canonical`` re-points a base/base-N merge onto the
+        suffix-free ``base``. Safe ONLY for the EXACT-slot sweeps, where the
+        two rows are the same date+time and the choice is purely cosmetic. The
+        near-slot sweep passes False because there the rows sit at DIFFERENT
+        dates and which one survives is semantic (a singular cross-date merge
+        must keep the HELD date, which may be the ``-N`` row) — the LLM's
+        target choice encodes that and must not be overridden.
 
         Returns the number of rows that were absorbed (merged into and
         then deleted in favor of the target).
@@ -1741,6 +1983,21 @@ class CaseSyncer:
             )
             return 0
 
+        # Prefer the suffix-free canonical key as the survivor when the cluster
+        # holds both `base` and `base-<digits>`: the LLM tends to pick the
+        # `-N` row (it carries more source_entry_ids), but keeping the drift
+        # suffix is exactly the "Sentencing Lytvynenko 2" artifact. Re-point
+        # the merge at `base` so the survivor (and its key-derived title /
+        # ICS UID / event ids) is clean. No-op when no base/base-N pair exists.
+        canonical = (
+            _canonical_drift_key([h["hearing_key"] for h in cluster])
+            if prefer_canonical
+            else None
+        )
+        if canonical and canonical != target_key:
+            target = next(h for h in cluster if h.get("hearing_key") == canonical)
+            target_key = canonical
+
         # Merge source_entry_ids from all duplicates into the target.
         merged_sources: list[Any] = list(target.get("source_entry_ids") or [])
         seen: set[Any] = set(merged_sources)
@@ -1764,6 +2021,15 @@ class CaseSyncer:
         better_notes = _best_proceeding_notes(target, cluster)
         if better_notes is not None:
             target["notes"] = better_notes
+
+        # Title: when the survivor's title is just its key title-cased, adopt
+        # an absorbed sibling's explicit title rather than carrying a
+        # key-derived one (the survivor key is canonical by now, so its own
+        # derived title is already clean; this only upgrades to a real title
+        # the LLM wrote on a sibling).
+        better_title = _best_dedupe_title(target, cluster)
+        if better_title is not None:
+            target["title"] = better_title
 
         # Record absorbed sibling keys + the LLM's reason on the
         # canonical's audit_notes so the audit trail of WHICH keys were
@@ -1834,15 +2100,25 @@ class CaseSyncer:
         if not clusters:
             return 0
 
-        def _rank(h: dict[str, Any]) -> tuple[int, str, str]:
-            # Higher source_entry_ids count first (so we sort descending
-            # via negation), oldest last_updated next (ascending), then
-            # alphabetical hearing_key for stable tie-break.
-            n = len(h.get("source_entry_ids") or [])
-            return (-n, h.get("last_updated") or "", h.get("hearing_key") or "")
-
         n_deleted = 0
         for cluster in clusters:
+            # Prefer the suffix-free canonical key when the cluster holds both
+            # `base` and `base-<digits>` (cross-record drift), so the survivor
+            # isn't a `-N` artifact. Otherwise fall back to: higher
+            # source_entry_ids count first, oldest last_updated next, then
+            # alphabetical hearing_key for a stable tie-break.
+            canonical = _canonical_drift_key([h["hearing_key"] for h in cluster])
+
+            def _rank(h: dict[str, Any], canonical: Optional[str] = canonical) -> tuple:
+                is_canonical = 0 if h.get("hearing_key") == canonical else 1
+                n = len(h.get("source_entry_ids") or [])
+                return (
+                    is_canonical,
+                    -n,
+                    h.get("last_updated") or "",
+                    h.get("hearing_key") or "",
+                )
+
             ranked = sorted(cluster, key=_rank)
             target = ranked[0]
             target_key = target.get("hearing_key")
@@ -1863,6 +2139,9 @@ class CaseSyncer:
             better_notes = _best_proceeding_notes(target, cluster)
             if better_notes is not None:
                 target["notes"] = better_notes
+            better_title = _best_dedupe_title(target, cluster)
+            if better_title is not None:
+                target["title"] = better_title
             # Record the absorbed sibling keys on the canonical's
             # audit_notes so the audit trail of WHICH keys were absorbed
             # stays attached to the surviving row after the siblings are
@@ -1945,7 +2224,11 @@ class CaseSyncer:
                 recent_entries=recent,
             )
             n_merged += self._apply_dedupe_action(
-                case, cluster, action, source="dedupe-nearslot"
+                case,
+                cluster,
+                action,
+                source="dedupe-nearslot",
+                prefer_canonical=False,
             )
 
         if n_merged:
@@ -2216,6 +2499,24 @@ class CaseSyncer:
         referenced = self._resolve_docket_refs(docket_id, entry)
         known_deadlines = self.store.get_deadlines_in_court(case.case_id, court_id)
 
+        # Multi-record collapse: when CourtListener split this logical PACER
+        # docket across several docket_id rows (the pacer_case_id reconciler,
+        # bug #7345), present them to the extractor AS ONE docket so the
+        # cross-docket rule doesn't force a drift-suffixed key ("-2") for an
+        # event that already exists under the sibling record's key. The
+        # canonical id is min(group) — stable, unlike get_docket_group_ids's
+        # date_modified ordering. Single-record dockets pass nothing (the
+        # extractor's docket_id view is identity).
+        group_docket_ids: Optional[set[int]] = None
+        canonical_docket_id: Optional[int] = None
+        meta = self.store.get_docket_meta(docket_id)
+        docket_number = meta.get("docket_number") if meta else None
+        if docket_number and court_id:
+            group = self.store.get_docket_group_ids(docket_number, court_id)
+            if len(group) > 1:
+                group_docket_ids = set(group)
+                canonical_docket_id = min(group)
+
         actions = llm.extract_actions(
             case_name=case.name,
             court_id=court_id,
@@ -2226,6 +2527,8 @@ class CaseSyncer:
             docket_id=docket_id,
             referenced_entries=referenced,
             known_deadlines=known_deadlines,
+            group_docket_ids=group_docket_ids,
+            canonical_docket_id=canonical_docket_id,
         )
 
         for action in actions:

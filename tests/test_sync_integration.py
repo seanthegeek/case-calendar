@@ -15,16 +15,24 @@ from case_calendar.store import Store
 from case_calendar.sync import (
     CaseConfig,
     CaseSyncer,
+    _absorbed_sibling_keys,
+    _best_dedupe_title,
     _best_proceeding_notes,
+    _canonical_drift_key,
     _describes_proceeding,
+    _drift_base,
     _entry_records_proceeding,
     _hearing_date_tokens,
     _is_admin_notice,
+    _key_to_title,
     _proceeding_notes_from_entry,
     _proceeding_record_rank,
     _proceeding_types,
     _record_proceeding_name,
+    _same_logical_slot,
+    _title_is_key_derived,
     fingerprint_entry,
+    heal_drifted_keys,
     heal_proceeding_notes,
     is_pending_enrichment,
 )
@@ -5659,3 +5667,511 @@ class TestReconcilePlaceholders:
             case, filed_after="2026-04-01"
         )
         assert stats["checked"] == 0
+
+
+# --- Part 1: multi-record group canonicalization for the extractor ---
+
+
+class TestMultiRecordGroupCanonicalization:
+    """When CourtListener splits one logical PACER docket across several
+    docket_id rows (the pacer_case_id reconciler, bug #7345), the per-entry
+    extractor must see them AS ONE docket so the cross-docket rule doesn't
+    force a drift-suffixed key (the "Sentencing Lytvynenko 2" bug)."""
+
+    @staticmethod
+    def _capture_extract(monkeypatch):
+        captured: dict = {}
+
+        def fake(*, group_docket_ids=None, canonical_docket_id=None, **_):
+            captured["group_docket_ids"] = group_docket_ids
+            captured["canonical_docket_id"] = canonical_docket_id
+            return [{"type": "IGNORE", "reason": "stub"}]
+
+        monkeypatch.setattr(llm_mod, "extract_actions", fake)
+        return captured
+
+    def test_multi_record_group_passes_canonical_to_extractor(self, store, monkeypatch):
+        # Two docket_ids sharing (docket_number, court_id) -> the extractor is
+        # told the group + the stable canonical id (min of the group).
+        for did in (73510620, 71820111):
+            store.upsert_docket_meta(
+                did, {"court_id": "tnmd", "docket_number": "3:23-cr-00088"}
+            )
+        case_multi = CaseConfig(
+            case_id="x", name="X", dockets=[71820111, 73510620], calendar="t"
+        )
+        captured = self._capture_extract(monkeypatch)
+        cl = FakeCourtListener(
+            dockets={
+                73510620: {
+                    "id": 73510620,
+                    "court_id": "tnmd",
+                    "docket_number": "3:23-cr-00088",
+                }
+            }
+        )
+        CaseSyncer(cl, store).process_entry(
+            case_multi, 73510620, _entry(42, "Sentencing set")
+        )
+        assert captured["group_docket_ids"] == {71820111, 73510620}
+        assert captured["canonical_docket_id"] == 71820111
+
+    def test_single_record_docket_passes_no_group(self, store, monkeypatch):
+        # A docket that is the only record in its (number, court) group gets
+        # identity behavior — no canonicalization.
+        store.upsert_docket_meta(100, {"court_id": "mad", "docket_number": "1:25-cr-1"})
+        case_one = CaseConfig(case_id="x", name="X", dockets=[100], calendar="t")
+        captured = self._capture_extract(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(case_one, 100, _entry(42, "Sentencing set"))
+        assert captured["group_docket_ids"] is None
+        assert captured["canonical_docket_id"] is None
+
+    def test_same_court_different_number_is_not_grouped(self, store, monkeypatch):
+        # Co-defendant dockets in the same court but with DIFFERENT docket
+        # numbers are genuinely distinct dockets, not a multi-record group —
+        # the cross-docket rule must still fire, so no canonicalization.
+        store.upsert_docket_meta(
+            100, {"court_id": "mad", "docket_number": "1:25-cr-1-A"}
+        )
+        store.upsert_docket_meta(
+            101, {"court_id": "mad", "docket_number": "1:25-cr-1-B"}
+        )
+        case_multi = CaseConfig(case_id="x", name="X", dockets=[100, 101], calendar="t")
+        captured = self._capture_extract(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(
+            case_multi, 100, _entry(42, "Sentencing set")
+        )
+        assert captured["group_docket_ids"] is None
+        assert captured["canonical_docket_id"] is None
+
+    def test_docket_without_number_skips_group_resolution(self, store, monkeypatch):
+        # A docket whose cached meta carries no docket_number (court_id only)
+        # can't be grouped — the guard skips group resolution entirely.
+        store.upsert_docket_meta(100, {"court_id": "mad"})
+        case_one = CaseConfig(case_id="x", name="X", dockets=[100], calendar="t")
+        captured = self._capture_extract(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()})
+        CaseSyncer(cl, store).process_entry(case_one, 100, _entry(42, "Sentencing set"))
+        assert captured["group_docket_ids"] is None
+        assert captured["canonical_docket_id"] is None
+
+
+# --- Part 2: dedupe merge prefers the suffix-free canonical key ---
+
+
+class TestDedupePrefersCanonicalKey:
+    """A base/base-N cluster must collapse onto the suffix-free `base`, even
+    when the `-N` row carries more source_entry_ids — otherwise the survivor
+    keeps the drift suffix (the visible "Sentencing Lytvynenko 2" artifact)."""
+
+    def test_llm_gated_sweep_repoints_to_base_over_n_target(
+        self, store, case, monkeypatch
+    ):
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did, {"court_id": "mad", "docket_number": "1:25-cr-00001-X"}
+            )
+        slot = "2099-09-10T15:00:00+00:00"
+        # base has FEWER sources and a key-derived title; base-N has MORE
+        # sources AND an explicit (LLM-written) title.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x",
+                "title": "Sentencing X",  # key-derived
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-x-2",
+                "title": "Sentencing Hearing",  # explicit
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 101,
+                "source_entry_ids": [20, 21, 22],
+            }
+        )
+        stub_verify(monkeypatch)
+        # The LLM (as it did in the live bug) picks the -N row as the target.
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-x-2",
+                "reason": "same slot",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # Survivor is the suffix-free base, not the -N the LLM named.
+        assert "sentencing-x" in rows
+        assert "sentencing-x-2" not in rows
+        assert set(rows["sentencing-x"]["source_entry_ids"]) == {10, 20, 21, 22}
+        # base's own title was key-derived, so the survivor adopts the
+        # absorbed sibling's explicit title rather than carrying "Sentencing X".
+        assert rows["sentencing-x"]["title"] == "Sentencing Hearing"
+
+    def test_held_sweep_prefers_base_when_n_has_more_sources(
+        self, store, case, monkeypatch
+    ):
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did, {"court_id": "mad", "docket_number": "1:25-cr-00001-X"}
+            )
+        slot = "2026-02-19T16:00:00+00:00"
+        # base: fewer sources, key-derived title. base-N: MORE sources.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-didenko",
+                "title": "Sentencing Didenko",
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [10],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-didenko-2",
+                "title": "Sentencing Hearing",  # explicit
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 101,
+                "source_entry_ids": [20, 21, 22],
+            }
+        )
+        stub_verify(monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_held"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        # Survivor is the suffix-free base despite having fewer sources, and
+        # adopts the absorbed sibling's explicit title (base's was key-derived).
+        assert "sentencing-didenko" in rows
+        assert "sentencing-didenko-2" not in rows
+        assert set(rows["sentencing-didenko"]["source_entry_ids"]) == {10, 20, 21, 22}
+        assert rows["sentencing-didenko"]["title"] == "Sentencing Hearing"
+
+
+# --- Part 3: heal already-drifted keys ---
+
+
+class TestHealDriftedKeys:
+    """Retroactive canonicalization of `base-N` survivors already collapsed in
+    the store (re-sync can't re-cluster them). Two provable-drift signals only;
+    meaningful trailing numbers are left untouched."""
+
+    def _seed_group(self, store):
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did, {"court_id": "tnmd", "docket_number": "3:23-cr-00088"}
+            )
+
+    def _h(
+        self,
+        store,
+        key,
+        *,
+        status="scheduled",
+        slot,
+        sources,
+        audit=None,
+        did=101,
+        title=None,
+        notes=None,
+    ):
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": key,
+                "title": title if title is not None else key.replace("-", " ").title(),
+                "starts_at_utc": slot,
+                "duration_minutes": 60,
+                "timezone": "America/Chicago",
+                "notes": notes,
+                "audit_notes": audit,
+                "status": status,
+                "significance": "major",
+                "docket_id": did,
+                "source_entry_ids": sources,
+            }
+        )
+
+    def test_rename_via_absorption_audit_fixes_key_title_and_m365(self, store):
+        # base absent (deleted at merge), audit records the absorption -> rename.
+        self._seed_group(store)
+        self._h(
+            store,
+            "sentencing-lytvynenko-2",
+            status="scheduled",
+            slot="2026-09-10T15:00:00+00:00",
+            sources=[10, 11],
+            audit="[dedupe] Absorbed sibling key(s) sentencing-lytvynenko: same slot",
+            did=101,
+        )
+        store.set_m365_id_for_hearing(
+            "us-v-x", "sentencing-lytvynenko-2", "OLD-GRAPH-ID"
+        )
+        changes = heal_drifted_keys(store, apply=True)
+        assert len(changes) == 1
+        assert changes[0]["action"] == "rename"
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-lytvynenko-2" not in rows
+        assert "sentencing-lytvynenko" in rows
+        survivor = rows["sentencing-lytvynenko"]
+        # Key-derived title recomputed from the canonical key (no "2").
+        assert survivor["title"] == "Sentencing Lytvynenko"
+        assert survivor["source_entry_ids"] == [10, 11]
+        # M365 id cleared so the next emit re-creates cleanly under the new key.
+        assert (
+            store.get_hearing("us-v-x", "sentencing-lytvynenko")["m365_event_id"]
+            is None
+        )
+
+    def test_delete_via_same_slot_base_coexistence(self, store):
+        # base exists at the SAME slot in the same group -> delete the -N row,
+        # fold its sources into base. base has a key-derived title and empty
+        # notes; the -N sibling carries an explicit title AND a proceeding
+        # record, so the survivor adopts BOTH (the dedupe-merge reasoning).
+        self._seed_group(store)
+        slot = "2026-12-18T16:00:00+00:00"
+        self._h(
+            store,
+            "sentencing-mcgonigal",  # key-derived title "Sentencing Mcgonigal"
+            status="held",
+            slot=slot,
+            sources=[1, 2],
+            did=100,
+            notes=None,
+        )
+        self._h(
+            store,
+            "sentencing-mcgonigal-2",
+            status="held",
+            slot=slot,
+            sources=[2, 3],
+            did=101,
+            title="Sentencing Hearing",
+            notes="Minute Entry for proceedings held: Sentencing as to McGonigal held.",
+        )
+        changes = heal_drifted_keys(store, apply=True)
+        assert [c["action"] for c in changes] == ["delete"]
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-mcgonigal-2" not in rows
+        survivor = rows["sentencing-mcgonigal"]
+        assert set(survivor["source_entry_ids"]) == {1, 2, 3}
+        # Adopted the absorbed sibling's explicit title and proceeding notes.
+        assert survivor["title"] == "Sentencing Hearing"
+        assert "proceedings held" in survivor["notes"]
+        assert "[heal-drift]" in (survivor["audit_notes"] or "")
+
+    def test_delete_keeps_base_when_already_good(self, store):
+        # Signal 2 where base already has an explicit title AND a proceeding
+        # record — nothing to adopt from the absorbed sibling, so the survivor
+        # keeps its own title/notes (exercises the no-upgrade branches).
+        self._seed_group(store)
+        slot = "2026-12-18T16:00:00+00:00"
+        self._h(
+            store,
+            "sentencing-mcgonigal",
+            status="held",
+            slot=slot,
+            sources=[1],
+            did=100,
+            title="Sentencing Hearing",
+            notes="Minute Entry for proceedings held: Sentencing held.",
+        )
+        self._h(
+            store,
+            "sentencing-mcgonigal-2",
+            status="held",
+            slot=slot,
+            sources=[2],
+            did=101,
+        )
+        changes = heal_drifted_keys(store, apply=True)
+        assert [c["action"] for c in changes] == ["delete"]
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-mcgonigal-2" not in rows
+        survivor = rows["sentencing-mcgonigal"]
+        assert survivor["title"] == "Sentencing Hearing"
+        assert "proceedings held" in survivor["notes"]
+        assert set(survivor["source_entry_ids"]) == {1, 2}
+
+    def test_delete_dry_run_does_not_mutate(self, store):
+        # Signal 2 in dry-run: the delete is reported but not applied.
+        self._seed_group(store)
+        slot = "2026-08-11T14:00:00+00:00"
+        self._h(store, "trial-x", status="cancelled", slot=slot, sources=[1], did=100)
+        self._h(store, "trial-x-2", status="cancelled", slot=slot, sources=[2], did=101)
+        changes = heal_drifted_keys(store, apply=False)
+        assert [c["action"] for c in changes] == ["delete"]
+        keys = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert {"trial-x", "trial-x-2"} <= keys  # nothing deleted
+
+    def test_meaningful_sequence_is_left_untouched(self, store):
+        # base exists at a DIFFERENT slot and there is no absorption note —
+        # a genuine sequential conference, NOT drift. Leave both alone.
+        self._seed_group(store)
+        self._h(
+            store,
+            "status-conf-ding",
+            status="held",
+            slot="2026-01-01T16:00:00+00:00",
+            sources=[1],
+            did=100,
+        )
+        self._h(
+            store,
+            "status-conf-ding-2",
+            status="scheduled",
+            slot="2026-03-01T16:00:00+00:00",
+            sources=[2],
+            did=100,
+        )
+        assert heal_drifted_keys(store, apply=True) == []
+        rows = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert {"status-conf-ding", "status-conf-ding-2"} <= rows
+
+    def test_lone_drift_key_without_proof_is_left_untouched(self, store):
+        # base absent AND no absorption note -> can't prove drift, leave alone.
+        self._seed_group(store)
+        self._h(
+            store,
+            "change-of-plea-x-2",
+            status="cancelled",
+            slot="2026-08-03T16:00:00+00:00",
+            sources=[1],
+            audit="[verify-pass] superseded",
+        )
+        assert heal_drifted_keys(store, apply=False) == []
+
+    def test_dry_run_does_not_mutate(self, store):
+        self._seed_group(store)
+        self._h(
+            store,
+            "sentencing-lytvynenko-2",
+            status="scheduled",
+            slot="2026-09-10T15:00:00+00:00",
+            sources=[10],
+            audit="[dedupe] Absorbed sibling key(s) sentencing-lytvynenko: x",
+        )
+        changes = heal_drifted_keys(store, apply=False)
+        assert len(changes) == 1
+        # Nothing written.
+        rows = {h["hearing_key"] for h in store.get_hearings("us-v-x")}
+        assert "sentencing-lytvynenko-2" in rows
+        assert "sentencing-lytvynenko" not in rows
+
+
+# --- drift-key helper units ---
+
+
+class TestDriftKeyHelpers:
+    def test_drift_base(self):
+        assert _drift_base("sentencing-x-2") == "sentencing-x"
+        assert _drift_base("trial-ding-day-2") == "trial-ding-day"
+        assert _drift_base("sentencing-x") is None  # no trailing -digits
+        assert _drift_base(None) is None
+        assert _drift_base("") is None
+
+    def test_canonical_drift_key(self):
+        # base + base-N present -> base is canonical.
+        assert (
+            _canonical_drift_key(["sentencing-x", "sentencing-x-2"]) == "sentencing-x"
+        )
+        # base absent -> no canonical (leave caller's choice).
+        assert _canonical_drift_key(["sentencing-x-2", "sentencing-x-3"]) is None
+        # nested: shortest base wins.
+        assert _canonical_drift_key(["a-b", "a-b-2", "a-b-2-3"]) == "a-b"
+        # no suffix anywhere.
+        assert _canonical_drift_key(["sentencing-x", "trial-x"]) is None
+
+    def test_key_to_title_and_is_key_derived(self):
+        assert _key_to_title("sentencing-lytvynenko-2") == "Sentencing Lytvynenko 2"
+        assert _key_to_title(None) == ""
+        assert _title_is_key_derived(
+            {"hearing_key": "sentencing-x", "title": "Sentencing X"}
+        )
+        assert not _title_is_key_derived(
+            {"hearing_key": "sentencing-x", "title": "Jury Trial"}
+        )
+
+    def test_best_dedupe_title(self):
+        # Target key-derived; a sibling has an explicit title -> adopt it.
+        target = {"hearing_key": "sentencing-x", "title": "Sentencing X"}
+        cluster = [
+            target,
+            {"hearing_key": "sentencing-x-2", "title": "Sentencing Hearing"},
+        ]
+        assert _best_dedupe_title(target, cluster) == "Sentencing Hearing"
+        # Target already explicit -> leave alone.
+        explicit = {"hearing_key": "sentencing-x", "title": "Jury Trial"}
+        assert _best_dedupe_title(explicit, cluster) is None
+        # All key-derived -> None (no upgrade available).
+        all_kd = [
+            {"hearing_key": "sentencing-x", "title": "Sentencing X"},
+            {"hearing_key": "sentencing-x-2", "title": "Sentencing X 2"},
+        ]
+        assert _best_dedupe_title(all_kd[0], all_kd) is None
+
+    def test_absorbed_sibling_keys(self):
+        audit = (
+            "[verify-pass] something\n\n"
+            "[dedupe] Absorbed sibling key(s) sentencing-x, motion-hearing-2: reason\n"
+            "[dedupe-held] Absorbed sibling key(s) detention-x at same UTC slot 2026"
+        )
+        assert _absorbed_sibling_keys(audit) == {
+            "sentencing-x",
+            "motion-hearing-2",
+            "detention-x",
+        }
+        # Trailing comma yields no empty token.
+        assert _absorbed_sibling_keys("Absorbed sibling key(s) a, : x") == {"a"}
+        assert _absorbed_sibling_keys(None) == set()
+
+    def test_same_logical_slot(self, store):
+        slot = "2026-09-10T15:00:00+00:00"
+        a = {"starts_at_utc": slot, "docket_id": 100}
+        # Same docket_id -> True without any meta lookup.
+        assert _same_logical_slot(store, a, {"starts_at_utc": slot, "docket_id": 100})
+        # Different slot -> False.
+        assert not _same_logical_slot(
+            store, a, {"starts_at_utc": "2026-01-01T00:00:00+00:00", "docket_id": 100}
+        )
+        # A None docket_id -> False (can't resolve a group).
+        assert not _same_logical_slot(
+            store, a, {"starts_at_utc": slot, "docket_id": None}
+        )
+        # Different docket_ids in the SAME (number, court) group -> True.
+        store.upsert_docket_meta(100, {"court_id": "tnmd", "docket_number": "3:23-x"})
+        store.upsert_docket_meta(101, {"court_id": "tnmd", "docket_number": "3:23-x"})
+        assert _same_logical_slot(store, a, {"starts_at_utc": slot, "docket_id": 101})
+        # Same slot but different docket group -> False.
+        store.upsert_docket_meta(102, {"court_id": "tnmd", "docket_number": "9:99-y"})
+        assert not _same_logical_slot(
+            store, a, {"starts_at_utc": slot, "docket_id": 102}
+        )

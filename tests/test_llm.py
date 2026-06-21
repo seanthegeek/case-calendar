@@ -229,6 +229,82 @@ class TestBuildUserMessage:
         assert "docket_id   : 72379655" in msg
         assert "docket_id=72380208" in msg
 
+    def test_multi_record_group_renders_canonical_docket_id(self):
+        # When the entry's docket and a known hearing belong to the same
+        # multi-record group, both render AS the canonical id so the
+        # cross-docket rule reads "same docket" and the model reuses the key
+        # (the "Sentencing Lytvynenko 2" drift fix). A row OUTSIDE the group
+        # keeps its real id.
+        msg = llm.build_user_message(
+            case_name="x",
+            court_id="tnmd",
+            court_tz="America/Chicago",
+            entry={"id": 1, "description": "", "recap_documents": []},
+            pdf_texts=[],
+            known_hearings=[
+                {
+                    "hearing_key": "sentencing-x",
+                    "status": "scheduled",
+                    "title": "Sentencing",
+                    "starts_at_utc": "2026-09-10T15:00:00+00:00",
+                    "location": None,
+                    "docket_id": 73510620,  # in-group sibling record
+                },
+                {
+                    "hearing_key": "oral-arg-x",
+                    "status": "scheduled",
+                    "title": "Oral Arg",
+                    "starts_at_utc": "2026-05-19T13:30:00+00:00",
+                    "location": None,
+                    "docket_id": 99999999,  # different docket, NOT in group
+                },
+            ],
+            known_deadlines=[
+                {
+                    "deadline_key": "govt-resp-x",
+                    "status": "pending",
+                    "title": "Govt response",
+                    "due_at_utc": "2026-07-01T21:00:00+00:00",
+                    "deadline_type": None,
+                    "docket_id": 73510620,
+                }
+            ],
+            docket_id=73510620,
+            group_docket_ids={71820111, 73510620},
+            canonical_docket_id=71820111,
+        )
+        # Entry + in-group known hearing + in-group known deadline all canonical.
+        assert "docket_id   : 71820111" in msg
+        assert "key='sentencing-x'" in msg and "docket_id=71820111" in msg
+        assert "key='govt-resp-x'" in msg
+        # The real in-group id never appears; the out-of-group id is untouched.
+        assert "73510620" not in msg
+        assert "docket_id=99999999" in msg
+
+    def test_canonical_kwargs_omitted_is_identity(self):
+        # Without the group kwargs the docket_id view is identity (no change
+        # from the prior behavior).
+        msg = llm.build_user_message(
+            case_name="x",
+            court_id="tnmd",
+            court_tz="America/Chicago",
+            entry={"id": 1, "description": "", "recap_documents": []},
+            pdf_texts=[],
+            known_hearings=[
+                {
+                    "hearing_key": "sentencing-x",
+                    "status": "scheduled",
+                    "title": "Sentencing",
+                    "starts_at_utc": "2026-09-10T15:00:00+00:00",
+                    "location": None,
+                    "docket_id": 73510620,
+                }
+            ],
+            docket_id=73510620,
+        )
+        assert "docket_id   : 73510620" in msg
+        assert "docket_id=73510620" in msg
+
     def test_pdf_texts_truncated_per_pdf(self):
         msg = llm.build_user_message(
             case_name="x",
@@ -469,6 +545,38 @@ def test_extract_actions_dispatches_to_anthropic(monkeypatch):
     assert out == [{"type": "ADD_HEARING", "hearing_key": "x", "title": "T"}]
     assert "US v. Z" in captured["user"]
     assert "Hearing types: arraignment" in captured["system"]
+
+
+def test_extract_actions_canonicalizes_prompt_but_keeps_real_telemetry_docket(
+    monkeypatch,
+):
+    # The group kwargs canonicalize the docket_id in the PROMPT, but the
+    # telemetry `docket=` passed to the dispatch must stay the REAL docket_id
+    # (provenance / per-docket token accounting are unaffected by the view).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    captured = {}
+
+    def fake_dispatch(provider, system, user, max_tokens, **kw):
+        captured["user"] = user
+        captured["docket"] = kw.get("docket")
+        return '{"actions": [{"type": "IGNORE"}]}'
+
+    monkeypatch.setattr(providers, "_dispatch_llm_call", fake_dispatch)
+
+    llm.extract_actions(
+        case_name="x",
+        court_id="tnmd",
+        court_tz="America/Chicago",
+        entry={"id": 1, "description": "", "recap_documents": []},
+        pdf_texts=[],
+        known_hearings=[],
+        docket_id=73510620,
+        group_docket_ids={71820111, 73510620},
+        canonical_docket_id=71820111,
+    )
+    # Prompt view is canonical; telemetry docket is the real id.
+    assert "docket_id   : 71820111" in captured["user"]
+    assert captured["docket"] == 73510620
 
 
 # --- structured output (schema enforcement on the extraction call, always on) ---
