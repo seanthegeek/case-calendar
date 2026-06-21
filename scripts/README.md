@@ -100,6 +100,46 @@ care about the DB (see [AGENTS.md](../AGENTS.md)). Re-emit (or let the next
 sync's auto-emit) afterward so the ICS feeds and index page pick up the new
 text.
 
+### `heal_drifted_keys.py`
+
+Canonicalize hearings left with a drifted `base-N` key — the "Sentencing
+Lytvynenko 2" class, where a stray trailing number leaks into the
+subscriber-facing title. This happens when CourtListener stores one logical
+PACER docket as several records (its reconciler does this when a docket's
+upstream `pacer_case_id` changes mid-life): the extractor used to treat the
+records as different dockets and mint a fresh `-2` key for an event a sibling
+record already had, and the end-of-sync deduplication then kept the `-2` row as
+the survivor. The sweep (`sync.heal_drifted_keys`) is **deterministic**: no LLM,
+no CourtListener.
+
+It only ever touches rows it can *prove* are drift, by two signals: (1) the
+survivor's audit trail records that it absorbed its own suffix-free base and
+that base no longer exists → rename `base-N` → `base` (and recompute the
+key-derived title); (2) the suffix-free `base` still exists at the same time in
+the same logical docket group → delete the `-N` row after folding its source
+entries into `base`. A *meaningful* trailing number — a second status
+conference, trial day 2, a date — has neither signal and is left untouched.
+
+Why: the code fix (`sync.py` / `llm.py`) stops *new* drift, but a row already
+collapsed in the store stays collapsed — its suffix-free sibling was already
+deleted by the dedupe merge, so re-running `sync` can't re-collapse it. This
+sweep repairs the rows already in the store, in one pass.
+
+```bash
+# Dry run: list the keys it would rename / merge (old -> new), change nothing.
+uv run python scripts/heal_drifted_keys.py
+
+# Write the changes back to the store.
+uv run python scripts/heal_drifted_keys.py --apply
+```
+
+Flags: `--db <path>` (default `data/case-calendar.sqlite`), `--apply` (persist;
+omit for a dry run). Renaming a key changes its ICS UID and Google / Microsoft
+365 event id, so subscribers' clients re-create those events once — back up the
+store before `--apply` (see [AGENTS.md](../AGENTS.md)) and re-emit afterward (or
+let the next sync's auto-emit) so the feeds and index page pick up the clean
+keys and titles.
+
 ## Webhook testing
 
 ### `test_webhook.py`
