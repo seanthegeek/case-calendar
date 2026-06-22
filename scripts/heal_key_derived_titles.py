@@ -1,27 +1,30 @@
-"""Recompute key-derived hearing titles so single-defendant dockets drop the
-redundant defendant name ("Sentencing Lytvynenko" -> "Sentencing").
+"""Recompute key-derived titles: hearings drop a redundant single-defendant
+name ("Sentencing Lytvynenko" -> "Sentencing"), and hearings AND deadlines
+expand proceeding-type abbreviations ("Status Conf" -> "Status Conference",
+"Govt Status Report" -> "Government Status Report").
 
-A hearing the LLM never gave an explicit title to falls back to the humanized
-key, which carries the defendant slug the key holds for disambiguation. On a
-single-defendant docket that name is redundant noise the prompt itself says to
-omit; on a genuine co-defendant docket it is needed. The write-time fallback
-(``sync._fallback_hearing_title``) now applies that single-vs-multi-defendant
-rule, but rows stored before it landed keep the old title — this sweep repairs
+A row the LLM never gave an explicit title to falls back to the humanized key:
+a hearing carries the defendant slug the key holds for disambiguation (redundant
+on a single-defendant docket, needed on a co-defendant one), and either kind can
+carry a key abbreviation (`conf`, `govt`). The write-time fallbacks
+(``sync._fallback_hearing_title`` / ``_fallback_deadline_title``) now handle
+both, but rows stored before that landed keep the old title — this sweep repairs
 them deterministically (no LLM, no CourtListener).
 
-Touches ONLY rows whose CURRENT title is the plain key humanization, so an
-explicit LLM title is never rewritten, and a case is judged single- vs
-multi-defendant from its own hearing keys, so co-defendant dockets keep their
-names (rendered "<Type> - <Name>").
+Touches ONLY rows whose CURRENT title is a fallback-derived form, so an explicit
+LLM title is never rewritten. Hearings are judged single- vs multi-defendant
+from each case's own hearing keys (co-defendant dockets keep their names,
+rendered "<Type> - <Name>"); deadlines get abbreviation expansion only (freeform
+keys, no name stripping).
 
 Usage:
     uv run python scripts/heal_key_derived_titles.py            # dry run
     uv run python scripts/heal_key_derived_titles.py --apply    # write + commit
     uv run python scripts/heal_key_derived_titles.py --db <path>
 
-Read-only by default. Rewrites only the ``title`` column of the ``hearings``
-table (no key change, no schema change); back up the store before ``--apply`` if
-you care about the DB (see AGENTS.md).
+Read-only by default. Rewrites only the ``title`` column of the ``hearings`` and
+``deadlines`` tables (no key change, no schema change); back up the store before
+``--apply`` if you care about the DB (see AGENTS.md).
 """
 
 from __future__ import annotations
@@ -54,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"{verb} {len(changes)} key-derived title(s):\n")
     for c in changes:
         print(
-            f"  {c['case_id']} / {c['hearing_key']}: "
+            f"  [{c['table']}] {c['case_id']} / {c['key']}: "
             f"{c['old_title']!r} -> {c['new_title']!r}"
         )
     if not args.apply:
