@@ -19,10 +19,13 @@ from case_calendar.sync import (
     _best_dedupe_title,
     _best_proceeding_notes,
     _canonical_drift_key,
+    _case_defendant_names,
     _describes_proceeding,
     _drift_base,
     _entry_records_proceeding,
+    _fallback_hearing_title,
     _hearing_date_tokens,
+    _hearing_key_name_tokens,
     _is_admin_notice,
     _key_to_title,
     _proceeding_notes_from_entry,
@@ -32,7 +35,9 @@ from case_calendar.sync import (
     _same_logical_slot,
     _title_is_key_derived,
     fingerprint_entry,
+    heal_drifted_deadline_keys,
     heal_drifted_keys,
+    heal_key_derived_titles,
     heal_proceeding_notes,
     is_pending_enrichment,
 )
@@ -5942,14 +5947,34 @@ class TestHealDriftedKeys:
         assert "sentencing-lytvynenko-2" not in rows
         assert "sentencing-lytvynenko" in rows
         survivor = rows["sentencing-lytvynenko"]
-        # Key-derived title recomputed from the canonical key (no "2").
-        assert survivor["title"] == "Sentencing Lytvynenko"
+        # Key-derived title recomputed from the canonical key, with the
+        # redundant single-defendant name stripped (no "2", no "Lytvynenko").
+        assert survivor["title"] == "Sentencing"
         assert survivor["source_entry_ids"] == [10, 11]
         # M365 id cleared so the next emit re-creates cleanly under the new key.
         assert (
             store.get_hearing("us-v-x", "sentencing-lytvynenko")["m365_event_id"]
             is None
         )
+
+    def test_rename_preserves_explicit_title(self, store):
+        # An EXPLICITLY-titled drift survivor keeps its title on rename — only
+        # the key is canonicalized, the LLM's title is not recomputed.
+        self._seed_group(store)
+        self._h(
+            store,
+            "sentencing-lytvynenko-2",
+            status="scheduled",
+            slot="2026-09-10T15:00:00+00:00",
+            sources=[10],
+            audit="[dedupe] Absorbed sibling key(s) sentencing-lytvynenko: same slot",
+            did=101,
+            title="Sentencing Hearing for Mr. Lytvynenko",
+        )
+        changes = heal_drifted_keys(store, apply=True)
+        assert changes[0]["action"] == "rename"
+        survivor = store.get_hearing("us-v-x", "sentencing-lytvynenko")
+        assert survivor["title"] == "Sentencing Hearing for Mr. Lytvynenko"
 
     def test_delete_via_same_slot_base_coexistence(self, store):
         # base exists at the SAME slot in the same group -> delete the -N row,
@@ -6175,3 +6200,300 @@ class TestDriftKeyHelpers:
         assert not _same_logical_slot(
             store, a, {"starts_at_utc": slot, "docket_id": 102}
         )
+
+    def test_same_logical_slot_due_at_field(self, store):
+        # The slot_field override lets the helper compare deadline due times.
+        slot = "2026-09-10T21:00:00+00:00"
+        a = {"due_at_utc": slot, "docket_id": 100}
+        assert _same_logical_slot(
+            store, a, {"due_at_utc": slot, "docket_id": 100}, slot_field="due_at_utc"
+        )
+        assert not _same_logical_slot(
+            store,
+            a,
+            {"due_at_utc": "2026-01-01T00:00:00+00:00", "docket_id": 100},
+            slot_field="due_at_utc",
+        )
+
+
+class TestFallbackHearingTitle:
+    """Name-aware fallback title: drop a redundant defendant name on a
+    single-defendant docket, keep it (as `<Type> - <Name>`) on a co-defendant
+    one. Mirrors the prompt's own "append defendant ONLY when multi-defendant"
+    rule for the case where the LLM left a hearing untitled."""
+
+    def test_name_tokens(self):
+        assert _hearing_key_name_tokens("sentencing-lytvynenko") == ["lytvynenko"]
+        assert _hearing_key_name_tokens("oral-argument") == []
+        assert _hearing_key_name_tokens("travis-initial-appearance-plea") == ["travis"]
+        # Digits and a multi-word proceeding name are NOT names.
+        assert _hearing_key_name_tokens("change-of-plea-lytvynenko-2") == ["lytvynenko"]
+        assert _hearing_key_name_tokens("trial-ding-day-2") == ["ding"]
+        assert _hearing_key_name_tokens(None) == []
+
+    def test_case_defendant_names(self):
+        # Single defendant across the case's keys.
+        assert _case_defendant_names(
+            ["sentencing-lytvynenko", "detention-hearing-lytvynenko"]
+        ) == {"lytvynenko"}
+        # Co-defendants (the Akhter twins) -> multi.
+        assert _case_defendant_names(
+            ["trial-akhter", "sentencing-muneeb", "detention-review-sohaib"]
+        ) == {"akhter", "muneeb", "sohaib"}
+        # No names at all.
+        assert _case_defendant_names(["oral-argument", "pretrial-conference"]) == set()
+
+    def test_single_defendant_strips_name(self):
+        names = {"lytvynenko"}
+        assert _fallback_hearing_title("sentencing-lytvynenko", names) == "Sentencing"
+        assert (
+            _fallback_hearing_title("detention-hearing-lytvynenko", names)
+            == "Detention Hearing"
+        )
+        # A leading-name key strips just as well.
+        assert (
+            _fallback_hearing_title("lytvynenko-initial-appearance", names)
+            == "Initial Appearance"
+        )
+
+    def test_multi_defendant_keeps_name_as_suffix(self):
+        names = {"akhter", "muneeb", "sohaib"}
+        assert (
+            _fallback_hearing_title("sentencing-muneeb", names) == "Sentencing - Muneeb"
+        )
+        assert _fallback_hearing_title("trial-akhter", names) == "Trial - Akhter"
+
+    def test_no_proceeding_words_falls_back_to_plain(self):
+        # Nothing but the name -> keep the plain humanization rather than empty.
+        assert _fallback_hearing_title("lytvynenko", {"lytvynenko"}) == "Lytvynenko"
+
+    def test_proceeding_only_key_unchanged_either_way(self):
+        assert _fallback_hearing_title("oral-argument", set()) == "Oral Argument"
+        assert _fallback_hearing_title("oral-argument", {"x", "y"}) == "Oral Argument"
+
+    def test_empty_segments_are_skipped(self):
+        # A doubled dash yields an empty segment that is ignored, not titled.
+        assert _fallback_hearing_title("sentencing--lytvynenko", {"lytvynenko"}) == (
+            "Sentencing"
+        )
+
+
+class TestHealKeyDerivedTitles:
+    """Retroactive cleanup of key-derived hearing titles that carry a redundant
+    single-defendant name (the rows the write-time fallback now prevents)."""
+
+    def _h(self, store, case_id, key, title):
+        store.upsert_hearing(
+            {
+                "case_id": case_id,
+                "hearing_key": key,
+                "title": title,
+                "starts_at_utc": "2026-09-10T15:00:00+00:00",
+                "duration_minutes": 60,
+                "timezone": "America/Chicago",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
+
+    def test_strips_single_defendant_name(self, store):
+        self._h(
+            store, "us-v-lytvynenko", "sentencing-lytvynenko", "Sentencing Lytvynenko"
+        )
+        self._h(
+            store,
+            "us-v-lytvynenko",
+            "detention-hearing-lytvynenko",
+            "Detention Hearing Lytvynenko",
+        )
+        changes = heal_key_derived_titles(store, apply=True)
+        new = {
+            h["hearing_key"]: h["title"] for h in store.get_hearings("us-v-lytvynenko")
+        }
+        assert new["sentencing-lytvynenko"] == "Sentencing"
+        assert new["detention-hearing-lytvynenko"] == "Detention Hearing"
+        assert len(changes) == 2
+
+    def test_leaves_explicit_titles_alone(self, store):
+        self._h(store, "us-v-x", "sentencing-x", "Jury Trial")  # explicit, != key
+        assert heal_key_derived_titles(store, apply=True) == []
+        assert store.get_hearing("us-v-x", "sentencing-x")["title"] == "Jury Trial"
+
+    def test_keeps_codefendant_names(self, store):
+        # Two defendants in the case -> names stay (rendered "<Type> - <Name>").
+        self._h(store, "us-v-akhter", "sentencing-muneeb", "Sentencing Muneeb")
+        self._h(store, "us-v-akhter", "trial-akhter", "Trial Akhter")
+        heal_key_derived_titles(store, apply=True)
+        new = {h["hearing_key"]: h["title"] for h in store.get_hearings("us-v-akhter")}
+        assert new["sentencing-muneeb"] == "Sentencing - Muneeb"
+        assert new["trial-akhter"] == "Trial - Akhter"
+
+    def test_dry_run_does_not_mutate(self, store):
+        self._h(
+            store, "us-v-lytvynenko", "sentencing-lytvynenko", "Sentencing Lytvynenko"
+        )
+        changes = heal_key_derived_titles(store, apply=False)
+        assert len(changes) == 1
+        # Unchanged in the store.
+        assert (
+            store.get_hearing("us-v-lytvynenko", "sentencing-lytvynenko")["title"]
+            == "Sentencing Lytvynenko"
+        )
+
+    def test_no_op_when_already_clean(self, store):
+        self._h(store, "us-v-x", "oral-argument", "Oral Argument")
+        assert heal_key_derived_titles(store, apply=True) == []
+
+
+class TestHealDriftedDeadlineKeys:
+    """Deadline analogue of the drifted-key heal — collapses cross-record
+    `base`/`base-N` drift at the same due slot, NOT distinct same-day deadlines."""
+
+    def _seed_group(self, store):
+        for did in (100, 101):
+            store.upsert_docket_meta(
+                did, {"court_id": "tnmd", "docket_number": "3:23-cr-00088"}
+            )
+
+    def _d(self, store, key, *, slot, sources, did=101, title=None, audit=None):
+        store.upsert_deadline(
+            {
+                "case_id": "us-v-x",
+                "deadline_key": key,
+                "title": title if title is not None else key.replace("-", " ").title(),
+                "due_at_utc": slot,
+                "timezone": "America/Chicago",
+                "status": "pending",
+                "significance": "major",
+                "audit_notes": audit,
+                "docket_id": did,
+                "source_entry_ids": sources,
+            }
+        )
+
+    def test_delete_via_same_slot_base_coexistence(self, store):
+        # The Lytvynenko transcript-release shape: base (good title) on one
+        # record, base-N (key-derived title) on the sibling, same due slot.
+        self._seed_group(store)
+        slot = "2026-06-30T21:00:00+00:00"
+        # Overlapping source ids (2 is shared) exercise the de-dup-on-merge skip.
+        self._d(
+            store,
+            "transcript-release-lytvynenko-12-17",
+            slot=slot,
+            sources=[1, 2],
+            did=100,
+            title="Release of Transcript Restriction (12/17/2025)",
+        )
+        self._d(
+            store,
+            "transcript-release-lytvynenko-12-17-2",
+            slot=slot,
+            sources=[2, 3],
+            did=101,
+        )
+        changes = heal_drifted_deadline_keys(store, apply=True)
+        assert [c["action"] for c in changes] == ["delete"]
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert "transcript-release-lytvynenko-12-17-2" not in keys
+        survivor = store.get_deadline("us-v-x", "transcript-release-lytvynenko-12-17")
+        assert survivor["title"] == "Release of Transcript Restriction (12/17/2025)"
+        assert survivor["source_entry_ids"] == [1, 2, 3]
+        assert "[heal-drift]" in (survivor["audit_notes"] or "")
+
+    def test_base_adopts_better_title_when_key_derived(self, store):
+        # base is key-derived, the -N sibling has the explicit title -> adopt it.
+        self._seed_group(store)
+        slot = "2026-06-30T21:00:00+00:00"
+        self._d(store, "redaction-request-x", slot=slot, sources=[1], did=100)
+        self._d(
+            store,
+            "redaction-request-x-2",
+            slot=slot,
+            sources=[2],
+            did=101,
+            title="Redaction Request (12/17/2025)",
+        )
+        heal_drifted_deadline_keys(store, apply=True)
+        survivor = store.get_deadline("us-v-x", "redaction-request-x")
+        assert survivor["title"] == "Redaction Request (12/17/2025)"
+
+    def test_distinct_same_day_deadlines_untouched(self, store):
+        # Two DIFFERENT deadlines on the same date with descriptive (non
+        # base/base-N) keys -> never merged (the us-v-ding concern AGENTS.md
+        # warns about).
+        self._seed_group(store)
+        slot = "2026-05-01T21:00:00+00:00"
+        self._d(store, "public-release-0106", slot=slot, sources=[1], did=100)
+        self._d(store, "public-release-0107", slot=slot, sources=[2], did=100)
+        assert heal_drifted_deadline_keys(store, apply=True) == []
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert {"public-release-0106", "public-release-0107"} <= keys
+
+    def test_meaningful_sequence_at_different_slots_untouched(self, store):
+        # base and base-2 at DIFFERENT due dates -> a real recurring deadline,
+        # not drift. Leave both.
+        self._seed_group(store)
+        self._d(
+            store, "govt-status-report", slot="2026-03-01T21:00:00+00:00", sources=[1]
+        )
+        self._d(
+            store, "govt-status-report-2", slot="2026-04-01T21:00:00+00:00", sources=[2]
+        )
+        assert heal_drifted_deadline_keys(store, apply=False) == []
+
+    def test_rename_via_absorption_audit(self, store):
+        # base absent + audit records the absorption -> rename base-N -> base.
+        # (Deadlines have no dedupe sweep that writes such audits today, but the
+        # signal is supported symmetrically with hearings.)
+        self._seed_group(store)
+        self._d(
+            store,
+            "exhibit-filing-deadline-2",
+            slot="2026-05-01T21:00:00+00:00",
+            sources=[3, 4],
+            did=101,
+            audit="[dedupe] Absorbed sibling key(s) exhibit-filing-deadline: same slot",
+        )
+        changes = heal_drifted_deadline_keys(store, apply=True)
+        assert [c["action"] for c in changes] == ["rename"]
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert "exhibit-filing-deadline-2" not in keys
+        assert "exhibit-filing-deadline" in keys
+        survivor = store.get_deadline("us-v-x", "exhibit-filing-deadline")
+        # Deadline keys are freeform -> plain humanization (no name stripping).
+        assert survivor["title"] == "Exhibit Filing Deadline"
+        assert survivor["source_entry_ids"] == [3, 4]
+
+    def test_rename_dry_run_does_not_mutate(self, store):
+        # Signal 1 in dry-run: the rename is reported but not written.
+        self._seed_group(store)
+        self._d(
+            store,
+            "exhibit-filing-deadline-2",
+            slot="2026-05-01T21:00:00+00:00",
+            sources=[3],
+            did=101,
+            audit="[dedupe] Absorbed sibling key(s) exhibit-filing-deadline: same slot",
+        )
+        changes = heal_drifted_deadline_keys(store, apply=False)
+        assert [c["action"] for c in changes] == ["rename"]
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert keys == {"exhibit-filing-deadline-2"}  # unchanged
+
+    def test_dry_run_does_not_mutate(self, store):
+        self._seed_group(store)
+        slot = "2026-06-30T21:00:00+00:00"
+        self._d(store, "transcript-release-x", slot=slot, sources=[1], did=100)
+        self._d(store, "transcript-release-x-2", slot=slot, sources=[2], did=101)
+        changes = heal_drifted_deadline_keys(store, apply=False)
+        assert [c["action"] for c in changes] == ["delete"]
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert {"transcript-release-x", "transcript-release-x-2"} <= keys
+
+    def test_no_drift_returns_empty(self, store):
+        self._seed_group(store)
+        self._d(store, "reply-deadline", slot="2026-06-30T21:00:00+00:00", sources=[1])
+        assert heal_drifted_deadline_keys(store, apply=True) == []

@@ -1794,6 +1794,21 @@ class Store:
             )
             return cur.rowcount
 
+    def delete_deadline(self, case_id: str, deadline_key: str) -> int:
+        """Delete a single deadline row by ``(case_id, deadline_key)``.
+
+        The deadline analogue of :meth:`delete_hearing`, used by the one-time
+        drifted-key heal to remove a cross-record ``base-N`` drift duplicate
+        once its ``source_entry_ids`` have been folded onto the canonical row.
+        Returns the number of rows deleted (0 or 1).
+        """
+        with self.tx():
+            cur = self.conn.execute(
+                "DELETE FROM deadlines WHERE case_id=? AND deadline_key=?",
+                (case_id, deadline_key),
+            )
+            return cur.rowcount
+
     def delete_docket(self, docket_id: int) -> dict[str, int]:
         """Cascade-delete every row tied to a docket_id. Returns per-table counts.
 
