@@ -15,6 +15,7 @@ import hashlib
 import json
 import logging
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -641,7 +642,9 @@ def _entry_records_proceeding(entry: dict[str, Any]) -> bool:
 
 
 def _best_proceeding_notes(
-    target: dict[str, Any], cluster: list[dict[str, Any]]
+    target: dict[str, Any],
+    cluster: list[dict[str, Any]],
+    key_field: str = "hearing_key",
 ) -> Optional[str]:
     """Choose the most informative notes for a dedupe survivor.
 
@@ -655,22 +658,22 @@ def _best_proceeding_notes(
     """
     if _describes_proceeding(target.get("notes")):
         return None
-    target_key = target.get("hearing_key")
+    target_key = target.get(key_field)
     candidates = [
         h
         for h in cluster
-        if h.get("hearing_key") != target_key and _describes_proceeding(h.get("notes"))
+        if h.get(key_field) != target_key and _describes_proceeding(h.get("notes"))
     ]
     if not candidates:
         return None
     # Prefer a substantive record over a transcript filing; then the richest
-    # description; stable tie-break on hearing_key.
+    # description; stable tie-break on the row key.
     best = min(
         candidates,
         key=lambda h: (
             _proceeding_record_rank(h.get("notes")),
             -len(h.get("notes") or ""),
-            h.get("hearing_key") or "",
+            h.get(key_field) or "",
         ),
     )
     return best.get("notes")
@@ -716,14 +719,176 @@ def _key_to_title(key: Optional[str]) -> str:
     return (key or "").replace("-", " ").title()
 
 
-def _title_is_key_derived(row: dict[str, Any]) -> bool:
+# Generic proceeding / structural words that appear in hearing keys, used ONLY
+# to tell a defendant-name token apart from the proceeding-type words around it
+# so a fallback title can drop a redundant defendant name on a single-defendant
+# docket (the prompt's own "append the defendant ONLY when multi-defendant"
+# rule — llm.py SYSTEM_PROMPT "--- Titles ---"). Hearing keys follow the
+# prompt's "defendant lastname + hearing type" convention.
+#
+# SAFETY: a word MISSING from this set only makes a key's non-vocabulary token
+# count look larger, which biases a case toward "multi-defendant" and KEEPS the
+# name — the conservative direction (no wrong strip). A word wrongly PRESENT
+# could strip a real defendant name, so this set holds only words that are
+# unambiguous court-proceeding vocabulary, never plausible surnames.
+_HEARING_TYPE_WORDS = frozenset(
+    {
+        "sentencing",
+        "resentencing",
+        "trial",
+        "jury",
+        "selection",
+        "bench",
+        "pretrial",
+        "conference",
+        "conf",
+        "status",
+        "scheduling",
+        "initial",
+        "appearance",
+        "arraignment",
+        "rearraignment",
+        "detention",
+        "bond",
+        "bail",
+        "hearing",
+        "hearings",
+        "motion",
+        "motions",
+        "change",
+        "of",
+        "plea",
+        "oral",
+        "argument",
+        "telephonic",
+        "evidentiary",
+        "evid",
+        "cipa",
+        "fisa",
+        "suppression",
+        "suppress",
+        "daubert",
+        "franks",
+        "markman",
+        "final",
+        "day",
+        "probable",
+        "cause",
+        "show",
+        "order",
+        "review",
+        "id",
+        "preliminary",
+        "injunction",
+        "pi",
+        "revocation",
+        "competency",
+        "settlement",
+        "fairness",
+        "in",
+        "limine",
+        "bill",
+        "particulars",
+        "mtd",
+        "msj",
+        "post",
+        "pretrial",
+        "charging",
+        "excusal",
+        "setting",
+        "to",
+        "standby",
+        "trade",
+        "secrets",
+        "protective",
+        "default",
+        "judgment",
+        "surrender",
+        "extension",
+        "superseding",
+        "indictment",
+        "attorney",
+        "appointment",
+        "counsel",
+        "briefing",
+        "calendar",
+        "call",
+        "docket",
+    }
+)
+
+
+def _hearing_key_name_tokens(key: Optional[str]) -> list[str]:
+    """The non-vocabulary, non-numeric tokens of a hearing key — i.e. the
+    defendant-name tokens. ``sentencing-lytvynenko`` → ``['lytvynenko']``;
+    ``oral-argument`` → ``[]``; ``travis-initial-appearance-plea`` →
+    ``['travis']``."""
+    return [
+        t
+        for t in (key or "").split("-")
+        if t and not t.isdigit() and t.lower() not in _HEARING_TYPE_WORDS
+    ]
+
+
+def _case_defendant_names(keys: Iterable[Optional[str]]) -> set[str]:
+    """The set of distinct (lowercased) defendant-name tokens across a case's
+    hearing keys. A case is treated as single-defendant when this set has at
+    most one element."""
+    names: set[str] = set()
+    for k in keys:
+        names.update(t.lower() for t in _hearing_key_name_tokens(k))
+    return names
+
+
+def _fallback_hearing_title(key: Optional[str], defendant_names: set[str]) -> str:
+    """Humanize a hearing key into a fallback title, applying the prompt's
+    own naming rule deterministically: drop a redundant defendant name on a
+    single-defendant docket, and render it as ``"<Type> - <Name>"`` on a
+    multi-defendant one.
+
+    ``defendant_names`` is the case-wide set from :func:`_case_defendant_names`.
+    With no LLM title, ``sentencing-lytvynenko`` on a single-defendant case
+    becomes "Sentencing"; on a multi-defendant case ``sentencing-vong``
+    becomes "Sentencing - Vong". Falls back to the plain humanization when the
+    key carries no proceeding-type words (nothing safe to keep)."""
+    multi = len(defendant_names) > 1
+    type_parts: list[str] = []
+    name_parts: list[str] = []
+    for part in (key or "").split("-"):
+        if not part:
+            continue
+        if not part.isdigit() and part.lower() in defendant_names:
+            name_parts.append(part)
+        else:
+            type_parts.append(part)
+    if not type_parts:
+        # Nothing but the name (and maybe a digit) — keep the plain form rather
+        # than emit an empty title.
+        return _key_to_title(key)
+    type_title = " ".join(type_parts).title()
+    if multi and name_parts:
+        return f"{type_title} - {' '.join(name_parts).title()}"
+    return type_title
+
+
+def _title_is_key_derived(row: dict[str, Any], key_field: str = "hearing_key") -> bool:
     """True when the row's title is just its key title-cased — i.e. the LLM
-    supplied no explicit title, so the title carries nothing the key doesn't."""
-    return (row.get("title") or "") == _key_to_title(row.get("hearing_key"))
+    supplied no explicit title, so the title carries nothing the key doesn't.
+
+    ``key_field`` selects the row's key column so the check works for deadlines
+    (``deadline_key``) as well as hearings (``hearing_key``). This recognizes
+    the plain :func:`_key_to_title` humanization that older rows stored; the
+    name-aware :func:`_fallback_hearing_title` produces a CLEANER string that
+    does NOT match here, so a name-stripped fallback reads as an explicit title
+    downstream — which is harmless, since it is already a good title.
+    """
+    return (row.get("title") or "") == _key_to_title(row.get(key_field))
 
 
 def _best_dedupe_title(
-    target: dict[str, Any], cluster: list[dict[str, Any]]
+    target: dict[str, Any],
+    cluster: list[dict[str, Any]],
+    key_field: str = "hearing_key",
 ) -> Optional[str]:
     """Choose a clean title for a dedupe survivor, or None to leave it alone.
 
@@ -735,20 +900,22 @@ def _best_dedupe_title(
     return None: choosing the suffix-free base as the survivor already yields a
     clean key-derived title, and a surviving ``-N`` whose suffix is meaningful
     must NOT be stripped.
+
+    ``key_field`` selects the key column so the helper serves deadlines too.
     """
-    if not _title_is_key_derived(target):
+    if not _title_is_key_derived(target, key_field):
         return None
-    target_key = target.get("hearing_key")
+    target_key = target.get(key_field)
     explicit = [
         h
         for h in cluster
-        if h.get("hearing_key") != target_key and not _title_is_key_derived(h)
+        if h.get(key_field) != target_key and not _title_is_key_derived(h, key_field)
     ]
     if not explicit:
         return None
     best = min(
         explicit,
-        key=lambda h: (-len(h.get("title") or ""), h.get("hearing_key") or ""),
+        key=lambda h: (-len(h.get("title") or ""), h.get(key_field) or ""),
     )
     return best.get("title")
 
@@ -1080,9 +1247,13 @@ def heal_drifted_keys(store: Store, *, apply: bool = False) -> list[dict[str, An
 
         if base_row is None and base in absorbed:
             # Signal 1: rename base-N -> base (base is provably free).
-            new_title = (
-                _key_to_title(base) if _title_is_key_derived(h) else h.get("title")
-            )
+            if _title_is_key_derived(h):
+                names = _case_defendant_names(
+                    [r.get("hearing_key") for r in store.get_hearings(case_id)] + [base]
+                )
+                new_title = _fallback_hearing_title(base, names)
+            else:
+                new_title = h.get("title")
             changes.append(
                 {
                     "case_id": case_id,
@@ -1151,11 +1322,180 @@ def heal_drifted_keys(store: Store, *, apply: bool = False) -> list[dict[str, An
     return changes
 
 
-def _same_logical_slot(store: Store, a: dict[str, Any], b: dict[str, Any]) -> bool:
-    """True when two hearings share a starts_at_utc AND the same logical PACER
-    docket group (same docket_number + court_id), so a base/base-N pair across
-    them is unambiguous key drift rather than two distinct proceedings."""
-    if a.get("starts_at_utc") != b.get("starts_at_utc") or not a.get("starts_at_utc"):
+def heal_key_derived_titles(
+    store: Store, *, apply: bool = False
+) -> list[dict[str, Any]]:
+    """Recompute key-derived hearing titles so a single-defendant docket drops
+    its redundant defendant name.
+
+    Deterministic, no LLM, no CourtListener. A hearing the LLM never titled
+    falls back to the humanized key, which carries the defendant slug the key
+    holds for disambiguation — so ``sentencing-lytvynenko`` reads "Sentencing
+    Lytvynenko" instead of the clean "Sentencing" the prompt asks for on a
+    single-defendant docket. The write-time fallback now applies the
+    single-vs-multi-defendant rule (:func:`_fallback_hearing_title`), but rows
+    stored before that landed keep the old title; this sweep repairs them.
+
+    Touches ONLY rows whose CURRENT title is the plain key humanization
+    (:func:`_title_is_key_derived`), so an explicit LLM title is never
+    rewritten. Each per-case defendant set is read from that case's hearing
+    keys, so a genuine co-defendant docket keeps its names. Returns one dict
+    per changed row; ``apply`` writes and commits the changes.
+    """
+    rows = store.conn.execute("SELECT * FROM hearings").fetchall()
+    hearings = [Store._row_to_hearing(r) for r in rows]
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for h in hearings:
+        by_case.setdefault(h["case_id"], []).append(h)
+    changes: list[dict[str, Any]] = []
+    for case_id, case_rows in by_case.items():
+        names = _case_defendant_names([h.get("hearing_key") for h in case_rows])
+        for h in case_rows:
+            if not _title_is_key_derived(h):
+                continue
+            key = h.get("hearing_key") or ""
+            new_title = _fallback_hearing_title(key, names)
+            if new_title == (h.get("title") or ""):
+                continue
+            changes.append(
+                {
+                    "case_id": case_id,
+                    "hearing_key": key,
+                    "old_title": h.get("title"),
+                    "new_title": new_title,
+                }
+            )
+            if apply:
+                updated = dict(h)
+                updated["title"] = new_title
+                store.upsert_hearing(updated)
+    if apply and changes:
+        store.conn.commit()
+    return changes
+
+
+def heal_drifted_deadline_keys(
+    store: Store, *, apply: bool = False
+) -> list[dict[str, Any]]:
+    """The deadline analogue of :func:`heal_drifted_keys`.
+
+    The same cross-record key drift that gives hearings a "Sentencing
+    Lytvynenko 2" row also hits deadlines: when CourtListener splits one
+    logical PACER docket into several records (bug #7345), the extractor
+    processing the second record mints ``transcript-release-lytvynenko-12-17-2``
+    for a deadline the first record already has as
+    ``transcript-release-lytvynenko-12-17``. The 0.18.0 extractor fix prevents
+    NEW drift, but pre-fix rows remain, and deadlines have no end-of-sync
+    dedupe sweep to collapse them.
+
+    This is NOT the forbidden deterministic same-slot deadline merge (see the
+    "Deadlines deliberately have NO same-slot dedupe sweep" design note): it
+    collapses ONLY a literal ``base`` / ``base-<digits>`` drift pair that
+    coexists in the SAME logical PACER group at the SAME ``due_at_utc``. Two
+    genuinely distinct deadlines that merely share a date have descriptive,
+    different keys (not a base/base-N pairing), so they are never touched —
+    the us-v-ding distinct-transcript clusters are safe.
+
+    Returns one dict per changed row; ``apply`` writes and commits.
+    """
+    rows = store.conn.execute("SELECT * FROM deadlines").fetchall()
+    changes: list[dict[str, Any]] = []
+    for row in rows:
+        d = Store._row_to_deadline(row)
+        key = d.get("deadline_key") or ""
+        base = _drift_base(key)
+        if not base:
+            continue
+        case_id = d["case_id"]
+        base_row = store.get_deadline(case_id, base)
+        absorbed = _absorbed_sibling_keys(d.get("audit_notes"))
+
+        if base_row is None and base in absorbed:
+            # Signal 1: rename base-N -> base (base is provably free). Deadline
+            # keys are freeform, so the title falls back to the plain
+            # humanization — no defendant-name stripping.
+            new_title = (
+                _key_to_title(base)
+                if _title_is_key_derived(d, "deadline_key")
+                else d.get("title")
+            )
+            changes.append(
+                {
+                    "case_id": case_id,
+                    "deadline_key": key,
+                    "action": "rename",
+                    "new_key": base,
+                    "old_title": d.get("title"),
+                    "new_title": new_title,
+                }
+            )
+            if apply:
+                new_row = dict(d)
+                new_row["deadline_key"] = base
+                new_row["title"] = new_title
+                new_row["gcal_event_id"] = None
+                store.conn.execute(
+                    "DELETE FROM deadlines WHERE case_id=? AND deadline_key=?",
+                    (case_id, key),
+                )
+                store.upsert_deadline(new_row)
+        elif base_row is not None and _same_logical_slot(
+            store, d, base_row, slot_field="due_at_utc"
+        ):
+            # Signal 2: base coexists at the same slot -> fold sources into
+            # base and delete the -N row.
+            merged_sources: list[Any] = list(base_row.get("source_entry_ids") or [])
+            seen: set[Any] = set(merged_sources)
+            for sid in d.get("source_entry_ids") or []:
+                if sid not in seen:
+                    seen.add(sid)
+                    merged_sources.append(sid)
+            better_title = _best_dedupe_title(base_row, [base_row, d], "deadline_key")
+            changes.append(
+                {
+                    "case_id": case_id,
+                    "deadline_key": key,
+                    "action": "delete",
+                    "new_key": base,
+                    "old_title": d.get("title"),
+                    "new_title": better_title
+                    if better_title is not None
+                    else base_row.get("title"),
+                }
+            )
+            if apply:
+                base_row["source_entry_ids"] = merged_sources
+                if better_title is not None:
+                    base_row["title"] = better_title
+                base_row["audit_notes"] = _append_audit_line(
+                    base_row.get("audit_notes"),
+                    "heal-drift",
+                    f"Absorbed drift sibling key {key} at same due slot "
+                    f"{base_row.get('due_at_utc')}",
+                )
+                store.upsert_deadline(base_row)
+                store.conn.execute(
+                    "DELETE FROM deadlines WHERE case_id=? AND deadline_key=?",
+                    (case_id, key),
+                )
+    if apply and changes:
+        store.conn.commit()
+    return changes
+
+
+def _same_logical_slot(
+    store: Store,
+    a: dict[str, Any],
+    b: dict[str, Any],
+    slot_field: str = "starts_at_utc",
+) -> bool:
+    """True when two rows share a slot time AND the same logical PACER docket
+    group (same docket_number + court_id), so a base/base-N pair across them is
+    unambiguous key drift rather than two distinct proceedings.
+
+    ``slot_field`` is ``starts_at_utc`` for hearings and ``due_at_utc`` for
+    deadlines."""
+    if a.get(slot_field) != b.get(slot_field) or not a.get(slot_field):
         return False
     did_a, did_b = a.get("docket_id"), b.get("docket_id")
     if did_a == did_b:
@@ -1195,6 +1535,18 @@ class CaseSyncer:
         self.store = store
 
     # --- shared helpers (used by polling sync_case AND the webhook server) ---
+
+    def _hearing_fallback_title(self, case_id: str, key: str) -> str:
+        """Fallback title for a hearing the LLM left untitled.
+
+        Applies the prompt's "append the defendant ONLY when multi-defendant"
+        rule deterministically (see :func:`_fallback_hearing_title`), so a
+        single-defendant docket gets "Sentencing" rather than the redundant
+        "Sentencing Lytvynenko". The case's defendant set is read from the
+        already-stored hearings plus the new key."""
+        keys = [h.get("hearing_key") for h in self.store.get_hearings(case_id)]
+        keys.append(key)
+        return _fallback_hearing_title(key, _case_defendant_names(keys))
 
     def _is_cross_court_mutation(
         self,
@@ -2425,7 +2777,7 @@ class CaseSyncer:
                 "case_id": case.case_id,
                 "hearing_key": action["hearing_key"],
                 "title": action.get("title")
-                or action["hearing_key"].replace("-", " ").title(),
+                or self._hearing_fallback_title(case.case_id, action["hearing_key"]),
                 "starts_at_utc": starts_utc,
                 "duration_minutes": duration,
                 "timezone": tz,
@@ -2843,7 +3195,11 @@ class CaseSyncer:
             "case_id": case.case_id,
             "hearing_key": key,
             "title": action.get("title")
-            or (existing.get("title") if existing else key.replace("-", " ").title()),
+            or (
+                existing.get("title")
+                if existing
+                else self._hearing_fallback_title(case.case_id, key)
+            ),
             "starts_at_utc": starts_utc,
             "duration_minutes": duration,
             "timezone": sticky_tz,

@@ -1084,6 +1084,33 @@ class TestDeleteHearing:
         assert store.get_hearings("us-v-x") == []
 
 
+class TestDeleteDeadline:
+    """``Store.delete_deadline`` — single-row delete used by the deadline
+    drifted-key heal to remove cross-record ``base-N`` duplicates."""
+
+    def test_delete_removes_matching_row(self, store: Store):
+        store.upsert_deadline(_deadline(key="keep-me"))
+        store.upsert_deadline(_deadline(key="delete-me"))
+        deleted = store.delete_deadline("anthropic-v-dow", "delete-me")
+        assert deleted == 1
+        remaining = {d["deadline_key"] for d in store.get_deadlines("anthropic-v-dow")}
+        assert remaining == {"keep-me"}
+
+    def test_delete_returns_zero_on_unknown_key(self, store: Store):
+        store.upsert_deadline(_deadline(key="exists"))
+        assert store.delete_deadline("anthropic-v-dow", "never-existed") == 0
+        assert len(store.get_deadlines("anthropic-v-dow")) == 1
+
+    def test_delete_scopes_to_case_id(self, store: Store):
+        store.upsert_deadline(_deadline(case_id="us-v-akhter", key="shared-key"))
+        store.upsert_deadline(_deadline(case_id="anthropic-v-dow", key="shared-key"))
+        assert store.delete_deadline("anthropic-v-dow", "shared-key") == 1
+        assert {d["deadline_key"] for d in store.get_deadlines("us-v-akhter")} == {
+            "shared-key"
+        }
+        assert store.get_deadlines("anthropic-v-dow") == []
+
+
 def _deadline(case_id="anthropic-v-dow", key="govt-response-mtd", **over):
     base = {
         "case_id": case_id,

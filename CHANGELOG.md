@@ -8,6 +8,30 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.18.1] - 2026-06-21
+
+### Fixed
+
+- **Single-defendant hearings no longer carry a redundant name in their title
+  ("Sentencing Lytvynenko" → "Sentencing").** When the model leaves a hearing
+  untitled, the title falls back to the humanized key — and the key carries the
+  defendant's name for disambiguation, so the fallback read "Sentencing
+  Lytvynenko". The fallback now applies the prompt's own rule: drop the
+  defendant name on a single-defendant docket, and keep it (as "Sentencing -
+  Prince") only when the case genuinely has co-defendants. A new
+  `scripts/heal_key_derived_titles.py` repairs hearings already stored with the
+  redundant name.
+- **Duplicate filing deadlines from a split CourtListener docket are
+  collapsed.** The same cross-record key drift that 0.18.0 fixed for hearings
+  also produced duplicate deadlines — a transcript-release deadline showing up
+  twice, once well-formatted ("Release of Transcript Restriction (12/17/2025)")
+  and once as the drifted key ("Transcript Release Lytvynenko 12 17 2"). The
+  0.18.0 extractor fix already prevents new drift; `scripts/heal_drifted_keys.py`
+  now also collapses the pre-existing deadline duplicates, keeping the
+  well-formatted row. It only merges a literal `base` / `base-N` pair sharing an
+  exact due date in one logical docket — genuinely distinct deadlines that
+  happen to share a date are never touched.
+
 ## [0.18.0] - 2026-06-20
 
 ### Fixed
