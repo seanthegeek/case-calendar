@@ -21,6 +21,13 @@ adheres to [Semantic Versioning][semver].
   Prince") only when the case genuinely has co-defendants. A new
   `scripts/heal_key_derived_titles.py` repairs hearings already stored with the
   redundant name.
+- **Untitled events no longer show abbreviated titles ("Status Conf" →
+  "Status Conference", "Govt Status Report" → "Government Status Report").**
+  When the model leaves an event untitled, the fallback humanizes the key — and
+  keys use abbreviations (`conf`, `govt`). Those are now expanded to the full
+  word so an untitled event reads the same as the model-titled ones elsewhere on
+  the calendar. Applies to both hearings and deadlines;
+  `scripts/heal_key_derived_titles.py` repairs existing rows.
 - **Duplicate filing deadlines from a split CourtListener docket are
   collapsed.** The same cross-record key drift that 0.18.0 fixed for hearings
   also produced duplicate deadlines — a transcript-release deadline showing up

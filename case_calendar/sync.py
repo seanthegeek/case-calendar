@@ -840,7 +840,39 @@ def _case_defendant_names(keys: Iterable[Optional[str]]) -> set[str]:
     return names
 
 
-def _fallback_hearing_title(key: Optional[str], defendant_names: set[str]) -> str:
+# Abbreviations that hearing / deadline keys use, expanded to the full word so a
+# fallback title reads "Status Conference" not "Status Conf", and "Government
+# response …" not "Govt response …". Only applied when humanizing an UNTITLED
+# row's key — an explicit LLM title is never passed through here — so the only
+# risk of a wrong expansion is a slightly-off fallback title, never a corrupted
+# real one. Keep to unambiguous court-vocabulary abbreviations that actually
+# appear in keys, and to single title-cased words (so the trailing ``.title()``
+# in the humanizers leaves them intact — an acronym like "PSR" would need
+# separate casing handling and is deliberately not here).
+_KEY_ABBREVIATIONS = {"conf": "Conference", "govt": "Government"}
+
+
+def _fallback_deadline_title(key: Optional[str], *, expand: bool = True) -> str:
+    """Humanize a deadline key into a fallback title, expanding proceeding-type
+    abbreviations (``govt`` → "Government") when ``expand`` is True.
+
+    The deadline counterpart of :func:`_fallback_hearing_title`, but with NO
+    defendant-name stripping — deadline keys are freeform ("govt-response-to-
+    forfeiture-motion"), not "type + defendant", so a name heuristic would
+    misfire. ``expand=False`` yields the plain humanization, so
+    :func:`_title_is_key_derived` can still recognize a row stored before
+    abbreviation expansion landed."""
+    parts = [p for p in (key or "").split("-") if p]
+    if not parts:
+        return _key_to_title(key)
+    if expand:
+        parts = [_KEY_ABBREVIATIONS.get(p.lower(), p) for p in parts]
+    return " ".join(parts).title()
+
+
+def _fallback_hearing_title(
+    key: Optional[str], defendant_names: set[str], *, expand: bool = True
+) -> str:
     """Humanize a hearing key into a fallback title, applying the prompt's
     own naming rule deterministically: drop a redundant defendant name on a
     single-defendant docket, and render it as ``"<Type> - <Name>"`` on a
@@ -850,7 +882,13 @@ def _fallback_hearing_title(key: Optional[str], defendant_names: set[str]) -> st
     With no LLM title, ``sentencing-lytvynenko`` on a single-defendant case
     becomes "Sentencing"; on a multi-defendant case ``sentencing-vong``
     becomes "Sentencing - Vong". Falls back to the plain humanization when the
-    key carries no proceeding-type words (nothing safe to keep)."""
+    key carries no proceeding-type words (nothing safe to keep).
+
+    When ``expand`` is True (the default) proceeding-type abbreviations are
+    expanded to the full word (``conf`` → "Conference"), so a key like
+    ``status-conf-schmitz`` titles "Status Conference". ``expand=False`` yields
+    the unexpanded form ("Status Conf"); it exists so :func:`_title_is_key_derived`
+    can recognize a row stored before abbreviation expansion landed."""
     multi = len(defendant_names) > 1
     type_parts: list[str] = []
     name_parts: list[str] = []
@@ -859,6 +897,8 @@ def _fallback_hearing_title(key: Optional[str], defendant_names: set[str]) -> st
             continue
         if not part.isdigit() and part.lower() in defendant_names:
             name_parts.append(part)
+        elif expand:
+            type_parts.append(_KEY_ABBREVIATIONS.get(part.lower(), part))
         else:
             type_parts.append(part)
     if not type_parts:
@@ -871,18 +911,41 @@ def _fallback_hearing_title(key: Optional[str], defendant_names: set[str]) -> st
     return type_title
 
 
-def _title_is_key_derived(row: dict[str, Any], key_field: str = "hearing_key") -> bool:
-    """True when the row's title is just its key title-cased — i.e. the LLM
-    supplied no explicit title, so the title carries nothing the key doesn't.
+def _title_is_key_derived(
+    row: dict[str, Any],
+    key_field: str = "hearing_key",
+    defendant_names: Optional[set[str]] = None,
+) -> bool:
+    """True when the row's title is one our fallback humanizer would produce —
+    i.e. the LLM supplied no explicit title, so the title carries nothing the
+    key doesn't.
 
     ``key_field`` selects the row's key column so the check works for deadlines
-    (``deadline_key``) as well as hearings (``hearing_key``). This recognizes
-    the plain :func:`_key_to_title` humanization that older rows stored; the
-    name-aware :func:`_fallback_hearing_title` produces a CLEANER string that
-    does NOT match here, so a name-stripped fallback reads as an explicit title
-    downstream — which is harmless, since it is already a good title.
-    """
-    return (row.get("title") or "") == _key_to_title(row.get(key_field))
+    (``deadline_key``) as well as hearings (``hearing_key``). Always recognizes
+    the plain :func:`_key_to_title` humanization that the oldest rows stored.
+    For a ``deadline_key`` it ALSO recognizes the :func:`_fallback_deadline_title`
+    forms (with and without abbreviation expansion). For a hearing, when
+    ``defendant_names`` is given, it recognizes the name-aware
+    :func:`_fallback_hearing_title` forms (with and without expansion) too — so a
+    row written by an earlier version of the fallback ("Status Conf", "Govt
+    Response …") is still seen as key-derived and can be recomputed to the
+    canonical form ("Status Conference", "Government Response …"). An explicit
+    LLM title matches none of these and is left alone."""
+    title = row.get("title") or ""
+    key = row.get(key_field)
+    if title == _key_to_title(key):
+        return True
+    if key_field == "deadline_key":
+        return title in (
+            _fallback_deadline_title(key, expand=True),
+            _fallback_deadline_title(key, expand=False),
+        )
+    if defendant_names is None:
+        return False
+    return title in (
+        _fallback_hearing_title(key, defendant_names, expand=True),
+        _fallback_hearing_title(key, defendant_names, expand=False),
+    )
 
 
 def _best_dedupe_title(
@@ -1325,33 +1388,41 @@ def heal_drifted_keys(store: Store, *, apply: bool = False) -> list[dict[str, An
 def heal_key_derived_titles(
     store: Store, *, apply: bool = False
 ) -> list[dict[str, Any]]:
-    """Recompute key-derived hearing titles so a single-defendant docket drops
-    its redundant defendant name.
+    """Recompute key-derived titles so a hearing drops its redundant
+    single-defendant name and both hearings AND deadlines expand proceeding-type
+    abbreviations.
 
-    Deterministic, no LLM, no CourtListener. A hearing the LLM never titled
-    falls back to the humanized key, which carries the defendant slug the key
-    holds for disambiguation — so ``sentencing-lytvynenko`` reads "Sentencing
-    Lytvynenko" instead of the clean "Sentencing" the prompt asks for on a
-    single-defendant docket. The write-time fallback now applies the
-    single-vs-multi-defendant rule (:func:`_fallback_hearing_title`), but rows
-    stored before that landed keep the old title; this sweep repairs them.
+    Deterministic, no LLM, no CourtListener. A row the LLM never titled falls
+    back to the humanized key: a hearing carries the defendant slug the key
+    holds for disambiguation (``sentencing-lytvynenko`` → "Sentencing
+    Lytvynenko" instead of the clean "Sentencing"), and either kind can carry a
+    key abbreviation (``status-conf-schmitz`` → "Status Conf"; ``govt-status-
+    report`` → "Govt Status Report"). The write-time fallbacks now apply the
+    name rule (:func:`_fallback_hearing_title`) and abbreviation expansion
+    (also :func:`_fallback_deadline_title`), but rows stored before that landed
+    keep the old title; this sweep repairs them.
 
-    Touches ONLY rows whose CURRENT title is the plain key humanization
+    Touches ONLY rows whose CURRENT title is a fallback-derived form
     (:func:`_title_is_key_derived`), so an explicit LLM title is never
-    rewritten. Each per-case defendant set is read from that case's hearing
-    keys, so a genuine co-defendant docket keeps its names. Returns one dict
-    per changed row; ``apply`` writes and commits the changes.
+    rewritten. Each hearing case's defendant set is read from that case's
+    hearing keys, so a genuine co-defendant docket keeps its names; deadlines
+    get abbreviation expansion only (freeform keys, no name stripping). Returns
+    one dict per changed row (``table`` / ``key`` / ``case_id`` / ``old_title`` /
+    ``new_title``); ``apply`` writes and commits the changes.
     """
-    rows = store.conn.execute("SELECT * FROM hearings").fetchall()
-    hearings = [Store._row_to_hearing(r) for r in rows]
-    by_case: dict[str, list[dict[str, Any]]] = {}
-    for h in hearings:
-        by_case.setdefault(h["case_id"], []).append(h)
     changes: list[dict[str, Any]] = []
+
+    hearing_rows = [
+        Store._row_to_hearing(r)
+        for r in store.conn.execute("SELECT * FROM hearings").fetchall()
+    ]
+    by_case: dict[str, list[dict[str, Any]]] = {}
+    for h in hearing_rows:
+        by_case.setdefault(h["case_id"], []).append(h)
     for case_id, case_rows in by_case.items():
         names = _case_defendant_names([h.get("hearing_key") for h in case_rows])
         for h in case_rows:
-            if not _title_is_key_derived(h):
+            if not _title_is_key_derived(h, "hearing_key", names):
                 continue
             key = h.get("hearing_key") or ""
             new_title = _fallback_hearing_title(key, names)
@@ -1359,8 +1430,9 @@ def heal_key_derived_titles(
                 continue
             changes.append(
                 {
+                    "table": "hearings",
+                    "key": key,
                     "case_id": case_id,
-                    "hearing_key": key,
                     "old_title": h.get("title"),
                     "new_title": new_title,
                 }
@@ -1369,6 +1441,32 @@ def heal_key_derived_titles(
                 updated = dict(h)
                 updated["title"] = new_title
                 store.upsert_hearing(updated)
+
+    deadline_rows = [
+        Store._row_to_deadline(r)
+        for r in store.conn.execute("SELECT * FROM deadlines").fetchall()
+    ]
+    for d in deadline_rows:
+        if not _title_is_key_derived(d, "deadline_key"):
+            continue
+        key = d.get("deadline_key") or ""
+        new_title = _fallback_deadline_title(key)
+        if new_title == (d.get("title") or ""):
+            continue
+        changes.append(
+            {
+                "table": "deadlines",
+                "key": key,
+                "case_id": d["case_id"],
+                "old_title": d.get("title"),
+                "new_title": new_title,
+            }
+        )
+        if apply:
+            updated = dict(d)
+            updated["title"] = new_title
+            store.upsert_deadline(updated)
+
     if apply and changes:
         store.conn.commit()
     return changes
@@ -3312,7 +3410,7 @@ class CaseSyncer:
                     {
                         "case_id": case.case_id,
                         "deadline_key": key,
-                        "title": action.get("title") or key.replace("-", " ").title(),
+                        "title": action.get("title") or _fallback_deadline_title(key),
                         "due_at_utc": due_at_utc,
                         "timezone": tz,
                         "notes": action.get("notes"),
@@ -3373,7 +3471,7 @@ class CaseSyncer:
             "case_id": case.case_id,
             "deadline_key": key,
             "title": action.get("title")
-            or (existing.get("title") if existing else key.replace("-", " ").title()),
+            or (existing.get("title") if existing else _fallback_deadline_title(key)),
             "due_at_utc": due_at_utc,
             "timezone": sticky_tz,
             "notes": action.get("notes")

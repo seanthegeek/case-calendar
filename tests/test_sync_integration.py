@@ -23,6 +23,7 @@ from case_calendar.sync import (
     _describes_proceeding,
     _drift_base,
     _entry_records_proceeding,
+    _fallback_deadline_title,
     _fallback_hearing_title,
     _hearing_date_tokens,
     _hearing_key_name_tokens,
@@ -6277,6 +6278,52 @@ class TestFallbackHearingTitle:
             "Sentencing"
         )
 
+    def test_abbreviation_expanded_by_default(self):
+        # "conf" -> "Conference"; single-defendant name still stripped.
+        assert _fallback_hearing_title("status-conf-schmitz", {"schmitz"}) == (
+            "Status Conference"
+        )
+        # Co-defendant keeps the name alongside the expanded type.
+        assert _fallback_hearing_title("status-conf-vong", {"vong", "wang"}) == (
+            "Status Conference - Vong"
+        )
+
+    def test_abbreviation_not_expanded_when_disabled(self):
+        # expand=False is the pre-expansion form the heal uses to recognize an
+        # already-name-stripped row.
+        assert (
+            _fallback_hearing_title("status-conf-schmitz", {"schmitz"}, expand=False)
+            == "Status Conf"
+        )
+
+
+class TestFallbackDeadlineTitle:
+    """Deadline fallback: abbreviation expansion, NO defendant-name stripping
+    (deadline keys are freeform, not 'type + defendant')."""
+
+    def test_expands_govt(self):
+        assert _fallback_deadline_title("govt-status-report") == (
+            "Government Status Report"
+        )
+        assert _fallback_deadline_title("govt-response-to-forfeiture-motion") == (
+            "Government Response To Forfeiture Motion"
+        )
+
+    def test_keeps_non_abbreviation_tokens_including_names(self):
+        # No name stripping — a defendant token stays.
+        assert _fallback_deadline_title("sentencing-memo-vong") == (
+            "Sentencing Memo Vong"
+        )
+
+    def test_expand_false_is_plain_humanization(self):
+        assert _fallback_deadline_title("govt-status-report", expand=False) == (
+            "Govt Status Report"
+        )
+
+    def test_empty_key(self):
+        assert _fallback_deadline_title("") == ""
+        assert _fallback_deadline_title(None) == ""
+
 
 class TestHealKeyDerivedTitles:
     """Retroactive cleanup of key-derived hearing titles that carry a redundant
@@ -6345,6 +6392,77 @@ class TestHealKeyDerivedTitles:
     def test_no_op_when_already_clean(self, store):
         self._h(store, "us-v-x", "oral-argument", "Oral Argument")
         assert heal_key_derived_titles(store, apply=True) == []
+
+    def test_expands_hearing_abbreviation(self, store):
+        # The plain-humanized "Status Conf Schmitz" -> expanded "Status Conference".
+        self._h(store, "us-v-schmitz", "status-conf-schmitz", "Status Conf Schmitz")
+        heal_key_derived_titles(store, apply=True)
+        assert (
+            store.get_hearing("us-v-schmitz", "status-conf-schmitz")["title"]
+            == "Status Conference"
+        )
+
+    def test_reheals_already_name_stripped_abbreviation(self, store):
+        # A row left "Status Conf" by an earlier name-only heal is still
+        # recognized as fallback-derived and recomputed to "Status Conference".
+        self._h(store, "us-v-schmitz", "status-conf-schmitz", "Status Conf")
+        changes = heal_key_derived_titles(store, apply=True)
+        assert len(changes) == 1
+        assert (
+            store.get_hearing("us-v-schmitz", "status-conf-schmitz")["title"]
+            == "Status Conference"
+        )
+
+    def _d(self, store, case_id, key, title):
+        store.upsert_deadline(
+            {
+                "case_id": case_id,
+                "deadline_key": key,
+                "title": title,
+                "due_at_utc": "2026-09-10T21:00:00+00:00",
+                "timezone": "America/Chicago",
+                "status": "pending",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [1],
+            }
+        )
+
+    def test_expands_deadline_govt_abbreviation(self, store):
+        self._d(store, "us-v-travis", "govt-status-report", "Govt Status Report")
+        changes = heal_key_derived_titles(store, apply=True)
+        assert [(c["table"], c["key"]) for c in changes] == [
+            ("deadlines", "govt-status-report")
+        ]
+        assert (
+            store.get_deadline("us-v-travis", "govt-status-report")["title"]
+            == "Government Status Report"
+        )
+
+    def test_leaves_explicit_deadline_title_alone(self, store):
+        self._d(
+            store,
+            "us-v-travis",
+            "govt-status-report",
+            "Government's quarterly status report",  # explicit LLM title
+        )
+        assert heal_key_derived_titles(store, apply=True) == []
+
+    def test_deadline_without_abbreviation_untouched(self, store):
+        self._d(store, "us-v-x", "reply-brief", "Reply Brief")
+        assert heal_key_derived_titles(store, apply=True) == []
+
+    def test_deadline_dry_run_does_not_mutate(self, store):
+        self._d(store, "us-v-travis", "govt-status-report", "Govt Status Report")
+        changes = heal_key_derived_titles(store, apply=False)
+        assert [(c["table"], c["key"]) for c in changes] == [
+            ("deadlines", "govt-status-report")
+        ]
+        # Unchanged in the store.
+        assert (
+            store.get_deadline("us-v-travis", "govt-status-report")["title"]
+            == "Govt Status Report"
+        )
 
 
 class TestHealDriftedDeadlineKeys:
