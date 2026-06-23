@@ -298,8 +298,9 @@ The scripts, all run from the repo root:
 ## Conventions for changes
 
 The project's rules for human and AI contributors alike live in
-[`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md) — read it before your first pull request. The ones
-that catch newcomers most often:
+[`agent-docs/CONVENTIONS.md`](https://github.com/seanthegeek/case-calendar/blob/main/agent-docs/CONVENTIONS.md)
+(linked from [`AGENTS.md`](https://github.com/seanthegeek/case-calendar/blob/main/AGENTS.md)) — read it before your first pull
+request. The ones that catch newcomers most often:
 
 - **Every behavior change ships with its test.** Adding a branch adds a test;
   fixing a bug adds the test that fails on the old code; changing behavior
