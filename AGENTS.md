@@ -76,7 +76,7 @@ The rationale behind the project's non-obvious choices — LLM-driven extraction
 
 ## Documentation
 
-The project must be well documented. If existing documentation exists, hollow that convention.
+The project must be well documented. If existing documentation exists, follow that convention.
 
 For new projects, do **NOT** use a monolithic readme. Instead, use the readme to provide an overview of the project, and leave specific details in friendly, bite-sized markdown-formatted pages in a `docs` directory.
 
