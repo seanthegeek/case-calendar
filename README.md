@@ -197,7 +197,7 @@ the specific failure modes worth knowing about.
 Bug reports and pull requests welcome at
 [github.com/seanthegeek/case-calendar/issues](https://github.com/seanthegeek/case-calendar/issues).
 Every behavior change ships with the test that proves it
-(see [AGENTS.md](AGENTS.md#testing-philosophy)); the suite is
+(see [tests/AGENTS.md](tests/AGENTS.md#testing-philosophy)); the suite is
 hermetic — no real HTTP, no real LLM, no real OAuth — and runs in
 about 25 seconds:
 

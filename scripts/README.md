@@ -9,7 +9,7 @@ Run everything **from the repo root** (the scripts use repo-relative paths like
 `data/case-calendar.sqlite`). The Python tools go through `uv run` so they pick
 up the project venv; the deployment scripts are plain bash.
 
-See also: [AGENTS.md](../AGENTS.md#one-shot-maintenance-scripts-scripts) for the
+See also: [AGENTS.md](AGENTS.md#one-shot-maintenance-scripts-scripts) for the
 maintainer-facing rationale and [docs/development.md](../docs/development.md) for
 how the deployment scripts fit the dev → prod workflow.
 
