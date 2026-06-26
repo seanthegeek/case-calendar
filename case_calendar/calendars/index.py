@@ -1471,7 +1471,26 @@ def build_calendar_models(
             # block entirely. Rows are keyed by (docket_number, court_id),
             # so a case with one logical docket spread across three CourtListener
             # docket_ids gets ONE summary, not three.
-            summaries: list[dict[str, Any]] = store.get_case_summaries(c["id"])
+            #
+            # Keep only summaries whose (docket_number, court_id) is still in
+            # the case's configured `dockets:` list. `case_summaries` rows
+            # persist after a docket is dropped from config — e.g. when a
+            # case transitions from pre-indictment magistrate (-mj-) dockets
+            # to the -cr- docket that supersedes them — so an unfiltered fetch
+            # would render the superseded dockets' summaries as extra,
+            # near-duplicate paragraphs about the same conduct. The store
+            # keeps those rows for audit context; the public page shows only
+            # the dockets the operator currently lists.
+            configured_groups = {
+                (m["docket_number"], m["court_id"])
+                for m in dockets_meta
+                if m.get("docket_number") and m.get("court_id")
+            }
+            summaries: list[dict[str, Any]] = [
+                s
+                for s in store.get_case_summaries(c["id"])
+                if (s.get("docket_number"), s.get("court_id")) in configured_groups
+            ]
             # Preserve config-defined docket order in the rendered output
             # so multi-docket cases read in the order the operator listed.
             # We order by group (docket_number, court_id), since a single

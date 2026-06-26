@@ -726,11 +726,19 @@ def _key_to_title(key: Optional[str]) -> str:
 # rule — llm.py SYSTEM_PROMPT "--- Titles ---"). Hearing keys follow the
 # prompt's "defendant lastname + hearing type" convention.
 #
-# SAFETY: a word MISSING from this set only makes a key's non-vocabulary token
-# count look larger, which biases a case toward "multi-defendant" and KEEPS the
-# name — the conservative direction (no wrong strip). A word wrongly PRESENT
-# could strip a real defendant name, so this set holds only words that are
-# unambiguous court-proceeding vocabulary, never plausible surnames.
+# SAFETY: a word wrongly PRESENT could strip a real defendant name, so this set
+# holds only words that are unambiguous court-proceeding vocabulary, never
+# plausible surnames. But a word MISSING is NOT harmless: an unrecognized
+# proceeding word is counted as a defendant-name token by
+# `_case_defendant_names`, which both biases a case toward "multi-defendant"
+# (the conservative direction — no wrong strip) AND makes
+# `_fallback_hearing_title` pull that word into the NAME half of the
+# "<Type> - <Name>" rendering, reordering it out of the proceeding type. That
+# scramble is how the key `waiver-of-indictment-zheng` rendered as
+# "Of Indictment - Waiver Zheng" (the us-v-zheng-et-al row) while "waiver" was
+# absent here — fixed by adding the word. So missing proceeding vocabulary is a
+# real title defect, not merely a count bias; add proceeding words as new ones
+# are seen in the wild.
 _HEARING_TYPE_WORDS = frozenset(
     {
         "sentencing",
@@ -807,6 +815,7 @@ _HEARING_TYPE_WORDS = frozenset(
         "extension",
         "superseding",
         "indictment",
+        "waiver",
         "attorney",
         "appointment",
         "counsel",
@@ -930,7 +939,16 @@ def _title_is_key_derived(
     row written by an earlier version of the fallback ("Status Conf", "Govt
     Response …") is still seen as key-derived and can be recomputed to the
     canonical form ("Status Conference", "Government Response …"). An explicit
-    LLM title matches none of these and is left alone."""
+    LLM title matches none of these and is left alone.
+
+    Recognition is EXACT-match only — never a looser word-set or
+    case-insensitive comparison. An explicit LLM title routinely shares the
+    key's words while differing in punctuation, casing, or order that carries
+    meaning ("Telephonic Pretrial Conference (CIPA)" vs the humanized
+    "Telephonic Pretrial Conference Cipa"; "Motion in Limine Hearing" vs
+    "Motion Hearing In Limine"; "Order to Show Cause Hearing" vs "Order To Show
+    Cause Hearing"), so any fuzzy match would mis-classify those as key-derived
+    and the heal would overwrite real titles with the inferior humanization."""
     title = row.get("title") or ""
     key = row.get(key_field)
     if title == _key_to_title(key):

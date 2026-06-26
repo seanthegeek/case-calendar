@@ -8,6 +8,33 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.18.2] - 2026-06-25
+
+### Fixed
+
+- **Summaries for dockets dropped from a case no longer appear on the index
+  page.** When a case's `dockets:` list changes — e.g. a pre-indictment
+  magistrate (`-mj-`) docket is superseded by the `-cr-` docket and removed from
+  config — its stored case-summary row stayed in the database and kept
+  rendering, so the case showed extra near-duplicate paragraphs about the same
+  conduct (the us-v-zheng-et-al card rendered six summaries, two of them
+  near-verbatim copies of the same superseded filing). The index now renders
+  only summaries whose docket is still in the case's configured `dockets:` list.
+  The store keeps the superseded rows for audit context; they're just no longer
+  shown.
+- **Untitled "waiver of indictment" hearings no longer render with scrambled
+  word order ("Of Indictment - Waiver Zheng" → "Waiver of Indictment -
+  Zheng").** When the model leaves a hearing untitled, the title falls back to
+  the humanized key, split into a proceeding-type part and a defendant-name
+  part. The word "waiver" was missing from the proceeding-vocabulary list, so it
+  was read as a defendant name and reordered into the name half of the title.
+  "waiver" is now recognized as proceeding vocabulary, so the fallback keeps the
+  natural word order. The title-recognition used by
+  `scripts/heal_key_derived_titles.py` is deliberately an exact match only — a
+  reordered title is indistinguishable from a deliberate model title, so the
+  heal cannot safely rewrite an already-stored scramble; the one existing row
+  was corrected by hand.
+
 ## [0.18.1] - 2026-06-21
 
 ### Fixed

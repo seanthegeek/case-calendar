@@ -6146,6 +6146,42 @@ class TestDriftKeyHelpers:
             {"hearing_key": "sentencing-x", "title": "Jury Trial"}
         )
 
+    def test_reordered_or_repunctuated_title_is_not_key_derived(self):
+        # Recognition is EXACT-match only. An explicit LLM title that shares the
+        # key's words but differs in order, punctuation, or casing is NOT
+        # key-derived and must be left alone — otherwise the heal would overwrite
+        # "Telephonic Pretrial Conference (CIPA)" with the humanized
+        # "Telephonic Pretrial Conference Cipa", drop "Motion in Limine Hearing"
+        # to "Motion Hearing In Limine", etc.
+        names = {"zheng", "english"}
+        # Reordered words (the us-v-zheng-et-al scramble shape).
+        assert not _title_is_key_derived(
+            {
+                "hearing_key": "waiver-of-indictment-zheng",
+                "title": "Of Indictment - Waiver Zheng",
+            },
+            "hearing_key",
+            names,
+        )
+        # Same words/order, different connective casing.
+        assert not _title_is_key_derived(
+            {
+                "hearing_key": "order-to-show-cause-hearing-zheng",
+                "title": "Order to Show Cause Hearing - Zheng",
+            },
+            "hearing_key",
+            names,
+        )
+        # Parenthetical framing + acronym casing the humanizer can't reproduce.
+        assert not _title_is_key_derived(
+            {
+                "hearing_key": "cipa-pretrial-conf-zheng",
+                "title": "Pretrial Conference (CIPA) - Zheng",
+            },
+            "hearing_key",
+            names,
+        )
+
     def test_best_dedupe_title(self):
         # Target key-derived; a sibling has an explicit title -> adopt it.
         target = {"hearing_key": "sentencing-x", "title": "Sentencing X"}
@@ -6296,6 +6332,25 @@ class TestFallbackHearingTitle:
             == "Status Conf"
         )
 
+    def test_waiver_is_proceeding_vocabulary_not_a_name(self):
+        # Regression: "waiver" must be recognized as proceeding vocabulary, not
+        # treated as a defendant-name token. Before the fix, the key
+        # `waiver-of-indictment-zheng` on the co-defendant us-v-zheng-et-al case
+        # rendered "Of Indictment - Waiver Zheng" — "waiver" was pulled into the
+        # name half and the type words reordered behind it.
+        case_keys = [
+            "waiver-of-indictment-zheng",
+            "change-of-plea-zheng",
+            "change-of-plea-english",
+        ]
+        names = _case_defendant_names(case_keys)
+        assert "waiver" not in names
+        assert names == {"zheng", "english"}
+        assert (
+            _fallback_hearing_title("waiver-of-indictment-zheng", names)
+            == "Waiver Of Indictment - Zheng"
+        )
+
 
 class TestFallbackDeadlineTitle:
     """Deadline fallback: abbreviation expansion, NO defendant-name stripping
@@ -6412,6 +6467,35 @@ class TestHealKeyDerivedTitles:
             store.get_hearing("us-v-schmitz", "status-conf-schmitz")["title"]
             == "Status Conference"
         )
+
+    def test_leaves_scrambled_fallback_alone(self, store):
+        # The us-v-zheng-et-al "Of Indictment - Waiver Zheng" row reads like a
+        # scrambled fallback, but it is NOT recomputed: recognition is
+        # exact-match only, so a reordered title is indistinguishable from an
+        # explicit LLM title and must be left untouched. (The write-time fix —
+        # "waiver" in _HEARING_TYPE_WORDS — prevents the scramble for NEW rows;
+        # this one stale row is corrected by hand, not by the heal.)
+        self._h(
+            store,
+            "us-v-zheng-et-al",
+            "waiver-of-indictment-zheng",
+            "Of Indictment - Waiver Zheng",
+        )
+        self._h(
+            store,
+            "us-v-zheng-et-al",
+            "change-of-plea-english",
+            "Change Of Plea English",
+        )
+        changes = heal_key_derived_titles(store, apply=True)
+        new = {
+            h["hearing_key"]: h["title"] for h in store.get_hearings("us-v-zheng-et-al")
+        }
+        # The scrambled row is left as-is...
+        assert new["waiver-of-indictment-zheng"] == "Of Indictment - Waiver Zheng"
+        # ...while the genuinely key-derived sibling is still cleaned up.
+        assert new["change-of-plea-english"] == "Change Of Plea - English"
+        assert {c["key"] for c in changes} == {"change-of-plea-english"}
 
     def _d(self, store, case_id, key, title):
         store.upsert_deadline(

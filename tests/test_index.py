@@ -1077,6 +1077,59 @@ class TestBuildCalendarModels:
         assert d["cl_records"][0]["absolute_url"] == "/docket/71989485/akhter/"
         assert d["cl_records"][2]["absolute_url"] == "/docket/73320754/akhter/"
 
+    def test_drops_summaries_for_dockets_no_longer_in_config(self, store):
+        # `case_summaries` rows persist after a docket is dropped from the
+        # case's `dockets:` list — the us-v-zheng-et-al shape, where the
+        # pre-indictment magistrate (-mj-) dockets were superseded by the
+        # -cr- docket and removed from config, but their summary rows stayed
+        # in the store. build_calendar_models must surface ONLY summaries for
+        # currently-configured dockets, so the superseded ones don't render as
+        # extra near-duplicate paragraphs about the same conduct.
+        store.upsert_docket_meta(
+            200,
+            {
+                "court_id": "gand",
+                "docket_number": "1:26-cr-00271",
+                "case_name": "United States v. Zheng",
+                "absolute_url": "/docket/200/zheng/",
+                "date_last_filing": "2026-06-18",
+            },
+        )
+        store.set_docket_last_modified(200, "2026-06-18T12:00:00Z")
+        store.upsert_court("gand", "N.D. Ga.", "gand", "N.D. Georgia")
+        # The configured -cr- docket's summary...
+        store.upsert_case_summary(
+            "us-v-zheng-et-al",
+            "1:26-cr-00271",
+            "gand",
+            summary="Zheng was charged with conspiracy to smuggle GPUs.",
+            model="test",
+        )
+        # ...plus a stale summary for a -mj- docket dropped from config.
+        store.upsert_case_summary(
+            "us-v-zheng-et-al",
+            "1:26-mj-00315",
+            "gand",
+            summary="Superseded magistrate-docket summary about the same conduct.",
+            model="test",
+        )
+        cfg = {
+            "calendars": {"cyber": {"name": "Cybercrime", "ics_path": "out/cyber.ics"}},
+            "cases": [
+                {
+                    "id": "us-v-zheng-et-al",
+                    "name": "United States v. Zheng et al.",
+                    "calendar": "cyber",
+                    "dockets": [200],
+                },
+            ],
+        }
+        models = build_calendar_models(cfg, store)
+        case = models[0]["cases"][0]
+        nums = [s["docket_number"] for s in case["summaries"]]
+        assert nums == ["1:26-cr-00271"]
+        assert "1:26-mj-00315" not in nums
+
     def test_handles_unseen_docket(self, store):
         # Case configured but no sync has happened yet — every aggregate
         # is None and the docket metadata is empty. The renderer still
