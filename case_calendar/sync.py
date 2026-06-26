@@ -799,6 +799,7 @@ _HEARING_TYPE_WORDS = frozenset(
         "particulars",
         "mtd",
         "msj",
+        "tro",
         "post",
         "pretrial",
         "charging",
@@ -849,21 +850,62 @@ def _case_defendant_names(keys: Iterable[Optional[str]]) -> set[str]:
     return names
 
 
-# Abbreviations that hearing / deadline keys use, expanded to the full word so a
-# fallback title reads "Status Conference" not "Status Conf", and "Government
-# response …" not "Govt response …". Only applied when humanizing an UNTITLED
-# row's key — an explicit LLM title is never passed through here — so the only
-# risk of a wrong expansion is a slightly-off fallback title, never a corrupted
-# real one. Keep to unambiguous court-vocabulary abbreviations that actually
-# appear in keys, and to single title-cased words (so the trailing ``.title()``
-# in the humanizers leaves them intact — an acronym like "PSR" would need
-# separate casing handling and is deliberately not here).
-_KEY_ABBREVIATIONS = {"conf": "Conference", "govt": "Government"}
+# Abbreviations / acronyms that hearing / deadline keys use, expanded to their
+# full phrase so a fallback title reads "Status Conference" not "Status Conf",
+# "Government response …" not "Govt response …", and "Motion for Summary
+# Judgment" not "Msj". Only applied when humanizing an UNTITLED row's key — an
+# explicit LLM title is never passed through here — so the only risk of a wrong
+# expansion is a slightly-off fallback title, never a corrupted real one. Keep
+# to unambiguous court-vocabulary abbreviations that actually appear in keys.
+# The expansion VALUE is emitted verbatim (it is NOT re-title-cased), so it may
+# be a multi-word phrase with lowercase connectives ("Motion for Summary
+# Judgment"); spell each value exactly as it should render. This is what lets an
+# acronym like "msj" expand cleanly — earlier this map was single-word-only
+# because the humanizers blanket-``.title()``-cased the result, which would have
+# turned "Motion for Summary Judgment" into "Motion For Summary Judgment";
+# :func:`_humanize_key_tokens` now cases per token instead.
+_KEY_ABBREVIATIONS = {
+    "conf": "Conference",
+    "govt": "Government",
+    "msj": "Motion for Summary Judgment",
+    "tro": "Temporary Restraining Order",
+}
+# NOTE on what does NOT belong here: an abbreviation that is also a plausible
+# SURNAME must not be expanded. "pi" (preliminary injunction) was deliberately
+# left out — "Pi" is a real surname, and because the deadline humanizer expands
+# every token and the hearing humanizer already treats "pi" as proceeding
+# vocabulary, a defendant named Pi would see an untitled "sentencing-pi" render
+# as "Sentencing Preliminary Injunction" instead of their name. "msj" / "tro"
+# are safe because they are not plausible surnames. Spell out preliminary
+# injunction in the model prompt / an explicit title instead, never here.
+
+
+def _humanize_key_tokens(tokens: list[str], *, expand: bool) -> str:
+    """Join key tokens into a human title, casing PER TOKEN.
+
+    A token that is a known abbreviation (and ``expand`` is True) becomes its
+    full phrase from :data:`_KEY_ABBREVIATIONS`, emitted verbatim so a multi-word
+    expansion keeps its own internal casing ("Motion for Summary Judgment", not
+    "Motion For Summary Judgment"). Every other token is title-cased
+    ("status" → "Status"). Per-token casing — rather than a blanket ``.title()``
+    on the joined string — is what makes multi-word / lowercase-connective
+    expansions render correctly. With ``expand=False`` no token is expanded, so
+    the result is the plain humanization (used by :func:`_title_is_key_derived`
+    to recognize rows stored before an abbreviation landed)."""
+    out: list[str] = []
+    for t in tokens:
+        low = t.lower()
+        if expand and low in _KEY_ABBREVIATIONS:
+            out.append(_KEY_ABBREVIATIONS[low])
+        else:
+            out.append(t.title())
+    return " ".join(out)
 
 
 def _fallback_deadline_title(key: Optional[str], *, expand: bool = True) -> str:
     """Humanize a deadline key into a fallback title, expanding proceeding-type
-    abbreviations (``govt`` → "Government") when ``expand`` is True.
+    abbreviations (``govt`` → "Government", ``msj`` → "Motion for Summary
+    Judgment") when ``expand`` is True.
 
     The deadline counterpart of :func:`_fallback_hearing_title`, but with NO
     defendant-name stripping — deadline keys are freeform ("govt-response-to-
@@ -874,9 +916,7 @@ def _fallback_deadline_title(key: Optional[str], *, expand: bool = True) -> str:
     parts = [p for p in (key or "").split("-") if p]
     if not parts:
         return _key_to_title(key)
-    if expand:
-        parts = [_KEY_ABBREVIATIONS.get(p.lower(), p) for p in parts]
-    return " ".join(parts).title()
+    return _humanize_key_tokens(parts, expand=expand)
 
 
 def _fallback_hearing_title(
@@ -894,7 +934,7 @@ def _fallback_hearing_title(
     key carries no proceeding-type words (nothing safe to keep).
 
     When ``expand`` is True (the default) proceeding-type abbreviations are
-    expanded to the full word (``conf`` → "Conference"), so a key like
+    expanded to the full phrase (``conf`` → "Conference"), so a key like
     ``status-conf-schmitz`` titles "Status Conference". ``expand=False`` yields
     the unexpanded form ("Status Conf"); it exists so :func:`_title_is_key_derived`
     can recognize a row stored before abbreviation expansion landed."""
@@ -906,15 +946,13 @@ def _fallback_hearing_title(
             continue
         if not part.isdigit() and part.lower() in defendant_names:
             name_parts.append(part)
-        elif expand:
-            type_parts.append(_KEY_ABBREVIATIONS.get(part.lower(), part))
         else:
             type_parts.append(part)
     if not type_parts:
         # Nothing but the name (and maybe a digit) — keep the plain form rather
         # than emit an empty title.
         return _key_to_title(key)
-    type_title = " ".join(type_parts).title()
+    type_title = _humanize_key_tokens(type_parts, expand=expand)
     if multi and name_parts:
         return f"{type_title} - {' '.join(name_parts).title()}"
     return type_title

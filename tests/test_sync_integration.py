@@ -6332,6 +6332,14 @@ class TestFallbackHearingTitle:
             == "Status Conf"
         )
 
+    def test_tro_is_proceeding_vocabulary_and_expands(self):
+        # "tro" must be proceeding vocabulary (not a defendant-name token) AND
+        # expand to its full phrase in the hearing fallback.
+        assert "tro" not in _case_defendant_names(["tro-hearing-smith"])
+        assert _fallback_hearing_title("tro-hearing-smith", {"smith"}) == (
+            "Temporary Restraining Order Hearing"
+        )
+
     def test_waiver_is_proceeding_vocabulary_not_a_name(self):
         # Regression: "waiver" must be recognized as proceeding vocabulary, not
         # treated as a defendant-name token. Before the fix, the key
@@ -6373,6 +6381,38 @@ class TestFallbackDeadlineTitle:
     def test_expand_false_is_plain_humanization(self):
         assert _fallback_deadline_title("govt-status-report", expand=False) == (
             "Govt Status Report"
+        )
+
+    def test_expands_msj_and_tro_acronyms(self):
+        # Multi-word expansions keep their own internal casing (lowercase "for"),
+        # not the blanket title-case that would make "Motion For Summary
+        # Judgment". The anthropic-v-dow `responses-to-cross-msj` /
+        # `replies-to-cross-msj` rows are the motivating case.
+        assert _fallback_deadline_title("responses-to-cross-msj") == (
+            "Responses To Cross Motion for Summary Judgment"
+        )
+        assert _fallback_deadline_title("replies-to-cross-msj") == (
+            "Replies To Cross Motion for Summary Judgment"
+        )
+        assert _fallback_deadline_title("govt-response-to-tro") == (
+            "Government Response To Temporary Restraining Order"
+        )
+
+    def test_pi_is_not_expanded_to_avoid_clobbering_a_surname(self):
+        # "pi" (preliminary injunction) is deliberately NOT in the expansion
+        # map: "Pi" is a plausible surname, and expanding it would render a
+        # defendant named Pi's untitled deadline as "...Preliminary Injunction".
+        # It stays the plain title-cased token.
+        assert _fallback_deadline_title("opposition-pi-motion") == (
+            "Opposition Pi Motion"
+        )
+
+    def test_msj_unexpanded_form_preserved_for_recognition(self):
+        # expand=False is what _title_is_key_derived uses to recognize a row
+        # stored before the acronym was expanded — it must still humanize "msj"
+        # to the plain "Msj".
+        assert _fallback_deadline_title("responses-to-cross-msj", expand=False) == (
+            "Responses To Cross Msj"
         )
 
     def test_empty_key(self):
