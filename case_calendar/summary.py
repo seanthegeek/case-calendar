@@ -2239,6 +2239,11 @@ def summarize_docket(
         "court_id": court_id,
         "court_citation": (store.get_court_citation(court_id) if court_id else None),
         "court_tz": tz_for(court_id) if court_id else None,
+        # This docket's OWN caption (e.g. "United States v. Kelly") — the
+        # disambiguator for a multi-defendant case whose overall name ("...
+        # et al.") and shared charging affidavit name a different lead
+        # defendant. The prompt uses it to foreground this docket's defendant.
+        "caption": meta.get("case_name"),
     }
 
     log.info(

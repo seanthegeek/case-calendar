@@ -1818,6 +1818,16 @@ EXCEPT the inline document links described under INLINE LINKS below.
   charges or claims; do not list every count. (EXCEPTION — a CRIMINAL APPEAL
   docket overrides this: see the "criminal appeal" rule below. Lead with the
   defendant APPEALING the conviction, NOT with "was charged".)
+  - FOREGROUND THIS DOCKET'S DEFENDANT. When a "THIS DOCKET'S CAPTION" line is
+    present, it names the defendant(s) this single docket belongs to. Lead with
+    and foreground THAT defendant, even when the broader CASE name is a
+    multi-defendant matter ("... et al.") or the shared charging document names
+    co-conspirators first. Name co-defendants only as needed for context (e.g.
+    "along with co-conspirators X and Y"), not as the subject. Do NOT let the
+    overall CASE name or the affidavit's ordering decide whose docket this is —
+    the caption does. This only reorders emphasis among defendants the documents
+    already name; never assert a charge against the captioned defendant that the
+    documents don't support.
 - Sentence 2-3: the current posture. For pre-disposition: where the case
   stands procedurally (pending dispositive motion, set for trial, briefing
   underway, etc.) drawn from the structured-events scaffold.
@@ -2438,6 +2448,13 @@ def _build_summary_user_message(
         f"CASE: {case_name}",
         f"DOCKET: {docket.get('docket_number')} ({docket.get('court_citation') or docket.get('court_id')})",
     ]
+    # This docket's own caption names its defendant(s); the CASE line above is
+    # the broader (possibly multi-defendant "... et al.") matter. Surfacing the
+    # per-docket caption lets the model foreground THIS docket's defendant even
+    # when the shared charging document names co-conspirators first — see the
+    # "foreground this docket's defendant" rule in SUMMARY_SYSTEM_PROMPT.
+    if docket.get("caption"):
+        parts.append(f"THIS DOCKET'S CAPTION: {docket.get('caption')}")
     if restitution_unreadable:
         parts.append("")
         parts.append(
