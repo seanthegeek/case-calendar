@@ -1847,6 +1847,44 @@ class TestBuildSummaryUserMessage:
         assert "Sentencing" in msg
         assert "Reply ISO MTD" in msg
 
+    def test_per_docket_caption_rendered_when_present(self):
+        # The docket's own caption (e.g. "United States v. Kelly") is surfaced
+        # so the model foregrounds THIS docket's defendant — the us-v-zheng-et-al
+        # case, where the overall CASE name is "... et al." and the shared
+        # complaint names Zheng first.
+        msg = llm._build_summary_user_message(
+            case_name="United States v. Zheng et al.",
+            aggregation_note=None,
+            docket={
+                "docket_number": "1:26-cr-00221",
+                "court_citation": "N.D. Ga.",
+                "caption": "United States v. Kelly",
+            },
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+        )
+        assert "THIS DOCKET'S CAPTION: United States v. Kelly" in msg
+
+    def test_caption_line_omitted_when_absent(self):
+        # No caption available -> no caption line (the common single-defendant
+        # case where the line would be redundant noise).
+        msg = llm._build_summary_user_message(
+            case_name="US v. X",
+            aggregation_note=None,
+            docket={"docket_number": "1:24-cr-1", "court_citation": "S.D.N.Y."},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+        )
+        assert "THIS DOCKET'S CAPTION" not in msg
+
     def test_reference_tokens_rendered_when_present(self):
         # When the summary pipeline has stamped a `ref` on each doc, the
         # block header leads with the prompt-only "[D1]" token the model

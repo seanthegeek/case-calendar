@@ -12,6 +12,19 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **Per-docket case summaries now foreground the defendant whose docket they
+  describe.** Each docket on a multi-defendant case is summarized from its own
+  charging documents, but the model was only told the overall case name (e.g.
+  "United States v. Zheng et al.") and the docket number — never which defendant
+  the docket belongs to. So when a docket's charging document was the shared
+  conspiracy affidavit naming co-conspirators first, the summary led with the
+  wrong person: the Kelly docket (`1:26-cr-00221`) opened "Stanley Yi Zheng,
+  Tommy Shad English, and Matthew Kelly were charged…" and identified Kelly only
+  via his hearing dates. The summary prompt now receives the docket's own
+  caption ("United States v. Kelly") and is told to lead with that defendant,
+  naming co-defendants only for context. This reorders emphasis among defendants
+  the documents already name; it never asserts a charge the documents don't
+  support. Re-run `summarize --force` to refresh existing summaries.
 - **Summaries for dockets dropped from a case no longer appear on the index
   page.** When a case's `dockets:` list changes — e.g. a pre-indictment
   magistrate (`-mj-`) docket is superseded by the `-cr-` docket and removed from
