@@ -12,6 +12,20 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **Untitled summary-judgment and restraining-order events now read in full
+  ("Responses To Cross Msj" → "Responses to Cross Motion for Summary
+  Judgment").** When the model leaves a hearing or deadline untitled, the title
+  falls back to the humanized key, and the abbreviations `msj` and `tro` weren't
+  expanded — so they rendered as the bare title-cased fragments "Msj" / "Tro".
+  They now expand to "Motion for Summary Judgment" and "Temporary Restraining
+  Order". The key humanizer was reworked to case each token independently, so a
+  multi-word expansion keeps its lowercase connectives ("Motion for Summary
+  Judgment", not "Motion For Summary Judgment"); `tro` was also added to the
+  proceeding-vocabulary set so a `tro` key token isn't mistaken for a defendant
+  name. Preliminary injunction (`pi`) is deliberately NOT expanded — "Pi" is a
+  plausible surname, and expanding it would replace a defendant's name with a
+  legal phrase. `scripts/heal_key_derived_titles.py` repairs existing untitled
+  rows.
 - **Per-docket case summaries now foreground the defendant whose docket they
   describe.** Each docket on a multi-defendant case is summarized from its own
   charging documents, but the model was only told the overall case name (e.g.
