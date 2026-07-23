@@ -25,7 +25,9 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Callable, Iterable, Optional
+from zoneinfo import ZoneInfo
 
 from . import llm, pdf
 from .courtlistener import API_BASE, CourtListener
@@ -1740,6 +1742,157 @@ def _strip_redundant_forfeiture(text: str) -> str:
     return new or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
 
 
+# Tier 5 — stale scheduled-event date. The structured-events scaffold outranks
+# document text for an event's CURRENT date (the matching CRITICAL rule in
+# SUMMARY_SYSTEM_PROMPT): a continuance stated in a document may itself have
+# been superseded by a later notice that is NOT in the document set, because a
+# plain scheduling notice is neither a primary document nor a disposition. The
+# us-v-ding case is the canonical instance: the 6/16/2026 minute entry
+# ("Sentencing continued to 8/4/2026") rode into the disposition set, the
+# 7/22/2026 clerk's notice that moved sentencing to 9/1/2026 did not, and the
+# model wrote "Sentencing is scheduled for August 4, 2026" while the
+# scaffold's Sentencing row said September 1 — so the published summary
+# contradicted the calendar feed rendered from the same store. The grounding
+# guard cannot catch this: the stale date IS in the corpus. This guard
+# compares each "<event> is scheduled/set/continued for <date>" claim against
+# the scaffold's scheduled rows for that event type and fires only when NO
+# scheduled row of that type falls on the claimed date (court-local or UTC).
+# It BIASES toward silence, matching the grounding guard's risk posture: no
+# scheduled row of the claimed type -> silent (the claim may narrate history,
+# or describe a deadline), historical phrasing ("was scheduled for",
+# "previously set for") -> silent, a date matching ANY row of the type
+# (co-defendants each with their own sentencing) -> silent. Enforcement is
+# retry -> strip -> WARN, the same shape as the grounding guard.
+_STALE_EVENT_CLAIM_RE = re.compile(
+    r"\b(?P<event>sentencing|jury\s+trial|trial|arraignment|oral\s+argument"
+    r"|change\s+of\s+plea)\b"
+    r"(?:\s+hearing)?"
+    r"(?P<gap>[^.!?;:]{0,60}?)"
+    r"\b(?:(?:re)?scheduled|set|continued)\s+(?:for|to|until)\s+"
+    r"(?:begin\s+)?(?:on\s+)?"
+    r"(?P<mon>jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+"
+    r"(?P<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?P<year>\d{4})\b",
+    re.I,
+)
+# Words between the event and the scheduling verb that mark the claim as
+# narrated HISTORY ("sentencing was scheduled for ...", "sentencing,
+# originally set for ...") rather than current posture — those never flag.
+_STALE_EVENT_HISTORICAL_RE = re.compile(
+    r"\b(?:was|were|had\s+been|previously|originally|initially|earlier|then)\b",
+    re.I,
+)
+# Prose event phrase -> the word a scaffold hearing TITLE must contain for the
+# row to govern that claim. "jury trial" and "trial" both map to "trial" so
+# either prose form matches a "Jury Trial" or "Trial" row.
+_STALE_EVENT_TITLE_WORDS = {
+    "sentencing": "sentencing",
+    "jury trial": "trial",
+    "trial": "trial",
+    "arraignment": "arraignment",
+    "oral argument": "argument",
+    "change of plea": "plea",
+}
+
+
+def _hearing_start_dates(
+    hearing: dict[str, Any],
+) -> tuple[Optional[str], Optional[str]]:
+    """(court-local ISO date, UTC ISO date) of the hearing's start.
+
+    Either slot is ``None`` when it can't be derived: a missing or
+    unparseable ``starts_at_utc`` yields ``(None, None)``; a missing or
+    unknown ``timezone`` yields a ``None`` local date. A naive timestamp is
+    treated as UTC, matching how the store writes ``starts_at_utc``. Both
+    dates are returned because prose normally states the court-local date but
+    the scaffold shows the model UTC timestamps — a claim matching either is
+    considered in agreement.
+    """
+    raw = hearing.get("starts_at_utc")
+    if not raw:
+        return (None, None)
+    try:
+        dt = datetime.fromisoformat(str(raw))
+    except ValueError:
+        return (None, None)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    utc_date = dt.astimezone(timezone.utc).date().isoformat()
+    local_date: Optional[str] = None
+    tz_name = hearing.get("timezone")
+    if tz_name:
+        try:
+            local_date = dt.astimezone(ZoneInfo(str(tz_name))).date().isoformat()
+        except (KeyError, ValueError):
+            # Unknown / malformed timezone name — fall back to UTC-only.
+            local_date = None
+    return (local_date, utc_date)
+
+
+def _audit_summary_stale_event_dates(
+    text: str, *, hearings: Iterable[dict[str, Any]]
+) -> list[str]:
+    """Return findings for scheduled-event dates contradicting the scaffold
+    (empty == clean). Detection only — see the tier comment on
+    :data:`_STALE_EVENT_CLAIM_RE` for the matching rules and the bias. Each
+    finding quotes the claim and the governing scaffold row(s) with their
+    current dates, so the retry correction can feed the right date back.
+    """
+    if not text or text.strip() == llm.SUMMARY_INSUFFICIENT_DOCUMENTS.strip():
+        return []
+    scheduled: list[tuple[str, str, set[str]]] = []
+    for h in hearings or []:
+        if (h.get("status") or "").lower() != "scheduled":
+            continue
+        local_date, utc_date = _hearing_start_dates(h)
+        if not utc_date:
+            continue
+        dates = {utc_date} | ({local_date} if local_date else set())
+        scheduled.append((str(h.get("title") or ""), local_date or utc_date, dates))
+    if not scheduled:
+        return []
+    out: list[str] = []
+    for m in _STALE_EVENT_CLAIM_RE.finditer(text):
+        if _STALE_EVENT_HISTORICAL_RE.search(m.group("gap")):
+            continue
+        event = re.sub(r"\s+", " ", m.group("event").lower())
+        title_word = _STALE_EVENT_TITLE_WORDS[event]
+        matching = [row for row in scheduled if title_word in row[0].lower()]
+        if not matching:
+            continue
+        mon = _GUARD_MONTHS[m.group("mon").lower()[:3]]
+        claimed = f"{int(m.group('year')):04d}-{mon:02d}-{int(m.group('day')):02d}"
+        if any(claimed in dates for _title, _display, dates in matching):
+            continue
+        current = "; ".join(
+            f"the scaffold's current {title!r} row (status=scheduled) is on {display}"
+            for title, display, _dates in matching
+        )
+        out.append(f"stale scheduled-event date: {m.group(0)!r} — {current}")
+    return out
+
+
+def _strip_stale_event_date_sentences(
+    text: str, *, hearings: Iterable[dict[str, Any]]
+) -> str:
+    """Remove whole sentences still carrying a stale scheduled-event date.
+
+    The deterministic backstop behind the stale-date retry, mirroring
+    :func:`_strip_ungrounded_sentences`: per-sentence detection reuses
+    :func:`_audit_summary_stale_event_dates`, so a sentence is dropped iff it
+    would itself flag — the calendar feed carries the event's current date, so
+    losing the sentence never loses the schedule. If every sentence is
+    stripped, the refusal sentence is returned.
+    """
+    hearings = list(hearings or [])
+    kept = [
+        s
+        for s in _split_sentences(text)
+        if not _audit_summary_stale_event_dates(s, hearings=hearings)
+    ]
+    result = " ".join(s.strip() for s in kept).strip()
+    return result or llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+
 # Operator-note provenance leak. The AGGREGATION NOTE and any NOTE FROM
 # OPERATOR are trusted CONTEXT for the model, not material to attribute to the
 # subscriber — the fact they carry should be stated directly, never sourced to
@@ -1869,6 +2022,13 @@ def _generate_guarded_summary(
     :func:`_strip_ungrounded_sentences`. The ungrounded figure never publishes;
     a WARNING is always logged so an operator can review the removal (a
     correctly-stated figure in an unusual format can trip this).
+
+    Two more retry-then-strip tiers follow the same shape: the redundant-
+    forfeiture guard (:func:`_audit_summary_forfeiture`) and the stale
+    scheduled-event-date guard (:func:`_audit_summary_stale_event_dates` —
+    a "scheduled for <date>" claim contradicting the scaffold's current row
+    for that event). Finally the operator-note attribution cleanup runs
+    unconditionally (always-safe, no retry).
     """
     known_dates = _grounding_dates(gen_kwargs)
     summary_text, model_id = llm.generate_docket_summary(**gen_kwargs)
@@ -1998,6 +2158,66 @@ def _generate_guarded_summary(
                 "summary: docket %s STILL stated a redundant forfeiture money "
                 "judgment after retry; stripped the forfeiture clause from the "
                 "draft — verify against the docket",
+                docket_id,
+            )
+
+    # Tier 5 — stale scheduled-event date (the prose contradicts the
+    # scaffold's current row for the event; see the tier comment on
+    # _STALE_EVENT_CLAIM_RE — the us-v-ding superseded-continuance case).
+    # Retry once quoting the scaffold's current date back; if the stale date
+    # persists, deterministically strip the sentence(s) carrying it so the
+    # summary cannot contradict the calendar feed rendered from the same
+    # store.
+    hearings_rows = list(gen_kwargs.get("hearings") or [])
+    stale_events = _audit_summary_stale_event_dates(
+        summary_text, hearings=hearings_rows
+    )
+    if stale_events:
+        log.warning(
+            "summary: docket %s draft carried stale scheduled-event date(s) %s; "
+            "retrying generation once with the scaffold's current date",
+            docket_id,
+            stale_events,
+        )
+        correction = (
+            "Your draft states a date for a scheduled event that does not "
+            "match the structured-events scaffold's CURRENT row for that "
+            "event: "
+            + "; ".join(stale_events)
+            + ". The scaffold outranks document text for an event's current "
+            "date — a continuance stated in a document may itself have been "
+            "superseded by a later notice not in your document set. Restate "
+            "the event using the scaffold row's date, or omit the specific "
+            "date."
+        )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction=correction, **gen_kwargs
+        )
+        retry_clean = (
+            not _audit_summary_stale_event_dates(retry_text, hearings=hearings_rows)
+            and not _audit_summary_text(retry_text, source_text=source_text)
+            and not _audit_summary_grounding(
+                retry_text, known_dates=known_dates, source_text=source_text
+            )
+            and not _audit_summary_forfeiture(retry_text)
+        )
+        if retry_clean:
+            log.info(
+                "summary: docket %s retry cleared the stale-event-date guard",
+                docket_id,
+            )
+            summary_text, model_id = retry_text, retry_model
+        else:
+            # The retry didn't come back fully clean — keep the known-good
+            # draft and remove the stale sentence(s) deterministically rather
+            # than adopt a retry that may have regressed elsewhere.
+            summary_text = _strip_stale_event_date_sentences(
+                summary_text, hearings=hearings_rows
+            )
+            log.warning(
+                "summary: docket %s STILL carried a stale scheduled-event date "
+                "after retry; removed the offending sentence(s) — the calendar "
+                "feed carries the event's current date",
                 docket_id,
             )
 
