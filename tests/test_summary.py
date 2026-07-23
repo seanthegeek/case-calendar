@@ -8,7 +8,7 @@ pre-canned ``/docket-entries/`` pages.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 import pytest
 
@@ -4835,6 +4835,297 @@ class TestStripUngroundedSentences:
         assert summary._split_sentences("X was charged with wire fraud.") == [
             "X was charged with wire fraud."
         ]
+
+
+# A scheduled Sentencing scaffold row on 2026-09-01 14:00 court time (the
+# us-v-ding shape after the 7/22/2026 clerk's notice moved it off August 4).
+def _scheduled_sentencing(
+    starts: Optional[str] = "2026-09-01T21:00:00+00:00",
+    tz: Optional[str] = "America/Los_Angeles",
+    *,
+    title: str = "Sentencing",
+    status: str = "scheduled",
+) -> dict[str, Any]:
+    return {
+        "title": title,
+        "status": status,
+        "starts_at_utc": starts,
+        "timezone": tz,
+    }
+
+
+class TestStaleEventDateAudit:
+    """Tier-5 detection — `_audit_summary_stale_event_dates` flags a
+    "scheduled for <date>" claim that contradicts the scaffold's current
+    scheduled row for that event type, and stays silent everywhere else
+    (the us-v-ding superseded-continuance regression)."""
+
+    def test_stale_sentencing_date_flagged(self):
+        # The us-v-ding failure verbatim: prose repeats the superseded
+        # August 4 continuance while the scaffold row moved to September 1.
+        out = summary._audit_summary_stale_event_dates(
+            "Sentencing is scheduled for August 4, 2026.",
+            hearings=[_scheduled_sentencing()],
+        )
+        assert out and "stale scheduled-event date" in out[0]
+        assert "2026-09-01" in out[0]  # the correction can quote the real date
+
+    def test_matching_court_local_date_not_flagged(self):
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is scheduled for September 1, 2026.",
+                hearings=[_scheduled_sentencing()],
+            )
+            == []
+        )
+
+    def test_court_local_date_differs_from_utc_date(self):
+        # 2026-09-02T02:00Z is the evening of September 1 in Los Angeles: the
+        # court-local claim must pass, and (belt-and-suspenders, since the
+        # scaffold shows the model UTC timestamps) so must the UTC date.
+        rows = [_scheduled_sentencing(starts="2026-09-02T02:00:00+00:00")]
+        for prose_date in ("September 1, 2026", "September 2, 2026"):
+            assert (
+                summary._audit_summary_stale_event_dates(
+                    f"Sentencing is set for {prose_date}.", hearings=rows
+                )
+                == []
+            ), prose_date
+
+    def test_no_scheduled_row_of_that_type_is_silent(self):
+        # Only a cancelled sentencing row -> the claim may narrate history the
+        # scaffold no longer carries; bias toward silence.
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is scheduled for August 4, 2026.",
+                hearings=[_scheduled_sentencing(status="cancelled")],
+            )
+            == []
+        )
+
+    def test_other_event_type_scheduled_is_silent(self):
+        # A scheduled trial row does not govern a sentencing claim.
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is scheduled for August 4, 2026.",
+                hearings=[_scheduled_sentencing(title="Jury Trial")],
+            )
+            == []
+        )
+
+    def test_historical_phrasing_is_silent(self):
+        for text in (
+            "Sentencing was scheduled for August 4, 2026.",
+            "Sentencing, originally set for August 4, 2026, has moved.",
+        ):
+            assert (
+                summary._audit_summary_stale_event_dates(
+                    text, hearings=[_scheduled_sentencing()]
+                )
+                == []
+            ), text
+
+    def test_continued_to_phrasing_flagged(self):
+        # Present-posture continuance wording (no historical marker) is a
+        # current-date claim and must be checked like "is scheduled for".
+        out = summary._audit_summary_stale_event_dates(
+            "Sentencing has been continued to August 4, 2026.",
+            hearings=[_scheduled_sentencing()],
+        )
+        assert out and "stale scheduled-event date" in out[0]
+
+    def test_trial_claim_matches_jury_trial_row(self):
+        out = summary._audit_summary_stale_event_dates(
+            "A jury trial is scheduled to begin on January 7, 2026.",
+            hearings=[
+                _scheduled_sentencing(
+                    starts="2026-03-02T15:00:00+00:00", title="Jury Trial"
+                )
+            ],
+        )
+        assert out and "'Jury Trial'" in out[0]
+
+    def test_any_matching_codefendant_row_is_silent(self):
+        # Two scheduled sentencings (co-defendants); the claimed date matches
+        # one of them -> in agreement.
+        rows = [
+            _scheduled_sentencing(),
+            _scheduled_sentencing(starts="2026-08-04T21:00:00+00:00"),
+        ]
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is scheduled for August 4, 2026.", hearings=rows
+            )
+            == []
+        )
+
+    def test_unparseable_or_missing_start_row_is_ignored(self):
+        for starts in (None, "not-a-timestamp"):
+            assert (
+                summary._audit_summary_stale_event_dates(
+                    "Sentencing is scheduled for August 4, 2026.",
+                    hearings=[_scheduled_sentencing(starts=starts)],
+                )
+                == []
+            ), starts
+
+    def test_naive_timestamp_treated_as_utc(self):
+        out = summary._audit_summary_stale_event_dates(
+            "Sentencing is scheduled for August 4, 2026.",
+            hearings=[_scheduled_sentencing(starts="2026-09-01T21:00:00")],
+        )
+        assert out and "2026-09-01" in out[0]
+
+    def test_unknown_timezone_falls_back_to_utc_date(self):
+        # ZoneInfo can't resolve the name -> only the UTC date governs.
+        rows = [_scheduled_sentencing(tz="Not/AZone")]
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is set for September 1, 2026.", hearings=rows
+            )
+            == []
+        )
+        assert summary._audit_summary_stale_event_dates(
+            "Sentencing is set for August 4, 2026.", hearings=rows
+        )
+
+    def test_missing_timezone_falls_back_to_utc_date(self):
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is set for September 1, 2026.",
+                hearings=[_scheduled_sentencing(tz=None)],
+            )
+            == []
+        )
+
+    def test_empty_text_and_refusal_exempt(self):
+        rows = [_scheduled_sentencing()]
+        assert summary._audit_summary_stale_event_dates("", hearings=rows) == []
+        assert (
+            summary._audit_summary_stale_event_dates(
+                summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS, hearings=rows
+            )
+            == []
+        )
+
+    def test_no_hearings_is_silent(self):
+        assert (
+            summary._audit_summary_stale_event_dates(
+                "Sentencing is scheduled for August 4, 2026.", hearings=[]
+            )
+            == []
+        )
+
+
+class TestStripStaleEventDateSentences:
+    """`_strip_stale_event_date_sentences` — the deterministic backstop that
+    removes only the sentence(s) still carrying a stale scheduled-event date
+    (refusal if none survive)."""
+
+    def test_drops_only_stale_sentence(self):
+        out = summary._strip_stale_event_date_sentences(
+            "X was convicted at trial. Sentencing is scheduled for August 4, 2026.",
+            hearings=[_scheduled_sentencing()],
+        )
+        assert out == "X was convicted at trial."
+
+    def test_keeps_current_date_sentence(self):
+        text = "X was convicted. Sentencing is scheduled for September 1, 2026."
+        assert (
+            summary._strip_stale_event_date_sentences(
+                text, hearings=[_scheduled_sentencing()]
+            )
+            == text
+        )
+
+    def test_all_stale_returns_refusal(self):
+        out = summary._strip_stale_event_date_sentences(
+            "Sentencing is scheduled for August 4, 2026.",
+            hearings=[_scheduled_sentencing()],
+        )
+        assert out == summary.llm.SUMMARY_INSUFFICIENT_DOCUMENTS
+
+
+class TestStaleEventDateGuardEndToEnd:
+    """Tier-5 retry-then-strip through summarize_docket, with the stale date
+    GROUNDED in the document corpus (the us-v-ding shape — the superseded
+    continuance minute entry is in the disposition set, so the grounding
+    guard cannot fire; only the stale-date guard can)."""
+
+    def _setup(self, store, patch_pdf):
+        cl, case = _indictment_case(
+            store,
+            patch_pdf,
+            primary_text=(
+                "INDICTMENT charging espionage. Sentencing continued to 8/4/2026."
+            ),
+        )
+        store.upsert_hearing(
+            {
+                "case_id": case.case_id,
+                "hearing_key": "sentencing-doe",
+                "title": "Sentencing",
+                "starts_at_utc": "2026-09-01T21:00:00+00:00",
+                "timezone": "America/Los_Angeles",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 1,
+            }
+        )
+        return cl, case
+
+    def test_stale_date_retry_clears(self, store, patch_pdf, monkeypatch, caplog):
+        import logging
+
+        cl, case = self._setup(store, patch_pdf)
+        calls = _queue_llm(
+            monkeypatch,
+            "X was charged. Sentencing is scheduled for August 4, 2026.",
+            "X was charged. Sentencing is scheduled for September 1, 2026.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        # The correction quotes the scaffold's current date back to the model.
+        assert "2026-09-01" in calls[1].get("correction", "")
+        assert row["summary"] == (
+            "X was charged. Sentencing is scheduled for September 1, 2026."
+        )
+        assert any("stale scheduled-event date" in r.message for r in caplog.records)
+
+    def test_stale_date_persists_strips_sentence(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        import logging
+
+        cl, case = self._setup(store, patch_pdf)
+        # The model repeats the stale date on the retry -> the offending
+        # sentence is removed; the rest of the summary survives.
+        calls = _queue_llm(
+            monkeypatch,
+            "X was charged with espionage. Sentencing is scheduled for August 4, 2026.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "August 4, 2026" not in row["summary"]
+        assert row["summary"] == "X was charged with espionage."
+        assert any(
+            "STILL carried a stale scheduled-event date" in r.message
+            for r in caplog.records
+        )
+
+    def test_current_date_no_retry(self, store, patch_pdf, monkeypatch):
+        cl, case = self._setup(store, patch_pdf)
+        calls = _queue_llm(
+            monkeypatch,
+            "X was charged. Sentencing is scheduled for September 1, 2026.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1  # in agreement with the scaffold -> no retry
 
 
 class TestRestitutionUnreadableDetector:
