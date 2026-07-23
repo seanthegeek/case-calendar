@@ -8,6 +8,43 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.18.3] - 2026-07-22
+
+### Fixed
+
+- **Case summaries can no longer contradict the calendar on a rescheduled
+  event's date.** When a continuance order rides into the summary's document
+  set but the later notice that moved the event again does not (a plain
+  scheduling notice is neither a charging document nor a disposition), the
+  summary model could repeat the superseded date even though the
+  structured-events scaffold carried the current one. United States v. Ding is
+  the observed instance: the June 16, 2026 minute entry ("Sentencing continued
+  to 8/4/2026") was in the document set, the July 22, 2026 clerk's notice
+  moving sentencing to September 1, 2026 was not, and the published summary
+  said August 4 while the calendar feed — rendered from the same store —
+  said September 1. The grounding guard can't catch this, because the stale date
+  genuinely appears in the source documents. A new deterministic guard now
+  compares each `scheduled/set/continued for <date>` claim in the prose
+  against the scaffold's scheduled rows for that event type (sentencing,
+  trial, arraignment, oral argument, change of plea), accepting either the
+  court-local or the UTC date. On a mismatch it retries generation once,
+  quoting the scaffold's current date back to the model, and if the stale date
+  persists it removes the offending sentence — the calendar feed carries the
+  event's current date, so dropping the sentence never loses the schedule.
+  Like the grounding guard, it is biased toward silence: historical phrasing
+  ("was scheduled for", "originally set for"), claims about event types with
+  no scheduled scaffold row, and dates matching any row of the type (each
+  co-defendant's own sentencing) never trip it.
+
+### Security
+
+- **Bumped the `json-repair` floor 0.30 → 0.60.1** (resolves Dependabot
+  alert #26). Versions before 0.60.1 are vulnerable to
+  [GHSA-xf7x-x43h-rpqh](https://github.com/advisories/GHSA-xf7x-x43h-rpqh),
+  a high-severity unbounded-CPU denial of service triggered by a circular
+  JSON Schema `$ref`. The lock file now resolves to 0.61.7; the full test
+  suite passes against the resolved set.
+
 ## [0.18.2] - 2026-06-25
 
 ### Fixed
