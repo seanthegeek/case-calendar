@@ -8,7 +8,7 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.19.0] - 2026-07-23
 
 ### Fixed
 
@@ -31,6 +31,16 @@ adheres to [Semantic Versioning][semver].
   future models that drop the parameter are handled without a code change.
   See the new "Models that reject the `temperature` parameter" note in
   [agent-docs/DESIGN-DECISIONS.md](agent-docs/DESIGN-DECISIONS.md).
+
+### Security
+
+- Updated the locked `pyasn1` version from 0.6.3 to 0.6.4 (Dependabot PR
+  [#88](https://github.com/seanthegeek/case-calendar/pull/88), merged into
+  this release branch), fixing two high-severity advisories:
+  [GHSA-hm4w-wwcw-mr6r](https://github.com/advisories/GHSA-hm4w-wwcw-mr6r)
+  (uncontrolled resource consumption when converting decoded REAL values) and
+  [GHSA-8ppf-4f7h-5ppj](https://github.com/advisories/GHSA-8ppf-4f7h-5ppj)
+  (quadratic complexity in OBJECT IDENTIFIER and RELATIVE-OID processing).
 
 ## [0.18.3] - 2026-07-22
 
