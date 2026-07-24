@@ -268,6 +268,73 @@ def _to_gemini_schema(schema: Any) -> Any:
     return out
 
 
+# --- Models that reject the `temperature` parameter ---------------------------
+# Newer hosted models are dropping sampling controls entirely: the Claude 5
+# family (and the Opus releases since 4.7) returns a 400 for ANY `temperature`
+# value — per Anthropic's model-migration guide the parameter is removed on
+# those models — and other providers' reasoning models restrict it to its
+# default. The domain layer pins temperature=0.0 on every call so re-runs are
+# repeatable, so without handling here a model upgrade would turn every LLM
+# call into a hard 400. Rather than maintain a list of which model names still
+# accept the parameter (stale on every model release), each hosted call path
+# detects the rejection, retries the identical request once WITHOUT the
+# parameter, and remembers the (provider, model) pair for the rest of the
+# process so later calls skip the doomed first attempt. Such a model samples
+# at the provider's default — the repeatability the temperature=0 pin bought
+# is simply unavailable there, which the warning in
+# _remember_temperature_unsupported spells out. The Ollama path is left alone:
+# it has its own temperature policy and operator overrides (see
+# _call_ollama_native), and this rejection shape is a hosted-API behavior.
+_TEMPERATURE_UNSUPPORTED: set[tuple[str, str]] = set()
+
+# Substrings (lowercased) that mark a "this model does not accept
+# `temperature`" rejection. Both conditions in _is_temperature_unsupported_error
+# must hold — the message names the parameter AND reads as a not-supported
+# rejection — so an out-of-range VALUE error (the caller passed a bad number,
+# which retrying without the knob would silently paper over) still propagates.
+_TEMPERATURE_UNSUPPORTED_MARKERS = (
+    "not supported",
+    "unsupported",
+    "does not support",
+    "not permitted",
+    "not accepted",
+)
+
+
+def _is_temperature_unsupported_error(exc: Exception) -> bool:
+    """True when an SDK exception says the model rejects the ``temperature``
+    parameter itself, matched on its message text (see
+    :data:`_TEMPERATURE_UNSUPPORTED_MARKERS`)."""
+    msg = str(exc).lower()
+    return "temperature" in msg and any(
+        marker in msg for marker in _TEMPERATURE_UNSUPPORTED_MARKERS
+    )
+
+
+def _temperature_known_unsupported(provider: str, model: str) -> bool:
+    """True when this (provider, model) already rejected ``temperature`` in
+    this process, so the call paths skip sending it instead of repeating the
+    failed first attempt on every call."""
+    return (provider, model) in _TEMPERATURE_UNSUPPORTED
+
+
+def _remember_temperature_unsupported(
+    provider: str, model: str, exc: Exception
+) -> None:
+    """Record that this (provider, model) rejects ``temperature`` and warn that
+    its calls now run at the provider's default sampling."""
+    _TEMPERATURE_UNSUPPORTED.add((provider, model))
+    logger.warning(
+        "%s model %s rejected the temperature parameter (%s); retrying without "
+        "it and omitting it for the rest of this process. Calls to this model "
+        "sample at the provider's default, so repeated runs on identical input "
+        "may vary where a temperature=0 run would not.",
+        provider,
+        model,
+        str(exc)[:200],
+    )
+
+
 def _call_anthropic(
     system: str,
     user: str,
@@ -340,9 +407,23 @@ def _call_anthropic(
             }
         ]
         create_kwargs["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_NAME}
-    if temperature is not None:
+    if temperature is not None and not _temperature_known_unsupported(
+        "anthropic", chosen
+    ):
         create_kwargs["temperature"] = temperature
-    resp = client.messages.create(**create_kwargs)
+    try:
+        resp = client.messages.create(**create_kwargs)
+    except Exception as exc:
+        # The Claude 5 family (and Opus 4.7+) removed the temperature
+        # parameter — any value is a 400. Drop the knob and retry once
+        # rather than fail the call; see _TEMPERATURE_UNSUPPORTED.
+        if "temperature" not in create_kwargs or not _is_temperature_unsupported_error(
+            exc
+        ):
+            raise
+        _remember_temperature_unsupported("anthropic", chosen, exc)
+        del create_kwargs["temperature"]
+        resp = client.messages.create(**create_kwargs)
     usage.record(
         purpose=purpose,
         provider="anthropic",
@@ -412,9 +493,19 @@ def _call_openai(
         kwargs["response_format"] = _openai_json_schema_format(schema)
     elif json_mode:
         kwargs["response_format"] = {"type": "json_object"}
-    if temperature is not None:
+    if temperature is not None and not _temperature_known_unsupported("openai", chosen):
         kwargs["temperature"] = temperature
-    resp = client.chat.completions.create(**kwargs)
+    try:
+        resp = client.chat.completions.create(**kwargs)
+    except Exception as exc:
+        # Same graceful drop as the Anthropic path: a model that rejects the
+        # temperature parameter itself (OpenAI's reasoning tiers restrict it
+        # to the default) gets one retry without it.
+        if "temperature" not in kwargs or not _is_temperature_unsupported_error(exc):
+            raise
+        _remember_temperature_unsupported("openai", chosen, exc)
+        del kwargs["temperature"]
+        resp = client.chat.completions.create(**kwargs)
     usage.record(
         purpose=purpose,
         provider="openai",
@@ -459,13 +550,28 @@ def _call_gemini(
         config_kwargs["response_schema"] = _to_gemini_schema(schema)
     elif json_mode:
         config_kwargs["response_mime_type"] = "application/json"
-    if temperature is not None:
+    if temperature is not None and not _temperature_known_unsupported("gemini", chosen):
         config_kwargs["temperature"] = temperature
-    resp = client.models.generate_content(
-        model=chosen,
-        contents=user,
-        config=gtypes.GenerateContentConfig(**config_kwargs),
-    )
+    try:
+        resp = client.models.generate_content(
+            model=chosen,
+            contents=user,
+            config=gtypes.GenerateContentConfig(**config_kwargs),
+        )
+    except Exception as exc:
+        # Same graceful drop as the Anthropic path, for a future Gemini model
+        # that rejects the temperature parameter itself.
+        if "temperature" not in config_kwargs or not _is_temperature_unsupported_error(
+            exc
+        ):
+            raise
+        _remember_temperature_unsupported("gemini", chosen, exc)
+        del config_kwargs["temperature"]
+        resp = client.models.generate_content(
+            model=chosen,
+            contents=user,
+            config=gtypes.GenerateContentConfig(**config_kwargs),
+        )
     usage.record(
         purpose=purpose,
         provider="gemini",
@@ -1321,7 +1427,13 @@ def _dispatch_llm_call(
     knob for "how stochastic should this call be" — pinning to ``0.0``
     is what ``case_calendar.llm`` uses for every domain call so
     extraction / verify / dedupe / summary decisions don't depend on
-    sampling variance across syncs.
+    sampling variance across syncs. A model that rejects the parameter
+    outright — the Claude 5 family and Opus 4.7+ return a 400 for any
+    value — is handled gracefully by the hosted call paths: the request
+    is retried once without the parameter and the (provider, model)
+    pair is remembered for the rest of the process, so calls to that
+    model run at the provider's default sampling instead of failing
+    (see :data:`_TEMPERATURE_UNSUPPORTED`).
 
     A hosted provider's "context length exceeded" error is normalized to
     :class:`ContextWindowExceededError` here (matched on the SDK error

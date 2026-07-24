@@ -8,6 +8,30 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **Models that reject the `temperature` parameter no longer fail every LLM
+  call.** The domain layer pins `temperature=0` on every call so re-runs are
+  repeatable, but newer hosted models drop sampling controls entirely —
+  Anthropic's model-migration guide documents the parameter as removed on the
+  Claude 5 family and on Opus 4.7 and later (any value returns a 400), and
+  OpenAI's reasoning tiers restrict it to its default. Pointing `LLM_MODEL` at
+  such a model previously turned every extraction, verify, dedupe, and summary
+  call into a hard API error. The hosted call paths in `llmkit` now detect the
+  rejection (the error must both name `temperature` and read as a
+  not-supported rejection — an out-of-range value error still propagates,
+  since that is a real configuration mistake), retry the identical request
+  once without the parameter, and remember the provider + model pair for the
+  rest of the process so later calls skip the doomed first attempt. A warning
+  is logged once per model noting that its calls sample at the provider's
+  default, so identical re-runs may vary where a `temperature=0` run would
+  not. Detection is dynamic rather than a maintained list of model names, so
+  future models that drop the parameter are handled without a code change.
+  See the new "Models that reject the `temperature` parameter" note in
+  [agent-docs/DESIGN-DECISIONS.md](agent-docs/DESIGN-DECISIONS.md).
+
 ## [0.18.3] - 2026-07-22
 
 ### Fixed
