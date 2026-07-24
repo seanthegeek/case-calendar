@@ -836,6 +836,265 @@ class TestCallGemini:
         assert out == '{"actions": []}'
 
 
+class TestTemperatureUnsupportedFallback:
+    """Newer models reject the ``temperature`` parameter outright — the
+    Claude 5 family and Opus 4.7+ return a 400 for any value (the parameter
+    is removed on those models). The hosted call paths must retry once
+    without the parameter and remember the (provider, model) pair so later
+    calls skip the doomed first attempt, instead of turning every domain
+    call (which pins temperature=0.0) into a hard failure."""
+
+    @pytest.fixture(autouse=True)
+    def _fresh_memory(self):
+        # The remembered-rejections set is process-global; isolate each test.
+        providers._TEMPERATURE_UNSUPPORTED.clear()
+        yield
+        providers._TEMPERATURE_UNSUPPORTED.clear()
+
+    @staticmethod
+    def _rejection() -> Exception:
+        return Exception(
+            "Error code: 400 - `temperature` is not supported by this model"
+        )
+
+    @staticmethod
+    def _fake_anthropic(monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        fake_client = MagicMock()
+        fake_mod.Anthropic.return_value = fake_client
+        block = MagicMock()
+        block.type = "text"
+        block.text = "ok"
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = "end_turn"
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+        return fake_client, resp
+
+    @staticmethod
+    def _fake_openai(monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="openai")
+        fake_client = MagicMock()
+        fake_mod.OpenAI.return_value = fake_client
+        msg = MagicMock()
+        msg.content = "ok"
+        choice = MagicMock()
+        choice.message = msg
+        choice.finish_reason = "stop"
+        resp = MagicMock()
+        resp.choices = [choice]
+        monkeypatch.setitem(sys.modules, "openai", fake_mod)
+        return fake_client, resp
+
+    @staticmethod
+    def _fake_gemini(monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_genai = MagicMock(name="google.genai")
+        fake_types = MagicMock(name="google.genai.types")
+
+        class _Cfg:
+            def __init__(self, **kw):
+                self.kw = kw
+
+        fake_types.GenerateContentConfig = _Cfg
+        fake_genai.types = fake_types
+        fake_client = MagicMock()
+        fake_genai.Client.return_value = fake_client
+        resp = MagicMock()
+        resp.text = "ok"
+        resp.candidates = []
+        fake_google = MagicMock()
+        fake_google.genai = fake_genai
+        monkeypatch.setitem(sys.modules, "google", fake_google)
+        monkeypatch.setitem(sys.modules, "google.genai", fake_genai)
+        monkeypatch.setitem(sys.modules, "google.genai.types", fake_types)
+        return fake_client, resp
+
+    def test_anthropic_rejection_retries_without_temperature(self, monkeypatch):
+        client, resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.side_effect = [self._rejection(), resp]
+
+        out = providers._call_anthropic("s", "u", 10, temperature=0.0)
+
+        assert out == "ok"
+        assert client.messages.create.call_count == 2
+        first = client.messages.create.call_args_list[0].kwargs
+        second = client.messages.create.call_args_list[1].kwargs
+        assert first["temperature"] == 0.0
+        assert "temperature" not in second
+        # The retry sends the SAME request minus the rejected knob.
+        assert second["model"] == first["model"]
+        assert second["messages"] == first["messages"]
+        assert (
+            "anthropic",
+            providers._DEFAULT_MODELS["anthropic"],
+        ) in providers._TEMPERATURE_UNSUPPORTED
+
+    def test_anthropic_remembered_model_skips_temperature_up_front(self, monkeypatch):
+        client, resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.return_value = resp
+        providers._TEMPERATURE_UNSUPPORTED.add(
+            ("anthropic", providers._DEFAULT_MODELS["anthropic"])
+        )
+
+        providers._call_anthropic("s", "u", 10, temperature=0.0)
+
+        assert client.messages.create.call_count == 1
+        assert "temperature" not in client.messages.create.call_args.kwargs
+
+    def test_memory_is_per_model_not_per_provider(self, monkeypatch):
+        # A rejection remembered for one model must not strip the knob from a
+        # DIFFERENT model on the same provider (an older model that still
+        # accepts it keeps its deterministic temperature=0 pin).
+        client, resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.return_value = resp
+        providers._TEMPERATURE_UNSUPPORTED.add(("anthropic", "claude-fable-5"))
+
+        providers._call_anthropic(
+            "s", "u", 10, model="claude-haiku-4-5", temperature=0.0
+        )
+
+        assert client.messages.create.call_args.kwargs["temperature"] == 0.0
+
+    def test_anthropic_unrelated_error_propagates_without_retry(self, monkeypatch):
+        client, _resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.side_effect = RuntimeError("529 overloaded")
+
+        with pytest.raises(RuntimeError, match="overloaded"):
+            providers._call_anthropic("s", "u", 10, temperature=0.0)
+
+        assert client.messages.create.call_count == 1
+        assert not providers._TEMPERATURE_UNSUPPORTED
+
+    def test_anthropic_bad_value_error_propagates(self, monkeypatch):
+        # Names the parameter but reads as an out-of-range VALUE error — the
+        # caller passed a bad number, and retrying without the knob would
+        # silently paper over that. Must propagate.
+        client, _resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.side_effect = Exception(
+            "temperature: must be between 0 and 1"
+        )
+
+        with pytest.raises(Exception, match="between 0 and 1"):
+            providers._call_anthropic("s", "u", 10, temperature=5.0)
+
+        assert client.messages.create.call_count == 1
+
+    def test_anthropic_no_temperature_sent_never_retries(self, monkeypatch):
+        # temperature=None means the kwarg was never sent, so a
+        # rejection-shaped error can't be about OUR parameter — propagate.
+        client, _resp = self._fake_anthropic(monkeypatch)
+        client.messages.create.side_effect = self._rejection()
+
+        with pytest.raises(Exception, match="not supported"):
+            providers._call_anthropic("s", "u", 10)
+
+        assert client.messages.create.call_count == 1
+
+    def test_openai_rejection_retries_without_temperature(self, monkeypatch):
+        client, resp = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = [self._rejection(), resp]
+
+        out = providers._call_openai("s", "u", 10, temperature=0.0)
+
+        assert out == "ok"
+        assert client.chat.completions.create.call_count == 2
+        first = client.chat.completions.create.call_args_list[0].kwargs
+        second = client.chat.completions.create.call_args_list[1].kwargs
+        assert first["temperature"] == 0.0
+        assert "temperature" not in second
+        assert (
+            "openai",
+            providers._DEFAULT_MODELS["openai"],
+        ) in providers._TEMPERATURE_UNSUPPORTED
+
+    def test_openai_remembered_model_skips_temperature_up_front(self, monkeypatch):
+        client, resp = self._fake_openai(monkeypatch)
+        client.chat.completions.create.return_value = resp
+        providers._TEMPERATURE_UNSUPPORTED.add(
+            ("openai", providers._DEFAULT_MODELS["openai"])
+        )
+
+        providers._call_openai("s", "u", 10, temperature=0.0)
+
+        assert client.chat.completions.create.call_count == 1
+        assert "temperature" not in client.chat.completions.create.call_args.kwargs
+
+    def test_openai_unrelated_error_propagates_without_retry(self, monkeypatch):
+        client, _resp = self._fake_openai(monkeypatch)
+        client.chat.completions.create.side_effect = RuntimeError("rate limited")
+
+        with pytest.raises(RuntimeError, match="rate limited"):
+            providers._call_openai("s", "u", 10, temperature=0.0)
+
+        assert client.chat.completions.create.call_count == 1
+        assert not providers._TEMPERATURE_UNSUPPORTED
+
+    def test_gemini_rejection_retries_without_temperature(self, monkeypatch):
+        client, resp = self._fake_gemini(monkeypatch)
+        client.models.generate_content.side_effect = [self._rejection(), resp]
+
+        out = providers._call_gemini("s", "u", 10, temperature=0.0)
+
+        assert out == "ok"
+        assert client.models.generate_content.call_count == 2
+        first = client.models.generate_content.call_args_list[0].kwargs["config"]
+        second = client.models.generate_content.call_args_list[1].kwargs["config"]
+        assert first.kw["temperature"] == 0.0
+        assert "temperature" not in second.kw
+        assert (
+            "gemini",
+            providers._DEFAULT_MODELS["gemini"],
+        ) in providers._TEMPERATURE_UNSUPPORTED
+
+    def test_gemini_remembered_model_skips_temperature_up_front(self, monkeypatch):
+        client, resp = self._fake_gemini(monkeypatch)
+        client.models.generate_content.return_value = resp
+        providers._TEMPERATURE_UNSUPPORTED.add(
+            ("gemini", providers._DEFAULT_MODELS["gemini"])
+        )
+
+        providers._call_gemini("s", "u", 10, temperature=0.0)
+
+        assert client.models.generate_content.call_count == 1
+        cfg = client.models.generate_content.call_args.kwargs["config"]
+        assert "temperature" not in cfg.kw
+
+    def test_gemini_unrelated_error_propagates_without_retry(self, monkeypatch):
+        client, _resp = self._fake_gemini(monkeypatch)
+        client.models.generate_content.side_effect = RuntimeError("server error")
+
+        with pytest.raises(RuntimeError, match="server error"):
+            providers._call_gemini("s", "u", 10, temperature=0.0)
+
+        assert client.models.generate_content.call_count == 1
+        assert not providers._TEMPERATURE_UNSUPPORTED
+
+    def test_matcher_requires_parameter_name_and_rejection_phrase(self):
+        assert providers._is_temperature_unsupported_error(
+            Exception("`temperature` is not supported by this model")
+        )
+        assert providers._is_temperature_unsupported_error(
+            Exception("Unsupported value: 'temperature' does not support 0")
+        )
+        # Names the parameter but reads as a bad-VALUE error.
+        assert not providers._is_temperature_unsupported_error(
+            Exception("temperature: must be between 0 and 2")
+        )
+        # Not-supported phrasing about a DIFFERENT parameter.
+        assert not providers._is_temperature_unsupported_error(
+            Exception("Unsupported parameter: 'top_p'")
+        )
+
+
 class TestCallOllama:
     """Local inference through Ollama's NATIVE ``/api/chat`` endpoint (chosen
     over the OpenAI-compat ``/v1`` path because only the native endpoint exposes
