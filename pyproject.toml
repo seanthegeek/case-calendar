@@ -1,6 +1,6 @@
 [project]
 name = "case-calendar"
-version = "0.19.0"
+version = "0.19.1"
 requires-python = ">=3.13"
 dependencies = [
     "anthropic>=0.40",
@@ -13,7 +13,7 @@ dependencies = [
     "azure-identity>=1.19.0",
     "httpx>=0.28.1",
     "json-repair>=0.60.1",
-    "pypdf>=6.13.3",
+    "pypdf>=6.14.2",
     "python-dotenv>=1.0",
     "pyyaml>=6.0.3",
     "tzdata>=2024.1; sys_platform == 'win32' or sys_platform == 'linux'",

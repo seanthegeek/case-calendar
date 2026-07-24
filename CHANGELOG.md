@@ -8,6 +8,27 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.19.1] - 2026-07-23
+
+### Security
+
+- **Bumped the `pypdf` floor 6.13.3 → 6.14.2**, resolving four advisories
+  disclosed shortly after 0.19.0 was cut — all denial-of-service class issues
+  in PDF parsing, which this project runs on court documents fetched from
+  CourtListener and the Internet Archive:
+  [GHSA-g867-7843-wf8q](https://github.com/advisories/GHSA-g867-7843-wf8q)
+  (high — possible infinite loop for unterminated inline images, ASCII85 and
+  ASCIIHex filters),
+  [GHSA-5xf7-4p34-54qr](https://github.com/advisories/GHSA-5xf7-4p34-54qr)
+  (high — possible infinite loop for unterminated inline images),
+  [GHSA-55h5-xmcq-c37v](https://github.com/advisories/GHSA-55h5-xmcq-c37v)
+  (medium — possible long runtimes for repeated malformed cross-reference
+  entries), and
+  [GHSA-5qjq-93h5-hrgp](https://github.com/advisories/GHSA-5qjq-93h5-hrgp)
+  (medium — possible large memory usage for wrong image dimensions).
+  `uv.lock` refreshed to the patched version; the full test suite passes
+  against the resolved set.
+
 ## [0.19.0] - 2026-07-23
 
 ### Fixed
