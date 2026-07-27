@@ -3,35 +3,50 @@
 Scored **992** docket entries (every `reviewed`, non-`bad_ocr` entry across the
 benchmark) carrying **421** human-counted actions, across **10** logical dockets
 in **6** cases. Lower deviation = closer to the human-read truth. All numbers
-below are measured under the shipping policy: **structured output ON** (the
+below are measured under the shipping policy — **structured output ON** (the
 schema-enforced JSON default) and, for local thinking models, the **bounded
-reasoning budget** with thinking ON.
+reasoning budget** with thinking ON for extraction — unless a row's label says
+otherwise. The July 2026 local sweep was run twice per model: once **greedy**
+(`temperature=0`, the shipping default, matching every prior row) and once
+**in-spec** (each model's lowest documented card temperature, fixed seed) — the
+`-inspec` rows.
 
-The shipped default is a **split**: **Gemini** (`gemini-3.1-flash-lite`) for
-extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. The benchmark ran
-in four phases:
+The shipped default remains a **split**: **Gemini** (`gemini-3.1-flash-lite`)
+for extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. The benchmark
+ran in four phases:
 
 - **Phase 0 — extraction accuracy**: every model extracts hearings/deadlines from
   the same frozen dockets; a human-blind deviation score ranks them.
 - **Phases 1 & 2 — summary generation**: each candidate summary model regenerates
-  the per-docket case summaries, on the top extractor's scaffold (Phase 1) and on
-  its own extraction (Phase 2).
-- **Phase 3 — summary grading**: the summaries are read by hand and graded for
-  accuracy, readability, and the China / DPRK / Russia provenance these cases turn
-  on (there is no automated summary scorer — see `summarize_phase.py`).
+  the per-docket case summaries on the top extractor's scaffold.
+- **Phase 3 — summary grading**: the summaries are read and graded for accuracy,
+  detail, and grammar against a fresh hosted reference generated on the same
+  scaffold (there is no automated summary scorer — see `summarize_phase.py`).
 
-The headline results:
+The headline results of the July 2026 sweep (new 32 GB + 24 GB dual-GPU rig,
+every installed Ollama model):
 
-- **Extraction**: Gemini wins (636 per-entry). The best **local** model,
-  `gpt-oss:20b`, is a close 2nd at **710 — ahead of hosted Anthropic, OpenAI-mini,
-  and OpenAI-nano** — so a free local model rivals the paid hosted tier on
-  extraction.
-- **Summaries**: no local summary is publication-ready — each is accurate on the
-  figures but too thin (gpt-oss, glm) or too clunky/defective (gemma, qwen), the
-  best reaching only a **C**. **Summaries need the higher hosted tier** — the
-  opposite of extraction.
-- **Thinking helps extraction but harms summaries** — a clean inversion (see the
-  thinking notes in each phase).
+- **A local model now tops the aggregate metric.** `gpt-oss:20b` run in-spec
+  (its vendor Modelfile `temperature=1.0`, seed 42) scores **332** aggregate —
+  ahead of hosted Gemini's 376 — and 666 per-entry (3rd). Two independent
+  no-cache runs at the same seed produced identical per-entry counts, so the
+  result is reproducible on this rig.
+- **A local model ties the hosted leader per-entry.** `gemma4:31b` (greedy)
+  scores **640** per-entry vs Gemini's 636 — statistically a tie — at the cost
+  of a \~10.5-hour benchmark wall-clock vs \~20 minutes of API calls.
+- **Local summaries reach B for the first time.** `gemma4:31b` grades **B**,
+  `mistral-small3.2` and `granite4.1:30b` **B−** — overturning the previous
+  "no local summary clears a C" finding. The hosted tier is still ahead
+  (Sonnet reference: A−), but the gap has narrowed from two letter grades to
+  one.
+- **Greedy-vs-in-spec is model-dependent**, not a blanket verdict: in-spec
+  helped six models (gpt-oss most, −115 per-entry) and hurt three
+  (lfm2.5 worst, +177). See the in-spec section for per-model temperatures.
+- **Three models could not be benchmarked on this hardware**:
+  `glm-4.7-flash` (both quants) and `qwen3.6` crash Ollama's ROCm runner on
+  the Radeon AI PRO R9700 at large context sizes — a missing-kernel gap in
+  the bundled hipBLASLt for gfx1201, not a model-quality finding. Details
+  below.
 
 ## Methodology — per-entry, blind, against complete-text inputs
 
@@ -116,35 +131,62 @@ cand), us-v-knoot, us-v-gholinejad, us-v-mcgonigal, us-v-schmitz.
 
 Sum over the 8 action categories of |model count − human count|, over all 992
 entries. `over` = model counted more than the human (duplicate keys /
-hallucination); `under` = fewer (missed).
+hallucination); `under` = fewer (missed). Rows without a policy suffix are
+greedy (`temperature=0`); `-inspec` rows are the same model at its card
+temperature with seed 42; historical rows measured on the prior rig are marked.
 
 | model | host | per-entry | over | under | Hs | Hr | Hh | Hc | Ds | Dr | Df | Dc | aggregate |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| **gemini/gemini-3.1-flash-lite** | hosted | **636** | 438 | 198 | 109 | 51 | 61 | 10 | 211 | 61 | 129 | 4 | **376** |
-| **ollama/gpt-oss:20b** (thinking LOW) | local | **710** | 476 | 234 | 115 | 65 | 58 | 7 | 228 | 81 | 135 | 21 | **396** |
-| ollama/gpt-oss:20b (thinking MEDIUM) | local | 728 | 508 | 220 | 149 | 60 | 44 | 4 | 234 | 83 | 139 | 15 | 420 |
+| **gemini/gemini-3.1-flash-lite** | hosted | **636** | 438 | 198 | 109 | 51 | 61 | 10 | 211 | 61 | 129 | 4 | 376 |
+| **ollama/gemma4:31b** | local | **640** | 393 | 247 | 152 | 57 | 60 | 7 | 225 | 33 | 105 | 1 | 438 |
+| **ollama/gpt-oss:20b-inspec** | local | **666** | 430 | 236 | 136 | 68 | 56 | 9 | 182 | 65 | 137 | 13 | **332** |
+| ollama/gemma4:31b-inspec | local | 687 | 421 | 266 | 160 | 57 | 54 | 6 | 268 | 37 | 105 | 0 | 477 |
+| ollama/gpt-oss:20b-medium (prior rig) | local | 728 | 508 | 220 | 149 | 60 | 44 | 4 | 234 | 83 | 139 | 15 | 420 |
+| ollama/gpt-oss:20b | local | 781 | 550 | 231 | 176 | 70 | 57 | 5 | 246 | 68 | 136 | 23 | 435 |
 | anthropic/claude-haiku-4-5 | hosted | 784 | 590 | 194 | 105 | 66 | 84 | 16 | 232 | 95 | 143 | 43 | 476 |
 | openai/gpt-5.4-mini | hosted | 879 | 676 | 203 | 113 | 92 | 62 | 4 | 322 | 107 | 173 | 6 | 551 |
-| ollama/qwen3.5:9b (thinking OFF) | local | 930 | 676 | 254 | 142 | 56 | 54 | 13 | 490 | 36 | 115 | 24 | 700 |
+| ollama/gemma4:latest-inspec | local | 917 | 704 | 213 | 120 | 136 | 149 | 13 | 276 | 99 | 109 | 15 | 665 |
+| ollama/granite4.1:30b-inspec | local | 920 | 719 | 201 | 127 | 101 | 103 | 19 | 305 | 142 | 113 | 10 | 672 |
+| ollama/qwen3.5:9b (prior rig) | local | 930 | 676 | 254 | 142 | 56 | 54 | 13 | 490 | 36 | 115 | 24 | 700 |
 | openai/gpt-5.4-nano | hosted | 967 | 760 | 207 | 146 | 99 | 83 | 7 | 366 | 131 | 132 | 3 | 697 |
-| ollama/gemma4:e4b (thinking ON) | local | 1241 | 1030 | 211 | 140 | 181 | 143 | 13 | 493 | 147 | 112 | 12 | 985 |
-| ollama/granite3.3:8b | local | 1461 | 1232 | 229 | 203 | 101 | 56 | 15 | 818 | 141 | 115 | 12 | 1181 |
-| ollama/granite4.1:8b | local | 1869 | 1670 | 199 | 178 | 125 | 565 | 33 | 708 | 109 | 126 | 25 | 1609 |
-| ollama/gemma4:e4b (thinking OFF) | local | 1945 | 1740 | 205 | 115 | 181 | 176 | 8 | 1155 | 178 | 116 | 16 | 1681 |
-| ollama/llama3.2:3b | local | 2367 | 2110 | 257 | 182 | 414 | 153 | 10 | 972 | 454 | 170 | 12 | 2001 |
+| ollama/gemma4:latest | local | 979 | 774 | 205 | 131 | 191 | 132 | 13 | 281 | 111 | 105 | 15 | 741 |
+| ollama/mistral-small3.2:latest-inspec | local | 998 | 806 | 192 | 127 | 105 | 88 | 17 | 368 | 84 | 193 | 16 | 650 |
+| ollama/granite4.1:30b | local | 1000 | 800 | 200 | 152 | 126 | 101 | 21 | 343 | 130 | 110 | 17 | 758 |
+| ollama/mistral-small3.2:latest | local | 1105 | 913 | 192 | 145 | 142 | 100 | 15 | 383 | 90 | 204 | 26 | 771 |
+| ollama/gemma4:e4b (prior rig) | local | 1241 | 1030 | 211 | 140 | 181 | 143 | 13 | 493 | 147 | 112 | 12 | 985 |
+| ollama/granite3.3:8b | local | 1275 | 1039 | 236 | 209 | 95 | 67 | 18 | 670 | 89 | 114 | 13 | 981 |
+| ollama/granite3.3:8b-inspec | local | 1325 | 1097 | 228 | 198 | 101 | 111 | 15 | 675 | 105 | 117 | 3 | 1043 |
+| ollama/granite4.1:8b-inspec | local | 1536 | 1347 | 189 | 206 | 105 | 352 | 31 | 579 | 83 | 157 | 23 | 1230 |
+| ollama/granite4.1:8b | local | 1848 | 1635 | 213 | 198 | 94 | 494 | 35 | 765 | 96 | 148 | 18 | 1548 |
+| ollama/gemma4:e4b-nothink (prior rig) | local | 1945 | 1740 | 205 | 115 | 181 | 176 | 8 | 1155 | 178 | 116 | 16 | 1681 |
+| ollama/lfm2.5:latest | local | 2059 | 1748 | 311 | 607 | 161 | 98 | 9 | 1040 | 35 | 104 | 5 | 1737 |
+| ollama/lfm2.5:latest-inspec | local | 2236 | 1946 | 290 | 614 | 141 | 97 | 11 | 1218 | 41 | 108 | 6 | 1894 |
+| ollama/llama3.2:3b-inspec | local | 2541 | 2260 | 281 | 189 | 426 | 171 | 16 | 777 | 712 | 208 | 42 | 2011 |
+| ollama/llama3.2:3b | local | 2686 | 2413 | 273 | 147 | 378 | 135 | 12 | 1052 | 681 | 276 | 5 | 2274 |
 
 `Hs/Hr/Hh/Hc` = hearings scheduled/rescheduled/held/cancelled; `Ds/Dr/Df/Dc` =
 deadlines set/rescheduled/met-filed/cancelled. Most deviation is `over` — every
 model over-extracts relative to a human counting the *final* state.
 
-**Two results stand out.** Gemini leads at 636. But the **best local model,
-`gpt-oss:20b`, is 2nd at 710 — ahead of hosted Anthropic (784) and both OpenAI
-models** — and within run-to-run noise of Gemini on the aggregate metric (396 vs
-376). It generates roughly half the output tokens of the other hosted models
-(more concise) and is fast despite its 20B size (see
-[Generation speed](#generation-speed-rx-7900-xtx-ollama-for-windows)) — both the
-best local extractor *and* a quick one. This is why `gpt-oss:20b` is the
-recommended local default.
+**Three results stand out.** Gemini still leads per-entry (636), but
+`gemma4:31b` greedy is a statistical tie at 640, and `gpt-oss:20b` in-spec
+takes the **aggregate lead outright** (332 vs 376) — the first time a local
+model has beaten the hosted leader on either metric. The per-entry and
+aggregate rankings disagree because the aggregate forgives attribution drift
+(the same action pinned to a neighboring entry); gpt-oss-in-spec's errors are
+mostly drift, while its event discovery per docket is the best measured.
+
+**Prior-rig rows are retained, not re-measured.** `gemma4:e4b`, `qwen3.5:9b`,
+and the gpt-oss thinking-MEDIUM level sweep were measured on the previous
+24 GB / Ollama-for-Windows rig and those models (or that sweep) were not part
+of the July 2026 run; their rows stay for context and are labeled. Rig-to-rig
+drift for re-measured models is real and worth naming honestly: on the current
+rig gpt-oss greedy scores 781 where the prior-rig blob scored 710 (the
+`gpt-oss` blob was also re-pulled between sweeps, so blob and environment both
+changed), granite3.3:8b improved 1461 → 1275, and llama3.2:3b worsened
+2367 → 2686 — same models, same greedy policy. This matches the documented
+GPU-nondeterminism caveat and is why cross-rig comparisons of single rows
+should be read loosely; within-sweep comparisons are the reliable ones.
 
 ### What a deviation of 636 means for the calendar (it is not a count of calendar errors)
 
@@ -246,7 +288,7 @@ fired it on the clerk's notice, or vice versa):
   responsive filing lands. The deadline stays on the calendar as a stale
   passed row rather than disappearing, so the symptom is bookkeeping lag a
   subscriber sees as extra history, never as a missing event. (The regex
-  pre-filter is complicit: 11 of the 21 provider-independent regex misses are
+  pre-filter is complicit: 10 of the 16 provider-independent regex misses are
   `Df` too — a "RESPONSE to Motion …" filing that satisfies a deadline is the
   hardest class for the vocabulary pre-filter.)
 - **Missed reschedules are the one under-class that could bite.** `Hr` 12 and
@@ -285,11 +327,13 @@ calendar is 5 rows.
 
 ### Hosted models — Gemini leads, Anthropic is the costliest
 
-Gemini is the most accurate, among the cheapest (see [Cost](#cost)), and the
-fastest per call. Per-call extraction latency, measured from the timestamped
-`llm-tokens` lines of this scorecard's own build log (median / mean wall-clock
-between consecutive live extraction calls within one provider's sequential
-build; gaps over two minutes dropped as case boundaries):
+The hosted rows were not re-run in the July 2026 sweep (their committed rows
+are unchanged). Gemini is the most accurate hosted extractor, among the
+cheapest (see [Cost](#cost)), and the fastest per call. Per-call extraction
+latency, measured from the timestamped `llm-tokens` lines of the prior
+sweep's build log (median / mean wall-clock between consecutive live
+extraction calls within one provider's sequential build; gaps over two
+minutes dropped as case boundaries):
 
 | model | median s/call | mean s/call |
 | --- | ---: | ---: |
@@ -298,245 +342,267 @@ build; gaps over two minutes dropped as case boundaries):
 | openai/gpt-5.4-nano | 2.0 | 2.7 |
 | anthropic/claude-haiku-4-5 | 3.1 | 3.7 |
 
-Anthropic Haiku is 2nd on accuracy (784) but the **most expensive** hosted
-extractor (see [Cost](#cost)) *and* the slowest — roughly 2× Gemini's per-call
-latency — a poor trade for the extraction track, which is why the default
-routes extraction to Gemini. The OpenAI models are the noisiest (`Ds`
-over-counts: they allocate more distinct set-deadlines than the human folds
-into one).
+Anthropic Haiku is the **most expensive** hosted extractor (see
+[Cost](#cost)) *and* the slowest — roughly 2× Gemini's per-call latency — a
+poor trade for the extraction track, which is why the default routes
+extraction to Gemini. The OpenAI models are the noisiest (`Ds` over-counts:
+they allocate more distinct set-deadlines than the human folds into one).
 
-### Local models — `gpt-oss:20b` leads; thinking *helps* extraction
+### Local models — the July 2026 sweep (dual-GPU rig)
 
-Beyond gpt-oss, the local field spreads wide:
+Every Ollama model installed on the new rig was benchmarked twice (greedy and
+in-spec), except the three blocked by the gfx1201 kernel gap (below). Run
+policy: one model at a time, the previous model explicitly unloaded first so
+every model loads onto empty GPUs (Ollama places a model on the GPU with the
+most free VRAM at load time — without the unload step, a still-resident
+previous model pushes the next onto the other card, which contaminated one
+early timing before the policy was adopted).
 
-- **`gpt-oss:20b` (710)** — best local, 2nd overall. Level-based reasoning; see the
-  level sweep below.
-- **`gemma4:e4b` thinking-ON (1241)** — 2nd local. Over-extracts harder than any
-  hosted model (`over` 1030), mostly spurious deadlines.
-- **`granite3.3:8b` (1461)** — 3rd local, and notably **better than its newer
-  sibling `granite4.1:8b`** (1461 vs 1869). Non-thinking; fast and stable in the
-  build (\~5–7 s/call, zero errors), but it floods set-deadlines (`Ds` 818 of its
-  1232 over) — the granite-family over-emission failure mode, relocated from
-  granite4.1's held-hearings to deadlines.
-- **`granite4.1:8b` (1869)** — does not report the `thinking` capability (so its
-  on/off runs are byte-identical); over-emits *held* hearings heavily (`Hh` 565).
-- **`llama3.2:3b` (2367)** — weakest; non-thinking; heavy deadline hallucination.
+Greedy-run wall-clock for the full 6-case benchmark build, with the GPU that
+hosted the model:
 
-Runtime — wall-clock for the full 6-case benchmark build on the local GPU
-(hosted models run against their APIs, so they have no comparable figure;
-their per-call latency is compared under
-[Hosted models](#hosted-models--gemini-leads-anthropic-is-the-costliest)):
+| model | params | runtime | GPU |
+| --- | --- | ---: | --- |
+| ollama/llama3.2:3b | 3.2B dense | 1:05:40 | R9700 |
+| ollama/granite3.3:8b | 8.2B dense | 1:00:28 | R9700 |
+| ollama/gpt-oss:20b | 20.9B MoE (MXFP4) | 1:28:36 | R9700 |
+| ollama/granite4.1:8b | 8.8B dense | 1:35:33 | R9700 |
+| ollama/mistral-small3.2:latest | 24.0B dense | 1:41:42 | R9700 |
+| ollama/granite4.1:30b | 28.9B dense | 2:07:24 | R9700 |
+| ollama/lfm2.5:latest | 8.5B MoE | 2:33:14 | R9700 |
+| ollama/gemma4:latest | 8.0B dense | 3:38:53 | R9700 |
+| ollama/gemma4:31b | 31.3B dense | 10:29:26 | both (split) |
 
-| model | runtime |
-| --- | ---: |
-| ollama/gpt-oss:20b (thinking LOW) | 1:15 |
-| ollama/gpt-oss:20b (thinking MEDIUM) | 2:59 |
-| ollama/qwen3.5:9b (thinking OFF) | 1:24 |
-| ollama/gemma4:e4b (thinking ON) | 3:24 |
-| ollama/gemma4:e4b (thinking OFF) | 1:12 |
-| ollama/granite3.3:8b | 1:17 |
-| ollama/granite4.1:8b | 1:16 |
-| ollama/llama3.2:3b | 0:43 |
+Notes on the two standouts:
 
-**Thinking ON is better than OFF for extraction.** The one clean ON/OFF pair —
-`gemma4:e4b` — scores **1241 thinking vs 1945 not** (a 36% improvement). Suppressing
-a weak model's reasoning makes it **re-emit the known deadlines it was shown** as
-spurious actions (`Ds` jumps 493 → 1155 with thinking OFF). This is why the
-shipping policy lets a local thinking model reason on the extraction track. (Note
-this **reverses** for summaries — see Phase 3.)
+- **`gemma4:31b` is the accuracy champion and the wall-clock outlier.** Its
+  256K-context KV cache does not fit beside its weights on one card, so it
+  runs split across both GPUs at \~56 s per extraction call (a dense 31B
+  thinker on court-length prompts), for a \~10.5-hour build. Its run also
+  skipped 3 of 992 entries per sweep on the densest us-v-ding filings — a
+  single-call timeout on legitimately slow generation, not a decoding
+  pathology; the in-spec run skipped 3 entries in the same neighborhood.
+  About 18% of the greedy run's calls replayed from the LLM cache after a
+  restart, so a fully cold run would be modestly longer than the figure
+  above.
+- **`lfm2.5` pays a reasoning tax on every call.** Its card documents an
+  always-on chain of thought, and it cannot be disabled (see Phase 3) — the
+  extra reasoning tokens make an 8.5B MoE slower end-to-end than the 24B
+  mistral, and its accuracy (2059) is second-worst anyway. Its first run
+  landed on the RX 7900 XTX by placement accident and finished in 2:05:37 vs
+  2:33:14 on the R9700 — the same model, same policy, \~18% faster on the
+  higher-bandwidth card (see the hardware section).
 
-#### gpt-oss reasoning levels — `low` is the sweet spot
+Accuracy observations within the sweep:
 
-gpt-oss's reasoning can't be turned off, only tuned by level (`OLLAMA_THINK_LEVEL`
-low/medium/high). More reasoning did **not** help extraction:
+- **`granite3.3:8b` still beats its newer 8B sibling** (1275 vs 1848) — the
+  granite4.1:8b held-hearing flood (`Hh` 494) persists on the new rig.
+- **The size ladder is real but expensive.** Within the gemma family:
+  8B 979 → 31B 640. Within granite: 8B 1848 → 30B 1000. Bigger dense models
+  extract better — but only gemma4:31b's jump lands it in hosted territory,
+  and at a 3× to 7× wall-clock premium over the 8B models.
+- **`llama3.2:3b` remains the floor** (2686), with heavy deadline
+  hallucination (`Ds` 1052, `Dr` 681).
 
-| level | per-entry | aggregate | runtime |
+### The in-spec sweep — per-model card temperatures, seed 42
+
+Greedy decoding (`temperature=0`) is the shipping default, pinned for
+byte-identical LLM-cache replay. Because several model cards recommend
+sampling, the entire roster was re-benchmarked **in-spec**: each model at the
+lowest temperature its own documentation supports, other sampling knobs
+inherited from the vendor's shipped Modelfile, `OLLAMA_SEED=42`. The
+temperatures actually used, with their basis:
+
+| model | in-spec temp | basis |
+| --- | ---: | --- |
+| mistral-small3.2 | 0.15 | model card recommendation |
+| lfm2.5 | 0.2 | model card recommendation |
+| glm-4.7-flash (not run — blocked) | 0.7 | card's code/terminal preset; default preset is 1.0 |
+| qwen3.6 (not run — blocked) | 0.6 | card's lowest thinking-mode preset (coding); general is 1.0 |
+| llama3.2:3b | 0.8 | no vendor sampling spec — Ollama's shipped default |
+| granite3.3:8b / granite4.1:8b / granite4.1:30b | 0.8 | no vendor sampling spec — Ollama's shipped default |
+| gpt-oss:20b | 1.0 | vendor Modelfile default; the card states no range |
+| gemma4:latest / gemma4:31b | 1.0 | card's standardized value across all use cases |
+
+The result is **model-dependent**, replacing the prior sweep's blanket
+"in-spec sampling buys no accuracy" finding (measured then on gemma4:e4b and
+gpt-oss only):
+
+| model | greedy per-entry | in-spec per-entry | delta |
 | --- | ---: | ---: | ---: |
-| **low** (default) | **710** | **396** | 1:15 |
-| medium | 728 | 420 | 2:59 |
-| high | — | — | cancelled (\~6:00 projected) |
+| gpt-oss:20b | 781 | 666 | −115 |
+| granite4.1:8b | 1848 | 1536 | −312 |
+| llama3.2:3b | 2686 | 2541 | −145 |
+| mistral-small3.2 | 1105 | 998 | −107 |
+| granite4.1:30b | 1000 | 920 | −80 |
+| gemma4:latest | 979 | 917 | −62 |
+| gemma4:31b | 640 | 687 | +47 |
+| granite3.3:8b | 1275 | 1325 | +50 |
+| lfm2.5 | 2059 | 2236 | +177 |
 
-Medium is marginally *worse* than low (within noise) at **2.4× the wall-clock**;
-high was cancelled once the diminishing-returns pattern was clear. This is the
-measured basis for the code sending `low` on the high-volume extract/verify/dedupe
-tracks.
+Three findings:
 
-#### The two Chinese reasoning models: off-spec under greedy, unusable even in-spec
+- **`gpt-oss:20b` in-spec is the best local configuration measured** — 666
+  per-entry and the overall aggregate lead at 332. Two independent runs with
+  the cache disabled produced identical per-entry counts at seed 42, so the
+  result is reproducible on this rig. (This differs from the prior rig, where
+  two same-seed gpt-oss runs diverged — 690 / 701; the runtime stack changed
+  from Ollama for Windows 0.30.x to native Linux 0.32.3, and same-seed
+  extraction is now stable for this model.) Note the caveat that the greedy
+  baseline on the current blob (781) is worse than the prior blob's 710, so
+  part of the in-spec delta may be blob drift rather than temperature.
+- **Sampling helps the over-emitters most.** The models whose greedy failure
+  mode is repetitive over-emission (granite4.1:8b's `Hh` flood, llama's `Ds`
+  flood) improve the most; llama3.2's in-spec build also ran a third faster
+  (41:19 vs 1:05:40) because sampling breaks its repetition loops.
+- **Greedy stays the shipped default.** The two models at the top of the
+  local table split on the question (gemma4:31b prefers greedy, gpt-oss
+  prefers in-spec), in-spec runs sacrifice the LLM-cache's byte-identical
+  replay, and the win is configuration-specific. An operator who wants the
+  measured gpt-oss optimum can opt in with `OLLAMA_TEMPERATURE=1.0` and
+  `OLLAMA_SEED=42` — the same escape-hatch knobs as before, now with a
+  measured reason to use them on one model.
 
-`qwen3.5:9b` and `deepseek-r1:8b` are both Chinese reasoning models, both were
-benchmarked under **greedy decoding** (`temperature=0` — the pipeline's default,
-pinned for the LLM-cache's byte-identical replay), and greedy is off-spec for both:
-the [Qwen3 card](https://huggingface.co/Qwen/Qwen3-8B) forbids it verbatim — "DO NOT
-use greedy decoding, as it can lead to performance degradation and endless
-repetitions" (it recommends temperature 0.6 / top-p 0.95 / top-k 20 for thinking
-mode) — and the [DeepSeek-R1 card](https://huggingface.co/deepseek-ai/DeepSeek-R1)
-documents a 0.5–0.7 range "to prevent endless repetitions". So part of what first
-read as inherent instability was an off-spec setting we introduced. A controlled
-probe confirmed greedy as the trigger: under greedy each produced an empty answer
-where in-spec sampling let the same entry complete (qwen: 64–67K reasoning
-characters, 0 answer, on stress entries; deepseek: 15,958 characters, 0 answer, on a
-*trivial* order — for deepseek the failure was the greedy × schema-grammar
-combination specifically, since dropping either stopped it).
+### Three models blocked on this hardware — the gfx1201 kernel gap
 
-A **run-away** is a generation that never stops on its own: the model emits tokens
-(typically its reasoning) until something external cuts it off — the bounded
-reasoning budget, or the request timeout — and ends with no usable answer. It is
-distinct from *slow* (steady low-rate progress) and *hung* (no output at all).
+`glm-4.7-flash:latest`, `glm-4.7-flash:q8_0`, and `qwen3.6:latest` could not
+be benchmarked: each crashes Ollama's ROCm runner when loaded on the Radeon
+AI PRO R9700. The journal signature is identical for all three —
+`rocblaslt error: Cannot read "TensileLibrary_lazy_gfx1201.dat"` followed by
+`ROCm error: no kernel image is available for execution on the device` and a
+llama-server abort — i.e. the hipBLASLt library bundled with Ollama 0.32.3's
+ROCm build lacks the gfx1201 (RDNA 4) kernel library that the
+glm4moelite/deepseek2 and qwen35moe matmul paths request. This is a
+**hardware/runtime packaging finding, not a model-quality claim** — the same
+class of caveat as the prior scorecard's "too slow to benchmark on 24 GB"
+section, with the cause visible in the server journal rather than inferred.
 
-**Bringing them in-spec does not make either usable — they fail differently:**
+Probing narrowed the trigger: all three models run normally on the same card
+with small contexts (the generation-speed table below includes all three),
+and glm survives a 13K-token prompt at `num_ctx` 16384 — but crashes at 32768
+and above. The benchmark needs large contexts (28% of its extraction prompts
+exceed 14K tokens; p95 is 20.7K), so no client-side setting can carry the
+full run. The paths to benchmarking them, in order of preference: an Ollama
+release whose ROCm bundle ships gfx1201 hipBLASLt kernels; or a service-level
+`ROCBLAS_USE_HIPBLASLT=0` environment override (falls back to classic rocBLAS
+kernels); or pinning the Q4 glm to the RX 7900 XTX (gfx1100, fully supported)
+via `HIP_VISIBLE_DEVICES` — the 31 GB q8_0 cannot fit that card. Their
+planned run configuration (greedy + in-spec at 0.7 / 0.6) is staged in the
+comparison tooling and runs unchanged once one of those lands.
 
-- **`qwen3.5:9b` — runaway, intermittent even in-spec.** Sampling turns the runaway
-  from constant into intermittent, not gone: at temperature 0.6 without a seed the
-  *same* entry completed on one run and ran away on the next, and at its Modelfile
-  default (temperature 1) it ran away *deterministically* on a stress entry. A fixed
-  seed pins *which* outcome you get (the probe reproduced both the empty runaway and
-  the clean answer byte-for-byte) but can lock in a runaway as readily as a clean
-  trace — no temperature reliably stops it. Its scored numbers below are the greedy
-  default: thinking on, ran away on \~47% of entries (\~580 s each, truncated and
-  skipped); thinking off, completes (930 in the table) but over-emits so hard \~22%
-  of entries truncate. A faster card would only make the runaways fail sooner.
+Dense architectures (llama, granite, gemma, mistral) and gpt-oss (MoE,
+MXFP4) are unaffected on gfx1201; lfm2.5 (`lfm2moe`) was explicitly re-run on
+the R9700 and is also unaffected.
 
-- **`deepseek-r1:8b` — over-emission, temperature-independent.** Its raw speed is
-  normal (86 tok/s) but it writes thousands of tokens per small-JSON answer. Greedy
-  scored: thinking on \~102 s/call with 8% of calls exhausting the bounded reasoning
-  budget (projected \~19 h per column); thinking off \~75 s/call, **27% of 137 calls
-  saturated the 8,192-token output cap** (truncated → entry skipped) at a median
-  4,729 output tokens/call (projected \~14 h per column, a quarter of entries
-  zeroed). In-spec sampling fixes the *infinite-reasoning* hang but **the
-  over-emission persists even at its card-recommended 0.6**: a one-hearing entry
-  still drew 14,763 characters of JSON, and a dense entry exceeded a 400 s timeout —
-  so deepseek is disqualified on output volume at every temperature tested. (Runs
-  used Ollama 0.30.7.)
+### Prior-generation findings retained
 
-Greedy stays the shipped default for both — in-spec sampling doesn't make them
-usable, and separately a re-benchmark found it no better for the *recommended* local
-models (see the
-[in-spec-sampling attempt](#in-spec-sampling-attempt-why-greedy-stays-the-default)
-below). In-spec
-sampling is an opt-in escape hatch (`OLLAMA_TEMPERATURE` / `OLLAMA_SEED`) for an
-operator who insists on running one of these; the Ollama sampling-and-seed design
-note in AGENTS.md covers the knobs. `gpt-oss:20b` (level-based, inherently bounded
-reasoning) remains the only recommended local extractor.
-
-The bounded reasoning budget (`num_predict = max_tokens + OLLAMA_THINK_BUDGET`)
-keeps a runaway model truncating cleanly to an `OutputTruncatedError` (entry
-skipped) instead of hanging; it is a runaway *guard*, not a throttle — disciplined
-thinkers (gemma, gpt-oss) top out around 1,500–1,900 generated tokens per call,
-far below the cap, so they are never touched.
-
-#### Models too slow to benchmark on 24 GB
-
-Four local models could not finish a usable extraction run on a 24 GB card
-(RX 7900 XTX). They are hardware/behavior findings, not scored rows (the
-output-volume failure of `deepseek-r1:8b` is covered with `qwen3.5:9b` above, not
-here):
-
-- **`glm-4.7-flash:q4_K_M`** — *too slow*: \~62 s/entry, timed out at 230/660
-  entries in 4:00. Not a runaway, just slow.
-- **`mistral-small3.2:24b`** (\~2:54/case) and **`granite4.1:30b`** (\~24.6 tok/s)
-  — dense 24B/30B models that crawl on a 24 GB card. **The verdict on "are larger
-  local models worth it?" is no on this hardware** — they spill the KV cache and
-  run 3-6× slower than gpt-oss while scoring no better.
-- **`deepseek-r1:14b`** — not attempted beyond a speed probe: it generates at
-  49 tok/s (57% of the 8b's rate, same rig), so with the 8b already disqualified
-  on output volume (above), the 14b projects past 25 h per column.
-
-#### In-spec sampling attempt: why greedy stays the default
-
-Because greedy decoding is off-spec for the local thinking models (above), we
-tested whether switching the recommended local extractors to **in-spec sampling**
-(no forced temperature, inheriting each model's Modelfile values, plus a fixed
-`OLLAMA_SEED=42`) would improve their scores enough to justify changing the
-default. It does not, so **greedy remains the default** and in-spec sampling is an
-opt-in escape hatch (`OLLAMA_TEMPERATURE` / `OLLAMA_SEED`) for the runaway-prone
-models. The re-benchmark (same frozen snapshot, RX 7900 XTX, June 2026):
-
-| model | metric | greedy (default) | in-spec sampling |
-| --- | --- | ---: | ---: |
-| gemma4:e4b | per-entry deviation | 1241 | 1258 |
-| gemma4:e4b | aggregate deviation | 985 | 998 |
-| gpt-oss:20b | per-entry deviation | 710 | 690 / 701 |
-| gpt-oss:20b | aggregate deviation | 396 | 373 / 418 |
-
-`gemma4:e4b` is seed-deterministic on extraction, so its single in-spec run is a
-clean comparison: marginally **worse** (+1.4% per-entry, +1.3% aggregate).
-`gpt-oss:20b` is **not** seed-deterministic on extraction (see below), so it was run
-**twice** at the same seed; greedy's 710 / 396 sit inside the run-to-run band of
-both metrics (690–701, 373–418), i.e. **statistically unchanged**. Switching buys no
-accuracy on the models we actually recommend, while it would invalidate every
-greedy-measured row in this scorecard and the build harness's LLM-cache replay — so
-greedy stays the default.
-
-The re-benchmark covered only the recommended extractors (gemma, gpt-oss); the two
-runaway-prone Chinese models weren't re-scored, because in-spec sampling doesn't make
-either usable (their distinct failure modes are detailed above), so their ranking
-can't change regardless of temperature.
-
-A second finding from the same runs: **a fixed seed is necessary but not sufficient
-for determinism on GPU.** With `OLLAMA_SEED=42`, two runs of the same entry were
-byte-identical for schema-constrained extraction on the non-reasoning gemma (and for
-qwen's short outputs), but **diverged** for gpt-oss extraction (which always emits a
-reasoning trace — one run even produced a different `deadline_key`) and for free-text
-summaries on both models. The inferred cause is GPU floating-point nondeterminism in
-the unconstrained reasoning/summary generation, which a grammar-pinned extraction is
-largely immune to. So the seed makes a non-reasoning model's extraction reproducible
-but does not guarantee reproducible summaries or reasoning-model output.
+- **The two Chinese reasoning models of the prior sweep** — `qwen3.5:9b` and
+  `deepseek-r1:8b` — were benchmarked on the previous rig under greedy
+  decoding, which both their cards advise against (the
+  [Qwen3 card](https://huggingface.co/Qwen/Qwen3-8B): "DO NOT use greedy
+  decoding, as it can lead to performance degradation and endless
+  repetitions"; the [DeepSeek-R1 card](https://huggingface.co/deepseek-ai/DeepSeek-R1)
+  recommends 0.5–0.7 "to prevent endless repetitions"). Bringing them in-spec
+  did not make either usable — qwen's runaways became intermittent rather
+  than gone; deepseek's over-emission persisted at every temperature tested —
+  so both remain disqualified with their prior-rig rows retained. Neither
+  model is installed on the current rig. Their successor `qwen3.6` removes
+  the explicit greedy prohibition from its card (it recommends sampling
+  presets and documents `presence_penalty` 0–2 against "endless
+  repetitions") — whether its behavior actually improved is untestable here
+  until the gfx1201 gap is fixed.
+- **The gpt-oss reasoning-level sweep** (prior rig): low 710 / 396, medium
+  728 / 420 at 2.4× the wall-clock, high cancelled at \~6:00 projected. The
+  code still sends `low` on the high-volume extract/verify/dedupe tracks; the
+  level sweep has not been repeated on the current rig or blob.
+- **Thinking ON vs OFF for extraction** (prior rig, gemma4:e4b): 1241
+  thinking vs 1945 not — the measured basis for the shipping policy of
+  letting local thinking models reason on the extraction track. (The
+  inversion for summaries also persists — see Phase 3.)
 
 ### The regex pre-filter recall gap
 
-**20** scored entries carried **21** actions that **every** model missed with a 0 —
-the `is_extractable` regex dropped them before any LLM ran (**5.0%** of all human
-actions; by category Hs 1, Hr 1, Hh 1, Ds 5, Dr 2, Df 11). This is the
+**16** scored entries carried **16** actions that **every** model missed with a
+0 — the `is_extractable` regex dropped them before any LLM ran (**3.8%** of all
+human actions; by category Ds 5, Dr 1, Df 10). The count shrank from the prior
+sweep's 20 entries / 5.0% because the wider model roster now catches four of
+the old all-zero entries — with 26 model configurations, an entry only lands
+here when the regex truly never let any model see it. This is the
 provider-independent recall floor the over-inclusive-regex design is measured
 against — a model can't be blamed for an entry it never saw, and the regex
-deliberately errs toward over-inclusion (a false positive costs one LLM call; a
-false negative loses an event).
+deliberately errs toward over-inclusion (a false positive costs one LLM call;
+a false negative loses an event). Ten of the sixteen are `Df` — a
+"RESPONSE to Motion …" filing that satisfies a deadline remains the hardest
+class for the vocabulary pre-filter.
 
-### Generation speed (RX 7900 XTX, Ollama for Windows)
+### Generation speed (dual-GPU, Ollama 0.32.3, native Linux)
 
-| model | gen tok/s |
-| --- | ---: |
-| llama3.2:3b | 146 |
-| **gpt-oss:20b** | **118** |
-| gemma4:e4b | 89 |
-| deepseek-r1:8b | 86 |
-| granite4.1:8b | 85 |
-| qwen3.5:9b | 83 |
-| granite3.3:8b | 83 |
-| glm-4.7-flash:q4_K_M | 73 |
-| deepseek-r1:14b | 49 |
-| mistral-small3.2:24b | 36 |
-| granite4.1:30b | 25 |
+Measured with a fixed prompt, greedy, 512 generated tokens, `num_ctx` 8192,
+one model loaded at a time with placement verified in the server journal.
+Without the context cap, models load at their native maximum context and
+split across both GPUs, which understates single-card speed — an earlier
+uncontrolled pass measured granite3.3 at 29 tok/s split vs 86 single-card.
 
-gpt-oss:20b runs **faster than every 8–9B model** despite being 20B (MXFP4 4-bit),
-while also scoring best — the dense 24B/30B models crawl at 36 and 25 tok/s, which
-is exactly why they're impractical.
+| model | R9700 gen tok/s | RX 7900 XTX gen tok/s |
+| --- | ---: | ---: |
+| lfm2.5:latest (8.5B MoE) | 207.9 | — |
+| llama3.2:3b | 164.6 | 188.9 |
+| gpt-oss:20b (MoE, MXFP4) | 105.8 | 138.5 |
+| granite3.3:8b | 86.3 | 99.9 |
+| gemma4:latest (8B) | 85.3 | — |
+| granite4.1:8b | 83.3 | — |
+| qwen3.6:latest (36B-A3B MoE) | 81.4 | — |
+| glm-4.7-flash:latest (30B-A3B MoE, Q4) | 77.3 | — |
+| glm-4.7-flash:q8_0 | 70.1 | — |
+| mistral-small3.2 (24B) | 35.9 | 46.1 |
+| granite4.1:30b (29B) | 29.3 | — |
+| gemma4:31b (31B) | 25.4 | — |
+
+Two hardware findings:
+
+- **The RX 7900 XTX generates 15–31% faster than the R9700 on every model
+  measured on both.** Token generation is memory-bandwidth-bound, and the
+  XTX's published 960 GB/s outruns the R9700's 640 GB/s
+  ([Sapphire's R9700 spec](https://www.sapphiretech.com/en/commercial/radeon-ai-pro-r9700));
+  the full-benchmark cross-check agrees (lfm2.5: 2:05:37 on the XTX vs
+  2:33:14 on the R9700). The R9700's contribution is **capacity**: its 32 GB
+  is what makes the 24–31B dense models runnable at all, and the pair
+  together host gemma4:31b's split-GPU KV cache.
+- **MoE beats dense at equal size for speed.** The 36B-A3B qwen3.6 generates
+  at 8B-class speed (81 tok/s) while the dense 29–31B models crawl at 25–29;
+  gpt-oss remains faster than every dense 8B. The prior scorecard's verdict
+  that "larger local models aren't worth it" was a 24 GB-VRAM artifact: with
+  32 GB, dense-30B models are benchmarkable — but only `gemma4:31b` converts
+  the size into hosted-tier accuracy, and MoE models are the ones that
+  convert size without the speed penalty.
 
 ## Phases 1 & 2 — summary generation
 
-Each candidate summary model regenerated the 10 per-docket case summaries with
-`summarize_phase.py`:
+Each candidate summary model regenerated the 10 per-docket case summaries
+with `summarize_phase.py` on the **top hosted extractor's scaffold** (a fresh
+Gemini extraction store), so every model summarizes the same events. Local
+models ran under the shipping local-summary policy: greedy, thinking OFF
+(`--no-think`) for boolean thinkers, level low for gpt-oss, 128K context
+window. A fresh `claude-sonnet-4-6` reference was generated on the **same
+scaffold** so the grades below compare like against like. All nine local
+models completed all 10 dockets with zero runaways and zero hangs — the
+prior generation's runaway/hung failure modes (qwen3.5 thinking-ON F,
+glm F) did not recur on this roster; the built-in RUNAWAY / HUNG detectors
+stayed quiet.
 
-- **Phase 1** — on the **top extractor's scaffold** (Gemini's extracted
-  hearings/deadlines), so every model summarizes the **same** events (isolates summary
-  quality from extraction quality).
-- **Phase 2** — on each model's **own extraction**, for the fast local models.
+## Phase 3 — summary quality (read + grade)
 
-Hosted top models (`claude-sonnet-4-6`, `gemini-2.5-pro`) summarized all 10 dockets at
-their native context windows. Local models ran at a 128K window
-(`OLLAMA_NUM_CTX=131072`), which fits even the largest docket on a 24 GB card. Each
-local thinking model was run both with thinking ON and OFF.
-
-## Phase 3 — summary quality (blind read + grade)
-
-Summary quality isn't a countable action, so each model's 10 summaries were read
-by hand and graded on three things, in order of importance: **accuracy** (do the
+Summary quality isn't a countable action, so each model's 10 summaries were
+read and graded on three things, in order of importance: **accuracy** (do the
 facts match the documents — charges, dispositions, dollar figures, dates),
-**detail** (are the case-distinguishing specifics present, not just bare charges),
-and **grammar** (clean, publishable prose and links). A *secondary* watch: whether
-a model omits the **foreign nexus** a case turns on (China/PRC for ding, DPRK for
-knoot, Russia / Deripaska for mcgonigal) — flagged mainly because a Chinese model
-(qwen) quietly dropping the China connection would be a bias worth catching.
+**detail** (are the case-distinguishing specifics present), and **grammar**
+(clean, publishable prose and links). A *secondary* watch: whether a model
+omits the **foreign nexus** a case turns on (China/PRC for ding, DPRK for
+knoot, Russia / Deripaska for mcgonigal). Every disputed fact was verified
+against the scaffold store itself — the decisive check this round was the
+us-v-ding jury verdict, whose docket entry (id 452067644, January 29, 2026,
+"JURY VERDICT … Guilty on Count 1-4,…8-14", with the full verdict-form text
+in the store) settled several models' claims in both directions.
 
 What the grades mean:
 
@@ -544,65 +610,85 @@ What the grades mean:
   Publication-ready.
 - **B** — accurate and clean, but a notch thinner on detail or one trivial
   blemish; usable with a light edit.
-- **C** — accurate on the core facts, but with a clear weakness (clunky grammar,
-  thin detail, or a small slip) an editor would have to fix.
-- **D** — a disqualifying defect a reader would catch (broken markup, or a factual
-  error like reporting a trial where the defendant pled guilty). Not usable as-is.
+- **C** — accurate on the core facts, but with a clear weakness (clunky
+  grammar, thin detail, or a small slip) an editor would have to fix.
+- **D** — a disqualifying defect a reader would catch (broken markup, or a
+  factual error like reporting a trial where the defendant pled guilty). Not
+  usable as-is.
 - **F** — produced no usable summary at all (reasoning ran away or hung).
 
 | model | mode | grade | notes |
 | --- | --- | :---: | --- |
-| **anthropic/claude-sonnet-4-6** | hosted | **A** | accurate, most detailed, clean — the reference |
-| gemini/gemini-2.5-pro | hosted | A− | accurate + clean, a touch less detail; omits China on ding |
-| ollama/gpt-oss:20b | thinking LOW | C | accurate figures + clean-ish, but **thin** (strips case context); one duplicated clause |
-| ollama/gemma4:e4b | thinking OFF | C | accurate + the **most detailed** local, but **clunky** ("convicted at a plea hearing", repetitive parentheticals) |
-| ollama/qwen3.5:9b | thinking OFF | C− | detailed, but a **fabricated** "convicted at trial" on the Anthropic *civil* docket + one fully **duplicated** summary; also drops China (the Chinese-model watch) |
-| ollama/glm-4.7-flash | thinking OFF | C− | accurate + clean but **thin**, and **slow** (\~2:10/docket) |
-| ollama/gemma4:e4b | thinking ON | D | **broken markup** — 12 prompt-only `[D1]` / `[doc:D7]` reference tokens leaked into the prose — plus trial-vs-plea errors |
-| ollama/qwen3.5:9b | thinking ON | F | reasoning ran away (cancelled) |
-| ollama/glm-4.7-flash | thinking ON | F | hung 9+ min on the first docket |
+| anthropic/claude-sonnet-4-6 | hosted, same scaffold | A− | richest context (McGonigal's FBI counterintelligence role, the Robbinhood ransomware victims, the DPRK laptop-farm mechanism); one slip — dates the ding jury verdict to the court's blank form (Jan 27) instead of the verdict entry (Jan 29) and omits the outcome |
+| **ollama/gemma4:31b** | thinking OFF | **B** | best local set measured: correct plea/appeal posture on every docket, accurate figures with per-fact links, clean prose; one defect — claims "no document in the record establishes" the ding verdict outcome when the store's verdict entry states it |
+| ollama/mistral-small3.2 | non-thinking | B− | zero fabrications, correct posture everywhere ("appealing his conviction … to which he pled guilty"), names the China nexus; one docket returned an "insufficient documents" sentinel instead of a summary, and the ding verdict date slips to Jan 27 |
+| ollama/granite4.1:30b | non-thinking | B− | the only model fully right on the ding verdict (date, outcome, cites the form); Judge Rita F. Lin, Robbinhood, four named victims; but calls the Ninth Circuit docket "the District of Columbia Circuit", leaks a `[D4]` token, and bolds keywords through plain prose |
+| ollama/granite3.3:8b | non-thinking | C | most detailed 8B (TPU/GPU/SmartNIC secrets, the PRC companies, the $40,000 fine, the surrender date); same wrong-circuit slip on ca9, and misattributes the "Silicon Valley ideology" framing to Anthropic's own argument |
+| ollama/gemma4:latest | thinking OFF | C | accurate figures; recurring "convicted at a plea of guilty" clunk, a duplicated clause, one raw scaffold-token leak, and appeal language on a district docket |
+| ollama/granite4.1:8b | non-thinking | C− | detailed but calls the civil D.C. Circuit petition "appealing its conviction", writes meta-language about "the provided documents", predicts a sentence in future tense, and numbers two different counts as Count 8 |
+| ollama/gpt-oss:20b | level low | D | regression from the prior C: "convicted at trial" twice for a defendant who pled guilty (the scale's canonical disqualifier), "no verdict has yet been entered" on ding (the verdict is in the store), reference-token leaks in four summaries, doubled-word grammar defects |
+| ollama/lfm2.5 | `--no-think` (ineffective) | D | its full chain of thought leaks into every stored summary as literal `<think>` blocks — the card documents the reasoning as inline in the content, so Ollama's thinking control cannot strip it; the answers underneath are accurate |
+| ollama/llama3.2:3b | non-thinking | D | one docket's "summary" is the literal token `[D7]`; a civil docket gains a fabricated conviction; an identical invented sentence ("60 months … $2 million restitution") recycles across three unrelated cases |
 
-**Two findings:**
+**Three findings:**
 
-**1. Summaries need the hosted tier.** No local summary cleared a C — each is
-accurate on the figures but fails on detail or grammar: gpt-oss and glm strip a
-case to bare charges; gemma is consistently clunky ("convicted at a plea hearing");
-qwen fabricates a conviction on a civil docket and duplicates a whole summary. Only
-the hosted models are publication-ready. This is the mirror image of extraction
-(where a local model rivals the hosted tier) and vindicates the project's separate,
-higher-tier hosted summary track.
+**1. Local summaries reached B.** The prior sweep's conclusion — no local
+summary clears a C, summaries need the hosted tier — is overturned at the top
+of the size ladder: `gemma4:31b` (B), `mistral-small3.2` (B−), and
+`granite4.1:30b` (B−) are all usable with a light edit. The hosted tier still
+leads (A−), and the recommended split (hosted Sonnet for summaries) still
+holds for a public page, but an all-local deployment now has genuinely
+publishable-with-edit options — at the summary track's low call volume, the
+wall-clock cost is minutes.
 
-**2. Thinking harms local summaries — the inversion.** OFF beat ON for *all three*
-local thinking models: gemma C (OFF) vs D (ON, broken markup); qwen C− (OFF) vs F
-(ON, runaway — \~8K-token reasoning trace per 2-4 sentence summary); glm C− (OFF)
-vs F (ON, hung 9+ min on one docket). Reasoning aids per-entry structured
-*extraction* but, on long-context *synthesis*, runs away (qwen), hangs (glm), or
-injects formatting/accuracy defects (gemma). **For local summaries: force thinking
-off** (`--no-think`).
+**2. Model size moved summary quality more than anything else.** The three
+B-range locals are the three largest models that ran (31B, 24B, 29B); every
+8B-and-under model graded C or worse. This is the same size ladder as
+extraction, but steeper — and unlike extraction, the small models fail on
+*integrity* (fabricated posture, token leaks, template reuse), not just
+detail.
 
-A **secondary** note on the foreign nexus: among the locals, only qwen — a Chinese
-model — named the DPRK and Russia connections while dropping the China one. A
-single benchmark can't separate a deliberate bias from the same thinness the other
-locals also show, but it's exactly the case where a Chinese model omitting China is
-worth flagging.
+**3. The truthfulness guard cuts both ways.** The summary prompt's
+no-unsupported-claims machinery produced honest refusals where weaker models
+fabricated (mistral's "insufficient documents" sentinel beats llama's
+`[D7]`), but also over-hedging: gemma4:31b and the Sonnet reference both
+declined to state a jury verdict that is plainly in the record. The one model
+that threaded the needle — granite4.1:30b — read the verdict form and cited
+it. Thinking stays OFF for local summaries per the prior sweep's measured
+inversion; nothing in this round contradicts it, and the roster's one
+always-on reasoner (lfm2.5) is precisely the one with the disqualifying
+markup leak. A candidate code hardening from that finding: strip inline
+`<think>` blocks in the Ollama response path for models that emit reasoning
+in content.
 
-`summarize_phase.py` carries built-in **runaway** (large `out=`) and **hung** (no
-progress in 240 s) detection, plus `--no-think` / `--think-level` / `--think-budget`
-controls, so these failure modes surface live rather than after a manual check.
+The foreign-nexus watch was quiet this round: every model that produced usable
+summaries named the PRC, DPRK, and Deripaska connections where the scaffold
+carried them; the prior sweep's one flagged case (Chinese-model qwen dropping
+the China nexus) had no Chinese model in this roster to re-test — qwen3.6 is
+blocked on the gfx1201 gap.
+
+`summarize_phase.py` carries built-in **runaway** (large `out=`) and **hung**
+(no progress in 240 s) detection, plus `--no-think` / `--think-level` /
+`--think-budget` controls, so these failure modes surface live rather than
+after a manual check.
 
 ## Hardware and software environment
 
-The local sweep ran on:
+The July 2026 local sweep ran on:
 
-- **GPU**: AMD Radeon RX 7900 XTX (24 GB, RDNA 3)
-- **Runtime**: Ollama for Windows (native), version 0.30.6 (the later
-  `granite3.3:8b` and `deepseek-r1` additions were measured on 0.30.7)
-- **Driver**: AMD Adrenalin 26.6.1
-- **Client**: WSL2, calling the Windows Ollama over `OLLAMA_BASE_URL`
+- **GPUs**: AMD Radeon AI PRO R9700 (32 GB, RDNA 4, gfx1201) + AMD Radeon
+  RX 7900 XTX (24 GB, RDNA 3, gfx1100)
+- **Runtime**: Ollama 0.32.3, native Linux (kernel 7.0.0-28), ROCm bundle
+  `rocm_v7_2`
+- **CPU / RAM**: AMD Ryzen 9 9950X3D, 94 GB visible to Ollama
 
-The 24 GB ceiling is the binding constraint on the local findings — `gpt-oss:20b`
-(\~13 GB resident) fits with room for a working context window, while the dense
-24B/30B models spill. A 32 GB+ card would change the "larger models" verdict.
+Placement policy for all measured runs: one model at a time, previous model
+unloaded first, placement read back from the server journal. The prior sweep
+(the retained rows) ran on the RX 7900 XTX alone under Ollama for Windows
+0.30.x from WSL2. The 32 GB card removes the prior rig's binding constraint —
+dense 24–31B models now complete the benchmark — and shifts the interesting
+constraints to per-token speed (the XTX is the faster card; the R9700 is the
+bigger one) and, for two model families, the gfx1201 kernel gap above.
 
 ## Structured output (schema-enforced JSON) — default ON
 
@@ -616,11 +702,15 @@ Phase 0 numbers above are with it on.
 ## Cost
 
 Extraction is the cost-dominant track (one call per entry, thousands of entries).
-Gemini is both the most accurate and near-cheapest; Anthropic Haiku is the most
-expensive hosted extractor (\~4.8× Gemini for worse accuracy). Local inference has
-no per-token cost — the trade is wall-clock and the operator's hardware/electricity.
-Full token + dollar figures are in [docs/cost.md](../docs/cost.md); the live
-per-run `llm-tokens` / `cost_est` log lines are the source of truth.
+Gemini is both the most accurate hosted extractor and near-cheapest; Anthropic
+Haiku is the most expensive hosted extractor (\~4.8× Gemini for worse accuracy).
+Local inference has no per-token cost — the trade is wall-clock and the
+operator's hardware/electricity, and the runtime table above is that trade made
+concrete (a full local benchmark build spans 1:00 to 10:30 per model). For
+scale: rebuilding the Gemini extraction scaffold for this sweep's summary phase
+cost $1.24 (672 extraction + 37 verify calls). Full token + dollar figures are
+in [docs/cost.md](../docs/cost.md); the live per-run `llm-tokens` / `cost_est`
+log lines are the source of truth.
 
 ## Configuring the tracks
 
@@ -632,7 +722,13 @@ ANTHROPIC_API_KEY=...
 # all-local (recommended local default for both tracks):
 LLM_PROVIDER=ollama
 LLM_MODEL=gpt-oss:20b
-# extraction is competitive; summaries are weaker — see Phase 3.
+# extraction is competitive at greedy and best-in-class with the measured
+# in-spec opt-in (OLLAMA_TEMPERATURE=1.0 plus OLLAMA_SEED for repeatability);
+# summaries on this model are not publication-ready — see Phase 3.
+
+# all-local, accuracy-first (slow — dense 31B; see the runtime table):
+# LLM_MODEL=gemma4:31b
+# extraction ties hosted Gemini; summaries grade B, the best local measured.
 ```
 
 ## Reproduce this

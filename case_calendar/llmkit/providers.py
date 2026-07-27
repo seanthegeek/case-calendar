@@ -966,13 +966,14 @@ def _ollama_seed() -> Optional[int]:
     """Fixed RNG seed for Ollama sampling, from ``OLLAMA_SEED``. Returns ``None``
     (Ollama's own random seed) when unset or malformed.
 
-    A fixed seed is the determinism lever for LOCAL models. They run their best
-    (non-greedy) sampling per their Modelfile — see :func:`_call_ollama_native`
-    for why we no longer force ``temperature=0`` on them — and sampling is
-    non-deterministic by construction; pinning the seed makes a sampled run
-    byte-reproducible (and keeps the benchmark's LLM-cache sound). It is OFF by
-    default so production gets the model's intended fresh sampling; benchmarking /
-    reproducible runs set it. See the Ollama sampling design note in AGENTS.md."""
+    Only meaningful when in-spec sampling is opted into via
+    ``OLLAMA_TEMPERATURE`` — the default Ollama path is greedy (the domain
+    layer's ``temperature=0`` is forwarded, see :func:`_call_ollama_native`),
+    which needs no seed. A sampled run is non-deterministic by construction;
+    pinning the seed makes it reproducible-in-principle (subject to the GPU
+    floating-point caveat in the Ollama sampling design note in AGENTS.md) and
+    keys the benchmark's LLM-cache correctly. OFF by default; benchmarking /
+    reproducible sampled runs set it."""
     raw = os.environ.get("OLLAMA_SEED", "").strip()
     if not raw:
         return None
@@ -987,11 +988,15 @@ def _ollama_temperature_override() -> Optional[float]:
     """Explicit sampling temperature for Ollama, from ``OLLAMA_TEMPERATURE``.
     Returns ``None`` when unset or malformed.
 
-    When ``None`` the Ollama path sends NO temperature, so the model's own
-    Modelfile default applies — deliberately NOT the domain layer's greedy
-    ``temperature=0`` pin, which is off-spec for local thinking models and drove
-    the reasoning runaways (see :func:`_call_ollama_native`). This is the
-    operator escape hatch to pin a specific temperature anyway."""
+    When ``None`` the Ollama path forwards the caller's temperature — in
+    practice the domain layer's greedy ``temperature=0`` pin, the same default
+    as the hosted providers (see the comment in :func:`_call_ollama_native`).
+    Setting ``OLLAMA_TEMPERATURE`` is the opt-in escape hatch for in-spec
+    sampling on models whose cards advise against greedy (pair it with
+    ``OLLAMA_SEED`` for reproducibility); the scorecard's in-spec-sampling
+    attempt found no accuracy win for the recommended local models, which is
+    why greedy stays the default. See the Ollama sampling design note in
+    AGENTS.md."""
     raw = os.environ.get("OLLAMA_TEMPERATURE", "").strip()
     if not raw:
         return None
@@ -999,7 +1004,7 @@ def _ollama_temperature_override() -> Optional[float]:
         return float(raw)
     except ValueError:
         logger.warning(
-            "OLLAMA_TEMPERATURE=%r is not a number; ignoring (Modelfile default)",
+            "OLLAMA_TEMPERATURE=%r is not a number; ignoring (greedy default)",
             raw,
         )
         return None

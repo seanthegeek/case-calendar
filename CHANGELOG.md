@@ -8,6 +8,39 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **`summarize_phase.py` no longer points summary runs at a dead Ollama
+  address.** The script set a hardcoded WSL2-era `OLLAMA_BASE_URL` default
+  *before* loading `.env`, and `load_dotenv` never overrides an env var that
+  is already set — so the operator's configured address silently lost to the
+  stale one on any machine where the shell didn't export it. `.env` now loads
+  at the top of the script, ahead of any fallback.
+- **Corrected the stale Ollama temperature/seed docstrings in
+  `providers.py`.** `_ollama_temperature_override` and `_ollama_seed`
+  described a reverted design ("sends no temperature by default"); the code —
+  and now the docstrings and the malformed-value warning — forward the domain
+  layer's greedy `temperature=0` unless `OLLAMA_TEMPERATURE` opts into
+  sampling.
+
+### Changed
+
+- **`model-comparison/SCORECARD.md` rewritten for the July 2026 dual-GPU
+  local-model sweep** (Radeon AI PRO R9700 32 GB + RX 7900 XTX 24 GB, Ollama
+  0.32.3, native Linux): every installed Ollama model benchmarked for
+  extraction under both the greedy shipping policy and an in-spec sampling
+  run at each model's card temperature (seed 42), plus a fresh summary phase
+  graded against a same-scaffold hosted reference. Headlines: `gpt-oss:20b`
+  in-spec takes the aggregate lead over hosted Gemini (332 vs 376, reproduced
+  across two seeded runs); `gemma4:31b` ties Gemini per-entry (640 vs 636);
+  local summaries reach B for the first time (`gemma4:31b`); `glm-4.7-flash`
+  and `qwen3.6` are blocked by a gfx1201 (RDNA 4) kernel gap in the bundled
+  hipBLASLt, documented with the probe that narrowed the trigger to contexts
+  of 32K and above. `model_actions.csv` now carries greedy and `-inspec` rows
+  for the nine runnable models alongside the retained prior-rig rows.
+
 ## [0.19.1] - 2026-07-23
 
 ### Security

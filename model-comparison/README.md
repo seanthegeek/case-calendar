@@ -208,19 +208,21 @@ LLM-cache hit, so a warm-cache rebuild still produces a complete CSV. The large
 stores, their `build.log`s (with the per-entry DECISION trace), and the rendered
 calendars stay under the gitignored `data/provider-stores/`.
 
-> **The committed `model_actions.csv` also carries the local models**
-> (`ollama/gpt-oss:20b` at thinking low and `-medium`, `ollama/gemma4:e4b`
-> thinking on and `-nothink`, `ollama/qwen3.5:9b`, `ollama/granite3.3:8b`,
-> `ollama/granite4.1:8b`, `ollama/llama3.2:3b` — see
-> [SCORECARD.md](SCORECARD.md#local-models--gpt-oss20b-leads-thinking-helps-extraction)).
-> They are measured under the shipping policy (bounded thinking on, structured
-> output on) except where the variant suffix says otherwise — the on/off pairs
-> exist because thinking measurably helps extraction (gemma4:e4b 1241 thinking
-> vs 1945 not).
+> **The committed `model_actions.csv` also carries the local models** — the
+> July 2026 sweep's nine models each measured twice (greedy, and `-inspec` at
+> the model's card temperature with seed 42): `ollama/gpt-oss:20b`,
+> `ollama/gemma4:31b`, `ollama/gemma4:latest`, `ollama/granite3.3:8b`,
+> `ollama/granite4.1:8b`, `ollama/granite4.1:30b`,
+> `ollama/mistral-small3.2:latest`, `ollama/lfm2.5:latest`,
+> `ollama/llama3.2:3b` — plus retained prior-rig rows (`gemma4:e4b` thinking
+> on and `-nothink`, `qwen3.5:9b`, `gpt-oss:20b-medium`). See
+> [SCORECARD.md](SCORECARD.md) for the numbers, the per-model in-spec
+> temperatures, and why `glm-4.7-flash` and `qwen3.6` have no rows (a
+> ROCm/RDNA 4 kernel gap, not a model finding).
 > They are opt-in — building them needs a running Ollama server, and because 11
 > benchmark entries have no usable PDF text in the snapshot they must run
 > **non-frozen** (a live PDF fetch + OCR, the same text the hosted models saw),
-> e.g. `--extra-variant ollama:gemma4:e4b` with `OLLAMA_BASE_URL` set and **no**
+> e.g. `--extra-variant ollama:gemma4:31b` with `OLLAMA_BASE_URL` set and **no**
 > `--frozen`. A default rebuild of the CSV (hosted models only) will overwrite
 > the file and **drop the local rows** — re-add the `--extra-variant` flags
 > (with a live Ollama) to keep them. Re-*scoring* the committed CSV needs none of
