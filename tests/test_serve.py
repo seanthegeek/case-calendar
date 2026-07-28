@@ -55,12 +55,24 @@ def _make_cl() -> FakeCourtListener:
     )
 
 
-def _start_server(*, store, case, cl, emit_fn=None):
+def _start_server(
+    *,
+    store,
+    cl,
+    case: CaseConfig | None = None,
+    cases: list[CaseConfig] | None = None,
+    emit_fn=None,
+):
+    """Boot a webhook server. Pass ``case`` for the single-case default, or
+    ``cases`` when a test needs a second case the delivery doesn't touch."""
+    if cases is None:
+        assert case is not None, "pass either case= or cases="
+        cases = [case]
     secret = "test-secret-please-make-it-long-enough"
     server = WebhookServer(
         ("127.0.0.1", 0),
         secret=secret,
-        cases=[case],
+        cases=cases,
         store=store,
         cl=cl,
         emit_fn=emit_fn,
@@ -457,6 +469,143 @@ class TestAutoEmit:
         assert resp["handled"]["emitted_calendars"] == []
         # Hearing row still landed — we don't lose data when the renderer fails.
         assert len(store.get_hearings("us-v-x")) == 1
+
+
+class TestPastDueDeadlineSweep:
+    """The wall-clock 'pending' -> 'passed' deadline sweep runs on the webhook
+    path too, over every configured case.
+
+    ``sync_case`` runs it at the end of a poll, but a webhook-driven
+    deployment may go months without a poll — and a quiet case never gets a
+    webhook of its own — so without this the row stays 'pending' forever: the
+    feed renders it as an upcoming event and the case-summary scaffold tells
+    the LLM the obligation is still outstanding.
+    """
+
+    def _quiet_case(self):
+        return CaseConfig(
+            case_id="us-v-quiet",
+            name="United States v. Quiet",
+            dockets=[200],
+            calendar="natsec",
+        )
+
+    def _deadline(self, case_id, key, due, status="pending"):
+        return {
+            "case_id": case_id,
+            "deadline_key": key,
+            "title": key.replace("-", " ").title(),
+            "due_at_utc": due,
+            "timezone": "America/New_York",
+            "status": status,
+            "significance": "major",
+            "docket_id": 100,
+            "source_entry_ids": [99],
+        }
+
+    def test_elapsed_deadline_on_untouched_case_flips_and_emits(
+        self, store: Store, case, monkeypatch
+    ):
+        # The webhook is for us-v-x; the stale row belongs to us-v-quiet,
+        # which this delivery never touches. It must still be swept, and its
+        # calendar must reach the emit set — a 'pending' deadline renders as a
+        # scheduled event and a 'passed' one as held, so the feed changed.
+        monkeypatch.setattr(
+            llm_mod, "extract_actions", lambda **kw: [{"type": "IGNORE"}]
+        )
+        quiet = self._quiet_case()
+        store.upsert_deadline(
+            self._deadline("us-v-quiet", "stale-reply", "2024-01-01T22:00:00+00:00")
+        )
+        store.upsert_deadline(
+            self._deadline("us-v-quiet", "future-reply", "2099-01-01T22:00:00+00:00")
+        )
+        emitted: list[set[str]] = []
+        server, url, secret = _start_server(
+            store=store,
+            cases=[case, quiet],
+            cl=_make_cl(),
+            emit_fn=lambda cals: emitted.append(set(cals)),
+        )
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([_sample_entry()]),
+                headers={"Idempotency-Key": "k-sweep-1"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert status == 200
+        assert resp["handled"]["deadlines_passed_cases"] == ["us-v-quiet"]
+        rows = {
+            d["deadline_key"]: d["status"] for d in store.get_deadlines("us-v-quiet")
+        }
+        assert rows["stale-reply"] == "passed"
+        assert rows["future-reply"] == "pending"
+        assert emitted == [{"cyber", "natsec"}]
+
+    def test_sweep_alone_triggers_emit_when_no_entry_was_relevant(
+        self, store: Store, case, monkeypatch
+    ):
+        # Nothing in the payload changed the calendar, but the sweep did.
+        monkeypatch.setattr(
+            llm_mod, "extract_actions", lambda **kw: [{"type": "IGNORE"}]
+        )
+        store.upsert_deadline(
+            self._deadline("us-v-x", "stale-reply", "2024-01-01T22:00:00+00:00")
+        )
+        emitted: list[set[str]] = []
+        server, url, secret = _start_server(
+            store=store,
+            case=case,
+            cl=_make_cl(),
+            emit_fn=lambda cals: emitted.append(set(cals)),
+        )
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert(
+                    [_sample_entry(desc="NOTICE OF ATTORNEY APPEARANCE by counsel")]
+                ),
+                headers={"Idempotency-Key": "k-sweep-2"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert status == 200
+        assert resp["handled"]["hearing_relevant"] == 0
+        assert resp["handled"]["emitted_calendars"] == ["cyber"]
+        assert emitted == [{"cyber"}]
+
+    def test_sweep_failure_does_not_fail_the_ack(self, store: Store, case, monkeypatch):
+        # Same fall-open posture as the auto-emit callback: CourtListener
+        # would just retry a non-2xx, and the entries already landed.
+        monkeypatch.setattr(
+            llm_mod, "extract_actions", lambda **kw: [{"type": "IGNORE"}]
+        )
+        server, url, secret = _start_server(store=store, case=case, cl=_make_cl())
+
+        def boom(*a, **k):
+            raise RuntimeError("sweep exploded")
+
+        monkeypatch.setattr(server.syncer, "mark_passed_deadlines", boom)
+        try:
+            status, resp = _post(
+                f"{url}/webhooks/case-calendar/{secret}",
+                _docket_alert([_sample_entry()]),
+                headers={"Idempotency-Key": "k-sweep-3"},
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        assert status == 200
+        assert resp["handled"]["deadlines_passed_cases"] == []
+        # The entry still processed — a sweep failure loses nothing.
+        assert resp["handled"]["entries_processed"] == 1
 
 
 class TestRequestErrors:

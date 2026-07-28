@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from .llmkit import providers
@@ -2030,6 +2031,31 @@ This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
 
+CRITICAL — elapsed deadlines: the user message opens with a
+``TODAY (UTC):`` line. Compare every deadline row's ``due_at_utc``
+against it before you write about that deadline. A deadline whose date has
+passed is NOT an outstanding obligation, whatever its ``status`` says,
+and must never be written in the forward-looking voice — the row's
+status only tells you whether the system has SEEN the filing that
+satisfies it, not whether the party filed:
+- ``status=met`` — the filing landed. Either say so ("the proposed
+  order on relief was filed") or omit the deadline entirely; do NOT
+  restate the directive as though it were still due.
+- ``status=passed`` or ``status=pending`` with an elapsed
+  ``due_at_utc`` — the date came and went and no filing that satisfies
+  it is visible in what you were given. Same honest framing as the
+  past-dated hearing rule above: state it in the PAST tense, and do not
+  speculate about why nothing is recorded. The party may well have
+  filed; a compliance filing is often an unremarkable docket entry that
+  never reaches you.
+- BAD:  "the court has directed Anthropic to file a proposed order on
+        relief by July 24, 2026" (written on July 27 — reads as an open
+        obligation three days after the date passed)
+- GOOD: "the court directed Anthropic to file a proposed order on
+        relief by July 24, 2026"
+A deadline whose ``due_at_utc`` is still in the future is the only kind
+you may describe as upcoming.
+
 CRITICAL — do NOT state speculative or conditional future outcomes, or
 obvious procedural boilerplate. A consequence that hangs on an event
 that hasn't happened is an unknown dressed up as a fact, and the routine
@@ -2443,8 +2469,14 @@ def _build_summary_user_message(
     extra_char_budget: int = 40_000,
     sealing_advisory: Optional[dict[str, Any]] = None,
     restitution_unreadable: bool = False,
+    today: Optional[str] = None,
 ) -> str:
+    # The model has no clock, so several prompt rules that turn on "is this
+    # date in the past?" — the past-dated 'scheduled' hearing rule and the
+    # elapsed-deadline rule — were unanswerable without this line. Injectable
+    # so tests are deterministic.
     parts = [
+        f"TODAY (UTC): {today or datetime.now(timezone.utc).date().isoformat()}",
         f"CASE: {case_name}",
         f"DOCKET: {docket.get('docket_number')} ({docket.get('court_citation') or docket.get('court_id')})",
     ]
@@ -2608,6 +2640,7 @@ def generate_docket_summary(
     disposition_char_budget: int = 40_000,
     extra_char_budget: int = 40_000,
     correction: Optional[str] = None,
+    today: Optional[str] = None,
 ) -> tuple[str, str]:
     """Generate a per-docket prose summary.
 
@@ -2656,6 +2689,7 @@ def generate_docket_summary(
         primary_char_budget=primary_char_budget,
         disposition_char_budget=disposition_char_budget,
         extra_char_budget=extra_char_budget,
+        today=today,
     )
 
     if correction:

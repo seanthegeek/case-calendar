@@ -19,7 +19,7 @@ Every prompt also receives a per-call **user message** assembled at runtime (the
 
 ## Hearing & deadline extraction — `SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L155)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L156)
 
 Runs against one docket entry plus the case's known-hearings list and known-deadlines list, and returns zero or more structured actions covering both. Hearings and filing deadlines are co-equal in one prompt — PART 1 holds the shared rules, PART 2 the hearing actions (`ADD_HEARING` / `RESCHEDULE_HEARING` / `CANCEL_HEARING` / `MARK_HELD` / `UPDATE_DETAILS` / `IGNORE`), PART 3 the deadline actions (`ADD_DEADLINE` / `RESCHEDULE_DEADLINE` / `CANCEL_DEADLINE` / `MARK_FILED`) — all emitted under a single JSON schema. Two major-vs-minor rubrics are interpolated in and reproduced inline below: `HEARING_SIGNIFICANCE_RULES` for hearings and `DEADLINE_SIGNIFICANCE_RULES` for deadlines (the latter enumerates the substantive federal-procedure classes that must be `major`, which is what lets the small/fast tier classify them correctly regardless of provider). This is the small/fast extraction tier (Gemini Flash Lite by default, or Haiku / `gpt-5.4-nano`).
 
@@ -696,7 +696,7 @@ entries.
 
 ## Row verify pass — `VERIFY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1114)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1115)
 
 The end-of-sync per-row confidence pass. One unified prompt handles BOTH hearings AND filing deadlines — the user message labels which kind ("CANDIDATE HEARING" or "CANDIDATE DEADLINE") and the system prompt has type-tagged action types (HEARING-ONLY: `MARK_HELD`, `REINSTATE`; DEADLINE-ONLY: `MARK_FILED`; common to both: `CONFIRM` / `RESCHEDULE_HEARING` / `CANCEL_HEARING` / `DELETE_HALLUCINATION` / `UNCLEAR`). Before 0.11.0 this was two separate prompts (`VERIFY_SYSTEM_PROMPT` + `VERIFY_DEADLINE_SYSTEM_PROMPT`); the merge consolidates them into one prompt. The stated goal was to clear Anthropic's Haiku 4.5 prompt-cache token floor, but that floor is 4096 tokens (the 2048 figure cited at the time is the *retired* Haiku 3.5's floor), and the merged prompt is only ~2000 tokens — so it does NOT cache on Haiku 4.5. See the changelog's "Known limitations" note and AGENTS.md's cache-threshold design note.
 
@@ -870,7 +870,7 @@ explanation.
 
 ## Duplicate-hearing resolver — `DEDUPE_HEARING_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1536)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1537)
 
 The duplicate-hearing resolver. Receives a cluster of two or more hearings on the same logical docket that are at or near the same slot — either the exact same start time, the same court-local date at different times, or the same once-only proceeding (sentencing, arraignment, etc.) for the same defendant at drifted dates — plus recent entries, and returns `MERGE_INTO` (pick a target; the caller folds the others' source entries onto it and DELETEs them) / `KEEP_BOTH` (genuinely distinct proceedings) / `UNCLEAR`. This resolver backs the two LLM-gated end-of-sync sweeps — the exact-slot scheduled sweep and the near-slot sweep added in 0.13.0 to collapse the duplicates the extractor proliferates on messy multi-proceeding dockets. (The third sweep, for exact-slot `held` clusters, is a separate deterministic merge that needs no LLM call — a court cannot have held two hearings at the same instant, so same-slot held rows are unambiguously a key-drift duplicate.)
 
@@ -934,7 +934,7 @@ no explanation.
 
 ## Case summary — `SUMMARY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1793)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1794)
 
 The higher-tier case-summary prompt (Sonnet / GPT-5.4 / Gemini Pro by default). Synthesizes the primary document, dispositions, and a structured hearings/deadlines scaffold into 2-4 sentences of prose. This is where the documents-only, absence-silence, custody-omit, speculative-outcome, and figure-grounding invariants live, as well as the `INLINE LINKS` rule that turns action phrases into newspaper-style links to the supporting documents (each document carries a prompt-only `[D1]`/`[D2]` reference token; the model links a phrase to a token and the pipeline resolves it to the document's URL).
 
@@ -1177,6 +1177,31 @@ reason:
 This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
+
+CRITICAL — elapsed deadlines: the user message opens with a
+``TODAY (UTC):`` line. Compare every deadline row's ``due_at_utc``
+against it before you write about that deadline. A deadline whose date has
+passed is NOT an outstanding obligation, whatever its ``status`` says,
+and must never be written in the forward-looking voice — the row's
+status only tells you whether the system has SEEN the filing that
+satisfies it, not whether the party filed:
+- ``status=met`` — the filing landed. Either say so ("the proposed
+  order on relief was filed") or omit the deadline entirely; do NOT
+  restate the directive as though it were still due.
+- ``status=passed`` or ``status=pending`` with an elapsed
+  ``due_at_utc`` — the date came and went and no filing that satisfies
+  it is visible in what you were given. Same honest framing as the
+  past-dated hearing rule above: state it in the PAST tense, and do not
+  speculate about why nothing is recorded. The party may well have
+  filed; a compliance filing is often an unremarkable docket entry that
+  never reaches you.
+- BAD:  "the court has directed Anthropic to file a proposed order on
+        relief by July 24, 2026" (written on July 27 — reads as an open
+        obligation three days after the date passed)
+- GOOD: "the court directed Anthropic to file a proposed order on
+        relief by July 24, 2026"
+A deadline whose ``due_at_utc`` is still in the future is the only kind
+you may describe as upcoming.
 
 CRITICAL — do NOT state speculative or conditional future outcomes, or
 obvious procedural boilerplate. A consequence that hangs on an event

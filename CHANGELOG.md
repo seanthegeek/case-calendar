@@ -8,10 +8,39 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.19.2] - 2026-07-27
 
 ### Fixed
 
+- **Elapsed deadlines no longer read as outstanding obligations — three fixes
+  behind one symptom.** On N.D. Cal. 3:26-cv-01996 (Anthropic PBC v. U.S.
+  Department of War), the case summary said "the court has directed Anthropic
+  to file a proposed order on relief by July 24, 2026" on July 27 — four days
+  after Anthropic filed it.
+  - The keyword prefilter (`extractor._DEADLINE_EXTRA_HINTS`) dropped the
+    filing that satisfied the deadline. It already anchored a brief /
+    response / opposition / reply at the head of an entry as a
+    deadline-meeting filing; entry #240, "Proposed Order re 166 MOTION for
+    Summary Judgment by Anthropic PBC.", matched neither hint regex, never
+    reached the LLM, and so never produced the `MARK_FILED` that flips the row
+    to `met`. A head-anchored proposed order / notice of compliance now
+    matches.
+  - The wall-clock `pending` → `passed` sweep never ran on a webhook-driven
+    deployment. `_auto_mark_passed_stale` was reachable only from the end of
+    `sync_case`, so a host that runs `serve` and polls rarely left every
+    elapsed deadline at `pending` indefinitely — the feed kept rendering it as
+    a scheduled event and the summary scaffold kept presenting it to the LLM
+    as live. The webhook receiver now runs the sweep (via the new
+    `CaseSyncer.mark_passed_deadlines`) over every configured case on each
+    delivery, not just the cases that delivery touched, and folds any affected
+    calendar into the auto-emit set. No LLM or CourtListener call.
+  - The summary prompt had no rule for an elapsed deadline and no way to know
+    the date. `SUMMARY_SYSTEM_PROMPT` gains the deadline analogue of the
+    past-dated `scheduled` hearing rule — a deadline whose `due_at_utc` has
+    passed is never written in the forward-looking voice, whatever its status
+    says — and the user message now opens with a `TODAY (UTC):` line so the
+    model can actually apply it (and the pre-existing past-dated hearing
+    rule).
 - **`summarize_phase.py` no longer points summary runs at a dead Ollama
   address.** The script set a hardcoded WSL2-era `OLLAMA_BASE_URL` default
   *before* loading `.env`, and `load_dotenv` never overrides an env var that
