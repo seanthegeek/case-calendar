@@ -55,7 +55,14 @@ ap.add_argument(
 )
 args = ap.parse_args()
 
-os.environ.setdefault("OLLAMA_BASE_URL", "http://172.17.160.1:11434")
+# Load .env FIRST (COURTLISTENER_TOKEN, OLLAMA_BASE_URL, ...) so the operator's
+# configured values win over this script's fallbacks — load_dotenv never
+# overrides an env var that is already set, so any setdefault before this line
+# would silently beat .env. (A hardcoded WSL2-era OLLAMA_BASE_URL default here
+# used to do exactly that, pointing summary runs at a dead address.)
+from dotenv import load_dotenv  # noqa: E402
+
+load_dotenv(os.path.join(REPO, ".env"))
 os.environ.setdefault("OLLAMA_NUM_CTX", "65536")
 
 # Apply the thinking-control flags to the Ollama env knobs the call layer reads.
@@ -152,13 +159,9 @@ def _hang_watchdog():
 logging.getLogger().addHandler(_RunawayDetector())
 threading.Thread(target=_hang_watchdog, daemon=True).start()
 
-# Load .env for COURTLISTENER_TOKEN (the CLI does this; this standalone script
-# must too), then NEUTRALIZE the operator's LLM_* overrides so the explicit
-# --provider/--model passed to refresh_stale is authoritative (same set
-# build_provider_stores pops for the same reason).
-from dotenv import load_dotenv  # noqa: E402
-
-load_dotenv(os.path.join(REPO, ".env"))
+# NEUTRALIZE the operator's LLM_* overrides so the explicit --provider/--model
+# passed to refresh_stale is authoritative (same set build_provider_stores pops
+# for the same reason). .env itself was loaded at the top of the script.
 for _k in (
     "LLM_MODEL",
     "LLM_SUMMARY_MODEL",

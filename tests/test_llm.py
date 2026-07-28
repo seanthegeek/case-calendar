@@ -6,6 +6,7 @@ so we never hit any network or import the heavy SDKs lazily-imported inside.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
@@ -1847,6 +1848,41 @@ class TestBuildSummaryUserMessage:
         assert "Sentencing" in msg
         assert "Reply ISO MTD" in msg
 
+    def test_today_line_leads_the_message(self):
+        # The model has no clock. Without this line the past-dated 'scheduled'
+        # hearing rule and the elapsed-deadline rule are both unanswerable —
+        # the 3:26-cv-01996 summary described a July 24 deadline as an open
+        # obligation on July 27 because nothing in the prompt said what day
+        # it was.
+        msg = llm._build_summary_user_message(
+            case_name="US v. X",
+            aggregation_note=None,
+            docket={"docket_number": "1:24-cr-1", "court_citation": "S.D.N.Y."},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+            today="2026-07-27",
+        )
+        assert msg.startswith("TODAY (UTC): 2026-07-27\n")
+
+    def test_today_defaults_to_current_utc_date(self):
+        msg = llm._build_summary_user_message(
+            case_name="US v. X",
+            aggregation_note=None,
+            docket={"docket_number": "1:24-cr-1"},
+            primary_documents=[],
+            disposition_documents=[],
+            hearings=[],
+            deadlines=[],
+            primary_char_budget=10_000,
+            disposition_char_budget=10_000,
+        )
+        expected = datetime.now(timezone.utc).date().isoformat()
+        assert msg.startswith(f"TODAY (UTC): {expected}\n")
+
     def test_per_docket_caption_rendered_when_present(self):
         # The docket's own caption (e.g. "United States v. Kelly") is surfaced
         # so the model foregrounds THIS docket's defendant — the us-v-zheng-et-al
@@ -2453,6 +2489,23 @@ class TestGenerateDocketSummary:
         assert "custody" in p.lower()
         assert "OMIT it entirely" in p  # undocumented custody is omitted, not "unknown"
         assert "pointless noise" in p.lower()
+
+    def test_prompt_forbids_forward_looking_elapsed_deadlines(self):
+        # A deadline whose due_at_utc has passed is not an outstanding
+        # obligation whatever its status says — status only records whether
+        # the system has SEEN the satisfying filing. The 3:26-cv-01996
+        # regression: entry #240 (the filed proposed order) was dropped by the
+        # prefilter, the row stayed 'pending' past its date, and the summary
+        # kept saying "the court has directed Anthropic to file ... by July
+        # 24, 2026" three days after July 24.
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        assert "TODAY (UTC):" in p
+        assert "elapsed deadlines" in p
+        assert "forward-looking voice" in p
+        # The 'met' branch and the elapsed-but-unconfirmed branch are both
+        # spelled out, and past tense is the prescribed framing.
+        assert "``status=met``" in p
+        assert "PAST tense" in p
 
     def test_prompt_forbids_speculative_conditional_outcomes(self):
         # A consequence that hangs on an unhappened event (sentence yet to be

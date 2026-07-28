@@ -251,6 +251,32 @@ class TestDeadlineExtraHints:
         )
         assert is_deadline_relevant(make(desc="RESPONDENT SUPPLEMENTAL BRIEF filed"))
 
+    def test_proposed_order_filing_relevant(self):
+        # Verbatim from N.D. Cal. 3:26-cv-01996 entry #240 — the filing that
+        # satisfied the entry #239 order ("By July 24, 2026, Anthropic shall
+        # file a proposed order on its 166 Motion for Summary Judgment").
+        # It matched neither hint regex, so it never reached the LLM and the
+        # deadline was never flipped to 'met'.
+        assert is_deadline_relevant(
+            make(
+                desc=(
+                    "Proposed Order re 166 MOTION for Summary Judgment by "
+                    "Anthropic PBC. (Mongan, Michael) (Filed on 7/23/2026) "
+                    "(Entered: 07/23/2026)"
+                )
+            )
+        )
+        assert is_deadline_relevant(
+            make(desc="NOTICE OF COMPLIANCE filed by United States")
+        )
+
+    def test_proposed_order_must_be_at_head(self):
+        # Same head-anchoring as the brief / response forms: an order that
+        # merely mentions a proposed order is not itself the filing.
+        assert not is_deadline_relevant(
+            make(desc="ORDER denying the proposed order submitted by plaintiff")
+        )
+
     def test_appellate_service_date_stamp_relevant(self):
         # Appellate submissions whose doc type isn't a brief (appendix, index)
         # still carry the "[Service Date: ...]" e-filing stamp.

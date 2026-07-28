@@ -71,6 +71,15 @@ _DEADLINE_HINTS = re.compile(
 #     the "[Service Date: ...]" e-filing stamp. The existing regex only catches
 #     the forward-looking "shall file a response", never the past-tense filing,
 #     so the matching deadline never flipped to filed.
+#   - The same past-tense filing shape for a court-ordered submission that isn't
+#     a brief: a proposed order or a notice of compliance at the head of the
+#     entry. Verbatim from N.D. Cal. docket 3:26-cv-01996 (Anthropic PBC v. U.S.
+#     Department of War) entry #240, "Proposed Order re 166 MOTION for Summary
+#     Judgment by Anthropic PBC." — the filing that satisfied the entry #239
+#     order directing Anthropic to file a proposed order on relief by July 24,
+#     2026. Neither regex above matched it, so it never reached the LLM, the
+#     deadline never flipped to 'met', and the case summary kept describing an
+#     already-satisfied court directive as an outstanding obligation.
 # Kept as its own regex (not folded into _DEADLINE_HINTS) because the date forms
 # end in digits, which that pattern's trailing `\b` cannot anchor, and because
 # the filing forms must anchor to the entry head (`^`, MULTILINE).
@@ -83,7 +92,8 @@ _DEADLINE_EXTRA_HINTS = re.compile(
     r"(?:(?:petitioner|respondent|appellant|appellee|cross-?appell\w+|"
     r"opening|answering|amended|corrected|supplemental|first|second|third|"
     r"final|joint)\s+)*"
-    r"(?:response|opposition|reply|sur-?reply|brief)\b",
+    r"(?:response|opposition|reply|sur-?reply|brief|"
+    r"proposed\s+order|notice\s+of\s+compliance)\b",
     re.IGNORECASE | re.MULTILINE,
 )
 

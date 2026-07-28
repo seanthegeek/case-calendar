@@ -74,7 +74,11 @@ class WebhookServer(ThreadingHTTPServer):
         self.emit_fn = emit_fn
         # docket_id -> case (a docket only ever belongs to one logical case)
         self.docket_to_case: dict[int, CaseConfig] = {}
+        # case_id -> case, for the sweeps that run over every configured case
+        # rather than only the ones a given delivery touched.
+        self.case_by_id: dict[str, CaseConfig] = {}
         for c in cases:
+            self.case_by_id[c.case_id] = c
             for d in c.dockets:
                 self.docket_to_case[d] = c
         # Process one webhook at a time so we don't race on the SQLite store
@@ -244,6 +248,29 @@ class WebhookHandler(BaseHTTPRequestHandler):
             with self.server.store.tx() as _:
                 pass
 
+        # Flip past-due 'pending' deadlines to 'passed'. This is the one sweep
+        # driven by the wall clock rather than by docket activity, so it has to
+        # run here as well as at the end of a poll: on a webhook-driven
+        # deployment `sync` may not run for months, and until then every
+        # elapsed deadline stayed 'pending' — the feed kept rendering it as an
+        # upcoming event and the case-summary scaffold kept telling the LLM the
+        # obligation was still outstanding. It runs over EVERY configured case,
+        # not just the ones this delivery touched, because a quiet case is
+        # exactly the one that never gets a webhook of its own. No LLM call and
+        # no CourtListener call: one SELECT per case plus an UPDATE per flipped
+        # row, inside the lock the caller already holds.
+        passed_cases: list[str] = []
+        try:
+            passed_cases = self.server.syncer.mark_passed_deadlines(
+                self.server.case_by_id
+            )
+        except Exception:
+            log.exception("past-due deadline sweep failed")
+        for case_id in passed_cases:
+            # Every returned id came from case_by_id's own keys, so the
+            # lookup can't miss.
+            affected_calendars.add(self.server.case_by_id[case_id].calendar)
+
         # Re-render affected calendars so subscribers see the update without
         # a manual emit. Failures here log but don't fail the webhook ack —
         # CourtListener would just retry, and the store is already up to date.
@@ -264,6 +291,7 @@ class WebhookHandler(BaseHTTPRequestHandler):
             "hearing_relevant": relevant,
             "skipped_unknown_dockets": skipped_unknown_dockets,
             "per_case": dict(per_case),
+            "deadlines_passed_cases": sorted(passed_cases),
             "emitted_calendars": emitted,
         }
 

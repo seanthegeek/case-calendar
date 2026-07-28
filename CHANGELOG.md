@@ -8,6 +8,68 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.19.2] - 2026-07-27
+
+### Fixed
+
+- **Elapsed deadlines no longer read as outstanding obligations — three fixes
+  behind one symptom.** On N.D. Cal. 3:26-cv-01996 (Anthropic PBC v. U.S.
+  Department of War), the case summary said "the court has directed Anthropic
+  to file a proposed order on relief by July 24, 2026" on July 27 — four days
+  after Anthropic filed it.
+  - The keyword prefilter (`extractor._DEADLINE_EXTRA_HINTS`) dropped the
+    filing that satisfied the deadline. It already anchored a brief /
+    response / opposition / reply at the head of an entry as a
+    deadline-meeting filing; entry #240, "Proposed Order re 166 MOTION for
+    Summary Judgment by Anthropic PBC.", matched neither hint regex, never
+    reached the LLM, and so never produced the `MARK_FILED` that flips the row
+    to `met`. A head-anchored proposed order / notice of compliance now
+    matches.
+  - The wall-clock `pending` → `passed` sweep never ran on a webhook-driven
+    deployment. `_auto_mark_passed_stale` was reachable only from the end of
+    `sync_case`, so a host that runs `serve` and polls rarely left every
+    elapsed deadline at `pending` indefinitely — the feed kept rendering it as
+    a scheduled event and the summary scaffold kept presenting it to the LLM
+    as live. The webhook receiver now runs the sweep (via the new
+    `CaseSyncer.mark_passed_deadlines`) over every configured case on each
+    delivery, not just the cases that delivery touched, and folds any affected
+    calendar into the auto-emit set. No LLM or CourtListener call.
+  - The summary prompt had no rule for an elapsed deadline and no way to know
+    the date. `SUMMARY_SYSTEM_PROMPT` gains the deadline analogue of the
+    past-dated `scheduled` hearing rule — a deadline whose `due_at_utc` has
+    passed is never written in the forward-looking voice, whatever its status
+    says — and the user message now opens with a `TODAY (UTC):` line so the
+    model can actually apply it (and the pre-existing past-dated hearing
+    rule).
+- **`summarize_phase.py` no longer points summary runs at a dead Ollama
+  address.** The script set a hardcoded WSL2-era `OLLAMA_BASE_URL` default
+  *before* loading `.env`, and `load_dotenv` never overrides an env var that
+  is already set — so the operator's configured address silently lost to the
+  stale one on any machine where the shell didn't export it. `.env` now loads
+  at the top of the script, ahead of any fallback.
+- **Corrected the stale Ollama temperature/seed docstrings in
+  `providers.py`.** `_ollama_temperature_override` and `_ollama_seed`
+  described a reverted design ("sends no temperature by default"); the code —
+  and now the docstrings and the malformed-value warning — forward the domain
+  layer's greedy `temperature=0` unless `OLLAMA_TEMPERATURE` opts into
+  sampling.
+
+### Changed
+
+- **`model-comparison/SCORECARD.md` rewritten for the July 2026 dual-GPU
+  local-model sweep** (Radeon AI PRO R9700 32 GB + RX 7900 XTX 24 GB, Ollama
+  0.32.3, native Linux): every installed Ollama model benchmarked for
+  extraction under both the greedy shipping policy and an in-spec sampling
+  run at each model's card temperature (seed 42), plus a fresh summary phase
+  graded against a same-scaffold hosted reference. Headlines: `gpt-oss:20b`
+  in-spec takes the aggregate lead over hosted Gemini (332 vs 376, reproduced
+  across two seeded runs); `gemma4:31b` ties Gemini per-entry (640 vs 636);
+  local summaries reach B for the first time (`gemma4:31b`); `glm-4.7-flash`
+  and `qwen3.6` are blocked by a gfx1201 (RDNA 4) kernel gap in the bundled
+  hipBLASLt, documented with the probe that narrowed the trigger to contexts
+  of 32K and above. `model_actions.csv` now carries greedy and `-inspec` rows
+  for the nine runnable models alongside the retained prior-rig rows.
+
 ## [0.19.1] - 2026-07-23
 
 ### Security

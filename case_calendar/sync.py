@@ -2866,6 +2866,23 @@ class CaseSyncer:
         self.store.upsert_deadline(merged)
         return True
 
+    def mark_passed_deadlines(self, case_ids: Iterable[str]) -> list[str]:
+        """Run the past-due deadline sweep over several cases.
+
+        Public wrapper over :meth:`_auto_mark_passed_stale` for callers outside
+        the polling path — specifically the webhook receiver, which processes
+        entries but never reaches ``sync_case``'s end-of-case sweeps. Returns
+        the case ids that had at least one row flipped, so the caller can
+        re-render exactly the affected calendars (a ``pending`` deadline
+        renders as a scheduled event and a ``passed`` one as a held event, so
+        the flip does change what subscribers see).
+        """
+        flipped: list[str] = []
+        for case_id in case_ids:
+            if self._auto_mark_passed_stale(case_id):
+                flipped.append(case_id)
+        return flipped
+
     def _auto_mark_passed_stale(self, case_id: str) -> int:
         """Flip past-dated 'pending' deadlines to 'passed'. Returns count flipped.
 
