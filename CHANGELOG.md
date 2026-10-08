@@ -66,6 +66,8 @@ only went as far as `pypdf` 6.16.1.
   sign-in):
   [GHSA-hj66-6f7g-4r5v](https://github.com/advisories/GHSA-hj66-6f7g-4r5v),
   [GHSA-xpv3-w29h-x7cv](https://github.com/advisories/GHSA-xpv3-w29h-x7cv).
+- **`multidict` 6.7.1 → 6.9.1** (via `aiohttp`, the Microsoft Graph stack):
+  [GHSA-54p9-h82j-f925](https://github.com/advisories/GHSA-54p9-h82j-f925).
 - **`h2` 4.3.0 → 4.4.1** and **`hpack` 4.1.0 → 4.2.0**:
   [GHSA-6hr6-w5qg-qmwg](https://github.com/advisories/GHSA-6hr6-w5qg-qmwg),
   [GHSA-8v8h-hg4w-mvq2](https://github.com/advisories/GHSA-8v8h-hg4w-mvq2).
