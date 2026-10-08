@@ -73,6 +73,15 @@ order, a not-yet-uploaded or sealed PDF) — is left as plain, unlinked text. A
 summary can never link to a document that wasn't in the set the model
 summarized from.
 
+Each document is linked once. A ruling that comes with a separate opinion —
+an appellate judgment that says "for the reasons in the accompanying
+opinion", say — links the ruling itself to the judgment or order, and the
+phrase naming the opinion's author to the opinion: "the court **denied the
+petitions for review** in an **opinion by Judge Katsas**, over a dissent by
+Judge Henderson". A dissent or concurrence printed in the same document as
+the majority opinion shares the opinion's link; it gets a link of its own only
+when the court files it as a separate document.
+
 There is nothing to configure; links appear automatically once summaries are
 enabled.
 
@@ -97,10 +106,12 @@ When `enabled: true`, summaries auto-refresh as part of `sync` and `serve`:
 whenever the syncer sees a new primary document or disposition — or whenever
 a hearing or deadline changes posture (gets marked held / cancelled, or
 rescheduled), even when no new document accompanies it — it flips the row's
-`stale` flag. At the end of the sync (or after the debounce timer fires in
-`serve`), the pipeline regenerates every stale row before re-emitting the
-index. The page reflects the case's current posture without you running
-anything manually.
+`stale` flag. A document whose PDF only reaches RECAP later, when someone buys
+it from PACER, does the same once [`reconcile`](cli.md) notices the purchase,
+so the summary can then read the document and link to it. At the end of the
+sync or reconcile (or after the debounce timer fires in `serve`), the pipeline
+regenerates every stale row before re-emitting the index. The page reflects
+the case's current posture without you running anything manually.
 
 ## Cost
 
