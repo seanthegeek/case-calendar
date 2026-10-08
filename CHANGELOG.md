@@ -8,7 +8,67 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.19.3] - 2026-10-07
+
+### Security
+
+Cleared every open Dependabot alert. `pypdf` is a direct dependency, so its
+minimum version in `pyproject.toml` is raised; the rest are pulled in by other
+libraries and are updated in `uv.lock`. This supersedes Dependabot #93, which
+only went as far as `pypdf` 6.16.1.
+
+- **`pypdf` 6.14.2 → 6.19.0** (minimum raised to `>=6.19.0`) — the PDF
+  text-extraction library:
+  [GHSA-qv6h-rv94-w285](https://github.com/advisories/GHSA-qv6h-rv94-w285),
+  [GHSA-5jq2-8x83-x246](https://github.com/advisories/GHSA-5jq2-8x83-x246),
+  [GHSA-fp3h-c4fm-7vvf](https://github.com/advisories/GHSA-fp3h-c4fm-7vvf),
+  [GHSA-g9cg-prrw-2r8q](https://github.com/advisories/GHSA-g9cg-prrw-2r8q),
+  [GHSA-jw7q-gvrg-4vj3](https://github.com/advisories/GHSA-jw7q-gvrg-4vj3),
+  [GHSA-php9-fj8v-98fj](https://github.com/advisories/GHSA-php9-fj8v-98fj),
+  [GHSA-v247-6f48-mgcj](https://github.com/advisories/GHSA-v247-6f48-mgcj),
+  [GHSA-w23x-9jrw-r45c](https://github.com/advisories/GHSA-w23x-9jrw-r45c),
+  [GHSA-fc8x-2rww-xw9m](https://github.com/advisories/GHSA-fc8x-2rww-xw9m),
+  [GHSA-fp3f-mc75-235c](https://github.com/advisories/GHSA-fp3f-mc75-235c),
+  [GHSA-fwg2-594c-jp42](https://github.com/advisories/GHSA-fwg2-594c-jp42),
+  [GHSA-jp53-mhqp-8xcg](https://github.com/advisories/GHSA-jp53-mhqp-8xcg),
+  [GHSA-23w6-3w8w-8484](https://github.com/advisories/GHSA-23w6-3w8w-8484),
+  [GHSA-763m-79hh-57f2](https://github.com/advisories/GHSA-763m-79hh-57f2).
+- **`PyJWT` 2.13.0 → 2.15.1** (via `msal`, Microsoft 365 sign-in):
+  [GHSA-ffc3-869f-jxw9](https://github.com/advisories/GHSA-ffc3-869f-jxw9),
+  [GHSA-9v7f-9g4p-ffgj](https://github.com/advisories/GHSA-9v7f-9g4p-ffgj),
+  [GHSA-r6x4-923q-g947](https://github.com/advisories/GHSA-r6x4-923q-g947),
+  [GHSA-w2cx-738m-mc7w](https://github.com/advisories/GHSA-w2cx-738m-mc7w),
+  [GHSA-9j54-fg26-wv3r](https://github.com/advisories/GHSA-9j54-fg26-wv3r),
+  [GHSA-hxm8-2xgr-2p9m](https://github.com/advisories/GHSA-hxm8-2xgr-2p9m),
+  [GHSA-42vr-xj54-vc7v](https://github.com/advisories/GHSA-42vr-xj54-vc7v),
+  [GHSA-gvp8-978c-rx2q](https://github.com/advisories/GHSA-gvp8-978c-rx2q),
+  [GHSA-w6j9-cwv2-h6wq](https://github.com/advisories/GHSA-w6j9-cwv2-h6wq),
+  [GHSA-8wjv-2p76-3863](https://github.com/advisories/GHSA-8wjv-2p76-3863),
+  [GHSA-p4g4-x82p-q773](https://github.com/advisories/GHSA-p4g4-x82p-q773),
+  [GHSA-2gx3-rcp4-g85q](https://github.com/advisories/GHSA-2gx3-rcp4-g85q),
+  [GHSA-jwrc-g2q2-pq5p](https://github.com/advisories/GHSA-jwrc-g2q2-pq5p).
+- **`anyio` 4.13.0 → 4.15.1**:
+  [GHSA-82r6-8w77-94w6](https://github.com/advisories/GHSA-82r6-8w77-94w6),
+  [GHSA-5p39-cfhj-2xmp](https://github.com/advisories/GHSA-5p39-cfhj-2xmp).
+- **`cryptography` 48.0.1 → 50.0.2**:
+  [GHSA-jwv3-5hgf-82ww](https://github.com/advisories/GHSA-jwv3-5hgf-82ww),
+  [GHSA-g6cj-pr64-35w5](https://github.com/advisories/GHSA-g6cj-pr64-35w5),
+  [GHSA-m2h6-j472-rp4c](https://github.com/advisories/GHSA-m2h6-j472-rp4c).
+- **`aiohttp` 3.14.1 → 3.14.4** (via the Microsoft Graph stack):
+  [GHSA-cq5v-8q36-5273](https://github.com/advisories/GHSA-cq5v-8q36-5273),
+  [GHSA-mfx4-hv73-q22v](https://github.com/advisories/GHSA-mfx4-hv73-q22v),
+  [GHSA-mq44-7p77-q5h7](https://github.com/advisories/GHSA-mq44-7p77-q5h7).
+- **`urllib3` 2.7.0 → 2.8.0**:
+  [GHSA-vxq7-64xx-v4gw](https://github.com/advisories/GHSA-vxq7-64xx-v4gw),
+  [GHSA-8988-9cw3-xx77](https://github.com/advisories/GHSA-8988-9cw3-xx77),
+  [GHSA-gh4c-6fx4-qh6g](https://github.com/advisories/GHSA-gh4c-6fx4-qh6g).
+- **`oauthlib` 3.3.1 → 4.0.0** (via `google-auth-oauthlib`, Google Calendar
+  sign-in):
+  [GHSA-hj66-6f7g-4r5v](https://github.com/advisories/GHSA-hj66-6f7g-4r5v),
+  [GHSA-xpv3-w29h-x7cv](https://github.com/advisories/GHSA-xpv3-w29h-x7cv).
+- **`h2` 4.3.0 → 4.4.1** and **`hpack` 4.1.0 → 4.2.0**:
+  [GHSA-6hr6-w5qg-qmwg](https://github.com/advisories/GHSA-6hr6-w5qg-qmwg),
+  [GHSA-8v8h-hg4w-mvq2](https://github.com/advisories/GHSA-8v8h-hg4w-mvq2).
 
 ### Fixed
 
