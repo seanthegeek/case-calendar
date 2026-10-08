@@ -55,8 +55,14 @@ So `serve` never sees the enriched version, and a hearing or deadline whose
 date lives only in the filled-in text can be missed until a poll re-reads
 it. `reconcile` closes that gap without the per-docket cost of a full
 `sync`: it re-checks only the entries that arrived as placeholders, one
-CourtListener request each, so its cost scales with recent filing activity
-rather than with the size of your caseload.
+CourtListener request per check, so its cost scales with recent filing
+activity rather than with the size of your caseload. The checks back off: a
+stub is first re-checked about an hour after it arrives, then each wait
+doubles (roughly 1h, 3h, 7h, 15h, 31h, 63h, 127h), so one that never fills
+in costs about seven requests over the 7-day window instead of one every
+run. Without the backoff, an hourly timer spends 24 requests a day on every
+such stub — five of them were enough to use up most of the 125-request
+free tier.
 
 It also re-checks the documents the [AI case summary](case-summaries.md)
 reads — complaints, indictments, petitions, orders, judgments, opinions —
@@ -86,7 +92,9 @@ When a placeholder has enriched, the re-fetch re-runs the normal pipeline:
 the entry's fingerprint flips, any new hearing or deadline is extracted, and
 the case summary is regenerated if its posture changed — exactly as a `sync`
 would, but touching only the handful of pending entries. An unchanged
-placeholder is a no-op (the fingerprint matches, so no LLM call is made).
+placeholder costs the one CourtListener request and nothing else (the
+fingerprint matches, so no LLM call is made), and its next check waits
+twice as long.
 
 Intended to run on a frequent cheap cron alongside `serve`, with a full
 `sync` kept as an infrequent catch-all. See

@@ -8,6 +8,22 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.19.6] - 2026-10-07
+
+### Fixed
+
+- **`reconcile` no longer uses up the CourtListener daily request budget on
+  placeholder entries that never fill in.** The placeholder re-check fetched
+  every pending stub on every run for 7 days, so each one that never filled
+  in cost 24 requests a day on an hourly timer. On 2026-10-07 five such stubs
+  (E.D.N.Y. 1:23-cr-00324 and 1:25-cr-00381, C.D. Cal. 2:25-cv-04631) used
+  about 120 of the free tier's 125 daily requests, so later work — including
+  a manual `summarize` — hit the limit. Placeholder re-checks now back off the
+  same way the summary-document re-checks do: the first comes about an hour
+  after the stub arrives, then each wait doubles, so a stub that never fills
+  in costs about seven requests over the 7-day window instead of 168. A stub
+  that does fill in is still caught within a few hours.
+
 ## [0.19.5] - 2026-10-07
 
 ### Fixed

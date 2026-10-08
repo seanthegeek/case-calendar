@@ -9,11 +9,12 @@ short-circuit, the entry-fingerprint dedup, and reschedule/cancel flows.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from case_calendar import llm as llm_mod
+from case_calendar import store as store_mod
 from case_calendar.store import Store
 from case_calendar.sync import (
     CaseConfig,
@@ -5569,7 +5570,19 @@ class TestReconcilePlaceholders:
             monkeypatch, by_entry={eid: [{"type": "IGNORE", "reason": "stub"}]}
         )
         CaseSyncer(cl, store).sync_case(case)
+        # In production the webhook stores the stub moments after
+        # CourtListener creates it (date_modified 10:53 PDT = 17:53 UTC);
+        # the seeding sync above stamped real wall-clock time instead.
+        store.conn.execute(
+            "UPDATE entries SET processed_at='2026-05-20T17:54:00+00:00' "
+            "WHERE entry_id=?",
+            (eid,),
+        )
+        store.conn.commit()
         return cl
+
+    # An hour and a bit after the stub was stored: the first re-check is due.
+    _DUE = datetime(2026, 5, 20, 19, 0, tzinfo=timezone.utc)
 
     def test_enriched_placeholder_reschedules(self, store, case, monkeypatch):
         self._seed_placeholder(store, case, monkeypatch)
@@ -5600,7 +5613,7 @@ class TestReconcilePlaceholders:
             entry_by_id={42: _enriched_entry(42)},
         )
         stats = CaseSyncer(cl, store).reconcile_placeholders(
-            case, filed_after="2026-04-01"
+            case, filed_after="2026-04-01", now=self._DUE
         )
 
         assert stats["checked"] == 1
@@ -5626,7 +5639,7 @@ class TestReconcilePlaceholders:
             entry_by_id={42: _placeholder_entry(42)},
         )
         stats = CaseSyncer(cl, store).reconcile_placeholders(
-            case, filed_after="2026-04-01"
+            case, filed_after="2026-04-01", now=self._DUE
         )
         assert stats["checked"] == 1
         # Re-fetched, but the fingerprint matched so process_entry no-oped
@@ -5634,6 +5647,43 @@ class TestReconcilePlaceholders:
         assert stats["entries_processed"] == 0
         assert stats["actions"] == 0
         assert store.get_deadlines("us-v-x") == []
+
+    def test_placeholder_not_due_is_not_fetched(self, store, case, monkeypatch):
+        # Stored a minute ago: inside the one-hour floor, so no request.
+        self._seed_placeholder(store, case, monkeypatch)
+        cl = FakeCourtListener(dockets={100: _docket()})
+        stats = CaseSyncer(cl, store).reconcile_placeholders(
+            case,
+            filed_after="2026-04-01",
+            now=datetime(2026, 5, 20, 18, 30, tzinfo=timezone.utc),
+        )
+        assert stats["checked"] == 0
+        assert [c for c in cl.calls if c[0] == "docket_entry"] == []
+
+    def test_unchanged_placeholder_backs_off(self, store, case, monkeypatch):
+        # The 2026-10-07 budget drain: a stub that never fills in was fetched
+        # on every hourly run. Each unchanged re-check now doubles the wait.
+        self._seed_placeholder(store, case, monkeypatch)
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entry_by_id={42: _placeholder_entry(42)}
+        )
+        syncer = CaseSyncer(cl, store)
+        fetched_at: list[str] = []
+        clock = datetime(2026, 5, 20, 18, 0, tzinfo=timezone.utc)
+        for _ in range(7 * 24):  # a week of hourly runs
+            clock += timedelta(hours=1)
+            monkeypatch.setattr(
+                store_mod, "_now", lambda c=clock: c.isoformat(), raising=True
+            )
+            stats = syncer.reconcile_placeholders(
+                case, filed_after="2026-04-01", now=clock
+            )
+            if stats["checked"]:
+                fetched_at.append(clock.isoformat())
+        # Hourly checking would be 168 requests; doubling waits give seven,
+        # at about 1h, 3h, 7h, 15h, 31h, 63h and 127h after the stub arrived.
+        assert len(fetched_at) == 7, fetched_at
+        assert fetched_at[0] == "2026-05-20T19:00:00+00:00"
 
     def test_age_cutoff_excludes_old_placeholders(self, store, case, monkeypatch):
         # An old stub is outside the filed_after window, so it's never
@@ -5834,6 +5884,17 @@ class TestIsRecheckDue:
             )
             is True
         )
+
+    def test_timestamp_start_for_placeholders(self):
+        # The placeholder sweep starts the clock at the entry's date_modified
+        # (a full timestamp), so a stub stored a minute after CourtListener
+        # created it is first re-checked an hour later, not a day later.
+        started = "2026-10-07T10:53:00-07:00"  # 17:53 UTC
+        last = "2026-10-07T17:54:00+00:00"
+        before = datetime(2026, 10, 7, 18, 30, tzinfo=timezone.utc)
+        after = datetime(2026, 10, 7, 18, 55, tzinfo=timezone.utc)
+        assert is_recheck_due(started, last, before) is False
+        assert is_recheck_due(started, last, after) is True
 
     def test_naive_last_checked_is_read_as_utc(self):
         assert is_recheck_due("2026-10-01", "2026-10-05T00:00:00", self._NOW) is False

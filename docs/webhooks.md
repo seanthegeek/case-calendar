@@ -181,9 +181,10 @@ enrichment of an entry it already delivered (see
 [Polling, webhooks, and reconcile](#polling-webhooks-and-reconcile)). A
 `reconcile` timer fills that gap cheaply — it re-checks only the entries that
 arrived as placeholders, plus summary documents whose PDF hasn't been bought
-into RECAP yet (on a backoff), so it costs a handful of CourtListener
-requests per run regardless of caseload. Run it as an unprivileged `oneshot`
-on a timer, under the same service user as `serve`.
+into RECAP yet, each on a backoff that doubles the wait after every check, so
+it costs a handful of CourtListener requests per run regardless of caseload.
+Run it as an unprivileged `oneshot` on a timer, under the same service user as
+`serve`.
 
 **Write the service** to `/etc/systemd/system/case-calendar-reconcile.service`:
 
@@ -395,8 +396,9 @@ poll re-reads it.
 Reconciling that enrichment is the job of polling — and `reconcile` does it
 cheaply. Instead of re-checking every docket like a full `sync`, it
 re-fetches only the entries that arrived as placeholders (one CourtListener
-request each), so its cost scales with recent filing activity, not caseload
-size. The same gap applies when someone later buys a document from PACER —
+request per check, with the wait doubling after each check), so its cost
+scales with recent filing activity, not caseload size. The same gap applies
+when someone later buys a document from PACER —
 a court opinion, say, whose docket text arrived complete but whose PDF
 wasn't on RECAP yet — so `reconcile` also re-checks those documents, with a
 backoff that spaces the checks further apart each time. The recommended

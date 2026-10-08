@@ -765,9 +765,10 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     `serve` never sees the enriched entry and the per-docket short-circuit
     can take until the next full `sync` to notice. This command closes that
     gap without the per-docket cost of a full sync: it re-fetches only the
-    pending placeholders (by entry id, one request each), so its cost scales
-    with recent filing activity, not with the size of the caseload. It also
-    re-checks, on a doubling backoff, summary documents whose PDF wasn't on
+    pending placeholders (by entry id, one request per check, on a doubling
+    backoff), so its cost scales with recent filing activity, not with the
+    size of the caseload. It also re-checks, on the same backoff, summary
+    documents whose PDF wasn't on
     RECAP when stored — a later PACER purchase sends no webhook either, and
     picking it up lets the summary read and link the document. Intended
     to run on a frequent cheap cron alongside `serve`, with the full `sync`
