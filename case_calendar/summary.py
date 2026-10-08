@@ -2929,6 +2929,11 @@ def summarize_docket(
     }
 
 
+def docket_numbers_on_case(store: Store, case: CaseConfig) -> list[str]:
+    """The PACER docket numbers :func:`summarize_case` would summarize."""
+    return [number for number, _, _ in _group_dockets_on_case(store, case)]
+
+
 def _group_dockets_on_case(
     store: Store, case: CaseConfig
 ) -> list[tuple[str, str, int]]:
@@ -3063,6 +3068,7 @@ def summarize_case(
     model: Optional[str] = None,
     allow_ocr: bool = True,
     force: bool = False,
+    docket_number: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """Summarize every logical PACER docket on a case.
 
@@ -3070,19 +3076,21 @@ def summarize_case(
     group are summarized once — entries are pooled across siblings. With
     ``force=False`` (the default), groups that already have a summary
     row are skipped. Pass ``force=True`` after a model upgrade or prompt
-    change to overwrite.
+    change to overwrite. Pass ``docket_number`` to summarize only the
+    group(s) with that PACER docket number — one docket of a multi-docket
+    case, without spending LLM calls or CourtListener requests on the rest.
     """
     out: list[dict[str, Any]] = []
-    for docket_number, court_id, canonical_docket_id in _group_dockets_on_case(
+    for group_number, court_id, canonical_docket_id in _group_dockets_on_case(
         store, case
     ):
-        if not force and store.get_docket_summary(
-            case.case_id, docket_number, court_id
-        ):
+        if docket_number is not None and group_number != docket_number:
+            continue
+        if not force and store.get_docket_summary(case.case_id, group_number, court_id):
             log.info(
                 "summary: skipping %s (%s) on case %s — already summarized, "
                 "pass force=True to overwrite",
-                docket_number,
+                group_number,
                 court_id,
                 case.case_id,
             )

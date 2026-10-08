@@ -765,9 +765,10 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     `serve` never sees the enriched entry and the per-docket short-circuit
     can take until the next full `sync` to notice. This command closes that
     gap without the per-docket cost of a full sync: it re-fetches only the
-    pending placeholders (by entry id, one request each), so its cost scales
-    with recent filing activity, not with the size of the caseload. It also
-    re-checks, on a doubling backoff, summary documents whose PDF wasn't on
+    pending placeholders (by entry id, one request per check, on a doubling
+    backoff), so its cost scales with recent filing activity, not with the
+    size of the caseload. It also re-checks, on the same backoff, summary
+    documents whose PDF wasn't on
     RECAP when stored — a later PACER purchase sends no webhook either, and
     picking it up lets the summary read and link the document. Intended
     to run on a frequent cheap cron alongside `serve`, with the full `sync`
@@ -1083,7 +1084,9 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     into ``index.html`` on the next emit.
 
     Existing summary rows are reused unless ``--force`` is passed; primary
-    documents are stable, so re-running cheaply is the default.
+    documents are stable, so re-running cheaply is the default. ``--docket``
+    narrows the run to one PACER docket number, so a multi-docket case can
+    have one summary regenerated without touching the others.
     """
     cfg = _load_config(args.config)
     summary_cfg = cfg.get("case_summaries") or {}
@@ -1095,7 +1098,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
         )
         return 2
 
-    from .summary import summarize_case
+    from .summary import docket_numbers_on_case, summarize_case
 
     cases = _cases_from_config(cfg)
     raw_cases = {c["id"]: c for c in cfg["cases"]}
@@ -1110,6 +1113,21 @@ def cmd_summarize(args: argparse.Namespace) -> int:
     allow_ocr = bool(summary_cfg.get("allow_ocr", True))
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
+    docket = getattr(args, "docket", None)
+    if docket:
+        numbers = {c.case_id: docket_numbers_on_case(store, c) for c in cases}
+        matching = [c for c in cases if docket in numbers[c.case_id]]
+        if not matching:
+            known = sorted({n for ns in numbers.values() for n in ns})
+            print(
+                f"no docket {docket!r} on "
+                + (f"case {args.case!r}" if args.case else "any configured case")
+                + (f"; known dockets: {', '.join(known)}" if known else ""),
+                file=sys.stderr,
+            )
+            store.close()
+            return 2
+        cases = matching
     _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
@@ -1126,6 +1144,7 @@ def cmd_summarize(args: argparse.Namespace) -> int:
                 model=model,
                 allow_ocr=allow_ocr,
                 force=args.force,
+                docket_number=docket,
             )
             for row in written:
                 print(
@@ -1540,6 +1559,11 @@ def main(argv: list[str] | None = None) -> int:
     p_summarize.add_argument(
         "--case",
         help="only summarize this case_id",
+    )
+    p_summarize.add_argument(
+        "--docket",
+        help="only summarize this PACER docket number (e.g. 26-1049) — one "
+        "docket of a multi-docket case; combine with --force to regenerate",
     )
     p_summarize.add_argument(
         "--force",

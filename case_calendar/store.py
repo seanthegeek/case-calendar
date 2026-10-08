@@ -1021,7 +1021,9 @@ class Store:
         ``sync.is_pending_enrichment`` to the parsed ``recap_documents`` to
         decide which are genuinely pending an upstream document. Scoped by
         ``filed_after`` (an ISO date) so only recent stubs are returned,
-        never every paperless entry ever stored.
+        never every paperless entry ever stored. ``date_modified`` and
+        ``processed_at`` come back for the caller's re-check backoff
+        (``sync.is_recheck_due``).
         """
         ids = list(docket_ids)
         if not ids:
@@ -1029,7 +1031,8 @@ class Store:
         placeholders = ",".join("?" for _ in ids)
         rows = self.conn.execute(
             f"""
-            SELECT docket_id, entry_id, recap_documents
+            SELECT docket_id, entry_id, date_filed, date_modified,
+                   recap_documents, processed_at
             FROM entries
             WHERE docket_id IN ({placeholders})
               AND date_filed >= ?

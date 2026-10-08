@@ -373,31 +373,43 @@ def is_pending_document(entry: dict[str, Any]) -> bool:
 _MIN_RECHECK_INTERVAL = timedelta(hours=1)
 
 
+def _parse_utc(value: str) -> datetime:
+    """Parse an ISO date or datetime; a bare date is midnight UTC, and a
+    datetime without an offset is read as UTC. Raises ``ValueError``."""
+    if len(value) == 10:
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    parsed = datetime.fromisoformat(value)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
 def is_recheck_due(
-    date_filed: Optional[str], last_checked: Optional[str], now: datetime
+    started: Optional[str], last_checked: Optional[str], now: datetime
 ) -> bool:
-    """True when a pending document entry is due for another re-check.
+    """True when a reconcile candidate is due for another re-check.
 
     The wait before the next check equals the entry's age at its last check
     (never less than :data:`_MIN_RECHECK_INTERVAL`), so the interval doubles
-    each time: an entry first stored 6 hours after filing is re-checked at
-    roughly 12h, 24h, 48h, ... — about nine checks across a 90-day window
-    instead of one per reconcile run. That keeps a document that is never
-    bought from spending the CourtListener daily request budget. Age is
-    measured from the start of ``date_filed`` (a date with no time) in UTC.
-    A missing or unparseable timestamp is treated as due, so a bad value
-    costs one request rather than hiding the entry forever.
+    each time: an entry first checked 6 hours after ``started`` is re-checked
+    at roughly 12h, 24h, 48h, ... instead of on every hourly reconcile run.
+    ``started`` is when the entry's clock starts — the pending-document sweep
+    passes ``date_filed`` (a bare date, read as midnight UTC), the
+    placeholder sweep passes the entry's ``date_modified`` timestamp so a
+    fresh stub is still re-checked about an hour after it arrives. Without
+    the backoff, every pending entry costs one CourtListener request per run:
+    on 2026-10-07, five placeholder stubs that never filled in (E.D.N.Y.
+    1:23-cr-00324 and 1:25-cr-00381, C.D. Cal. 2:25-cv-04631) were fetched
+    about 27 times each in 24 hours — nearly the whole 125-request daily
+    budget. A missing or unparseable timestamp is treated as due, so a bad
+    value costs one request rather than hiding the entry forever.
     """
-    if not date_filed or not last_checked:
+    if not started or not last_checked:
         return True
     try:
-        filed = datetime.fromisoformat(date_filed[:10]).replace(tzinfo=timezone.utc)
-        last = datetime.fromisoformat(last_checked)
+        start = _parse_utc(started)
+        last = _parse_utc(last_checked)
     except ValueError:
         return True
-    if last.tzinfo is None:
-        last = last.replace(tzinfo=timezone.utc)
-    wait = max(last - filed, _MIN_RECHECK_INTERVAL)
+    wait = max(last - start, _MIN_RECHECK_INTERVAL)
     return now - last >= wait
 
 
@@ -1984,13 +1996,16 @@ class CaseSyncer:
         flips the summary stale via the upsert chokepoint); if not, the
         fingerprint matches and it's a no-op.
 
-        Cost is one CourtListener request per pending placeholder —
+        Cost is one CourtListener request per pending placeholder that is due —
         O(pending placeholders), independent of the docket count — so it
         scales with filing activity like the webhook path, not with the
         size of the caseload like a full per-docket poll. ``filed_after``
         (an ISO date the caller derives from an age cutoff) bounds the
         retries so a stub that never enriches drops out of scope rather
-        than being re-checked forever.
+        than being re-checked forever. Within that window,
+        :func:`is_recheck_due` spaces the re-checks out (doubling interval,
+        measured from the entry's ``date_modified``), so a stub that never
+        fills in costs a handful of requests rather than one per run.
 
         When ``document_filed_after`` is given, the sweep also re-checks
         pending document entries (see :func:`is_pending_document`): entries
@@ -2008,6 +2023,7 @@ class CaseSyncer:
             "entries_processed": 0,
             "actions": 0,
         }
+        current = now or datetime.now(timezone.utc)
         rows = self.store.get_empty_body_entries_since(
             case.dockets, filed_after=filed_after
         )
@@ -2019,15 +2035,23 @@ class CaseSyncer:
             docs = json.loads(row["recap_documents"])
             if not is_pending_enrichment({"description": "", "recap_documents": docs}):
                 continue
+            # Back off from when CourtListener last changed the entry, so a
+            # fresh stub is still re-checked within about an hour but one
+            # that never fills in stops costing a request every run.
+            started = row["date_modified"] or row["date_filed"]
+            if not is_recheck_due(started, row["processed_at"], current):
+                continue
             stats["checked"] += 1
             entry = self.cl.get_docket_entry(row["entry_id"])
             self.process_entry(case, row["docket_id"], entry, stats=stats)
             with self.store.tx() as _:
-                pass  # commit per entry so partial progress sticks
+                # Commit per entry so partial progress sticks, and advance the
+                # backoff clock (process_entry skips mark_entry when nothing
+                # changed).
+                self.store.mark_entry_checked(row["docket_id"], row["entry_id"])
 
         if document_filed_after is None:
             return stats
-        current = now or datetime.now(timezone.utc)
         rows = self.store.get_bodied_document_entries_since(
             case.dockets, filed_after=document_filed_after
         )
