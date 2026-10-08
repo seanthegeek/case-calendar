@@ -19,6 +19,7 @@ import pytest
 import yaml
 
 from case_calendar import cli
+from case_calendar.store import Store
 from .conftest import must
 from case_calendar.cli import (
     _cases_from_config,
@@ -3187,6 +3188,75 @@ class TestCmdSummarizeCoverage:
         assert cmd_summarize(args) == 0
         # summarize_case returned [] -> affected_calendars empty -> no emit.
         assert emit_calls == []
+
+    def _enable_and_seed(self, cfg_file, monkeypatch):
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        seed = Store(cfg["store_path"])
+        seed.upsert_docket_meta(100, {"docket_number": "26-1049", "court_id": "cadc"})
+        seed.conn.commit()
+        seed.close()
+
+    def test_docket_filter_is_passed_through(self, cfg_file, fake_cl_ctx, monkeypatch):
+        self._enable_and_seed(cfg_file, monkeypatch)
+        from case_calendar import summary as summary_mod
+
+        seen: list[Any] = []
+        monkeypatch.setattr(
+            summary_mod,
+            "summarize_case",
+            lambda **kw: seen.append((kw["case"].case_id, kw["docket_number"])) or [],
+        )
+        # No --case: the docket number alone picks the case that has it.
+        args = Namespace(
+            config=str(cfg_file),
+            case=None,
+            docket="26-1049",
+            force=True,
+            no_emit=True,
+        )
+        assert cmd_summarize(args) == 0
+        assert seen == [("us-v-x", "26-1049")]
+
+    def test_unknown_docket_returns_2_and_lists_known(
+        self, cfg_file, fake_cl_ctx, monkeypatch, capsys
+    ):
+        self._enable_and_seed(cfg_file, monkeypatch)
+        from case_calendar import summary as summary_mod
+
+        def boom(**_):
+            raise AssertionError("must not summarize anything")
+
+        monkeypatch.setattr(summary_mod, "summarize_case", boom)
+        args = Namespace(
+            config=str(cfg_file),
+            case="us-v-x",
+            docket="26-9999",
+            force=True,
+            no_emit=True,
+        )
+        assert cmd_summarize(args) == 2
+        err = capsys.readouterr().err
+        assert "no docket '26-9999' on case 'us-v-x'" in err
+        assert "known dockets: 26-1049" in err
+
+    def test_unknown_docket_without_case_or_known_dockets(
+        self, cfg_file, fake_cl_ctx, monkeypatch, capsys
+    ):
+        # Nothing synced yet: no known dockets to list.
+        cfg = yaml.safe_load(cfg_file.read_text())
+        cfg["case_summaries"] = {"enabled": True}
+        cfg_file.write_text(yaml.safe_dump(cfg))
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        args = Namespace(
+            config=str(cfg_file), case=None, docket="26-1049", force=True, no_emit=True
+        )
+        assert cmd_summarize(args) == 2
+        err = capsys.readouterr().err
+        assert "no docket '26-1049' on any configured case" in err
+        assert "known dockets" not in err
 
     def test_no_emit_flag_short_circuits_even_when_summaries_written(
         self,

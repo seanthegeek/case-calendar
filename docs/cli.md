@@ -160,11 +160,14 @@ a new primary document or disposition lands.
 
 ```bash
 uv run case-calendar summarize
+# regenerate just one docket of a multi-docket case:
+uv run case-calendar summarize --case anthropic-v-dow --docket 26-1049 --force
 ```
 
 | Flag | Purpose |
 | --- | --- |
 | `--case <case_id>` | Summarize only this one case. |
+| `--docket <number>` | Summarize only the docket with this PACER docket number (for example `26-1049`), leaving the case's other dockets alone — no LLM calls or CourtListener requests are spent on them. Works with or without `--case`; an unknown number exits with the list of known dockets. Combine with `--force` to regenerate an existing summary. |
 | `--force` | Regenerate even when a summary row already exists. Use after a model or prompt change. |
 | `--no-emit` | Skip the index.html re-emit after writing. |
 

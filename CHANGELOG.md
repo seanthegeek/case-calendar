@@ -24,6 +24,16 @@ adheres to [Semantic Versioning][semver].
   in costs about seven requests over the 7-day window instead of 168. A stub
   that does fill in is still caught within a few hours.
 
+### Added
+
+- **`summarize --docket <number>` regenerates one docket of a multi-docket
+  case.** `--case` alone summarizes every docket on the case — on Anthropic
+  v. Department of War that's the district case and two appellate dockets —
+  even when only one needs refreshing. `--docket 26-1049 --force`
+  regenerates just that docket's summary, so the others spend no LLM calls or
+  CourtListener requests. It works with or without `--case`; an unknown docket
+  number exits with the list of known dockets.
+
 ## [0.19.5] - 2026-10-07
 
 ### Fixed

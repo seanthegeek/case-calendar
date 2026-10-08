@@ -3770,6 +3770,44 @@ class TestSummarizeCase:
             == "A two-sentence summary of the matter."
         )
 
+    def test_docket_number_limits_to_one_docket(self, store, monkeypatch):
+        # A multi-docket case (district + appellate): --docket regenerates
+        # only the named docket, leaving the other untouched.
+        _seed_docket_meta(store, 1)
+        _seed_docket_meta(store, 2, court_id="cadc", docket_number="26-1049")
+        called: list[int] = []
+        monkeypatch.setattr(
+            summary,
+            "summarize_docket",
+            lambda **kw: (
+                called.append(kw["docket_id"])
+                or {"docket_number": "26-1049", "court_id": "cadc", "summary": "s"}
+            ),
+        )
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1, 2], calendar="cyber"
+        )
+        rows = summarize_case(
+            cl=_FakeCourtListener({}),
+            store=store,
+            case=case,
+            force=True,
+            docket_number="26-1049",
+        )
+        assert called == [2]
+        assert [r["docket_number"] for r in rows] == ["26-1049"]
+
+    def test_docket_numbers_on_case(self, store):
+        _seed_docket_meta(store, 1)
+        _seed_docket_meta(store, 2, court_id="cadc", docket_number="26-1049")
+        case = _Case(
+            case_id="us-v-doe", name="US v. Doe", dockets=[1, 2], calendar="cyber"
+        )
+        assert summary.docket_numbers_on_case(store, case) == [
+            "1:24-cr-100",
+            "26-1049",
+        ]
+
     def test_default_skips_when_summary_already_present(
         self,
         store,
