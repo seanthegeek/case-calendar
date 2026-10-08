@@ -1056,11 +1056,14 @@ Rules:
   statement (the indictment / superseding indictment for the charges; the
   judgment for the sentence; the verdict for a conviction or acquittal; the
   order of dismissal for a dismissal; the plea agreement or judgment for a
-  plea). If you are unsure which document supports a statement, leave the
+  plea; the opinion for who wrote it and for a dissent or concurrence). If
+  you are unsure which document supports a statement, leave the
   phrase unlinked — unlinked prose is always acceptable.
 - Link the latest governing document: when multiple charging documents are
   present, link the charges to the operative (most recent superseding) one.
 - At most one link per statement; do not link the same document repeatedly.
+  The one exception is naming a separate opinion, its author, and any dissent
+  or concurrence, described under "one ruling is one statement" below.
 - These ``[phrase](doc:Dn)`` markers are the ONLY markdown allowed; everything
   else stays plain prose. Do NOT write out raw URLs (the "do not include URLs"
   rule below still holds — you write the token, the system fills in the link).
@@ -1079,6 +1082,17 @@ restating a ruling: when one decision is spread across an opinion and the order
 implementing it, pick the single most operative document for the link (prefer
 the order / judgment that carries legal effect over the explanatory opinion)
 and let the sentence read as one event.
+- Naming the opinion is NOT restating the ruling. When the opinion is its own
+  document and your sentence already says who wrote it, or mentions a dissent
+  or concurrence, link that naming phrase to the opinion document, while the
+  ruling's action words keep their link to the order / judgment:
+      the court [denied the petitions for review](doc:D2) in an
+      [opinion by Judge Smith](doc:D3), over a
+      [dissent by Judge Jones](doc:D3)
+  A dissent or concurrence printed in the same document as the majority
+  opinion links to that same document. Only link a name the sentence already
+  carries — never add an author, dissent, or concurrence clause just to make
+  room for a link, and never name a judge the documents don't identify.
 - BAD:  "the court granted a preliminary injunction on March 26, 2026, finding
         the action likely unlawful, and the accompanying preliminary injunction
         order enjoins defendants from implementing the directive" (the grant and
