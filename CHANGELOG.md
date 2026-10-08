@@ -8,6 +8,26 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.19.5] - 2026-10-07
+
+### Fixed
+
+- **A dissent printed in the same document as the majority opinion no longer
+  gets its own, repeated link.** 0.19.4 linked both "opinion by Judge Katsas"
+  and "dissent by Judge Henderson" in the D.C. Cir. 26-1049 summary, but the
+  two are one 51-page PDF (the dissent begins on page 44), so both links went
+  to the same file. The summary prompt now links each document once: the
+  phrase naming the opinion's author carries the link, and a dissent or
+  concurrence is linked separately only when it is filed as its own document.
+
+### Documentation
+
+- `docs/case-summaries.md` now explains how a ruling with a separate opinion
+  is linked (the ruling to the judgment or order, the opinion's author to the
+  opinion, each document once), and that a document bought into RECAP after
+  it was docketed also triggers a summary refresh once `reconcile` sees it
+  (behavior added in 0.19.3).
+
 ## [0.19.4] - 2026-10-07
 
 ### Fixed
