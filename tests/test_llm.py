@@ -3694,13 +3694,20 @@ class TestSummaryPromptSingleRuling:
 
         norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
         assert "Naming the opinion is NOT restating the ruling" in norm
-        assert "[opinion by Judge Smith](doc:D3)" in norm
-        assert "[dissent by Judge Jones](doc:D3)" in norm
+        assert "[opinion by Judge Smith](doc:D3), over a dissent by Judge Jones" in norm
+        # 26-1049's dissent is printed in the same PDF as the majority (pages
+        # 44-51 of 51), so it shares the opinion's single link rather than
+        # repeating it; only a separately filed dissent gets its own link.
+        assert "[dissent by Judge Jones]" not in norm
+        assert "Link each document once" in norm
+        assert "is covered by the opinion's link — leave it unlinked" in norm
+        assert "only when it is its own separate document" in norm
         # No invented clauses or judges just to make room for a link.
         assert "never add an author, dissent, or concurrence clause" in norm
         assert "never name a judge the documents don't identify" in norm
         # The one-link-per-statement rule names the exception.
         assert "The one exception is naming a separate opinion" in norm
+        assert "each document is linked only once" in norm
         # Real judges' names stay out of the prompt's examples.
         assert "Katsas" not in norm and "Henderson" not in norm
 
