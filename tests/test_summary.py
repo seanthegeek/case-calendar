@@ -326,6 +326,46 @@ class TestDispositionDetection:
         assert not is_disposition({"description": description})
 
 
+class TestIsSummaryDocument:
+    """``is_summary_document`` = the find_primary_documents classification
+    (primary OR strict disposition document), used by the reconcile sweep."""
+
+    def test_primary_document(self):
+        assert summary.is_summary_document(
+            {"description": "INDICTMENT as to John Doe", "recap_documents": []}
+        )
+
+    def test_opinion(self):
+        assert summary.is_summary_document(
+            {
+                "description": "OPINION [2194984] filed (Pages: 43) for the "
+                "Court by Judge Katsas",
+                "recap_documents": [],
+            }
+        )
+
+    def test_judgment_matched_by_document_description(self):
+        # D.C. Cir. 26-1049: the entry text leads with "PER CURIAM", but the
+        # recap_document's own label is a judgment.
+        assert summary.is_summary_document(
+            {
+                "description": "PER CURIAM JUDGMENT [2194982] filed that the "
+                "petitions for review be denied",
+                "recap_documents": [
+                    {"description": "Judgment w/Opinion Filed (Merits Panel)"}
+                ],
+            }
+        )
+
+    def test_motion_is_not(self):
+        assert not summary.is_summary_document(
+            {
+                "description": "MOTION for Preliminary Injunction by Acme",
+                "recap_documents": [],
+            }
+        )
+
+
 class TestDispositionDocumentDetection:
     """The stricter sibling of ``is_disposition`` used inside
     ``find_primary_documents`` to pick which documents reach the LLM.

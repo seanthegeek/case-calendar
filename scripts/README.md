@@ -206,9 +206,10 @@ Run `case-calendar reconcile` on prod over ssh, streaming output back to your
 terminal. Same shape as `sync-prod`, but runs the cheap placeholder re-check
 instead of a full sync — it re-fetches only the entries that arrived as
 placeholders (one CourtListener request each) to pick up the upstream
-enrichment a webhook delivery can't see (see CourtListener issue #7423).
-Forwards extra args (`--case …`, `--days …`). Doesn't stop the service —
-reconcile and serve coexist safely under WAL journaling.
+enrichment a webhook delivery can't see (see CourtListener issue #7423),
+plus summary documents whose PDF has since been bought into RECAP.
+Forwards extra args (`--case …`, `--days …`, `--document-days …`). Doesn't
+stop the service — reconcile and serve coexist safely under WAL journaling.
 
 ```bash
 ./scripts/reconcile-prod

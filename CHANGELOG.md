@@ -8,6 +8,27 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **Case summaries now pick up and link documents bought into RECAP after
+  they were docketed.** A court opinion or other ruling often arrives with
+  its full docket text but no PDF, which appears only later when someone
+  buys it from PACER — and CourtListener sends no webhook for that. The
+  store kept the "not available" copy forever, so the summary was never
+  regenerated and couldn't link the document: the D.C. Circuit's opinion
+  and dissent in Anthropic v. Department of War (26-1049) were named in the
+  summary but not linked. `case-calendar reconcile` now also re-checks
+  documents the summary reads (complaints, indictments, petitions, orders,
+  judgments, opinions) whose PDF isn't on RECAP yet, within a new
+  `--document-days` window (default 90). Re-checks back off — each wait is
+  as long as the entry's age at its last check — so a document that is
+  never bought costs about nine CourtListener requests rather than one per
+  run. Entries the court marks as paperless or text-only are skipped, since
+  there is no PDF to wait for. When the PDF appears, the summary is marked
+  stale and regenerated in the same run.
+
 ## [0.19.2] - 2026-07-27
 
 ### Fixed

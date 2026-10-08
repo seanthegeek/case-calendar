@@ -379,6 +379,19 @@ def _is_disposition_document(entry: dict[str, Any]) -> bool:
     return _entry_matches(entry, _matches_disposition_document)
 
 
+def is_summary_document(entry: dict[str, Any]) -> bool:
+    """True if the summary LLM reads this entry's document.
+
+    The same classification :func:`find_primary_documents` applies: a
+    primary document (indictment / complaint / petition) or a strict
+    disposition document (order / judgment / opinion). Used by the
+    reconcile sweep to decide which not-yet-available documents are worth
+    re-checking — a document the summary reads, once bought into RECAP,
+    gives the summary new text to draw from and a PDF to link.
+    """
+    return is_primary_document(entry) or _is_disposition_document(entry)
+
+
 # ---------------------------------------------------------------------------
 # CourtListener helpers (lightweight wrappers around the existing client)
 # ---------------------------------------------------------------------------

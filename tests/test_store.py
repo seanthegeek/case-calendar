@@ -2907,3 +2907,86 @@ class TestEmptyBodyEntriesSince:
             recap_documents=self._doc(),
         )
         assert store.get_empty_body_entries_since([], filed_after="2026-05-01") == []
+
+
+class TestBodiedDocumentEntriesSince:
+    """The SQL pre-filter for the pending-document half of the reconcile
+    sweep: filled-in body + recent + has-recap_documents. The summary
+    classification and the backoff are applied by the caller.
+    """
+
+    def _doc(self):
+        return [
+            {"id": 9001, "is_available": False, "is_sealed": False, "plain_text": ""}
+        ]
+
+    def test_selects_recent_bodied_entries_with_docs(self, store):
+        # A: wanted — has a body, has docs, recent.
+        store.mark_entry(
+            1,
+            100,
+            "2026-09-25T10:00:00Z",
+            "fpA",
+            date_filed="2026-09-25",
+            description="OPINION filed for the Court by Judge Katsas",
+            recap_documents=self._doc(),
+        )
+        # B: empty body (the placeholder sweep's job) → excluded.
+        store.mark_entry(
+            1,
+            101,
+            "2026-09-25T10:00:00Z",
+            "fpB",
+            date_filed="2026-09-25",
+            description="  ",
+            recap_documents=self._doc(),
+        )
+        # C: fingerprint-only stub (no body, no docs) → excluded.
+        store.mark_entry(1, 102, "2026-09-25T10:00:00Z", "fpC", date_filed="2026-09-25")
+        # D: filed before the window → excluded.
+        store.mark_entry(
+            1,
+            103,
+            "2026-01-01T10:00:00Z",
+            "fpD",
+            date_filed="2026-01-01",
+            description="JUDGMENT",
+            recap_documents=self._doc(),
+        )
+        # E: docket not in the query → excluded.
+        store.mark_entry(
+            2,
+            104,
+            "2026-09-25T10:00:00Z",
+            "fpE",
+            date_filed="2026-09-25",
+            description="JUDGMENT",
+            recap_documents=self._doc(),
+        )
+        rows = store.get_bodied_document_entries_since([1], filed_after="2026-07-01")
+        assert [r["entry_id"] for r in rows] == [100]
+        row = rows[0]
+        assert row["date_filed"] == "2026-09-25"
+        assert row["description"].startswith("OPINION")
+        assert row["recap_documents"] is not None
+        assert row["processed_at"]
+
+    def test_empty_docket_list_returns_empty(self, store):
+        assert (
+            store.get_bodied_document_entries_since([], filed_after="2026-07-01") == []
+        )
+
+
+class TestMarkEntryChecked:
+    def test_advances_processed_at_only(self, store):
+        store.mark_entry(1, 100, "2026-09-25T10:00:00Z", "fp", date_filed="2026-09-25")
+        store.conn.execute(
+            "UPDATE entries SET processed_at='2026-09-25T00:00:00+00:00'"
+        )
+        store.mark_entry_checked(1, 100)
+        row = store.conn.execute(
+            "SELECT processed_at, fingerprint, date_modified FROM entries"
+        ).fetchone()
+        assert row["processed_at"] > "2026-09-25T00:00:00+00:00"
+        assert row["fingerprint"] == "fp"
+        assert row["date_modified"] == "2026-09-25T10:00:00Z"
