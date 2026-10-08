@@ -227,7 +227,7 @@ wheels = [
 
 [[package]]
 name = "case-calendar"
-version = "0.19.3"
+version = "0.19.4"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

@@ -8,7 +8,7 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
-## [Unreleased]
+## [0.19.4] - 2026-10-07
 
 ### Fixed
 
