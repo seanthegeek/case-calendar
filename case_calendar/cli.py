@@ -766,7 +766,10 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
     can take until the next full `sync` to notice. This command closes that
     gap without the per-docket cost of a full sync: it re-fetches only the
     pending placeholders (by entry id, one request each), so its cost scales
-    with recent filing activity, not with the size of the caseload. Intended
+    with recent filing activity, not with the size of the caseload. It also
+    re-checks, on a doubling backoff, summary documents whose PDF wasn't on
+    RECAP when stored — a later PACER purchase sends no webhook either, and
+    picking it up lets the summary read and link the document. Intended
     to run on a frequent cheap cron alongside `serve`, with the full `sync`
     as an infrequent catch-all.
     """
@@ -780,13 +783,20 @@ def cmd_reconcile(args: argparse.Namespace) -> int:
 
     store = Store(cfg.get("store_path", "data/case-calendar.sqlite"))
     filed_after = (date.today() - timedelta(days=args.days)).isoformat()
+    document_filed_after = (
+        date.today() - timedelta(days=args.document_days)
+    ).isoformat()
 
     _log_llm_setup(cfg)
     affected_calendars: set[str] = set()
     with CourtListener() as cl:
         syncer = CaseSyncer(cl, store)
         for case in cases:
-            stats = syncer.reconcile_placeholders(case, filed_after=filed_after)
+            stats = syncer.reconcile_placeholders(
+                case,
+                filed_after=filed_after,
+                document_filed_after=document_filed_after,
+            )
             print(
                 f"[{case.case_id}] checked={stats['checked']} "
                 f"processed={stats['entries_processed']} "
@@ -1475,6 +1485,14 @@ def main(argv: list[str] | None = None) -> int:
         default=7,
         help="only re-check placeholder entries filed within this many days "
         "(default 7) — bounds retries on stubs that never enrich",
+    )
+    p_reconcile.add_argument(
+        "--document-days",
+        type=int,
+        default=90,
+        help="re-check summary documents (complaints, indictments, opinions, "
+        "judgments) whose PDF isn't on RECAP yet if filed within this many "
+        "days (default 90); re-checks back off, doubling the wait each time",
     )
     p_reconcile.add_argument(
         "--no-emit",

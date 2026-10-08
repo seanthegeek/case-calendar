@@ -10,6 +10,7 @@ import argparse
 import io
 import urllib.error
 from argparse import Namespace
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -1466,7 +1467,9 @@ class TestCmdSync:
 
 class TestCmdReconcile:
     def test_unknown_case_id_returns_2(self, cfg_file):
-        args = Namespace(config=str(cfg_file), case="nope", days=7, no_emit=False)
+        args = Namespace(
+            config=str(cfg_file), case="nope", days=7, document_days=90, no_emit=False
+        )
         assert cmd_reconcile(args) == 2
 
     def test_case_filter_scopes_to_one_case(self, cfg_file, fake_cl_ctx, monkeypatch):
@@ -1481,9 +1484,35 @@ class TestCmdReconcile:
 
         monkeypatch.setattr(cli.CaseSyncer, "reconcile_placeholders", _fake_reconcile)
         monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
-        args = Namespace(config=str(cfg_file), case="us-v-x", days=7, no_emit=False)
+        args = Namespace(
+            config=str(cfg_file), case="us-v-x", days=7, document_days=90, no_emit=False
+        )
         assert cmd_reconcile(args) == 0
         assert seen == ["us-v-x"]
+
+    def test_passes_document_window(self, cfg_file, fake_cl_ctx, monkeypatch):
+        # --document-days becomes the pending-document window, separate from
+        # (and longer than) the placeholder window from --days.
+        monkeypatch.setattr(cli.llmkit, "provider_info", lambda: "fake/model")
+        seen: list[dict[str, Any]] = []
+
+        def _fake_reconcile(self, case, **kw):
+            seen.append(kw)
+            return {"checked": 0, "entries_processed": 0, "actions": 0}
+
+        monkeypatch.setattr(cli.CaseSyncer, "reconcile_placeholders", _fake_reconcile)
+        monkeypatch.setattr(cli, "emit_calendars", lambda *a, **kw: {})
+        args = Namespace(
+            config=str(cfg_file), case="us-v-x", days=7, document_days=90, no_emit=True
+        )
+        assert cmd_reconcile(args) == 0
+        today = date.today()
+        assert seen == [
+            {
+                "filed_after": (today - timedelta(days=7)).isoformat(),
+                "document_filed_after": (today - timedelta(days=90)).isoformat(),
+            }
+        ]
 
     def test_runs_reconcile_and_emits_on_actions(
         self, cfg_file, fake_cl_ctx, monkeypatch, capsys
@@ -1500,7 +1529,9 @@ class TestCmdReconcile:
             "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
-        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=False)
+        args = Namespace(
+            config=str(cfg_file), case=None, days=7, document_days=90, no_emit=False
+        )
         assert cmd_reconcile(args) == 0
         assert emit_calls == [{"cyber"}]
         out = capsys.readouterr().out
@@ -1527,7 +1558,9 @@ class TestCmdReconcile:
             "emit_calendars",
             lambda *a, **kw: emit_calls.append(kw.get("only_calendars")) or {},
         )
-        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=False)
+        args = Namespace(
+            config=str(cfg_file), case=None, days=7, document_days=90, no_emit=False
+        )
         assert cmd_reconcile(args) == 0
         assert emit_calls == [set()]
 
@@ -1546,7 +1579,9 @@ class TestCmdReconcile:
         monkeypatch.setattr(
             cli, "emit_calendars", lambda *a, **kw: called.append(1) or {}
         )
-        args = Namespace(config=str(cfg_file), case=None, days=7, no_emit=True)
+        args = Namespace(
+            config=str(cfg_file), case=None, days=7, document_days=90, no_emit=True
+        )
         assert cmd_reconcile(args) == 0
         assert called == []
 

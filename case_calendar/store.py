@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS entries (
     description TEXT,            -- raw entry text; used to resolve cross-refs
     short_description TEXT,
     recap_documents TEXT,        -- JSON list of attached docs; surfaced as URLs in event description
-    processed_at TEXT NOT NULL,
+    processed_at TEXT NOT NULL,  -- last processed OR last re-checked by reconcile (its backoff clock)
     PRIMARY KEY (docket_id, entry_id)
 );
 
@@ -1040,6 +1040,51 @@ class Store:
             (*ids, filed_after),
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_bodied_document_entries_since(
+        self, docket_ids: Iterable[int], *, filed_after: str
+    ) -> list[dict[str, Any]]:
+        """Stored entries on these dockets, filed on/after ``filed_after``,
+        whose ``description`` is filled in and that carry recap_documents.
+
+        The SQL pre-filter for the pending-document half of the reconcile
+        sweep — the complement of :meth:`get_empty_body_entries_since`. The
+        caller applies ``sync.is_pending_document`` (summary-read entry with
+        an unavailable main document) and ``sync.is_recheck_due`` (the
+        doubling backoff, keyed on ``processed_at``) to each row.
+        """
+        ids = list(docket_ids)
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        rows = self.conn.execute(
+            f"""
+            SELECT docket_id, entry_id, date_filed, description,
+                   short_description, recap_documents, processed_at
+            FROM entries
+            WHERE docket_id IN ({placeholders})
+              AND date_filed >= ?
+              AND recap_documents IS NOT NULL
+              AND description IS NOT NULL AND TRIM(description) != ''
+            ORDER BY date_filed
+            """,
+            (*ids, filed_after),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_entry_checked(self, docket_id: int, entry_id: int) -> None:
+        """Stamp ``processed_at`` with now after a re-check that found nothing new.
+
+        ``process_entry`` returns early when the fingerprint is unchanged, so
+        ``mark_entry`` never runs and ``processed_at`` would keep the time
+        of the last real change. The reconcile sweep's backoff
+        (``sync.is_recheck_due``) reads ``processed_at`` as "last checked",
+        so a no-op re-check must still move it forward. Does not commit.
+        """
+        self.conn.execute(
+            "UPDATE entries SET processed_at=? WHERE docket_id=? AND entry_id=?",
+            (_now(), docket_id, entry_id),
+        )
 
     def get_case_aggregates(
         self, docket_ids: Iterable[int]

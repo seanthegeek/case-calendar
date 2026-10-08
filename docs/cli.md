@@ -43,7 +43,7 @@ Run on a cron once you're past the initial backfill — every five minutes is
 fine; once an hour is plenty for most cases. Or skip cron entirely and use
 [real-time webhooks](webhooks.md).
 
-## `reconcile` — catch enriched placeholder entries cheaply
+## `reconcile` — catch enriched entries and newly bought documents cheaply
 
 A docket-alert webhook delivers a new entry once, the moment it's docketed —
 often as a stub whose document text isn't available yet (an empty
@@ -58,6 +58,19 @@ it. `reconcile` closes that gap without the per-docket cost of a full
 CourtListener request each, so its cost scales with recent filing activity
 rather than with the size of your caseload.
 
+It also re-checks the documents the [AI case summary](case-summaries.md)
+reads — complaints, indictments, petitions, orders, judgments, opinions —
+when the docket text is filled in but the PDF isn't on RECAP yet. Those
+PDFs often appear later, when someone buys them from PACER, and no webhook
+announces that either. Once the PDF shows up, the summary is regenerated
+so it can read the document and link to it. Entries the court marks as
+having no document at all (paperless or text-only orders) are skipped,
+since there is no PDF to wait for. A purchase can come weeks after filing,
+so these get a longer window, and the re-checks back off: each wait is as
+long as the entry's age at its last check (at least an hour), so a
+document that is never bought costs about nine requests over 90 days
+rather than one per run.
+
 ```bash
 uv run case-calendar reconcile
 ```
@@ -66,6 +79,7 @@ uv run case-calendar reconcile
 | --- | --- |
 | `--case <case_id>` | Reconcile only this one case. |
 | `--days <n>` | Only re-check placeholder entries filed within this many days (default 7). Bounds retries on stubs that never enrich — a placeholder older than the window drops out of scope. |
+| `--document-days <n>` | Only re-check summary documents whose PDF isn't on RECAP yet if filed within this many days (default 90). |
 | `--no-emit` | Skip the auto-emit at the end of the reconcile. |
 
 When a placeholder has enriched, the re-fetch re-runs the normal pipeline:
