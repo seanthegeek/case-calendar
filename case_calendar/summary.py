@@ -755,11 +755,78 @@ def find_primary_documents_for_group(
         for e in d:
             _take(dispositions_by_key, e)
 
+    _drop_unnumbered_duplicates(primary_by_key)
+    _drop_unnumbered_duplicates(dispositions_by_key)
+
     primary = sorted(primary_by_key.values(), key=lambda e: e.get("date_filed") or "")
     dispositions = sorted(
         dispositions_by_key.values(), key=lambda e: e.get("date_filed") or ""
     )
     return primary, dispositions
+
+
+# The clerk's "[Entered: 09/25/2026 10:51 AM]" / "(Entered: 05/06/2026)" stamp,
+# which one copy of an entry can carry and another lack.
+_ENTERED_STAMP_RE = re.compile(r"[\[(]\s*Entered:[^\])]*[\])]", re.IGNORECASE)
+
+
+def _normalized_entry_description(entry: dict[str, Any]) -> str:
+    """The entry's description with formatting differences removed.
+
+    Drops the clerk's ``Entered:`` stamp and square brackets, collapses
+    whitespace, strips a trailing period, and casefolds — so two copies of
+    one filing that CourtListener rendered slightly differently compare
+    equal. Verbatim from D.C. Cir. 26-1049: ``OPINION 2194984 filed (Pages:
+    43) ... [26-1049, 26-1162]`` and ``OPINION [2194984] filed (Pages: 43)
+    ... [26-1049, 26-1162] [Entered: 09/25/2026 10:51 AM]``.
+    """
+    text = _ENTERED_STAMP_RE.sub(" ", entry.get("description") or "")
+    text = text.replace("[", "").replace("]", "")
+    return _WS_RE.sub(" ", text).strip().rstrip(".").casefold()
+
+
+def _drop_unnumbered_duplicates(by_key: dict[tuple, dict[str, Any]]) -> None:
+    """Remove a number-less entry that duplicates a numbered one, in place.
+
+    CourtListener can hold one filing as two entries on the same docket: the
+    numbered PACER entry, and a copy with no ``entry_number`` whose document
+    has no number or file. :func:`_logical_entry_dedup_key` keys the first by
+    number and the second by description, so both survive — and the summary
+    LLM is handed the filing twice, once without a URL. On D.C. Cir. 26-1049
+    the opinion arrived as entry 1208891909 (the PDF) and as a number-less
+    copy (sealed placeholder document, no PDF) listed ahead of it; the
+    summary described the opinion but left it unlinked.
+
+    A number-less entry is treated as the same filing as a numbered entry
+    filed the same day whose :func:`_normalized_entry_description` matches.
+    The numbered copy is kept, unless only the number-less copy has
+    document text, in which case that copy takes the numbered one's place.
+    """
+    numbered: dict[tuple[str, str], tuple] = {}
+    for key, entry in by_key.items():
+        if key[0] == "num":
+            match = (
+                entry.get("date_filed") or "",
+                _normalized_entry_description(entry),
+            )
+            numbered.setdefault(match, key)
+    for key in [k for k in by_key if k[0] == "desc"]:
+        entry = by_key[key]
+        match = (entry.get("date_filed") or "", _normalized_entry_description(entry))
+        num_key = numbered.get(match)
+        if num_key is None:
+            continue
+        duplicate = by_key.pop(key)
+        if _entry_main_doc_has_plain_text(
+            duplicate
+        ) and not _entry_main_doc_has_plain_text(by_key[num_key]):
+            by_key[num_key] = duplicate
+        log.info(
+            "summary: dropping entry %s as a duplicate of numbered entry %s "
+            "(same date and description)",
+            duplicate.get("id"),
+            num_key[1],
+        )
 
 
 def _entry_main_doc_has_plain_text(entry: dict[str, Any]) -> bool:
@@ -2383,9 +2450,9 @@ def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> st
     A known ref with a URL becomes ``[words](url)`` (the index renderer turns
     that into an ``<a>`` on the words themselves); a known ref with no URL, or
     an unknown ref, collapses back to the bare ``words`` so the prose still
-    reads cleanly. Unknown refs are logged — they mean the model linked a
-    token we never assigned, the link analogue of the grounding guard's
-    warning.
+    reads cleanly. Unknown refs are logged as a warning — they mean the model
+    linked a token we never assigned, the link analogue of the grounding
+    guard's warning — and a known ref with no URL is logged at INFO.
 
     After resolution, :func:`_tidy_link_spans` normalizes each link's span so
     the leading verb is inside and a dangling trailing preposition is outside.
@@ -2404,6 +2471,15 @@ def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> st
             return anchor
         url = link_map[ref]
         if not url:
+            # Expected for paperless orders and verdict forms, but logged so
+            # a link that should have rendered can be traced to the token
+            # the model chose.
+            log.info(
+                "summary: leaving %r unlinked — the model cited document %s, "
+                "which has no public URL",
+                anchor,
+                ref,
+            )
             return anchor
         return f"[{anchor}]({url})"
 

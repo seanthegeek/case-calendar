@@ -1130,6 +1130,115 @@ class TestFindPrimaryDocumentsForGroup:
         assert [e["id"] for e in primary] == [10]
         assert [e["id"] for e in dispositions] == [99]
 
+    # D.C. Cir. 26-1049, verbatim: the opinion as a number-less copy (sealed
+    # placeholder document) and as the numbered entry carrying the PDF.
+    _OPINION_COPY = (
+        "OPINION 2194984 filed (Pages: 43) for the Court by Judge Katsas, "
+        "DISSENTING OPINION (Pages: 8) by Judge Henderson. [26-1049, 26-1162]"
+    )
+    _OPINION_NUMBERED = (
+        "OPINION [2194984] filed (Pages: 43) for the Court by Judge Katsas, "
+        "DISSENTING OPINION (Pages: 8) by Judge Henderson. [26-1049, 26-1162] "
+        "[Entered: 09/25/2026 10:51 AM]"
+    )
+
+    def _opinion_cl(self, *, copy_text="", numbered_text="opinion body"):
+        return _FakeCourtListener(
+            {
+                (1, "date_filed"): [],
+                (1, "-date_filed"): [
+                    {
+                        "id": 874,
+                        "description": self._OPINION_COPY,
+                        "date_filed": "2026-09-25",
+                        "entry_number": None,
+                        "recap_documents": [
+                            {"id": 714, "is_sealed": True, "plain_text": copy_text}
+                        ],
+                    },
+                    {
+                        "id": 875,
+                        "description": self._OPINION_NUMBERED,
+                        "date_filed": "2026-09-25",
+                        "entry_number": 1208891909,
+                        "recap_documents": [
+                            {
+                                "id": 716,
+                                "is_available": True,
+                                "plain_text": numbered_text,
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+
+    def test_unnumbered_copy_of_numbered_entry_is_dropped(self, caplog):
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.summary"):
+            _, dispositions = find_primary_documents_for_group(self._opinion_cl(), [1])
+        assert [e["id"] for e in dispositions] == [875]
+        assert "dropping entry 874 as a duplicate of numbered entry 1208891909" in (
+            caplog.text
+        )
+
+    def test_unnumbered_copy_wins_when_only_it_has_text(self):
+        # Same rule as the sibling dedup: a populated copy beats an empty one.
+        cl = self._opinion_cl(copy_text="opinion body", numbered_text="")
+        _, dispositions = find_primary_documents_for_group(cl, [1])
+        assert [e["id"] for e in dispositions] == [874]
+
+    def test_unnumbered_entry_with_different_text_is_kept(self):
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [],
+                (1, "-date_filed"): [
+                    {
+                        "id": 1,
+                        "description": "JUDGMENT as to John Doe",
+                        "date_filed": "2026-09-25",
+                        "entry_number": None,
+                        "recap_documents": [{"id": 11}],
+                    },
+                    {
+                        "id": 2,
+                        "description": "JUDGMENT as to Jane Roe",
+                        "date_filed": "2026-09-25",
+                        "entry_number": 40,
+                        "recap_documents": [{"id": 12}],
+                    },
+                ],
+            }
+        )
+        _, dispositions = find_primary_documents_for_group(cl, [1])
+        assert sorted(e["id"] for e in dispositions) == [1, 2]
+
+    def test_same_text_on_another_day_is_kept(self):
+        cl = _FakeCourtListener(
+            {
+                (1, "date_filed"): [],
+                (1, "-date_filed"): [
+                    {
+                        "id": 1,
+                        "description": "JUDGMENT",
+                        "date_filed": "2026-09-24",
+                        "entry_number": None,
+                        "recap_documents": [{"id": 11}],
+                    },
+                    {
+                        "id": 2,
+                        "description": "JUDGMENT",
+                        "date_filed": "2026-09-25",
+                        "entry_number": 40,
+                        "recap_documents": [{"id": 12}],
+                    },
+                ],
+            }
+        )
+        _, dispositions = find_primary_documents_for_group(cl, [1])
+        assert sorted(e["id"] for e in dispositions) == [1, 2]
+
     def test_dedupes_by_entry_number(self):
         # Same logical PACER entry (entry_number=1) on two CourtListener siblings
         # under DIFFERENT CourtListener ids. Pool returns it ONCE — first-seen wins.
@@ -1848,6 +1957,15 @@ class TestResolveDocumentLinks:
     def test_known_token_without_url_drops_to_bare_words(self):
         out = _resolve_document_links("He [pled guilty](doc:D2) today.", {"D2": None})
         assert out == "He pled guilty today."
+
+    def test_known_token_without_url_is_logged(self, caplog):
+        # So a missing link can be traced to the token the model chose.
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="case_calendar.summary"):
+            _resolve_document_links("He [pled guilty](doc:D2) today.", {"D2": None})
+        assert "leaving 'pled guilty' unlinked" in caplog.text
+        assert "D2" in caplog.text
 
     def test_unknown_token_drops_to_bare_words_and_warns(self, caplog):
         import logging

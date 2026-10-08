@@ -8,6 +8,35 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.19.4] - 2026-10-07
+
+### Fixed
+
+- **Case summaries now link a court's opinion, not just the judgment it
+  accompanies.** After 0.19.3 picked up the newly bought opinion in Anthropic
+  v. Department of War (D.C. Cir. 26-1049), the regenerated summary described
+  the opinion but still linked only the two-page per curiam judgment. Two
+  causes:
+  - The opinion reached the summary model twice. CourtListener holds it as
+    the numbered entry with the PDF and as a number-less copy with no file,
+    listed first, and the two never matched as duplicates because one is
+    keyed by entry number and the other by description. A number-less entry
+    is now treated as the same filing as a numbered entry from the same day
+    whose description matches once the clerk's "Entered:" stamp and brackets
+    are removed.
+  - The summary prompt told the model to put a ruling's single link on the
+    order or judgment rather than the explanatory opinion. That rule stays,
+    but naming the opinion is now carved out of it: when the summary says who
+    wrote the opinion or mentions a dissent or concurrence, that phrase links
+    to the opinion. The 26-1049 summary now reads "denied the petitions for
+    review" (judgment), "opinion by Judge Katsas" and "dissent by Judge
+    Henderson" (opinion).
+
+  When the model cites a document that has no public URL, the summary log now
+  says so, so a missing link can be traced to the document the model chose.
+  Existing summaries pick up the new link rule the next time they're
+  regenerated.
+
 ## [0.19.3] - 2026-10-07
 
 ### Security

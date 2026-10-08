@@ -3686,6 +3686,24 @@ class TestSummaryPromptSingleRuling:
         assert "the accompanying preliminary injunction order enjoins" in norm
         assert "and enjoining defendants from implementing the directive" in norm
 
+    def test_naming_the_opinion_is_linked_separately(self):
+        # D.C. Cir. 26-1049: the ruling linked to the per curiam judgment and
+        # the Katsas opinion / Henderson dissent stayed unlinked. Naming the
+        # opinion's author or a dissent links to the opinion itself.
+        import re
+
+        norm = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        assert "Naming the opinion is NOT restating the ruling" in norm
+        assert "[opinion by Judge Smith](doc:D3)" in norm
+        assert "[dissent by Judge Jones](doc:D3)" in norm
+        # No invented clauses or judges just to make room for a link.
+        assert "never add an author, dissent, or concurrence clause" in norm
+        assert "never name a judge the documents don't identify" in norm
+        # The one-link-per-statement rule names the exception.
+        assert "The one exception is naming a separate opinion" in norm
+        # Real judges' names stay out of the prompt's examples.
+        assert "Katsas" not in norm and "Henderson" not in norm
+
 
 class TestSummaryPromptOperatorContext:
     """The operator's AGGREGATION NOTE / NOTE FROM OPERATOR is context for the
