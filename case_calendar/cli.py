@@ -306,8 +306,8 @@ def _maybe_ensure_docket_alerts(
     Gated on the top-level ``ensure_docket_alerts`` config flag (default
     True). When enabled, walks the union of every case's docket ids and
     has :func:`alerts.ensure_docket_alerts` reconcile against the
-    account's existing subscriptions, creating any that are missing.
-    Failures are logged but don't abort sync / serve — webhook alerts
+    account's existing subscriptions, creating any that are missing and
+    switching back on any that are switched off. Failures are logged but don't abort sync / serve — webhook alerts
     are auxiliary to polling, and the polling path still works without
     them.
     """
@@ -320,12 +320,15 @@ def _maybe_ensure_docket_alerts(
 
     statuses = ensure_docket_alerts(cl, docket_ids)
     created = sum(1 for v in statuses.values() if v == "created")
+    reenabled = sum(1 for v in statuses.values() if v == "reenabled")
     failed = sum(1 for v in statuses.values() if v == "failed")
-    if created or failed:
+    if created or reenabled or failed:
         log.info(
-            "docket alerts: %d created, %d already subscribed, %d failed",
+            "docket alerts: %d created, %d re-enabled, %d already subscribed, "
+            "%d failed",
             created,
-            len(docket_ids) - created - failed,
+            reenabled,
+            len(docket_ids) - created - reenabled - failed,
             failed,
         )
 

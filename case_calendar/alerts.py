@@ -9,12 +9,17 @@ and silently miss webhook updates until the next polling sync catches
 them. This module closes that gap: ``ensure_docket_alerts`` lists the
 account's existing alerts, compares against the docket IDs configured
 in ``config.yaml``, and creates a subscription for any docket that
-doesn't already have one.
+doesn't already have one. A docket whose alert exists but is switched
+off (``alert_type`` 0) gets that alert switched back on instead:
+CourtListener allows only one alert row per docket per account, so a
+second create would be rejected. CourtListener switches alerts off on
+its own for terminated cases with no updates for about 180 days, and
+without a daily polling sync such a docket would otherwise go unwatched.
 
 Failure semantics are deliberately permissive — if CourtListener
-returns a 4xx on a specific docket's create call (e.g. the docket
-doesn't exist on CourtListener yet, or the account already has a row
-that didn't show up in the list paginator), we log a warning and
+returns a 4xx on a specific docket's create or update call (e.g. the
+docket doesn't exist on CourtListener yet, or the account already has a
+row that didn't show up in the list paginator), we log a warning and
 continue. The polling sync path still works without webhook alerts;
 this feature is about reducing manual setup, not adding a hard
 dependency.
@@ -34,9 +39,8 @@ from .courtlistener import CourtListener
 
 log = logging.getLogger(__name__)
 
-# CourtListener alert_type values. Only ``SUBSCRIBED`` is created by
-# this module; ``UNSUBSCRIBED`` rows are treated as "no active
-# subscription" when reconciling against the configured set.
+# CourtListener alert_type values. Rows with any other value (0 means
+# unsubscribed) are "switched off" and get switched back on.
 _ALERT_TYPE_SUBSCRIBED = 1
 
 
@@ -50,6 +54,8 @@ def ensure_docket_alerts(
     * ``"exists"`` — an active subscription was already in place; no
       POST was issued.
     * ``"created"`` — a new subscription was created via POST.
+    * ``"reenabled"`` — the docket already had an alert that was switched
+      off; it was switched back on via PATCH.
     * ``"failed"`` — the create call raised; logged at WARNING with
       the exception type and message. The caller's loop (sync / serve)
       continues — webhook setup is auxiliary, not load-bearing.
@@ -64,13 +70,18 @@ def ensure_docket_alerts(
     if not docket_ids:
         return {}
 
+    existing: set[int] = set()
+    # docket id -> id of that docket's switched-off alert row
+    switched_off: dict[int, int] = {}
     try:
-        existing = {
-            int(alert["docket"])
-            for alert in cl.iter_docket_alerts()
-            if int(alert.get("alert_type", 0)) == _ALERT_TYPE_SUBSCRIBED
-            and alert.get("docket") is not None
-        }
+        for alert in cl.iter_docket_alerts():
+            if alert.get("docket") is None:
+                continue
+            did = int(alert["docket"])
+            if int(alert.get("alert_type", 0)) == _ALERT_TYPE_SUBSCRIBED:
+                existing.add(did)
+            elif alert.get("id") is not None:
+                switched_off[did] = int(alert["id"])
     except Exception as e:
         # Listing failed entirely. Don't half-attempt creates against an
         # unknown baseline — that would either spam duplicate POSTs or
@@ -110,6 +121,27 @@ def ensure_docket_alerts(
     for did in docket_ids:
         if did in existing:
             status[did] = "exists"
+            continue
+        if did in switched_off:
+            alert_id = switched_off[did]
+            try:
+                cl.update_docket_alert(alert_id)
+                status[did] = "reenabled"
+                log.info(
+                    "ensure_docket_alerts: re-enabled switched-off subscription "
+                    "for docket %s (alert %s)",
+                    did,
+                    alert_id,
+                )
+            except Exception as e:
+                status[did] = "failed"
+                log.warning(
+                    "ensure_docket_alerts: failed to re-enable subscription "
+                    "for docket %s (alert %s): %s",
+                    did,
+                    alert_id,
+                    e,
+                )
             continue
         try:
             cl.create_docket_alert(did)
