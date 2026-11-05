@@ -53,13 +53,13 @@ ssh "$CC_PROD_SSH" "\
 #    service account's shell — otherwise `uv sync` runs as the SSH user
 #    and writes its-owned files into .venv that later `uv run` as the
 #    service account can't overwrite.
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE bash -c 'git pull && ./.local/bin/uv sync'"
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE bash -c 'git pull && ~$CC_PROD_SERVICE/.local/bin/uv sync'"
 
 # 6. Re-emit so out/*.ics + out/index.html reflect any rendering changes
 #    in the new code. PYTHONUNBUFFERED=1 so emit's stdout streams to this
 #    terminal as it runs (sudo strips env vars by default; wrap with
 #    `env` to set it inside the service account's environment).
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar emit"
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ~$CC_PROD_SERVICE/.local/bin/uv run case-calendar emit"
 
 # 7. Restart.
 ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"

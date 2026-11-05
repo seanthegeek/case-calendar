@@ -18,7 +18,10 @@
 #   CC_PROD_SERVICE    the systemd unit name AND the unix service account
 #                      (assumed identical, the common systemd pattern;
 #                      e.g. case-calendar). Used for `systemctl <unit>`
-#                      and `sudo -u <account>`.
+#                      and `sudo -u <account>`. The scripts run uv from
+#                      that account's home (~<account>/.local/bin/uv,
+#                      where uv's installer puts it), so the home does
+#                      not have to be CC_PROD_APP_DIR.
 #   CC_PROD_STAGE_DIR  a directory on prod writable by CC_PROD_SSH_USER
 #                      without sudo, used to stage scp drops before they're
 #                      cp'd into place (e.g. the ssh user's home, /root).

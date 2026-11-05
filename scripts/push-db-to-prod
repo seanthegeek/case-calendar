@@ -111,7 +111,7 @@ ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE git pull"
 #    PYTHONUNBUFFERED=1 so emit's stdout streams to this terminal as it
 #    runs (sudo strips env vars by default; wrap with `env` to set it
 #    inside the service account's environment).
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar emit"
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ~$CC_PROD_SERVICE/.local/bin/uv run case-calendar emit"
 
 # 10. Bring the service back up.
 ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"

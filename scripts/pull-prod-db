@@ -48,7 +48,7 @@ echo "local backup: ${backup_base}"
 # 3. Snapshot prod's DB using SQLite's online backup API into /tmp.
 #    This produces a consistent file copy even while prod's serve
 #    process is handling webhooks — no extra service downtime needed.
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ./.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ~$CC_PROD_SERVICE/.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
 
 # 4. Clear dev's WAL sidecars before the swap — if they're left in
 #    place, SQLite will try to replay them against the newly-copied
