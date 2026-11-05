@@ -179,8 +179,9 @@ class TestEstimateCost:
     def test_openai_cache_write_rate_applies_when_reported(self):
         # gpt-6.1-sol lists a 30-minute cache-write rate ($2.50); the older
         # models list none, so their written tokens cost nothing extra.
-        usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=1_000_000)
-        assert costs.estimate_cost("gpt-6.1-sol", usage) == pytest.approx(2.50)
+        # A 200K prompt, all written to the cache: 200K @ $2.50 = $0.50.
+        usage = TokenUsage(input=200_000, output=0, cached=0, cache_write=200_000)
+        assert costs.estimate_cost("gpt-6.1-sol", usage) == pytest.approx(0.50)
         assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(0.0)
 
     def test_unknown_model_returns_none(self):
@@ -297,3 +298,33 @@ class TestLongPromptRates:
         # (_rates returns None first), so a typo'd key would silently do
         # nothing. Pin that every key is also in the main table.
         assert set(costs._LONG_PROMPT_RATES) <= set(costs._RATES_USD_PER_MTOK)
+
+    def test_openai_over_272k(self):
+        # OpenAI's long-context view: gpt-6.1-sol $2 -> $4 input, $10 -> $15
+        # output; gpt-6-luna $0.10 -> $0.20, $0.50 -> $0.75; gpt-6-astra $10 ->
+        # $20, $50 -> $75; gpt-6.1-terra $1 -> $2, $5 -> $7.50; gpt-5.6-sol $4
+        # -> $8, $20 -> $30. Exactly 272,000 tokens is still short context.
+        short = TokenUsage(input=272_000, output=10_000)
+        long = TokenUsage(input=272_001, output=10_000)
+        assert costs.estimate_cost("gpt-6.1-sol", short) == pytest.approx(
+            (272_000 * 2.00 + 10_000 * 10.00) / 1_000_000
+        )
+        expected_long = {
+            "gpt-6.1-sol": (4.00, 15.00),
+            "gpt-6-luna": (0.20, 0.75),
+            "gpt-6-astra": (20.00, 75.00),
+            "gpt-6.1-terra": (2.00, 7.50),
+            "gpt-5.6-sol": (8.00, 30.00),
+        }
+        for model, (inp, out) in expected_long.items():
+            assert costs.estimate_cost(model, long) == pytest.approx(
+                (272_001 * inp + 10_000 * out) / 1_000_000
+            ), model
+
+    def test_openai_long_context_cache_rates(self):
+        # Over 272K, cached input and cache writes move up too (gpt-6-luna:
+        # $0.02 cached, $0.25 30-minute write).
+        usage = TokenUsage(input=300_000, output=0, cached=200_000, cache_write=50_000)
+        assert costs.estimate_cost("gpt-6-luna", usage) == pytest.approx(
+            (50_000 * 0.20 + 200_000 * 0.02 + 50_000 * 0.25) / 1_000_000
+        )
