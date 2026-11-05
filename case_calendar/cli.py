@@ -22,7 +22,7 @@ import yaml
 from dotenv import load_dotenv
 
 from . import costs, llm, llmkit
-from .calendars.description import no_time_title_prefix
+from .calendars.description import is_calendar_visible, no_time_title_prefix
 from .calendars.ics import write_ics
 from .calendars.index import build_calendar_models, write_index
 from .courtlistener import CourtListener
@@ -594,7 +594,11 @@ def emit_calendars(
     first-run code path used by ``case-calendar setup``.
 
     Returns ``{cal_id: {"events": int, "ics_path": str|None,
-    "gcal_pushed": bool, "m365_pushed": bool}}``.
+    "gcal_pushed": bool, "m365_pushed": bool}}``. ``events`` counts the
+    events subscribers actually see — rows every backend renders
+    (``is_calendar_visible`` and not ``cancelled``), not every row assigned
+    to the calendar; minor and cancelled rows stay in the store but off the
+    feed.
     """
     cases = _cases_from_config(cfg)
     case_overrides = {c["id"]: c for c in cfg["cases"]}  # raw dicts with extras
@@ -686,7 +690,11 @@ def emit_calendars(
             continue
         hearings = by_calendar.get(cal_id, [])
         result: dict[str, Any] = {
-            "events": len(hearings),
+            "events": sum(
+                1
+                for h in hearings
+                if is_calendar_visible(h) and h.get("status") != "cancelled"
+            ),
             "ics_path": None,
             "gcal_pushed": False,
             "m365_pushed": False,
