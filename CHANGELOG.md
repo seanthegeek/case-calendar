@@ -10,6 +10,27 @@ adheres to [Semantic Versioning][semver].
 
 ## [Unreleased]
 
+### Security
+
+- **`pypdf` 6.21.2 → 6.21.4** (minimum raised to 6.21.4):
+  [GHSA-5849-834g-hvw5](https://github.com/advisories/GHSA-5849-834g-hvw5),
+  [GHSA-cggf-277g-3q54](https://github.com/advisories/GHSA-cggf-277g-3q54),
+  [GHSA-mfr5-77xh-9j7h](https://github.com/advisories/GHSA-mfr5-77xh-9j7h),
+  [GHSA-42gh-23hr-vphw](https://github.com/advisories/GHSA-42gh-23hr-vphw),
+  [GHSA-4vqv-7265-gm2w](https://github.com/advisories/GHSA-4vqv-7265-gm2w),
+  [GHSA-62m5-6wh8-28x7](https://github.com/advisories/GHSA-62m5-6wh8-28x7),
+  [GHSA-x3rh-gjgm-fmqc](https://github.com/advisories/GHSA-x3rh-gjgm-fmqc).
+- **`certifi` 2026.4.22 → 2026.10.23**:
+  [GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2).
+- **`pyasn1` 0.6.4 → 0.6.5** (via `google-auth`):
+  [GHSA-2qm8-x737-gmw5](https://github.com/advisories/GHSA-2qm8-x737-gmw5),
+  [GHSA-mm57-4v3p-rchx](https://github.com/advisories/GHSA-mm57-4v3p-rchx),
+  [GHSA-9m75-vc3g-4x39](https://github.com/advisories/GHSA-9m75-vc3g-4x39),
+  [GHSA-fm9c-5rcf-2q5p](https://github.com/advisories/GHSA-fm9c-5rcf-2q5p).
+- **`opentelemetry-api` 1.41.1 → 1.45.2** (via the Microsoft Graph stack;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move with it):
+  [GHSA-xcq7-p3pf-p88h](https://github.com/advisories/GHSA-xcq7-p3pf-p88h).
+
 ### Fixed
 
 - **Switched-off docket alerts for configured dockets are switched back
