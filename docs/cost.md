@@ -164,9 +164,13 @@ because the system prompt is cached on almost every call.
 
 **`cost_est` is an estimate, not a bill.** It comes from a small static price
 table (`case_calendar/costs.py`) hand-copied from each provider's pricing page
-and dated with `PRICES_VERIFIED` — the default Anthropic, Gemini, and OpenAI
-(5.4 / 5.5 family) models are priced at their standard tier. It does not model
-batch discounts, long-context (>200k) tiers, or data-residency multipliers.
+and dated with `PRICES_VERIFIED` — the current Anthropic, Gemini, and OpenAI
+(GPT-5 and GPT-6) models are priced at their standard tier. Where a provider
+charges more for a long prompt — Claude Haiku 5.5 over 100,000 tokens, the
+Gemini Pro models over 200,000, OpenAI's GPT-6, GPT-5.6, GPT-5.5 and GPT-5.4
+flagship models over 272,000 — the whole call is priced at the higher rate, as
+the provider bills it. It does not model batch discounts or data-residency
+multipliers.
 When a model isn't in the table — a legacy model, or anything you set via
 `LLM_MODEL` that hasn't been added — the call logs `cost_est=?` and the run
 `TOTAL` notes how many calls had no price entry, so a partial estimate is
