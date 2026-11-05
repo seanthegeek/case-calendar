@@ -3824,7 +3824,12 @@ class TestVerifyPromptConsolidation:
         # trailing section.
         p = llm.VERIFY_SYSTEM_PROMPT
         assert "CRITICAL — multi-defendant dockets (HEARINGS)" in p
-        assert "for ANY\n   defendant on the docket → MARK_HELD" in p
+        assert "a record that\n   it was held for ANY of them counts" in p
+        # ...but only for a SHARED row: a row that is one named defendant's
+        # own proceeding needs a record for THAT defendant, or a co-defendant's
+        # trial would mark a pleaded defendant's own trial row held.
+        assert "the record must show it held for THAT defendant" in p
+        assert "a co-defendant's proceeding being held is NOT evidence" in p
         assert 'An order that ends the proceeding "as to" ONE defendant' in p
         assert "A shared surname does NOT make a row one defendant's" in p
 

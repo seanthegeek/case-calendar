@@ -689,6 +689,26 @@ class TestMarkHeldDateMatches:
             {"starts_at_utc": "2026-04-14T15:00:00+00:00"},
         )
 
+    def test_compares_court_local_dates_not_utc(self):
+        # A 2 p.m. hearing in Honolulu (HST, UTC-10) on May 4 is stored as
+        # May 5 UTC. The 2-day window is measured from the local May 4.
+        honolulu = {
+            "starts_at_utc": "2026-05-05T00:00:00+00:00",
+            "timezone": "Pacific/Honolulu",
+        }
+        assert _mark_held_date_matches({"local_date": "2026-05-02"}, honolulu)
+        assert _mark_held_date_matches({"local_date": "2026-05-06"}, honolulu)
+        assert not _mark_held_date_matches({"local_date": "2026-05-07"}, honolulu)
+
+    def test_unknown_timezone_falls_back_to_utc_date(self):
+        row = {"starts_at_utc": "2026-05-05T00:00:00+00:00", "timezone": "Bogus/Zone"}
+        assert _mark_held_date_matches({"local_date": "2026-05-07"}, row)
+        assert not _mark_held_date_matches({"local_date": "2026-05-08"}, row)
+
+    def test_naive_timestamp_is_read_as_utc(self):
+        row = {"starts_at_utc": "2026-05-05T00:00:00", "timezone": "Pacific/Honolulu"}
+        assert not _mark_held_date_matches({"local_date": "2026-05-07"}, row)
+
     def test_malformed_dates_fall_open_to_true(self):
         # Garbage in either date -> can't compare; treat as matching so
         # the action proceeds (consistent with the function's docstring).

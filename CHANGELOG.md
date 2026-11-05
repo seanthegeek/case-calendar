@@ -40,12 +40,16 @@ adheres to [Semantic Versioning][semver].
   5/4/2026 trial row, though the trial went ahead for Sohaib Akhter that
   day. The verify prompt now says that ending a proceeding "as to" one
   defendant cancels only a row that is that defendant's alone, and that a
-  proceeding held for any defendant is MARK_HELD.
+  shared proceeding held for any defendant is MARK_HELD — while a row that
+  is one named defendant's own needs a record for that defendant.
 - **The verify pass no longer marks a hearing held on the record of a
   different date.** It marked a superseded 2/2/2026 Akhter trial row held,
   citing the May trial. A verify MARK_HELD now carries the date the cited
   record shows the hearing was held, and is ignored when that date is more
   than 2 days from the row's — the rule the per-entry path already had.
+  Both paths now measure those 2 days between court-local dates; they
+  compared the row's UTC date, which shifted the window by a day for a
+  hearing stored on the next UTC day (an afternoon hearing in Honolulu).
 
 - **"wrote N events" now counts the events subscribers see.** `emit`,
   `sync` and `serve` reported every hearing assigned to a calendar,
