@@ -179,6 +179,15 @@ class FakeCourtListener(CourtListener):
 
     def create_docket_alert(self, docket_id: int, *, alert_type: int = 1) -> dict:
         self.calls.append(("create_alert", docket_id))
+        # CourtListener keeps one alert row per (docket, user) and answers a
+        # second create with HTTP 400 "The fields docket, user must make a
+        # unique set." — mirror that so a test can't pass by re-creating a
+        # switched-off alert.
+        if any(a.get("docket") == docket_id for a in self._docket_alerts):
+            raise RuntimeError(
+                f"400: alert for docket {docket_id} already exists "
+                "(docket, user must make a unique set)"
+            )
         row = {
             "docket": docket_id,
             "alert_type": alert_type,
@@ -186,6 +195,14 @@ class FakeCourtListener(CourtListener):
         }
         self._docket_alerts.append(row)
         return row
+
+    def update_docket_alert(self, alert_id: int, *, alert_type: int = 1) -> dict:
+        self.calls.append(("update_alert", alert_id))
+        for a in self._docket_alerts:
+            if a.get("id") == alert_id:
+                a["alert_type"] = alert_type
+                return a
+        raise RuntimeError(f"404: no alert with id {alert_id}")
 
     def close(self) -> None:
         pass

@@ -3155,6 +3155,20 @@ class TestEnsureDocketAlertsWiring:
             _maybe_ensure_docket_alerts({}, FakeCourtListener(), [case])
         assert any("docket alerts: 1 created" in r.message for r in caplog.records)
 
+        # re-enabled only -> still log the summary, counted separately.
+        caplog.clear()
+        monkeypatch.setattr(
+            "case_calendar.alerts.ensure_docket_alerts",
+            lambda cl, dids: {d: "reenabled" for d in dids},
+        )
+        with caplog.at_level("INFO", logger="case_calendar.cli"):
+            _maybe_ensure_docket_alerts({}, FakeCourtListener(), [case])
+        assert any(
+            "docket alerts: 0 created, 1 re-enabled, 0 already subscribed, 0 failed"
+            in r.message
+            for r in caplog.records
+        )
+
 
 class TestCmdSummarizeCoverage:
     """Branches in cmd_summarize that the main happy-path test skips."""

@@ -97,7 +97,7 @@ ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE git pull"
 #    destructive and prod has no in-script backup. The local DB backup
 #    at step 2 covers dev recovery only.
 if [ "$prune" -eq 1 ]; then
-    ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar prune --apply"
+    ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ~$CC_PROD_SERVICE/.local/bin/uv run case-calendar prune --apply"
 else
     echo "skipping prune (pass --prune to clean up orphaned dockets in the same run)"
 fi
@@ -111,7 +111,7 @@ fi
 #    terminal in real time (python block-buffers when stdout isn't a TTY,
 #    which it isn't on the far end of ssh; sudo strips the env var by
 #    default).
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ./.local/bin/uv run case-calendar sync $sync_args"
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE env PYTHONUNBUFFERED=1 ~$CC_PROD_SERVICE/.local/bin/uv run case-calendar sync $sync_args"
 
 # 7. Restart the service so the running serve process picks up both the
 #    new config (case-calendar.serve reads config.yaml at process startup
@@ -124,7 +124,7 @@ ssh "$CC_PROD_SSH" "systemctl restart $CC_PROD_SERVICE"
 #    This produces a consistent file copy even while the just-restarted
 #    serve process is back to handling webhooks — no extra service
 #    downtime needed for the DB pull.
-ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ./.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
+ssh "$CC_PROD_SSH" "cd $CC_PROD_APP_DIR && sudo -u $CC_PROD_SERVICE ~$CC_PROD_SERVICE/.local/bin/uv run python -c \"import sqlite3; src=sqlite3.connect('data/case-calendar.sqlite'); dst=sqlite3.connect('/tmp/case-calendar-snapshot.sqlite'); src.backup(dst); src.close(); dst.close()\""
 
 # 9. Clear dev's WAL sidecars before the swap — if they're left in
 #    place, SQLite will try to replay them against the newly-copied

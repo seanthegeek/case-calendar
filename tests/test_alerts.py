@@ -41,19 +41,52 @@ class TestEnsureDocketAlerts:
         create_calls = [c for c in cl.calls if c[0] == "create_alert"]
         assert [c[1] for c in create_calls] == [200, 300]
 
-    def test_unsubscribed_alert_type_is_treated_as_missing(self):
-        # CourtListener stores alert_type=0 as "unsubscribed". The
-        # reconciler must NOT treat an unsubscribed row as a live
-        # subscription — otherwise an operator who manually
-        # unsubscribed once would never get re-subscribed even though
-        # they re-added the docket to config.yaml.
+    def test_switched_off_alert_is_switched_back_on(self, caplog):
+        # CourtListener stores alert_type=0 as "unsubscribed" — it switches
+        # alerts off itself on terminated cases with no updates for ~180
+        # days. It keeps one alert row per (docket, user), so the reconciler
+        # must PATCH the existing row back on rather than POST a new one
+        # (which CourtListener rejects with HTTP 400).
         cl = FakeCourtListener(
             existing_alerts=[
-                {"docket": 100, "alert_type": 0},  # unsubscribed
+                {"id": 7, "docket": 100, "alert_type": 0},  # switched off
             ]
         )
+        with caplog.at_level("INFO", logger="case_calendar.alerts"):
+            status = ensure_docket_alerts(cl, [100])
+        assert status == {100: "reenabled"}
+        assert ("update_alert", 7) in cl.calls
+        assert not any(c[0] == "create_alert" for c in cl.calls)
+        assert cl._docket_alerts[0]["alert_type"] == 1
+        assert any(
+            "re-enabled switched-off subscription for docket 100 (alert 7)" in r.message
+            for r in caplog.records
+        )
+
+    def test_reenable_failure_is_logged_and_does_not_abort(self, caplog):
+        class _UpdateFailureCourtListener(FakeCourtListener):
+            def update_docket_alert(self, alert_id, *, alert_type=1):
+                raise RuntimeError("boom — 4xx from CourtListener")
+
+        cl = _UpdateFailureCourtListener(
+            existing_alerts=[{"id": 7, "docket": 100, "alert_type": 0}]
+        )
+        with caplog.at_level("WARNING", logger="case_calendar.alerts"):
+            status = ensure_docket_alerts(cl, [100, 200])
+        assert status == {100: "failed", 200: "created"}
+        assert any(
+            "failed to re-enable subscription for docket 100 (alert 7)" in r.message
+            for r in caplog.records
+        )
+
+    def test_switched_off_alert_without_id_falls_back_to_create(self):
+        # Without the row's id there is nothing to PATCH, so the reconciler
+        # tries a create; CourtListener (and the fake) reject the duplicate
+        # and the docket is reported as failed rather than silently skipped.
+        cl = FakeCourtListener(existing_alerts=[{"docket": 100, "alert_type": 0}])
         status = ensure_docket_alerts(cl, [100])
-        assert status == {100: "created"}
+        assert status == {100: "failed"}
+        assert ("create_alert", 100) in cl.calls
 
     def test_alert_without_docket_field_is_ignored(self):
         # Malformed rows (missing the docket id) shouldn't crash the
@@ -232,6 +265,39 @@ class TestCourtListenerClientAlerts:
         import json
 
         assert json.loads(captured["body"]) == {"docket": 100, "alert_type": 1}
+
+    def test_update_docket_alert_patches_expected_body(self):
+        import httpx
+
+        from case_calendar.courtlistener import API_BASE, CourtListener
+
+        captured: dict = {}
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            captured["method"] = request.method
+            captured["url"] = str(request.url)
+            captured["body"] = request.content.decode()
+            return httpx.Response(
+                200,
+                json={"id": 7, "docket": 100, "alert_type": 1},
+            )
+
+        cl = CourtListener(token="t")
+        cl.client = httpx.Client(
+            transport=httpx.MockTransport(handler),
+            headers={"Authorization": "Token t"},
+        )
+        try:
+            result = cl.update_docket_alert(7)
+        finally:
+            cl.close()
+
+        assert result == {"id": 7, "docket": 100, "alert_type": 1}
+        assert captured["method"] == "PATCH"
+        assert captured["url"] == f"{API_BASE}/docket-alerts/7/"
+        import json
+
+        assert json.loads(captured["body"]) == {"alert_type": 1}
 
     def test_post_retries_on_429(self, monkeypatch):
         # Same retry shape as _get — covered via the shared _request

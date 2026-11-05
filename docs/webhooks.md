@@ -341,11 +341,24 @@ Adding a case to `config.yaml` automatically wires up the docket alert
 on the next sync; removing a case leaves the existing subscription
 in place (no automatic cleanup).
 
+A docket alert can be switched off without being deleted — by
+unsubscribing, or by CourtListener itself, which switches alerts off for
+terminated cases that have had no updates for about 180 days (see
+[re-upping a docket alert](https://wiki.free.law/c/courtlistener/help/api/webhooks/about#re-upping-a-docket-alert)).
+A switched-off alert still exists, and CourtListener allows only one
+alert per docket per account, so for a configured docket whose alert
+is switched off Case Calendar switches that alert back on instead of
+creating a new one. A dormant case that later gets a new filing — a
+post-judgment motion, say — keeps sending webhooks. This also means
+unsubscribing from a docket that's still in `config.yaml` only lasts
+until the next sync or serve start; to stop following a docket, remove
+it from `config.yaml` and then delete its alert in CourtListener.
+
 Failures are logged but don't abort sync / serve — polling still works
 without webhook alerts, and a temporary CourtListener outage during
 the reconcile shouldn't block the rest of the pipeline. The summary
 line in the log reads
-`docket alerts: <created> created, <exists> already subscribed, <failed> failed`.
+`docket alerts: <created> created, <re-enabled> re-enabled, <exists> already subscribed, <failed> failed`.
 
 To opt out — say you maintain alerts through some other surface (a
 bulk CSV upload, a separate admin tool) — set

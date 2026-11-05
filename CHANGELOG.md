@@ -8,6 +8,52 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Security
+
+- **`pypdf` 6.21.2 → 6.21.4** (minimum raised to 6.21.4):
+  [GHSA-5849-834g-hvw5](https://github.com/advisories/GHSA-5849-834g-hvw5),
+  [GHSA-cggf-277g-3q54](https://github.com/advisories/GHSA-cggf-277g-3q54),
+  [GHSA-mfr5-77xh-9j7h](https://github.com/advisories/GHSA-mfr5-77xh-9j7h),
+  [GHSA-42gh-23hr-vphw](https://github.com/advisories/GHSA-42gh-23hr-vphw),
+  [GHSA-4vqv-7265-gm2w](https://github.com/advisories/GHSA-4vqv-7265-gm2w),
+  [GHSA-62m5-6wh8-28x7](https://github.com/advisories/GHSA-62m5-6wh8-28x7),
+  [GHSA-x3rh-gjgm-fmqc](https://github.com/advisories/GHSA-x3rh-gjgm-fmqc).
+- **`certifi` 2026.4.22 → 2026.10.23**:
+  [GHSA-6q48-6c7w-9gw2](https://github.com/advisories/GHSA-6q48-6c7w-9gw2).
+- **`pyasn1` 0.6.4 → 0.6.5** (via `google-auth`):
+  [GHSA-2qm8-x737-gmw5](https://github.com/advisories/GHSA-2qm8-x737-gmw5),
+  [GHSA-mm57-4v3p-rchx](https://github.com/advisories/GHSA-mm57-4v3p-rchx),
+  [GHSA-9m75-vc3g-4x39](https://github.com/advisories/GHSA-9m75-vc3g-4x39),
+  [GHSA-fm9c-5rcf-2q5p](https://github.com/advisories/GHSA-fm9c-5rcf-2q5p).
+- **`opentelemetry-api` 1.41.1 → 1.45.2** (via the Microsoft Graph stack;
+  `opentelemetry-sdk` and `opentelemetry-semantic-conventions` move with it):
+  [GHSA-xcq7-p3pf-p88h](https://github.com/advisories/GHSA-xcq7-p3pf-p88h).
+
+### Fixed
+
+- **Switched-off docket alerts for configured dockets are switched back
+  on.** CourtListener keeps a docket alert that is switched off
+  (`alert_type` 0) and allows only one alert per docket per account. It
+  switches alerts off itself once a terminated case has had no updates for
+  about 180 days, and an unsubscribe does the same. `sync` and `serve`
+  treated a switched-off alert as missing and tried to create a new one,
+  which CourtListener rejected with HTTP 400 on every run, so the docket
+  never sent webhooks again. Seen on McGonigal (66749883, switched off
+  2026-09-20, about 187 days after its last alert) and Vong (68814692,
+  switched off 2025-08-05); Vong then had docket activity that only a full
+  sync picked up. A configured docket's switched-off alert is now switched
+  back on, and the log summary counts it as `re-enabled`.
+
+- **The deployment scripts in `scripts/` now find uv when the service
+  account's home is not the install directory.** They ran
+  `./.local/bin/uv` from `CC_PROD_APP_DIR`, which only works when the
+  account's home *is* the install directory. They now run
+  `~<account>/.local/bin/uv`, where uv's installer puts it, so a layout like
+  home `/opt/casecalendar` with the repo at `/opt/casecalendar/casecalendar`
+  works too.
+
 ## [0.19.6] - 2026-10-07
 
 ### Fixed

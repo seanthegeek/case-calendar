@@ -295,6 +295,10 @@ class CourtListener:
         """Thin POST wrapper around :meth:`_request`."""
         return self._request("POST", url, json_body=json_body)
 
+    def _patch(self, url: str, json_body: dict[str, Any]) -> httpx.Response:
+        """Thin PATCH wrapper around :meth:`_request`."""
+        return self._request("PATCH", url, json_body=json_body)
+
     def close(self) -> None:
         self.client.close()
 
@@ -412,5 +416,21 @@ class CourtListener:
         r = self._post(
             f"{API_BASE}/docket-alerts/",
             json_body={"docket": docket_id, "alert_type": alert_type},
+        )
+        return r.json()
+
+    def update_docket_alert(self, alert_id: int, *, alert_type: int = 1) -> dict:
+        """Set an existing docket alert's ``alert_type``. Returns the updated row.
+
+        CourtListener keeps one alert row per (docket, user) and rejects a
+        second create for the same docket, so an alert that is switched off
+        (``alert_type`` 0) has to be switched back on by updating its row.
+        CourtListener switches alerts off itself on terminated cases with no
+        updates for about 180 days, and documents this PATCH as the way to
+        "re-up" one.
+        """
+        r = self._patch(
+            f"{API_BASE}/docket-alerts/{alert_id}/",
+            json_body={"alert_type": alert_type},
         )
         return r.json()
