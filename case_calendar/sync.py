@@ -2225,6 +2225,22 @@ class CaseSyncer:
         stats["auto_passed"] = self._auto_mark_passed_stale(case.case_id)
         return stats
 
+    def _docket_record_ids(self, docket_id: int) -> list[int]:
+        """Every CourtListener record of ``docket_id``'s logical PACER docket
+        (same ``docket_number`` + ``court_id``), ``docket_id`` first.
+
+        Reads only the local ``dockets`` table — no CourtListener request.
+        Falls back to ``[docket_id]`` when the docket's number or court isn't
+        cached.
+        """
+        meta = self.store.get_docket_meta(docket_id) or {}
+        docket_number = meta.get("docket_number")
+        court_id = meta.get("court_id")
+        if not docket_number or not court_id:
+            return [docket_id]
+        group = self.store.get_docket_group_ids(docket_number, court_id)
+        return [docket_id, *(d for d in group if d != docket_id)]
+
     def _verify_context_entries(
         self,
         docket_id: int,
@@ -2263,13 +2279,21 @@ class CaseSyncer:
            absent from what the LLM saw, which can still happen if a
            source row was deleted or its id is malformed).
 
+        All three sets are read from EVERY CourtListener record of the row's
+        logical PACER docket, not just the record the row sits on.
+        CourtListener can split one docket across several records (bug #7345),
+        and the extractor files a proceeding's later entries under whichever
+        record they arrived on. Reading one record hid the adjournment orders
+        and the minute entry for us-v-tymoshchuk's Stryzhak sentencing
+        (E.D.N.Y. 1:23-cr-00324, records 70029216 and 70701403): the verify
+        LLM found "no docket entry vacating" the 8/11 date and REINSTATEd the
+        cancelled row. For an unsplit docket this is the same three queries
+        as before.
+
         This widens what the LLM can SEE; it does not loosen the bar for
         marking a hearing held — the prompt still requires a cited record.
         """
-        recent = self.store.get_recent_relevant_entries(
-            docket_id, "9999-12-31T00:00:00", limit=15
-        )
-        near: list[dict[str, Any]] = []
+        start = end = None
         if target_date_utc:
             try:
                 anchor_date = datetime.fromisoformat(
@@ -2284,12 +2308,20 @@ class CaseSyncer:
                 end = (
                     anchor_date + timedelta(days=_VERIFY_OUTCOME_WINDOW_DAYS)
                 ).isoformat()
-                near = self.store.get_relevant_entries_in_date_range(
-                    docket_id, start, end, limit=20
-                )
+
+        recent: list[dict[str, Any]] = []
+        near: list[dict[str, Any]] = []
         sources: list[dict[str, Any]] = []
-        if source_entry_ids:
-            sources = self.store.get_entries_by_ids(docket_id, source_entry_ids)
+        for record_id in self._docket_record_ids(docket_id):
+            recent += self.store.get_recent_relevant_entries(
+                record_id, "9999-12-31T00:00:00", limit=15
+            )
+            if start is not None and end is not None:
+                near += self.store.get_relevant_entries_in_date_range(
+                    record_id, start, end, limit=20
+                )
+            if source_entry_ids:
+                sources += self.store.get_entries_by_ids(record_id, source_entry_ids)
 
         seen: set[int] = set()
         merged: list[dict[str, Any]] = []
@@ -2577,17 +2609,12 @@ class CaseSyncer:
             meta = self.ensure_docket_cached(docket_id)
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
-            recent = self.store.get_recent_relevant_entries(
-                docket_id,
-                "9999-12-31T00:00:00",
-                limit=15,
-            )
             action = llm_mod.resolve_duplicate_hearings(
                 case_name=case.name,
                 court_id=court_id,
                 court_tz=tz,
                 cluster=cluster,
-                recent_entries=recent,
+                recent_entries=self._cluster_recent_entries(cluster),
             )
             n_merged += self._apply_dedupe_action(case, cluster, action)
 
@@ -2837,6 +2864,39 @@ class CaseSyncer:
         self.store.conn.commit()
         return n_deleted
 
+    def _cluster_recent_entries(
+        self, cluster: list[dict[str, Any]], limit: int = 15
+    ) -> list[dict[str, Any]]:
+        """Recent hearing-relevant entries for a dedupe resolver call, drawn
+        from EVERY CourtListener docket record the cluster's rows sit on.
+
+        The dedupe sweeps cluster by logical PACER docket, so one cluster can
+        span the records CourtListener split a docket into (bug #7345). The
+        evidence for the merge — the adjournment orders and the minute entry
+        of the date the proceeding was actually held — often sits only on the
+        record holding the drifted ``-N`` row (us-v-tymoshchuk, E.D.N.Y.
+        1:23-cr-00324, records 70029216 and 70701403). Reading only the first
+        row's record would hide it. Up to ``limit`` entries per record,
+        de-duplicated, newest filing first; for a single-record cluster this
+        is exactly that record's ``limit`` most recent entries.
+        """
+        docket_ids = list(dict.fromkeys(h["docket_id"] for h in cluster))
+        if len(docket_ids) == 1:
+            return self.store.get_recent_relevant_entries(
+                docket_ids[0], "9999-12-31T00:00:00", limit=limit
+            )
+        merged: dict[int, dict[str, Any]] = {}
+        for docket_id in docket_ids:
+            for e in self.store.get_recent_relevant_entries(
+                docket_id, "9999-12-31T00:00:00", limit=limit
+            ):
+                merged.setdefault(e["entry_id"], e)
+        return sorted(
+            merged.values(),
+            key=lambda e: (e.get("date_filed") or "", e["entry_id"]),
+            reverse=True,
+        )
+
     def _dedupe_nearslot_hearings(self, case: CaseConfig) -> int:
         """Resolve NEAR-slot duplicate hearings the exact-slot sweeps miss.
 
@@ -2874,17 +2934,12 @@ class CaseSyncer:
             meta = self.ensure_docket_cached(docket_id)
             court_id = meta.get("court_id") or ""
             tz = tz_for(court_id)
-            recent = self.store.get_recent_relevant_entries(
-                docket_id,
-                "9999-12-31T00:00:00",
-                limit=15,
-            )
             action = llm_mod.resolve_duplicate_hearings(
                 case_name=case.name,
                 court_id=court_id,
                 court_tz=tz,
                 cluster=cluster,
-                recent_entries=recent,
+                recent_entries=self._cluster_recent_entries(cluster),
             )
             n_merged += self._apply_dedupe_action(
                 case,

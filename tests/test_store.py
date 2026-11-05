@@ -2752,6 +2752,70 @@ class TestNearslotClusters:
             ["sentencing-mcgonigal", "sentencing-mcgonigal-2"]
         ]
 
+    def test_singular_held_and_scheduled_cluster_across_dates(self, store: Store):
+        # A once-only proceeding held at its final date while the row for a
+        # date it was moved away from is still 'scheduled' — the
+        # us-v-tymoshchuk sentencing-stryzhak (8-11, scheduled) vs
+        # sentencing-stryzhak-2 (10-27, held) shape. Cross-status, so the
+        # held-only version of this tier missed it.
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-stryzhak",
+                status="scheduled",
+                starts_at_utc="2026-08-11T15:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-stryzhak-2",
+                status="held",
+                starts_at_utc="2026-10-27T14:30:00+00:00",
+            )
+        )
+        clusters = store.find_nearslot_hearing_clusters("us-v-x")
+        assert self._keys(clusters) == [
+            ["sentencing-stryzhak", "sentencing-stryzhak-2"]
+        ]
+
+    def test_singular_scheduled_only_not_clustered(self, store: Store):
+        # Two scheduled rows of a once-only proceeding at different dates: no
+        # held row, so nothing says which date (if either) it happened on —
+        # not a candidate.
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-stryzhak",
+                status="scheduled",
+                starts_at_utc="2026-08-11T15:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-stryzhak-2",
+                status="scheduled",
+                starts_at_utc="2026-10-27T14:30:00+00:00",
+            )
+        )
+        assert store.find_nearslot_hearing_clusters("us-v-x") == []
+
+    def test_singular_held_and_scheduled_different_defendants_not_clustered(
+        self, store: Store
+    ):
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-wang",
+                status="held",
+                starts_at_utc="2026-01-05T16:00:00+00:00",
+            )
+        )
+        store.upsert_hearing(
+            _hearing(
+                key="sentencing-prince",
+                status="scheduled",
+                starts_at_utc="2026-02-09T16:00:00+00:00",
+            )
+        )
+        assert store.find_nearslot_hearing_clusters("us-v-x") == []
+
     def test_singular_different_defendants_not_clustered(self, store: Store):
         store.upsert_hearing(
             _hearing(

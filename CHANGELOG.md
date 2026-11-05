@@ -33,6 +33,19 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **A stale "scheduled" sentencing no longer survives next to the held
+  one.** On a docket CourtListener splits across two records (E.D.N.Y.
+  1:23-cr-00324 in us-v-tymoshchuk), the extractor filed Stryzhak's
+  adjournments and the 10/27 sentencing under a new key on one record. The
+  verify pass, reading only the other record, saw no entry adjourning the
+  original 8/11 date and reinstated that cancelled row, and the dedupe sweep
+  only paired once-only proceedings that were *both* held — so the feed
+  showed an 8/11 sentencing as scheduled. The verify pass and both
+  LLM-gated dedupe sweeps now read every record of a split docket, and the
+  near-slot sweep pairs a held once-only proceeding (sentencing,
+  arraignment, plea or change of plea, initial appearance) with a scheduled row of
+  the same proceeding for the same defendant, for the resolver to merge.
+
 - **Switched-off docket alerts for configured dockets are switched back
   on.** CourtListener keeps a docket alert that is switched off
   (`alert_type` 0) and allows only one alert per docket per account. It
