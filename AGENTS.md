@@ -16,7 +16,7 @@ The module-by-module architecture (CLI, courtlistener, llm, llmkit, store, sync,
 
 ## Key Design Decisions
 
-The rationale behind the project's non-obvious choices — LLM-driven extraction, the three-tier short-circuit, the summary truthfulness guards, the dedupe sweeps, the prompt-cache thresholds, multi-record docket grouping, and the rest — lives in [agent-docs/DESIGN-DECISIONS.md](agent-docs/DESIGN-DECISIONS.md). It is the most important reference when touching the LLM-driven layers: read the relevant note before changing extraction, verification, dedupe, or summary behavior.
+The rationale behind the project's non-obvious choices — LLM-driven extraction, the three-tier short-circuit, the summary truthfulness guards, the dedupe sweeps, the prompt-cache thresholds, multi-record docket grouping, the provider retirement dates of the default models, and the rest — lives in [agent-docs/DESIGN-DECISIONS.md](agent-docs/DESIGN-DECISIONS.md). It is the most important reference when touching the LLM-driven layers: read the relevant note before changing extraction, verification, dedupe, or summary behavior.
 
 ## Tech Stack
 
