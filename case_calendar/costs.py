@@ -14,10 +14,9 @@ It is deliberately an ESTIMATE, not a bill:
   estimate at all (the ledger logs `cost_est=?` and flags the run total
   partial) rather than a wrong number.
 - Where a provider charges more for a long prompt (Claude Haiku 5.5 over 100K
-  tokens, the Gemini Pro models over 200K, OpenAI's GPT-6 models and GPT-5.6
-  Sol over 272K), the whole call is priced at the higher rate, the way the
-  provider bills it. The other OpenAI models' over-272K rates aren't modeled:
-  its pricing page loads them by script, so they couldn't be checked.
+  tokens, the Gemini Pro models over 200K, OpenAI's GPT-6, GPT-5.6, GPT-5.5
+  and GPT-5.4 flagship models over 272K), the whole call is priced at the
+  higher rate, the way the provider bills it.
 - It does NOT model batch discounts, data-residency multipliers, or per-hour
   cache storage — only the standard per-token rates.
 
@@ -85,8 +84,8 @@ class _LongPromptRates(TypedDict):
 #   routes those calls to gemini-3.8-flash and bills them at its rates, so
 #   estimates logged under the 2.5-pro name will run high.
 # OpenAI (https://developers.openai.com/api/docs/pricing): the standard tier,
-#   at the short-context (<=272K) rates; the long-context rates that could be
-#   checked are in _LONG_PROMPT_RATES. cache_read is the "cached input"
+#   at the short-context (<=272K) rates; the long-context rates are in
+#   _LONG_PROMPT_RATES. cache_read is the "cached input"
 #   rate; the `-pro` models publish no cached rate, so cached input is priced
 #   at the full input rate. The GPT-5.6 and GPT-6 models also charge for cache
 #   writes (cache_write is their 30-minute write rate), but our OpenAI token
@@ -403,9 +402,9 @@ _LONG_PROMPT_RATES: dict[str, _LongPromptRates] = {
             "output": 15.00,
         },
     },
-    # OpenAI's "Long: >272K input tokens" view of the standard tier. The
-    # gpt-5.6-sol rates are from the page's cyber-models table, the only place
-    # its long-context rates appear.
+    # OpenAI's "Long: >272K input tokens" view of the standard tier, which
+    # lists only these models; the rest of the lineup has one rate. The -pro
+    # models publish no cached rate, so cached input is priced as input.
     "gpt-6-astra": {
         "over": 272_000,
         "rates": {
@@ -449,6 +448,69 @@ _LONG_PROMPT_RATES: dict[str, _LongPromptRates] = {
             "cache_read": 0.80,
             "cache_write": 10.00,
             "output": 30.00,
+        },
+    },
+    "gpt-6-sol": {
+        "over": 272_000,
+        "rates": {
+            "input": 4.00,
+            "cache_read": 0.40,
+            "cache_write": 5.00,
+            "output": 15.00,
+        },
+    },
+    "gpt-5.6-terra": {
+        "over": 272_000,
+        "rates": {
+            "input": 4.00,
+            "cache_read": 0.40,
+            "cache_write": 5.00,
+            "output": 18.00,
+        },
+    },
+    "gpt-5.6-luna": {
+        "over": 272_000,
+        "rates": {
+            "input": 0.40,
+            "cache_read": 0.04,
+            "cache_write": 0.50,
+            "output": 1.80,
+        },
+    },
+    "gpt-5.5": {
+        "over": 272_000,
+        "rates": {
+            "input": 10.00,
+            "cache_read": 1.00,
+            "cache_write": 0.0,
+            "output": 45.00,
+        },
+    },
+    "gpt-5.5-pro": {
+        "over": 272_000,
+        "rates": {
+            "input": 60.00,
+            "cache_read": 60.00,
+            "cache_write": 0.0,
+            "output": 270.00,
+        },
+    },
+    "gpt-5.4": {
+        "over": 272_000,
+        "rates": {
+            "input": 5.00,
+            "cache_read": 0.50,
+            "cache_write": 0.0,
+            "output": 22.50,
+        },
+    },
+    "gpt-5.4-pro": {
+        "over": 272_000,
+        "rates": {
+            "input": 60.00,
+            "cache_read": 60.00,
+            "cache_write": 0.0,
+            "output": 270.00,
         },
     },
 }

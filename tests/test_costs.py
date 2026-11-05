@@ -129,9 +129,10 @@ class TestEstimateCost:
         assert costs.estimate_cost("gpt-5.4-nano", usage) == pytest.approx(1.45)
 
     def test_openai_summary_default(self):
-        # gpt-5.4 (the OpenAI summary default): $2.50 input + $15.00 output.
-        usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
-        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(17.50)
+        # gpt-5.4 (the OpenAI summary default): $2.50 input + $15.00 output,
+        # for a prompt under the 272K long-context limit.
+        usage = TokenUsage(input=100_000, output=100_000, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(1.75)
 
     def test_openai_cached_input_rate(self):
         # OpenAI cached prompt tokens billed at the cheaper cached-input rate
@@ -141,9 +142,9 @@ class TestEstimateCost:
 
     def test_openai_variant_not_mispriced_as_base(self):
         # gpt-5.4-mini must use its own rate, not fall back to gpt-5.4.
-        usage = TokenUsage(input=1_000_000, output=0, cached=0, cache_write=0)
-        assert costs.estimate_cost("gpt-5.4-mini", usage) == pytest.approx(0.75)
-        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(2.50)
+        usage = TokenUsage(input=100_000, output=0, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4-mini", usage) == pytest.approx(0.075)
+        assert costs.estimate_cost("gpt-5.4", usage) == pytest.approx(0.25)
 
     def test_openai_gpt5_family(self):
         usage = TokenUsage(input=1_000_000, output=1_000_000, cached=0, cache_write=0)
@@ -198,7 +199,8 @@ class TestEstimateCost:
         assert costs.estimate_cost("claude-haiku-4-5-20251001", usage) == pytest.approx(
             1.0
         )
-        assert costs.estimate_cost("gpt-5.4-2026-01-15", usage) == pytest.approx(2.50)
+        short = TokenUsage(input=100_000, output=0, cached=0, cache_write=0)
+        assert costs.estimate_cost("gpt-5.4-2026-01-15", short) == pytest.approx(0.25)
 
     def test_unlisted_sibling_version_not_mispriced(self):
         # ...but a sibling VERSION we don't list (a hypothetical gpt-5.3) is a
@@ -315,6 +317,13 @@ class TestLongPromptRates:
             "gpt-6-astra": (20.00, 75.00),
             "gpt-6.1-terra": (2.00, 7.50),
             "gpt-5.6-sol": (8.00, 30.00),
+            "gpt-6-sol": (4.00, 15.00),
+            "gpt-5.6-terra": (4.00, 18.00),
+            "gpt-5.6-luna": (0.40, 1.80),
+            "gpt-5.5": (10.00, 45.00),
+            "gpt-5.5-pro": (60.00, 270.00),
+            "gpt-5.4": (5.00, 22.50),
+            "gpt-5.4-pro": (60.00, 270.00),
         }
         for model, (inp, out) in expected_long.items():
             assert costs.estimate_cost(model, long) == pytest.approx(
@@ -328,3 +337,17 @@ class TestLongPromptRates:
         assert costs.estimate_cost("gpt-6-luna", usage) == pytest.approx(
             (50_000 * 0.20 + 200_000 * 0.02 + 50_000 * 0.25) / 1_000_000
         )
+
+    def test_openai_models_without_a_long_context_rate_keep_one_rate(self):
+        # OpenAI's long-context view lists only the flagship models; the
+        # mini / nano / older models keep their one rate at any prompt size.
+        usage = TokenUsage(input=500_000, output=0)
+        assert costs.estimate_cost("gpt-5.4-mini", usage) == pytest.approx(0.375)
+        assert costs.estimate_cost("gpt-5.4-nano", usage) == pytest.approx(0.10)
+        assert costs.estimate_cost("gpt-5", usage) == pytest.approx(0.625)
+
+    def test_openai_pro_long_context_cached_input_priced_as_input(self):
+        # gpt-5.4-pro publishes no cached rate in either view, so cached input
+        # over 272K bills at the $60 long-context input rate.
+        usage = TokenUsage(input=300_000, output=0, cached=300_000)
+        assert costs.estimate_cost("gpt-5.4-pro", usage) == pytest.approx(18.0)
