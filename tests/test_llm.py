@@ -3782,7 +3782,7 @@ class TestVerifyPromptConsolidation:
     ``VERIFY_DEADLINE_SYSTEM_PROMPT``) ran two separate prompts. The
     merge's stated goal was to clear Anthropic's Haiku 4.5 prompt-cache
     token floor, but that floor is 4096 tokens (2048 is the RETIRED
-    Haiku 3.5's floor), and the merged prompt is only ~2000 tokens — so
+    Haiku 3.5's floor), and the merged prompt is only ~2700 tokens — so
     it still does NOT cache on Haiku 4.5. That's a documented cost
     limitation, not a bug (see AGENTS.md's cache-threshold design note).
     These tests pin the contract elements that must survive a
@@ -3793,7 +3793,7 @@ class TestVerifyPromptConsolidation:
         # Corrected reality check: Claude Haiku 4.5's documented minimum
         # cacheable prompt length is 4096 tokens (the 2048 figure is the
         # RETIRED Haiku 3.5's floor — an earlier version of this test
-        # misread the docs table). The merged verify prompt is ~2000
+        # misread the docs table). The merged verify prompt is ~2700
         # tokens, so it does NOT cache on Haiku 4.5 and the verify track
         # pays full uncached input rate there — a known cost limitation,
         # not a bug. Use the project's standard ~4 chars/token
@@ -3808,6 +3808,25 @@ class TestVerifyPromptConsolidation:
             "That's an improvement, but update the AGENTS.md cache-threshold "
             "design note and CHANGELOG to reflect it."
         )
+
+    def test_mark_held_asks_for_the_held_date(self):
+        # The calendar layer rejects a verify MARK_HELD whose local_date is
+        # more than 2 days from the row's date, so the prompt must ask for it.
+        p = llm.VERIFY_SYSTEM_PROMPT
+        assert '{"type": "MARK_HELD", "local_date": "YYYY-MM-DD"' in p
+        assert "candidate's OWN date" in p
+
+    def test_codefendant_termination_is_not_a_cancel_signal(self):
+        # us-v-akhter: "Jury Trial terminated as to defendant Muneeb Akhter"
+        # after his plea cancelled the shared trial row, though the trial went
+        # ahead for Sohaib Akhter on the row's date. The rule has to sit in
+        # the decision priority, where the model applies it, not only in a
+        # trailing section.
+        p = llm.VERIFY_SYSTEM_PROMPT
+        assert "CRITICAL — multi-defendant dockets (HEARINGS)" in p
+        assert "for ANY\n   defendant on the docket → MARK_HELD" in p
+        assert 'An order that ends the proceeding "as to" ONE defendant' in p
+        assert "A shared surname does NOT make a row one defendant's" in p
 
     def test_old_deadline_prompt_constant_is_removed(self):
         # The consolidation is one-way: VERIFY_DEADLINE_SYSTEM_PROMPT

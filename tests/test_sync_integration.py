@@ -1942,6 +1942,54 @@ class TestPastScheduledHearings:
         assert stats["verified"] == 1
         assert store.get_hearings("us-v-x")[0]["status"] == "held"
 
+    def test_mark_held_for_a_different_date_is_rejected(
+        self, store: Store, case, monkeypatch, caplog
+    ):
+        # The us-v-akhter trial-akhter-3 shape: a trial row for a date that
+        # was later moved, marked held on the strength of the minute entries
+        # for the trial's actual (months-later) date. More than 2 days off the
+        # row's own date, so the row is left alone.
+        self._seed_past_scheduled(store, key="trial-x", title="Jury Trial")
+        stub_verify(
+            monkeypatch,
+            by_key={
+                "trial-x": {
+                    "type": "MARK_HELD",
+                    "local_date": "2024-05-04",
+                    "reason": "Jury Trial held on 5/4/2024",
+                },
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        with caplog.at_level("WARNING", logger="case_calendar.sync"):
+            stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 0
+        assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
+        assert any(
+            "verify MARK_HELD date mismatch" in r.message for r in caplog.records
+        )
+
+    def test_mark_held_within_two_days_is_applied(
+        self, store: Store, case, monkeypatch
+    ):
+        # A minute entry dated a day after the row (filed late, or a
+        # date-only row vs the timed record) is still this row's record.
+        self._seed_past_scheduled(store, key="past-conf")
+        stub_verify(
+            monkeypatch,
+            by_key={
+                "past-conf": {
+                    "type": "MARK_HELD",
+                    "local_date": "2024-01-02",
+                    "reason": "Status Conference held on 1/2/2024",
+                },
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["verified"] == 1
+        assert store.get_hearings("us-v-x")[0]["status"] == "held"
+
     def test_unclear_leaves_past_row_as_scheduled(
         self,
         store: Store,

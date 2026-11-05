@@ -2515,6 +2515,22 @@ class CaseSyncer:
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "No docket entry supports this hearing"
         elif atype == "MARK_HELD":
+            # Same date-proximity rule as the per-entry MARK_HELD path: a
+            # held record more than 2 days from the row's own date is a
+            # different proceeding (or the row's date was moved), not
+            # evidence THIS row happened — e.g. the verify pass citing the
+            # May trial minute entries to mark a superseded February trial
+            # row held (us-v-akhter trial-akhter-3).
+            if not _mark_held_date_matches(action, hearing):
+                log.warning(
+                    "verify MARK_HELD date mismatch: case=%s key=%r "
+                    "starts=%s action_local_date=%s — leaving row alone",
+                    case.case_id,
+                    hearing.get("hearing_key"),
+                    hearing.get("starts_at_utc"),
+                    action.get("local_date"),
+                )
+                return False
             merged.update(status="held")
         elif atype == "REINSTATE":
             # Issued for a 'cancelled' row whose cancellation is not
