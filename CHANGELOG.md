@@ -33,6 +33,13 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **"wrote N events" now counts the events subscribers see.** `emit`,
+  `sync` and `serve` reported every hearing assigned to a calendar,
+  including the minor and cancelled ones the feed leaves out — on
+  2026-11-05 the log said 352 events for a cybercrime feed that held 234.
+  The count (and the matching Google Calendar / Microsoft 365 "pushed N
+  events" lines) now matches what is written.
+
 - **A stale "scheduled" sentencing no longer survives next to the held
   one.** On a docket CourtListener splits across two records (E.D.N.Y.
   1:23-cr-00324 in us-v-tymoshchuk), the extractor filed Stryzhak's

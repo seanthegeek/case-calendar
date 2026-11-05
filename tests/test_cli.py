@@ -196,6 +196,26 @@ class TestEmitCalendars:
             }
         )
 
+    def test_event_count_matches_what_the_feed_shows(self, store, cfg):
+        # The count printed as "wrote N events" used to be every row
+        # assigned to the calendar, including the minor and cancelled rows
+        # the feed leaves out (352 reported vs 234 in the cybercrime feed on
+        # 2026-11-05). It must equal the VEVENTs actually written.
+        self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
+        self._seed_hearing(store, case_id="us-v-x", key="status-conf-x")
+        self._seed_hearing(store, case_id="us-v-x", key="trial-x")
+        self._seed_hearing(store, case_id="us-v-x", key="no-date-x")
+        minor = store.get_hearing("us-v-x", "status-conf-x")
+        store.upsert_hearing({**minor, "significance": "minor"})
+        cancelled = store.get_hearing("us-v-x", "trial-x")
+        store.upsert_hearing({**cancelled, "status": "cancelled"})
+        dateless = store.get_hearing("us-v-x", "no-date-x")
+        store.upsert_hearing({**dateless, "starts_at_utc": None})
+        results = emit_calendars(cfg, store)
+        assert results["cyber"]["events"] == 1
+        ics = Path(results["cyber"]["ics_path"]).read_text()
+        assert ics.count("BEGIN:VEVENT") == results["cyber"]["events"]
+
     def test_writes_ics_for_each_calendar(self, store, cfg):
         self._seed_hearing(store, case_id="us-v-x", key="sentencing-x")
         self._seed_hearing(store, case_id="acme-v-widget", key="hearing-acme")
