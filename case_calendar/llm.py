@@ -1614,6 +1614,7 @@ def _build_dedupe_hearing_user_message(
                 f"  hearing_key: {h.get('hearing_key')!r}",
                 f"  title: {h.get('title')!r}",
                 f"  starts_at_utc: {h.get('starts_at_utc')}",
+                f"  status: {h.get('status')}",
                 f"  duration_minutes: {h.get('duration_minutes')}",
                 f"  significance: {h.get('significance')}",
                 f"  docket_id: {h.get('docket_id')}",

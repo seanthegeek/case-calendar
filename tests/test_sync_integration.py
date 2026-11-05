@@ -3720,6 +3720,151 @@ class TestDedupeNearslotHearings:
         assert rows["sentencing-mcgonigal-2"]["starts_at_utc"].startswith("2023-12-14")
         assert sorted(rows["sentencing-mcgonigal-2"]["source_entry_ids"]) == [20, 21]
 
+    def test_singular_held_vs_scheduled_merge_keeps_held_date(
+        self, store, case, monkeypatch
+    ):
+        # A sentencing held 10-27 under a drifted key while the original row
+        # is still 'scheduled' at the 8-11 date it was moved away from (the
+        # us-v-tymoshchuk Stryzhak shape). The resolver merges into the held
+        # row; the stale scheduled row is deleted.
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-stryzhak",
+                "title": "Sentencing - Stryzhak",
+                "starts_at_utc": "2026-08-11T15:00:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "scheduled",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [30],
+            }
+        )
+        store.upsert_hearing(
+            {
+                "case_id": "us-v-x",
+                "hearing_key": "sentencing-stryzhak-2",
+                "title": "Sentencing - Stryzhak",
+                "starts_at_utc": "2026-10-27T14:30:00+00:00",
+                "duration_minutes": 90,
+                "timezone": "America/New_York",
+                "status": "held",
+                "significance": "major",
+                "docket_id": 100,
+                "source_entry_ids": [31],
+            }
+        )
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-stryzhak-2",
+                "reason": "One sentencing; adjourned from 8-11, held 10-27.",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 1
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert "sentencing-stryzhak" not in rows
+        survivor = rows["sentencing-stryzhak-2"]
+        assert survivor["status"] == "held"
+        assert survivor["starts_at_utc"].startswith("2026-10-27")
+        assert sorted(survivor["source_entry_ids"]) == [30, 31]
+
+    def test_merge_into_scheduled_row_over_held_row_is_refused(
+        self, store, case, monkeypatch, caplog
+    ):
+        # If the resolver picks the stale scheduled row as the survivor of a
+        # held/scheduled once-only cluster, the merge would delete the record
+        # of when the sentencing actually happened. Refuse it.
+        for key, start, status, src in (
+            ("sentencing-stryzhak", "2026-08-11T15:00:00+00:00", "scheduled", 30),
+            ("sentencing-stryzhak-2", "2026-10-27T14:30:00+00:00", "held", 31),
+        ):
+            store.upsert_hearing(
+                {
+                    "case_id": "us-v-x",
+                    "hearing_key": key,
+                    "title": "Sentencing - Stryzhak",
+                    "starts_at_utc": start,
+                    "duration_minutes": 90,
+                    "timezone": "America/New_York",
+                    "status": status,
+                    "significance": "major",
+                    "docket_id": 100,
+                    "source_entry_ids": [src],
+                }
+            )
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-stryzhak",
+                "reason": "wrong survivor",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        with caplog.at_level("WARNING", logger="case_calendar.sync"):
+            stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["sentencing-stryzhak-2"]["status"] == "held"
+        assert rows["sentencing-stryzhak"]["status"] == "scheduled"
+        assert any("has a held row" in r.message for r in caplog.records)
+
+    def test_resolver_context_spans_every_record_in_cluster(self, store):
+        # One logical docket split across two CourtListener records: the
+        # stale scheduled row on 70029216, the drifted held row (and the
+        # adjournment + minute entry that prove it) on 70701403. The resolver
+        # context must include both records' entries, newest filing first.
+        store.mark_entry(
+            70029216,
+            1,
+            "2026-05-01T00:00:00Z",
+            "fp",
+            date_filed="2026-05-01",
+            description="SCHEDULING ORDER: sentencing set for 8/11/2026",
+        )
+        store.mark_entry(
+            70701403,
+            2,
+            "2026-10-01T00:00:00Z",
+            "fp",
+            date_filed="2026-10-01",
+            description="ORDER: Sentencing is adjourned to 10/27/2026",
+        )
+        store.mark_entry(
+            70701403,
+            3,
+            "2026-10-27T00:00:00Z",
+            "fp",
+            date_filed="2026-10-27",
+            description="Minute Entry: Sentencing held on 10/27/2026",
+        )
+        cluster = [
+            {"hearing_key": "sentencing-stryzhak", "docket_id": 70029216},
+            {"hearing_key": "sentencing-stryzhak-2", "docket_id": 70701403},
+        ]
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        entries = syncer._cluster_recent_entries(cluster)
+        assert [e["entry_id"] for e in entries] == [3, 2, 1]
+
+    def test_resolver_context_single_record_unchanged(self, store):
+        store.mark_entry(100, 1, "2026-01-01T00:00:00Z", "fp", description="A")
+        store.mark_entry(100, 2, "2026-01-02T00:00:00Z", "fp", description="B")
+        cluster = [
+            {"hearing_key": "a", "docket_id": 100},
+            {"hearing_key": "b", "docket_id": 100},
+        ]
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        assert syncer._cluster_recent_entries(
+            cluster
+        ) == store.get_recent_relevant_entries(100, "9999-12-31T00:00:00", limit=15)
+
     def test_keep_both_leaves_distinct_same_day_hearings(
         self, store, case, monkeypatch
     ):
@@ -4679,6 +4824,84 @@ class TestVerifyContextEntries:
         cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
         CaseSyncer(cl, store).sync_case(case)
         assert store.get_hearings("us-v-x")[0]["status"] == "scheduled"
+
+    def _seed_split_docket(self, store):
+        # One logical docket (same number + court) split by CourtListener
+        # across two records — the us-v-tymoshchuk 1:23-cr-00324 shape.
+        for record_id in (70029216, 70701403):
+            store.upsert_docket_meta(
+                record_id,
+                {
+                    "court_id": "nyed",
+                    "docket_number": "1:23-cr-00324",
+                    "case_name": "United States v. Tymoshchuk",
+                    "absolute_url": f"/docket/{record_id}/x/",
+                },
+            )
+
+    def test_split_docket_context_reads_every_record(self, store: Store):
+        # The 8/11 row sits on 70029216; the adjournment and the minute entry
+        # are on 70701403. The verify LLM must see them, or it reinstates a
+        # cancelled sentencing for lack of "an entry vacating" it.
+        self._seed_split_docket(store)
+        store.mark_entry(
+            70029216,
+            1,
+            "2026-05-11T00:00:00Z",
+            "fp",
+            date_filed="2026-05-11",
+            description="SCHEDULING ORDER: sentencing adjourned to 8/11/2026",
+        )
+        store.mark_entry(
+            70701403,
+            2,
+            "2026-07-29T00:00:00Z",
+            "fp",
+            date_filed="2026-07-29",
+            description="ORDER granting Motion to Continue Sentencing to 10/6/2026",
+        )
+        store.mark_entry(
+            70701403,
+            3,
+            "2026-10-27T00:00:00Z",
+            "fp",
+            date_filed="2026-10-27",
+            description="Minute Entry: Sentencing held on 10/27/2026",
+        )
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(
+            70029216, "2026-08-11T15:00:00+00:00", source_entry_ids=[1]
+        )
+        assert [e["entry_id"] for e in ctx] == [3, 2, 1]
+
+    def test_split_docket_source_entries_on_sibling_record(self, store: Store):
+        # A row's source entry can live on the sibling record; it must still
+        # reach the LLM (and so satisfy the DELETE_HALLUCINATION guard).
+        self._seed_split_docket(store)
+        store.mark_entry(
+            70701403,
+            7,
+            "2025-01-01T00:00:00Z",
+            "fp",
+            date_filed="2025-01-01",
+            description="SCHEDULING ORDER: sentencing set",
+        )
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        ctx = syncer._verify_context_entries(70029216, None, source_entry_ids=[7])
+        assert [e["entry_id"] for e in ctx] == [7]
+
+    def test_docket_without_cached_number_reads_only_its_record(self, store: Store):
+        store.mark_entry(
+            555,
+            1,
+            "2026-01-01T00:00:00Z",
+            "fp",
+            date_filed="2026-01-01",
+            description="A",
+        )
+        syncer = CaseSyncer(FakeCourtListener(), store)
+        assert syncer._docket_record_ids(555) == [555]
+        assert [e["entry_id"] for e in syncer._verify_context_entries(555, None)] == [1]
 
 
 class TestDeleteHallucinationGuard:

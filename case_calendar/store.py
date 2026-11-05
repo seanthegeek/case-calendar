@@ -1269,11 +1269,16 @@ class Store:
           calendar date but a DIFFERENT ``starts_at_utc`` (a date-only midnight
           row + a timed row of the same proceeding; two same-day vocab-drift
           keys). Clustered within a single ``status``.
-        - **Same singular proceeding type + defendant, any date** (held only):
-          two ``status='held'`` rows whose keys are the same once-only
-          proceeding for the same defendant (see ``_singular_defendant_base``),
-          even days apart — the ``sentencing-mcgonigal`` @12-18 vs
-          ``sentencing-mcgonigal-2`` @12-14 shape.
+        - **Same singular proceeding type + defendant, any date**: rows whose
+          keys are the same once-only proceeding for the same defendant (see
+          ``_singular_defendant_base``), even days apart, when at least one of
+          them is ``held`` — two held rows (the ``sentencing-mcgonigal`` @12-18
+          vs ``sentencing-mcgonigal-2`` @12-14 shape), or a held row plus a
+          ``scheduled`` one left at a date the proceeding was moved away from
+          (the us-v-tymoshchuk ``sentencing-stryzhak`` @8-11 scheduled vs
+          ``sentencing-stryzhak-2`` @10-27 held shape). A bucket with no held
+          row is not a candidate: two scheduled rows give no evidence of which
+          date, if either, the proceeding happened on.
 
         Clusters are disjoint and exclude exact-slot groups (the caller runs
         this AFTER the exact-slot sweeps, so those are already merged). Returns
@@ -1333,11 +1338,12 @@ class Store:
                 clusters.append(bucket)
                 assigned.update(h["hearing_key"] for h in bucket)
 
-        # Tier 2 — same singular type + defendant, held, any date (rows not
-        # already claimed by a same-date cluster above).
+        # Tier 2 — same singular type + defendant, any date, held or
+        # scheduled, with at least one held row (rows not already claimed by a
+        # same-date cluster above).
         singular_buckets: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
         for h in rows:
-            if h["status"] != "held" or h["hearing_key"] in assigned:
+            if h["hearing_key"] in assigned:
                 continue
             base = _singular_defendant_base(h["hearing_key"])
             if base is None:
@@ -1345,7 +1351,7 @@ class Store:
             dn, cid = _logical(h)
             singular_buckets.setdefault((dn, cid, base), []).append(h)
         for bucket in singular_buckets.values():
-            if len(bucket) > 1:
+            if len(bucket) > 1 and any(h["status"] == "held" for h in bucket):
                 clusters.append(bucket)
 
         return clusters
