@@ -634,6 +634,12 @@ def _mark_held_date_matches(
     A 2-day window covers same-week reschedules where the minute entry might
     be filed a day or two after the hearing; anything wider is almost certainly
     the LLM stapling a held proceeding onto the wrong logical hearing.
+
+    The action's ``local_date`` is a court-local date, so the hearing's
+    ``starts_at_utc`` is converted to its own ``timezone`` before the dates
+    are compared — a 2 p.m. Honolulu hearing is stored on the NEXT UTC day,
+    and comparing UTC dates would shift the window by a day. Falls back to
+    the UTC date when the row has no timezone or an unknown one.
     """
     action_date_str = action.get("local_date")
     existing_starts = existing.get("starts_at_utc")
@@ -642,10 +648,18 @@ def _mark_held_date_matches(
     try:
         from datetime import date
 
-        existing_date = datetime.fromisoformat(existing_starts).date()
+        existing_dt = datetime.fromisoformat(existing_starts)
         action_date = date.fromisoformat(action_date_str)
     except (ValueError, TypeError):
         return True
+    if existing_dt.tzinfo is None:
+        existing_dt = existing_dt.replace(tzinfo=timezone.utc)
+    try:
+        existing_date = existing_dt.astimezone(
+            ZoneInfo(existing.get("timezone") or "UTC")
+        ).date()
+    except (ZoneInfoNotFoundError, ValueError):
+        existing_date = existing_dt.date()
     return abs((existing_date - action_date).days) <= tolerance_days
 
 
@@ -2515,6 +2529,22 @@ class CaseSyncer:
             merged.update(status="cancelled")
             audit_note = action.get("reason") or "No docket entry supports this hearing"
         elif atype == "MARK_HELD":
+            # Same date-proximity rule as the per-entry MARK_HELD path: a
+            # held record more than 2 days from the row's own date is a
+            # different proceeding (or the row's date was moved), not
+            # evidence THIS row happened — e.g. the verify pass citing the
+            # May trial minute entries to mark a superseded February trial
+            # row held (us-v-akhter trial-akhter-3).
+            if not _mark_held_date_matches(action, hearing):
+                log.warning(
+                    "verify MARK_HELD date mismatch: case=%s key=%r "
+                    "starts=%s action_local_date=%s — leaving row alone",
+                    case.case_id,
+                    hearing.get("hearing_key"),
+                    hearing.get("starts_at_utc"),
+                    action.get("local_date"),
+                )
+                return False
             merged.update(status="held")
         elif atype == "REINSTATE":
             # Issued for a 'cancelled' row whose cancellation is not
