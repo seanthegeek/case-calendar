@@ -2673,6 +2673,23 @@ class CaseSyncer:
             )
             return 0
 
+        # A held row is the record of when a proceeding actually happened.
+        # The near-slot sweep's once-only tier mixes held and scheduled rows;
+        # a merge INTO a scheduled row there would delete that record and keep
+        # a stale date, so refuse it and leave the cluster for the next sync.
+        if target.get("status") != "held" and any(
+            h.get("status") == "held" for h in cluster
+        ):
+            log.warning(
+                "%s MERGE_INTO target_key %r is %r but the cluster has a held "
+                "row %s: leaving cluster alone",
+                source,
+                target_key,
+                target.get("status"),
+                [h.get("hearing_key") for h in cluster if h.get("status") == "held"],
+            )
+            return 0
+
         # Prefer the suffix-free canonical key as the survivor when the cluster
         # holds both `base` and `base-<digits>`: the LLM tends to pick the
         # `-N` row (it carries more source_entry_ids), but keeping the drift

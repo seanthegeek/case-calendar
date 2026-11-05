@@ -3774,6 +3774,48 @@ class TestDedupeNearslotHearings:
         assert survivor["starts_at_utc"].startswith("2026-10-27")
         assert sorted(survivor["source_entry_ids"]) == [30, 31]
 
+    def test_merge_into_scheduled_row_over_held_row_is_refused(
+        self, store, case, monkeypatch, caplog
+    ):
+        # If the resolver picks the stale scheduled row as the survivor of a
+        # held/scheduled once-only cluster, the merge would delete the record
+        # of when the sentencing actually happened. Refuse it.
+        for key, start, status, src in (
+            ("sentencing-stryzhak", "2026-08-11T15:00:00+00:00", "scheduled", 30),
+            ("sentencing-stryzhak-2", "2026-10-27T14:30:00+00:00", "held", 31),
+        ):
+            store.upsert_hearing(
+                {
+                    "case_id": "us-v-x",
+                    "hearing_key": key,
+                    "title": "Sentencing - Stryzhak",
+                    "starts_at_utc": start,
+                    "duration_minutes": 90,
+                    "timezone": "America/New_York",
+                    "status": status,
+                    "significance": "major",
+                    "docket_id": 100,
+                    "source_entry_ids": [src],
+                }
+            )
+        stub_verify(monkeypatch)
+        stub_dedupe(
+            monkeypatch,
+            action={
+                "type": "MERGE_INTO",
+                "target_key": "sentencing-stryzhak",
+                "reason": "wrong survivor",
+            },
+        )
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        with caplog.at_level("WARNING", logger="case_calendar.sync"):
+            stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["deduped_nearslot"] == 0
+        rows = {h["hearing_key"]: h for h in store.get_hearings("us-v-x")}
+        assert rows["sentencing-stryzhak-2"]["status"] == "held"
+        assert rows["sentencing-stryzhak"]["status"] == "scheduled"
+        assert any("has a held row" in r.message for r in caplog.records)
+
     def test_resolver_context_spans_every_record_in_cluster(self, store):
         # One logical docket split across two CourtListener records: the
         # stale scheduled row on 70029216, the drifted held row (and the

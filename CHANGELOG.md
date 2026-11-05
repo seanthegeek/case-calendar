@@ -45,6 +45,8 @@ adheres to [Semantic Versioning][semver].
   near-slot sweep pairs a held once-only proceeding (sentencing,
   arraignment, plea or change of plea, initial appearance) with a scheduled row of
   the same proceeding for the same defendant, for the resolver to merge.
+  The resolver now sees each candidate's status, and a merge that would
+  keep a scheduled row and delete a held one is refused.
 
 - **Switched-off docket alerts for configured dockets are switched back
   on.** CourtListener keeps a docket alert that is switched off
