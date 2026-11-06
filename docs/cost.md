@@ -65,7 +65,7 @@ The summary default has since moved from Claude Sonnet 4.6 to **Claude Sonnet
 third lower, but it counts the same text as more tokens (1.42× on this
 project's filings) and thinks before answering. Regenerating all 39 dockets of
 the November 2026 caseload with Sonnet 5.5 cost **$2.99** (about $0.08 per
-docket); on the 10-docket benchmark it cost $0.80 against Sonnet 4.6's $0.70.
+docket); on the 10-docket benchmark it cost $0.73 against Sonnet 4.6's $0.74.
 See
 [SCORECARD Phase 4](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-4--claude-sonnet-55-vs-sonnet-46-on-the-current-prompt-2026-11-05)
 for the comparison.

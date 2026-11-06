@@ -131,10 +131,11 @@ adheres to [Semantic Versioning][semver].
 - **The default case-summary model is now Claude Sonnet 5.5**
   (`claude-sonnet-5-5`), replacing Claude Sonnet 4.6. Re-graded on the
   summary benchmark with the current prompt, Sonnet 5.5 scored A− and
-  Sonnet 4.6 scored D: Sonnet 4.6 reversed which side was appealing on the
-  Ninth Circuit docket in Anthropic v. DOW, stated a nationality the
-  documents don't support, and ran past the word limit. The cost is about
-  the same — $0.80 against $0.70 on the 10-docket benchmark, and $2.99 for
+  Sonnet 4.6 scored D: Sonnet 4.6 misdescribed the Ninth Circuit docket in
+  Anthropic v. DOW as the D.C. Circuit petition, stated a nationality the
+  documents don't support, ignored the rule for leading an appeal summary,
+  and described a past hearing as still scheduled. The cost is the same —
+  $0.73 against $0.74 on the 10-docket benchmark, and $2.99 for
   the 39-docket production caseload. Sonnet 5.5 is supported until at least
   2027-09-28, against 2027-02-17 for Sonnet 4.6. Existing summaries are not
   regenerated automatically; run `case-calendar summarize --force` to
