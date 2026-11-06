@@ -534,6 +534,117 @@ class TestDispositionDocumentDetection:
         # to hand the summary model as the verdict.
         assert is_disposition(entry)
 
+    # Procedural orders / minute entries the strict predicate used to accept
+    # because a disposition word appears in a NON-ruling sense. All verbatim
+    # (trimmed) from the live store, 2026-11-05.
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # anthropic-v-dow 3:26-cv-01996 — a ruling word mentioned in passing.
+            "ORDER by Judge Rita F. Lin granting 168 171 173 Motions to File "
+            "Amicus Curiae Briefs. Any further amicus briefs related to the "
+            "summary judgment motions must be filed by June 26, 2026 at 5:00 p.m.",
+            "ORDER. By July 24, 2026, Anthropic shall file a proposed order on its "
+            "166 Motion for Summary Judgment. The proposed order shall be limited "
+            "to the issue of relief.",
+            "ORDER RE AMICUS CURIAE BRIEFS. Amicus briefs in support of the motion "
+            "for preliminary injunction must be filed by 3/13/2026 at 5:00 p.m.",
+            # "remanded" = custody, not an appellate remand.
+            "MINUTE ORDER as to ALEKSEY OLEGOVICH VOLKOV (1) for proceedings held "
+            "before Magistrate Judge Kellie M. Barr on 11/12/2025: The Parties "
+            "appeared for an Initial Appearance. Defendant remanded to the custody "
+            "of the U.S. Marshals pending further proceedings.",
+            "Minute Entry for proceedings held before District Judge Rossie D. "
+            "Alston, Jr: Jury Trial as to Sohaib Akhter held on 5/4/2026. Jury "
+            "Trial cont'd to 5/5/2026. Deft remanded. (Court Reporter: T. Harris)",
+            # "vacated" = a hearing, not a ruling.
+            "MINUTE ORDER as to CHRISTINA CHAPMAN: In light of a conflict in the "
+            "Court's schedule, it is hereby ORDERED that the status hearing set "
+            "for December 6 is VACATED and RESCHEDULED to January 6, 2025.",
+            # "sentencing" = scheduling.
+            "ORDER as to Matthew Isaac Knoot: Sentencing Hearing is reset for "
+            "5/1/2026 at 9:00 AM. Signed by District Judge Eli J. Richardson.",
+            "ORDER as to Artem Aleksandrovych Stryzhak. The 47 Motion for "
+            "Extension of Time to File Sentencing Memorandum and Adjournment "
+            "Request is granted. Sentencing is adjourned to 10/27/2026.",
+            # Rule 5(f) / Brady boilerplate names sanctions it doesn't impose.
+            "ORDER as to Peter Stokes: Initial appearance held on 6/30/2026. "
+            "Failure to comply may result in sanctions, including but not limited "
+            "to exclusion of evidence, adverse jury instructions, a mistrial, "
+            "dismissal of charges, vacatur of a conviction or guilty plea, as "
+            "required by Rule 5(f). Defendant is remanded to the custody of the "
+            "U.S. Marshal.",
+            # An order that is nothing but the Rule 5(f) warning (us-v-didenko).
+            "MINUTE ORDER as to OLEKSANDR DIDENKO: As required by Rule 5(f), the "
+            "United States is ordered to produce all exculpatory evidence, and "
+            "failure to comply may result in sanctions, including exclusion of "
+            "evidence, adverse jury instructions, dismissal of charges and "
+            "contempt proceedings",
+            # A judgment named only as what an appeal is from.
+            "ORDER of US Court of Appeals appointing the Public Defender as to "
+            "Sina Gholinejad regarding 44 Notice of Appeal - Final Judgment.",
+            # Motion-hearing minute entry with "as to <defendant>" before "held".
+            "Minute Entry for proceedings held before Judge Vince Chhabria: Motion "
+            "Hearing as to Linwei Ding held on 6/16/2026 re 394 MOTION for "
+            "Acquittal or, In the Alternative, New Trial. Oral arguments made and "
+            "heard. Court to issue written order.",
+            # The defendant's oath, not an appellate affirmance.
+            "Minute Entry for proceedings held before Chief Judge Richard E. Myers "
+            "II: Arraignment as to Sina Gholinejad held on 5/27/2025. Defendant "
+            "Affirmed - Competent. Plea entered: Not Guilty.",
+        ],
+    )
+    def test_rejects_procedural_entries_with_non_ruling_keywords(self, description):
+        assert not _is_disposition_document({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # Rulings that must still pass, verbatim (trimmed) from the live store.
+            "ORDER GRANTING MOTION FOR PRELIMINARY INJUNCTION 6 . Signed by Judge "
+            "Rita F. Lin on 3/26/2026.",
+            "ORDER ON 166 215 CROSS MOTIONS FOR SUMMARY JUDGMENT; GRANTING 169 "
+            "MOTION TO SUPPLEMENT THE ADMINISTRATIVE RECORD.",
+            "ORDER Granting Ding's Motion for Judgment of Acquittal for Economic "
+            "Espionage Counts. Signed by Judge Vince Chhabria on 8/20/2026.",
+            # Plea forms that used to pass only on their "Sentencing set for" line.
+            "Minute Entry for proceedings held before Judge Pamela K. Chen: "
+            "Arraignment, Initial Appearance and Change of Plea Hearing as to "
+            "Artem Aleksandrovych Stryzhak held on 12/19/2025. Court accepted the "
+            "guilty plea. Sentencing set for 5/6/2026 at 10:30 a.m.",
+            "PAPERLESS Minute Entry for proceedings held before Judge Darrin P. "
+            "Gayles: Change of Plea Hearing as to Erick Ntekereze Prince held on "
+            "11/6/2025. Erick Ntekereze Prince (3) Guilty Count 2. Sentencing "
+            "Hearing set for January 7, 2025 at 2:30 PM.",
+            "Minute Entry for proceedings held before Chief Judge Richard E. Myers "
+            "II: Arraignment as to Sina Gholinejad held on 5/27/2025. Defendant "
+            "Affirmed - Competent - Rule 11 conducted. Plea entered: Guilty.",
+            # The old rules missed this one entirely.
+            "Minute Entry for proceedings held before Judge Michael R. Barrett: "
+            "Change of Plea Hearing as to Deniss Zolotarjovs held on 7/29/2025; "
+            "Counsel present; Defendant enters a guilty plea to Counts 1 and 2.",
+            # A verdict recorded in a minute entry.
+            "Minute Entry for proceedings held before District Judge Rossie D. "
+            "Alston, Jr: Jury Trial as to Sohaib Akhter cont'd on 5/7/2026. The "
+            "jury returned to the courtroom with a verdict of Guilty on Counts 1, "
+            "7, 8; Not Guilty on Count 13. Deft remanded.",
+            # A restitution order.
+            "ORDER as to Christina Chapman (1): Upon consideration of the "
+            "Governments Unopposed Motion for Order of Restitution, Dkt. 48, it is "
+            "hereby ORDERED that the motion is GRANTED and Defendant shall pay "
+            "restitution as specified in the attached Order of Restitution.",
+            # Sentencing that happened.
+            "Minute Entry for proceedings held before District Judge J. Randal "
+            "Hall: Sentencing held on 3/19/2026 for Jason Salazar (1). As to "
+            "Count 1, Def sentenced to 3 years probation.",
+            # A real appellate-style remand still counts.
+            "ORDER granting motion to remand; case remanded to the Superior Court "
+            "of California.",
+        ],
+    )
+    def test_accepts_rulings_in_their_ruling_sense(self, description):
+        assert _is_disposition_document({"description": description})
+
 
 # ---------------------------------------------------------------------------
 # find_primary_documents

@@ -32,6 +32,18 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **Procedural orders are no longer sent to the summary model as rulings.**
+  An order or minute entry counted as a "disposition" if any ruling-type
+  word appeared anywhere in it, so custody notes ("remanded to the custody
+  of the U.S. Marshal"), cancelled hearings ("VACATED and RESCHEDULED"),
+  scheduling orders ("Sentencing Hearing is reset"), the standard Rule 5(f)
+  warning, and orders that merely mention a motion ("Amicus briefs in
+  support of the motion for preliminary injunction must be filed by …")
+  were all sent as rulings. Those words now count only in their ruling
+  sense. Across the live store this drops 36 procedural entries and picks up
+  one guilty plea the old rules missed; Anthropic v. DOW's district-court
+  summary now gets just its four rulings instead of seven documents.
+  Existing summaries keep what they were generated from until regenerated.
 - **Jury verdicts reach case summaries, with their real date and outcome.**
   A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
   a disposition, so sync stored it without its text, it didn't trigger a

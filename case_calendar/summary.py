@@ -225,12 +225,118 @@ def _matches_disposition_broad(text: str) -> bool:
     return bool(_DISPOSITION_KEYWORD_RE.search(text))
 
 
+# --- Ruling vocabulary for the STRICT predicate ------------------------------
+# An entry headed ORDER / MINUTE ENTRY / CLERK'S NOTES is a disposition
+# document only if it records a RULING. The broad keyword list above can't
+# tell, because its words also have non-ruling senses that clerks use all the
+# time; measured on 2026-11-05, about 40 of the 100 entries the strict
+# predicate accepted through the keyword route were procedural. These were
+# sent to the summary model as "dispositions" — the us-v-ding verdict and the
+# anthropic-v-dow "file a proposed order by July 24" sentence both came from
+# documents picked this way. The broad predicate keeps its list unchanged:
+# an extra stale flag only costs a refresh.
+
+# Boilerplate sentences that name sanctions without imposing any — the
+# Rule 5(f) / Brady / Due Process Protections Act warning in many minute
+# orders ("sanctions, including ... a mistrial, dismissal of charges ...").
+_RULING_BOILERPLATE_SENTENCE_RE = re.compile(
+    r"\bbrady\b|rule\s*5\s*\(\s*f\s*\)|due\s+process\s+protections\s+act",
+    re.IGNORECASE,
+)
+
+# Words that count anywhere in the entry, each in its RULING sense only.
+_RULING_KEYWORD_RE = re.compile(
+    r"""\b(?:
+        # Sentencing that HAPPENED — not "Sentencing set for", "sentencing
+        # is adjourned / reset / continued", or a sentencing memorandum.
+        sentencing\s+(?:hearing\s+)?held
+        | sentenced\s+to
+        | sentence\s+(?:imposed|with\s+psr\s+hearing\s+held)
+        | mistrials?
+        | acquit(?:tals?|ted)
+        | forfeitures?
+        | nolle\s+pros(?:equi|sed)
+        # Pleas — including the forms change-of-plea minute entries use,
+        # which used to pass only on their "Sentencing set for" line.
+        | pled\s+guilty
+        | pleads?\s+guilty
+        | plea\s+of\s+guilty
+        | (?<!not\s)guilty\s+plea
+        | plea\s+entered\b(?![^.;]{0,60}\bnot\s+guilty)[^.;]{0,60}\bguilty
+        # The clerk's plea notation: "Erick Ntekereze Prince (3) Guilty Count
+        # 2" (an arraignment's "(1) Not Guilty Count ..." doesn't match).
+        | (?<=\)\s)guilty\s+(?:on\s+)?counts?
+        # A verdict recorded in a minute entry: "returned to the courtroom
+        # with a verdict of Guilty on Counts 1, 7, 8" (us-v-akhter #133).
+        | verdicts?\s+of\s+(?:not\s+)?guilty
+        # A restitution order: "Defendant shall pay restitution as specified
+        # in the attached Order of Restitution" (us-v-chapman #49).
+        | order\s+of\s+restitution
+        | pay\s+restitution
+        | (?:report\s+and\s+recommendations?|r&r)\s+on\s+
+          (?:plea\s+of\s+guilty|change\s+of\s+plea)
+        | class\s+certification
+        # An appellate / jurisdictional remand — not "remanded to the custody
+        # of the U.S. Marshal" or a bare "Deft remanded."
+        | remand(?:ed)?\b(?!\s*[.,;]|\s*$|\s+(?:in)?to\s+(?:the\s+)?(?:custody|
+          u\.?\s*s\.?\s*marshal|marshal|attorney\s+general|bop))
+        | entry\s+of\s+default
+        | decrees?
+        | dismiss(?:al|als|ed)
+        | mandates?
+        # Not the defendant's oath ("Defendant Affirmed - Competent").
+        | (?<!defendant\s)(?<!deft\s)affirm(?:s|ed|ance|ances)?
+        | reversed
+        # Vacating a ruling — not a vacated hearing, trial date, or order.
+        | (?:judgment|conviction|sentence|verdict|plea)s?\b[^.;]{0,60}\bvacated
+        | vacat(?:ed|es|ing)\s+(?:the\s+)?
+          (?:judgment|conviction|sentence|verdict|plea)
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Words that count only in the entry's TITLE (its first sentence): an order
+# granting / denying / on a motion for judgment or an injunction names it
+# there ("ORDER GRANTING MOTION FOR PRELIMINARY INJUNCTION"), while a
+# procedural order mentions it later in passing ("ORDER RE AMICUS CURIAE
+# BRIEFS. Amicus briefs in support of the motion for preliminary injunction
+# must be filed by ..."; "ORDER. By July 24, 2026, Anthropic shall file a
+# proposed order on its Motion for Summary Judgment ...").
+_RULING_TITLE_KEYWORD_RE = re.compile(
+    r"\b(?:judg(?:e)?ments?|injunctions?|tros?|temporary\s+restraining\s+orders?)\b",
+    re.IGNORECASE,
+)
+
+# A title that names a judgment only as what an appeal is FROM.
+_RULING_TITLE_NON_RULING_RE = re.compile(
+    r"notice\s+of\s+appeal\s*[-–—:]?\s*(?:final\s+)?judg(?:e)?ment",
+    re.IGNORECASE,
+)
+
+
+def _records_ruling(text: str) -> bool:
+    """True when an order / minute-entry description records a ruling, using
+    the ruling senses of the disposition vocabulary (see the regexes above)."""
+    sentences = [
+        s
+        for s in _split_sentences(text)
+        if not _RULING_BOILERPLATE_SENTENCE_RE.search(s)
+    ]
+    if not sentences:
+        return False
+    if _RULING_KEYWORD_RE.search(" ".join(sentences)):
+        return True
+    title = _RULING_TITLE_NON_RULING_RE.sub(" ", sentences[0])
+    return bool(_RULING_TITLE_KEYWORD_RE.search(title))
+
+
 def _matches_disposition_document(text: str) -> bool:
     """Strict disposition-document classifier — picks the documents the
     LLM document set should include. Rejects motions / briefs / status
     reports / notices-of-filing that mention disposition vocabulary in
     passing; accepts actual orders / judgments / minute-entries-of-
-    decision whose head IS a disposition phrase.
+    decision whose head IS a disposition phrase, or that record a ruling
+    (:func:`_records_ruling`).
     """
     text = (text or "").strip()
     if not text:
@@ -243,7 +349,7 @@ def _matches_disposition_document(text: str) -> bool:
         return True
     if not _DISPOSITION_DOCUMENT_HEAD_RE.match(text):
         return False
-    return bool(_DISPOSITION_KEYWORD_RE.search(text))
+    return _records_ruling(text)
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +484,9 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
         # sentencings / verdicts, which ARE dispositions). Keys off the
         # "Motion Hearing re: …" / "Motion Hearing held on …" phrasing
         # that CourtListener clerks use for the procedural recording.
-        motion\s+hearing\s+(?:re:?|held|on)
+        # ...including "Motion Hearing as to <defendant> held on ..." (us-v-ding
+        # #429 / #436), which the bare form missed.
+        motion\s+hearing\s+(?:as\s+to\s+[^.;]{1,80}?\s+)?(?:re:?|held|on)
         # Case-schedule orders that reference upcoming dispositive motions
         # ("Motion for Summary Judgment due 6/10/2026") — these have
         # disposition vocabulary in passing but the order itself is
