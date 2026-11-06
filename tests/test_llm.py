@@ -3117,6 +3117,40 @@ class TestSummaryPromptDatedReferenceGuards:
         # two govern different concerns and both apply.
         assert "independent of the trial-vs-plea invariant" in llm.SUMMARY_SYSTEM_PROMPT
 
+    @staticmethod
+    def _past_dated_examples(kind: str) -> list[str]:
+        """The quoted BAD / GOOD examples of the past-dated-rows rule."""
+        import re
+
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        section = p[p.index("past-dated 'scheduled' rows") :]
+        section = section[: section.index("This rule is independent")]
+        section = re.sub(r"\s+", " ", section)
+        return re.findall(rf'- {kind}: "([^"]+)"', section)
+
+    def test_past_dated_good_example_passes_truthfulness_guard(self):
+        # The old GOOD example ("...; no public docket entry confirms either
+        # the proceeding or its vacatur") was itself an absence-of-record
+        # claim the guard rejects, so a model that copied it closely —
+        # Claude Sonnet 5.5, on three us-v-zheng-et-al dockets — tripped
+        # the guard on every regeneration. The prompt's own GOOD example
+        # must never fail the guard that checks the output.
+        from case_calendar import summary
+
+        good = self._past_dated_examples("GOOD")
+        assert good == ["a trial was originally set for June 12, 2024"]
+        for example in good:
+            assert summary._audit_summary_text(example) == []
+
+    def test_past_dated_absence_clause_is_listed_as_bad(self):
+        from case_calendar import summary
+
+        bad = [
+            b for b in self._past_dated_examples("BAD") if "no public docket entry" in b
+        ]
+        assert bad, "the old absence-claim wording must be shown as BAD"
+        assert summary._audit_summary_text(bad[0]) != []
+
     def test_scaffold_date_outranks_superseded_document_date(self):
         # The us-v-kejia-wang self-surrender regression: a judgment recited
         # "self-surrender by June 10, 2026"; a later endorsed order

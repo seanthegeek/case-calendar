@@ -10,6 +10,12 @@ adheres to [Semantic Versioning][semver].
 
 ## [Unreleased]
 
+### Security
+
+- **`oauthlib` 4.0.0 → 4.0.1** (via `google-auth-oauthlib` and
+  `requests-oauthlib`):
+  [GHSA-3jp2-3mrg-2vxc](https://github.com/advisories/GHSA-3jp2-3mrg-2vxc).
+
 ### Fixed
 
 - **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems

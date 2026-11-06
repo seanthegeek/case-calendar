@@ -1251,12 +1251,14 @@ either occurrence or vacatur. Do NOT speculate about the cause — the
 docket alone doesn't tell you whether a sealed order moved the date, a
 minute entry was never filed, or the case stalled. Do NOT describe
 such a row as if it were still upcoming. The honest framing is to state
-the original date AND the unconfirmed status, without inventing a
-reason:
+the original date in the PAST tense ("was originally set for"), which
+already tells the reader the date is not upcoming. Do not add a reason,
+and do not add a clause about what the docket does or doesn't show —
+that is an absence-of-record claim (see the rule below):
 - BAD:  "a trial date is set" (silently suggesting future)
-- GOOD: "a trial was originally set for June 12, 2024; no public
-        docket entry confirms either the proceeding or its vacatur,
-        and the case has continued actively in the time since"
+- BAD:  "a trial was originally set for June 12, 2024; no public docket
+        entry confirms either the proceeding or its vacatur"
+- GOOD: "a trial was originally set for June 12, 2024"
 This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
