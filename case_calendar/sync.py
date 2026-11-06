@@ -749,6 +749,14 @@ _SPEEDY_TRIAL_EXCLUSION_END_RE = re.compile(
 _SPEEDY_TRIAL_DEADLINE_NAME_RE = re.compile(
     r"speedy|exclu(?:ded|dable|sion)|continuance", re.IGNORECASE
 )
+# ...unless it also names something a party files — a "Speedy Trial
+# Statement" (us-v-ding has one) or a "Motion for Continuance" is a real
+# obligation even when it falls on the excluded period's end date.
+_FILING_DEADLINE_NAME_RE = re.compile(
+    r"statement|motion|brief|response|reply|opposition|memorand|filing|"
+    r"notice|report|declaration|letter|submission|objection|proposed",
+    re.IGNORECASE,
+)
 
 
 def _is_speedy_trial_exclusion_end(
@@ -767,13 +775,16 @@ def _is_speedy_trial_exclusion_end(
     deadline the court sets on the exclusion's end date — courts often exclude
     time up to the next scheduled event — is kept: the date matches an
     excluded period's end stated in the entry, AND the deadline's key or title
-    names the trial clock ("speedy", "excluded", "continuance").
+    names the trial clock ("speedy", "excluded", "continuance") without
+    naming a filing ("statement", "motion", "brief", ...).
     """
     local_date = action.get("local_date")
     if not local_date:
         return False
     name = f"{action.get('deadline_key') or ''} {action.get('title') or ''}"
     if not _SPEEDY_TRIAL_DEADLINE_NAME_RE.search(name):
+        return False
+    if _FILING_DEADLINE_NAME_RE.search(name):
         return False
     text = f"{entry.get('description') or ''} {entry.get('short_description') or ''}"
     for m in _SPEEDY_TRIAL_EXCLUSION_END_RE.finditer(text):

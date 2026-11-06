@@ -592,6 +592,18 @@ class TestDispositionDocumentDetection:
             "Minute Entry for proceedings held before Chief Judge Richard E. Myers "
             "II: Arraignment as to Sina Gholinejad held on 5/27/2025. Defendant "
             "Affirmed - Competent. Plea entered: Not Guilty.",
+            # Copilot (PR #110): with the clerk's stamps intact, "(Entered: ...)"
+            # must not read as a decision on the judgment / injunction a later
+            # sentence mentions. Verbatim from the live store.
+            "ORDER RE AMICUS CURIAE BRIEFS. Amicus briefs in support of the "
+            "motion for preliminary injunction must be filed by 3/13/2026 at 5:00 "
+            "p.m. Amicus briefs oppositions due 3/17/2026 at 5:00 p.m. Signed by "
+            "Judge Rita F. Lin on 3/12/2026. (afm, COURT STAFF) (Filed on "
+            "3/12/2026) (Entered: 03/12/2026)",
+            "ORDER by Judge Rita F. Lin granting 168 171 173 Motions to File "
+            "Amicus Curiae Briefs. Any further amicus briefs related to the "
+            "summary judgment motions must be filed by June 26, 2026 at 5:00 p.m. "
+            "(rfllc3, COURT STAFF) (Filed on 6/11/2026) (Entered: 06/11/2026)",
         ],
     )
     def test_rejects_procedural_entries_with_non_ruling_keywords(self, description):
@@ -640,10 +652,52 @@ class TestDispositionDocumentDetection:
             # A real appellate-style remand still counts.
             "ORDER granting motion to remand; case remanded to the Superior Court "
             "of California.",
+            # Copilot (PR #110): remand rulings that end their sentence.
+            "ORDER granting motion to remand.",
+            "ORDER case remanded.",
+            # Copilot (PR #110): a judgment / injunction decided after a
+            # generic title.
+            "ORDER. The motion for preliminary injunction is GRANTED.",
+            "ORDER. Defendant's motion for summary judgment is DENIED.",
         ],
     )
     def test_accepts_rulings_in_their_ruling_sense(self, description):
         assert _is_disposition_document({"description": description})
+
+    def test_blank_verdict_form_main_document_does_not_override(self):
+        # Copilot (PR #110): a judge-signed blank form whose MAIN document is
+        # described as "Verdict Form" must stay rejected...
+        entry = {
+            "description": "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26.",
+            "recap_documents": [
+                {"description": "Verdict Form", "attachment_number": None}
+            ],
+        }
+        assert not _is_disposition_document(entry)
+        # ...while a separately described attachment still qualifies.
+        entry["recap_documents"].append(
+            {"description": "JUDGMENT as to X", "attachment_number": 1}
+        )
+        assert _is_disposition_document(entry)
+
+    def test_summary_relevance_includes_strict_only_ruling_forms(self):
+        # Copilot (PR #110): forms only the strict check reads must also keep
+        # their body and flag the summary stale. The rules version is bumped
+        # so existing stubs get re-checked.
+        from case_calendar.summary import (
+            SUMMARY_RELEVANCE_RULES_VERSION,
+            is_summary_relevant,
+        )
+
+        entry = {
+            "description": "Minute Entry for proceedings held before Judge "
+            "Michael R. Barrett: Change of Plea Hearing as to Deniss Zolotarjovs "
+            "held on 7/29/2025; Counsel present; Defendant enters a guilty plea "
+            "to Counts 1 and 2."
+        }
+        assert not is_disposition(entry)
+        assert is_summary_relevant(entry)
+        assert SUMMARY_RELEVANCE_RULES_VERSION == 2
 
 
 # ---------------------------------------------------------------------------
@@ -5714,6 +5768,62 @@ class TestCaseCitationCorpus:
 
     def test_empty_case_is_empty(self, store):
         assert summary._case_citation_corpus(store, [9]) == ""
+
+    def test_one_filing_on_sibling_docket_ids_counts_once(self, store):
+        # Copilot (PR #110): CourtListener can split one PACER docket into
+        # several ids, storing the same filing (same entry number) under each.
+        # The typo must count once, or three copies pass the minority cap and
+        # disable the retry. The fullest copy is kept.
+        meta = {"docket_number": "1:25-cr-00307", "court_id": "vaed"}
+        for docket_id in (1, 2, 3):
+            store.upsert_docket_meta(docket_id, meta)
+        for docket_id, eid in ((1, 10), (2, 20), (3, 30)):
+            store.mark_entry(
+                docket_id,
+                eid,
+                "2026-01-01",
+                f"fp{eid}",
+                entry_number=5,
+                description="PETITION",
+                recap_documents=[{"id": eid, "plain_text": "under 41 U.S.C. § 3252"}],
+            )
+        # A fuller copy of a DIFFERENT entry number is its own filing.
+        store.mark_entry(
+            2,
+            21,
+            "2026-01-01",
+            "fp21",
+            entry_number=6,
+            description="BRIEF",
+            recap_documents=[{"id": 21, "plain_text": "under 10 U.S.C. § 3252"}],
+        )
+        out = summary._case_citation_corpus(store, [1, 2, 3])
+        assert out.count("41 U.S.C. § 3252") == 1
+        assert out.count("10 U.S.C. § 3252") == 1
+
+    def test_fullest_sibling_copy_is_kept(self, store):
+        meta = {"docket_number": "1:25-cr-00307", "court_id": "vaed"}
+        store.upsert_docket_meta(1, meta)
+        store.upsert_docket_meta(2, meta)
+        store.mark_entry(
+            1,
+            10,
+            "2026-01-01",
+            "a",
+            entry_number=5,
+            description="X",
+            recap_documents=[],
+        )
+        store.mark_entry(
+            2,
+            20,
+            "2026-01-01",
+            "b",
+            entry_number=5,
+            description="X",
+            recap_documents=[{"id": 20, "plain_text": "full text here"}],
+        )
+        assert "full text here" in summary._case_citation_corpus(store, [1, 2])
 
 
 class TestRestitutionUnreadableDetector:

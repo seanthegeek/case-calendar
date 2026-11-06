@@ -280,6 +280,13 @@ _RULING_KEYWORD_RE = re.compile(
         # of the U.S. Marshal" or a bare "Deft remanded."
         | remand(?:ed)?\b(?!\s*[.,;]|\s*$|\s+(?:in)?to\s+(?:the\s+)?(?:custody|
           u\.?\s*s\.?\s*marshal|marshal|attorney\s+general|bop))
+        # ...and remand rulings that end their sentence, which the lookahead
+        # above would otherwise reject ("ORDER granting motion to remand.",
+        # "ORDER case remanded."). A custody note never names a motion to
+        # remand or a case / action / matter being remanded.
+        | motions?\s+to\s+remand
+        | (?:case|action|matter|proceeding)s?\s+(?:is\s+|are\s+|was\s+|be\s+)?
+          (?:hereby\s+)?remanded
         | entry\s+of\s+default
         | decrees?
         | dismiss(?:al|als|ed)
@@ -313,6 +320,19 @@ _RULING_TITLE_NON_RULING_RE = re.compile(
     re.IGNORECASE,
 )
 
+# Decision language that lets a judgment / injunction word count outside the
+# title: the sentence must decide it, not just mention it.
+_RULING_DECISION_RE = re.compile(
+    r"\b(?:grant(?:s|ed|ing)?|den(?:y|ies|ied|ying)|enter(?:s|ed|ing)?|"
+    r"issue(?:s|d)?|issuing)\b",
+    re.IGNORECASE,
+)
+# The clerk's docketing stamps — "(Entered: 06/11/2026)", "(Filed on
+# 6/11/2026)" — are stripped before looking for decision language: "Entered"
+# there is when the entry was docketed, not a ruling (it re-admitted the
+# anthropic-v-dow amicus orders #55 / #177 in an early draft of this check).
+_CLERK_STAMP_RE = re.compile(r"\((?:entered|filed(?:\s+on)?)\b[^)]*\)", re.IGNORECASE)
+
 
 def _records_ruling(text: str) -> bool:
     """True when an order / minute-entry description records a ruling, using
@@ -327,7 +347,18 @@ def _records_ruling(text: str) -> bool:
     if _RULING_KEYWORD_RE.search(" ".join(sentences)):
         return True
     title = _RULING_TITLE_NON_RULING_RE.sub(" ", sentences[0])
-    return bool(_RULING_TITLE_KEYWORD_RE.search(title))
+    if _RULING_TITLE_KEYWORD_RE.search(title):
+        return True
+    # Past the title, a judgment / injunction word counts only in a sentence
+    # that also decides it ("ORDER. The motion for preliminary injunction is
+    # GRANTED.") — not one that merely refers to it ("... shall file a
+    # proposed order on its Motion for Summary Judgment", "Amicus briefs in
+    # support of the motion for preliminary injunction must be filed by").
+    later = (_CLERK_STAMP_RE.sub(" ", s) for s in sentences[1:])
+    return any(
+        _RULING_TITLE_KEYWORD_RE.search(s) and _RULING_DECISION_RE.search(s)
+        for s in later
+    )
 
 
 def _matches_disposition_document(text: str) -> bool:
@@ -418,14 +449,27 @@ def is_disposition(entry: dict[str, Any]) -> bool:
 # (CaseSyncer._repair_stub_bodies).
 #   1 — "JURY VERDICT as to …" accepted (us-v-ding #367 had been stored as a
 #       stub, so the summary model never saw the returned verdict).
-SUMMARY_RELEVANCE_RULES_VERSION = 1
+#   2 — anything the strict disposition-document check accepts, which now
+#       includes plea / verdict / restitution forms the broad check misses
+#       ("Defendant enters a guilty plea", "(3) Guilty Count 2").
+SUMMARY_RELEVANCE_RULES_VERSION = 2
 
 
 def is_summary_relevant(entry: dict[str, Any]) -> bool:
     """True when the summary pipeline needs this entry's body: a primary
     document or a disposition. Sync keeps these entries' bodies even when the
-    hearing filter skips them."""
-    return is_primary_document(entry) or is_disposition(entry)
+    hearing filter skips them, and flags the summary stale on them.
+
+    Includes the strict :func:`_is_disposition_document` as well as the broad
+    :func:`is_disposition`: the strict check reads some ruling forms the broad
+    keyword list doesn't ("Defendant enters a guilty plea to Counts 1 and 2"),
+    and an entry the summary model would be handed must also keep its body
+    and trigger a refresh."""
+    return (
+        is_primary_document(entry)
+        or is_disposition(entry)
+        or _is_disposition_document(entry)
+    )
 
 
 # Stricter sibling used by ``find_primary_documents`` to pick the documents
@@ -520,7 +564,29 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
 
 
 def _is_disposition_document(entry: dict[str, Any]) -> bool:
-    return _entry_matches(entry, _matches_disposition_document)
+    """Strict entry-level check: the entry's head, or one of its
+    recap_documents' descriptions, reads as a ruling.
+
+    When the head is rejected as PROCEDURAL (one of the strict negative
+    patterns — a judge-signed blank verdict form, a motion-hearing minute
+    entry, a scheduling order), the MAIN document (no attachment number) is
+    that same filing, so its own terser description ("Verdict Form") must not
+    override the rejection. Attachments carry their own descriptions and can
+    still qualify independently (a substance document filed under a
+    procedural parent)."""
+    head = _entry_description_head(entry)
+    if _matches_disposition_document(head):
+        return True
+    procedural_head = bool(
+        _DISPOSITION_NEGATIVE_RE.search(head)
+        or _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(head)
+    )
+    for rd in entry.get("recap_documents") or []:
+        if procedural_head and not rd.get("attachment_number"):
+            continue
+        if _matches_disposition_document(rd.get("description") or ""):
+            return True
+    return False
 
 
 def is_summary_document(entry: dict[str, Any]) -> bool:
@@ -2270,17 +2336,37 @@ def _case_citation_corpus(
     few primary / disposition documents, and a typo can sit in exactly those
     (Anthropic's D.C. Circuit petition was the only document on its summary
     call, and it carried the one "41 U.S.C. § 3252"), while the briefs and
-    orders that cite the section correctly are elsewhere on the docket. Each
-    filing is counted once, so a typo isn't inflated past the minority
-    threshold by also appearing in the model's input.
+    orders that cite the section correctly are elsewhere on the docket.
+
+    Each filing is counted ONCE, so a typo isn't inflated past the minority
+    threshold. That includes copies across sibling CourtListener docket ids:
+    CourtListener can split one PACER docket into several ids (12 logical
+    dockets in the live store on 2026-11-05, with 230 entries stored more
+    than once), so entries are keyed by logical docket (docket_number,
+    court_id) plus entry number, keeping the copy with the most text.
+    Entries without a number fall back to their own id.
     """
-    parts: list[str] = []
+    copies: dict[tuple[Any, ...], tuple[int, str]] = {}
     for docket_id in dict.fromkeys(docket_ids):
+        meta = store.get_docket_meta(docket_id) or {}
+        logical = (meta.get("docket_number"), meta.get("court_id"))
         for entry in store.get_entries_with_body(docket_id):
-            parts.append(entry.get("description") or "")
-            parts += [
-                rd.get("plain_text") or "" for rd in entry.get("recap_documents") or []
-            ]
+            text = "\n".join(
+                [entry.get("description") or ""]
+                + [
+                    rd.get("plain_text") or ""
+                    for rd in entry.get("recap_documents") or []
+                ]
+            )
+            number = entry.get("entry_number")
+            key: tuple[Any, ...] = (
+                (*logical, number)
+                if number is not None and all(logical)
+                else ("entry", docket_id, entry.get("id"))
+            )
+            if key not in copies or len(text) > copies[key][0]:
+                copies[key] = (len(text), text)
+    parts = [text for _, text in copies.values()]
     for doc in extra_documents or []:
         parts += [doc.get("text") or "", doc.get("operator_note") or ""]
     return "\n".join(p for p in parts if p)

@@ -1033,7 +1033,9 @@ class TestSpeedyTrialExclusionIsNotADeadline:
         assert not _is_speedy_trial_exclusion_end(entry, motions)
         # A clock-named deadline on a different date is kept.
         other = self._deadline(
-            "speedy-trial-statement", "Speedy Trial Statement", date="2026-06-01"
+            "speedy-trial-continuance-schmitz",
+            "Speedy Trial Continuance Schmitz",
+            date="2026-06-01",
         )
         assert not _is_speedy_trial_exclusion_end(entry, other)
         # No exclusion language in the entry -> nothing to match against.
@@ -1042,6 +1044,20 @@ class TestSpeedyTrialExclusionIsNotADeadline:
         )
         # A date-less (conditional) action is never matched.
         assert not _is_speedy_trial_exclusion_end(entry, {**speedy, "local_date": None})
+
+    def test_clock_named_filing_on_the_end_date_is_kept(self):
+        # Copilot (PR #110): a filing obligation whose name mentions the trial
+        # clock (us-v-ding has a real "speedy trial statement" deadline) is
+        # kept even when it falls on the excluded period's end date.
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": _SPEEDY_TRIAL_ORDER}
+        for key, title in (
+            ("defense-speedy-trial-statement", "Defense Speedy Trial Statement"),
+            ("motion-for-continuance", "Motion for Continuance"),
+            ("govt-response-speedy-trial", "Government Response re Speedy Trial"),
+        ):
+            assert not _is_speedy_trial_exclusion_end(entry, self._deadline(key, title))
 
     def test_two_digit_year_and_through_wording(self):
         from case_calendar.sync import _is_speedy_trial_exclusion_end

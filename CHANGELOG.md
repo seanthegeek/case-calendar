@@ -60,6 +60,16 @@ adheres to [Semantic Versioning][semver].
   one guilty plea the old rules missed; Anthropic v. DOW's district-court
   summary now gets just its four rulings instead of seven documents.
   Existing summaries keep what they were generated from until regenerated.
+  Following Copilot's review: remand rulings that end a sentence ("ORDER
+  granting motion to remand.") and judgment or injunction decisions after a
+  generic title ("ORDER. The motion for preliminary injunction is
+  GRANTED.") are recognized; a judge-signed blank verdict form can't slip
+  back in through its main document's description; ruling forms only the
+  stricter check reads now keep their text and trigger a summary refresh
+  (rules version 2, so the next sync re-checks existing stubs once more);
+  the citation check counts a filing stored under several sibling docket
+  ids once; and a clock-named filing such as a "Speedy Trial Statement" due
+  on an excluded period's end date is kept.
 - **Jury verdicts reach case summaries, with their real date and outcome.**
   A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
   a disposition, so sync stored it without its text, it didn't trigger a
