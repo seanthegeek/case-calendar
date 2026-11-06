@@ -691,6 +691,19 @@ scale, and every disputed fact was checked against the scaffold store.
 | **anthropic/claude-sonnet-5-5** | **A−** | 118 / 128 | $0.80 (11 calls) | accurate on every fact checked, including both disputes below; keeps every foreign nexus (PRC for ding, the North Korean link for knoot, Deripaska for mcgonigal) and case-distinguishing figures (Versus's 380,000 users and nearly 600,000 orders, knoot's $544,700 in losses); one slip — dates the ding verdict to the Jan 27 form and omits the outcome, the same slip as the Phase 3 Sonnet 4.6 reference |
 | anthropic/claude-sonnet-4-6 | D | 110 / 181 | $0.70 (10 calls) | on the Ninth Circuit docket (26-2011) it reverses the parties — "Anthropic's opening brief" and a pending motion "by Anthropic" — and describes the appeal as Anthropic's § 4713 petition for review, which is the D.C. Circuit case; calls Gholinejad "an Iranian national" where the indictment says only "residing overseas, including in Iran"; the same ding verdict slip; one summary runs 181 words, over the 150 cap |
 
+**The ding verdict slip was not the models' error.** Both rows above, and the
+Phase 3 reference, date the ding verdict to January 27 and omit the outcome.
+The cause was document selection: the summarizer sent the court's blank
+verdict form (entry #361, "Verdict Form. Signed by Judge Vince Chhabria on
+1/27/26.") and not the verdict the jury returned on January 29 (#367, "JURY
+VERDICT as to Linwei Ding (1) Guilty on Count …"), which the disposition
+classifier failed to recognize. Each model reported the only verdict document
+it was given. With the classifier fixed, the benchmark ding summary from
+Sonnet 5.5 reads "the jury returned its verdict on January 29, 2026, and Ding
+was convicted at trial". Without that slip, Sonnet 5.5's set has no remaining
+error and grades **A**; the A− above is the grade as first recorded. Sonnet
+4.6 stays at D on its other errors.
+
 The two disputes, settled against the store:
 
 - **Who appealed in 26-2011.** The docket's opening entries list the federal
