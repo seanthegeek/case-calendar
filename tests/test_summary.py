@@ -659,10 +659,65 @@ class TestDispositionDocumentDetection:
             # generic title.
             "ORDER. The motion for preliminary injunction is GRANTED.",
             "ORDER. Defendant's motion for summary judgment is DENIED.",
+            # Copilot (PR #110, round 2): a sanction actually IMPOSED for a
+            # Brady violation is a ruling, unlike the Rule 5(f) warning.
+            "ORDER as to John Doe: The indictment is dismissed with prejudice "
+            "for Brady violations.",
+            "ORDER as to John Doe: The Court declares a mistrial based on the "
+            "government's Brady violation.",
         ],
     )
     def test_accepts_rulings_in_their_ruling_sense(self, description):
         assert _is_disposition_document({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # Rule 5(f) warnings whose "dismissal" sentence doesn't itself name
+            # Brady — they slipped past a Brady-keyed boilerplate rule.
+            # Verbatim (trimmed) from the live store.
+            "Minute Entry for proceedings held before Judge Randolph D. Moss: "
+            "Arraignment as to CHRISTINA CHAPMAN (1) held on 5/22/2024. The "
+            "government is reminded of its Brady disclosure obligations. Failure "
+            "to comply could result in dismissal of the indictment or individual "
+            "charges, exclusion of evidence, adverse jury instructions.",
+            "Minute Order for proceedings held before Magistrate Judge Eduardo I. "
+            "Sanchez: granting 13 Defendant's Ore Tenus Motion to Appoint "
+            "Counsel. Sanctions may include, but not limited to, exclusion of "
+            "evidence, adverse jury instructions, dismissal of charges, contempt "
+            "proceedings, if the government fails to comply; possible sanctions "
+            "apply.",
+        ],
+    )
+    def test_rejects_conditional_sanction_warnings(self, description):
+        assert not _is_disposition_document({"description": description})
+
+    def test_short_description_cannot_override_a_procedural_full_description(self):
+        # Copilot (PR #110, round 2): the head prefers short_description.
+        blank = {
+            "description": "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26.",
+            "short_description": "Verdict Form",
+        }
+        assert not _is_disposition_document(blank)
+        real = {
+            "description": "VERDICT FORM as to John Doe (1) Guilty on Count 1.",
+            "short_description": "Verdict Form",
+        }
+        assert _is_disposition_document(real)
+
+    def test_procedural_attachment_descriptions_do_not_qualify(self):
+        # Attachments are judged on their own descriptions, exclusions included.
+        entry = {
+            "description": "NOTICE of filing",
+            "recap_documents": [
+                {"description": "Order re status conference", "attachment_number": 1},
+                {
+                    "description": "Minute Entry: Motion Hearing held re 12 Motion",
+                    "attachment_number": 2,
+                },
+            ],
+        }
+        assert not _is_disposition_document(entry)
 
     def test_blank_verdict_form_main_document_does_not_override(self):
         # Copilot (PR #110): a judge-signed blank form whose MAIN document is

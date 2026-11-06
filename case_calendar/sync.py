@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
 from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
 from .courts import tz_for
@@ -2177,11 +2179,11 @@ class CaseSyncer:
                 len(stubs),
                 version,
             )
-            for entry in self.cl.iter_entries(docket_id, max_pages=200):
-                if entry.get("id") not in stubs:
-                    continue
+
+            def check(entry: dict[str, Any]) -> None:
+                nonlocal restored
                 if not summary_mod.is_summary_relevant(entry):
-                    continue
+                    return
                 if self.store.restore_entry_body(
                     docket_id,
                     entry["id"],
@@ -2190,6 +2192,24 @@ class CaseSyncer:
                     recap_documents=compact_recap_documents(entry),
                 ):
                     restored += 1
+
+            seen: set[int] = set()
+            for entry in self.cl.iter_entries(docket_id, max_pages=200):
+                if entry.get("id") in stubs:
+                    seen.add(entry["id"])
+                    check(entry)
+            # iter_entries stops quietly at max_pages (200 pages of 50), so on
+            # a very large docket some stubs may not have come back. Fetch
+            # each one directly rather than record the version with stubs
+            # unchecked — once recorded, later syncs never revisit them.
+            for entry_id in sorted(stubs - seen):
+                try:
+                    entry = self.cl.get_docket_entry(entry_id)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        continue  # removed upstream; nothing left to restore
+                    raise
+                check(entry)
             if restored:
                 meta = self.store.get_docket_meta(docket_id) or {}
                 docket_number = meta.get("docket_number")

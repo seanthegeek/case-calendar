@@ -236,11 +236,18 @@ def _matches_disposition_broad(text: str) -> bool:
 # documents picked this way. The broad predicate keeps its list unchanged:
 # an extra stale flag only costs a refresh.
 
-# Boilerplate sentences that name sanctions without imposing any — the
-# Rule 5(f) / Brady / Due Process Protections Act warning in many minute
-# orders ("sanctions, including ... a mistrial, dismissal of charges ...").
+# Boilerplate sentences that warn of POSSIBLE sanctions without imposing
+# any — the Rule 5(f) / Brady / Due Process Protections Act warning in many
+# minute orders ("Failure to comply may result in sanctions, including ... a
+# mistrial, dismissal of charges ..."). Keyed on the conditional warning
+# itself, not on naming Brady: a sentence that IMPOSES a sanction ("The
+# indictment is dismissed with prejudice for Brady violations.") is a ruling
+# and stays (Copilot, PR #110).
 _RULING_BOILERPLATE_SENTENCE_RE = re.compile(
-    r"\bbrady\b|rule\s*5\s*\(\s*f\s*\)|due\s+process\s+protections\s+act",
+    r"\bfailure\s+to\s+comply\b"
+    r"|\b(?:may|could|might|can|will)\s+(?:also\s+)?(?:result|lead)\s+in\b"
+    r"|\bsanctions?,?\s+(?:including|such\s+as)\b"
+    r"|\bpossible\s+(?:sanctions|consequences)\b",
     re.IGNORECASE,
 )
 
@@ -573,16 +580,24 @@ def _is_disposition_document(entry: dict[str, Any]) -> bool:
     that same filing, so its own terser description ("Verdict Form") must not
     override the rejection. Attachments carry their own descriptions and can
     still qualify independently (a substance document filed under a
-    procedural parent)."""
+    procedural parent).
+
+    The procedural check reads the FULL description as well as the head:
+    ``_entry_description_head`` prefers the short description, so a terse
+    short heading ("Verdict Form") must not override a full description that
+    is procedural ("Verdict Form. Signed by Judge ..." — Copilot, PR #110)."""
     head = _entry_description_head(entry)
-    if _matches_disposition_document(head):
-        return True
-    procedural_head = bool(
-        _DISPOSITION_NEGATIVE_RE.search(head)
-        or _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(head)
+    full = (entry.get("description") or "").strip()
+    procedural = any(
+        _DISPOSITION_NEGATIVE_RE.search(t)
+        or _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(t)
+        for t in (head, full)
+        if t
     )
+    if not procedural and _matches_disposition_document(head):
+        return True
     for rd in entry.get("recap_documents") or []:
-        if procedural_head and not rd.get("attachment_number"):
+        if procedural and not rd.get("attachment_number"):
             continue
         if _matches_disposition_document(rd.get("description") or ""):
             return True

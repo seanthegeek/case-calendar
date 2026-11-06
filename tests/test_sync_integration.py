@@ -947,6 +947,72 @@ class TestStubRepair:
         assert stats["stubs_restored"] == 1
         assert self._body(store, 7) == _JURY_VERDICT
 
+    @staticmethod
+    def _truncating_cl(listed, by_id, missing=(), failing=()):
+        """A CourtListener fake whose paged walk stops early (as iter_entries
+        does at max_pages), returning only ``listed``; single-entry fetches
+        come from ``by_id``, 404 for ``missing``, 500 for ``failing``."""
+        import httpx
+
+        class _CL(FakeCourtListener):
+            def iter_entries(self, docket_id, **_):
+                self.calls.append(("entries", docket_id))
+                yield from listed
+
+            def get_docket_entry(self, entry_id):
+                self.calls.append(("docket_entry", entry_id))
+                for code, ids in ((404, missing), (500, failing)):
+                    if entry_id in ids:
+                        req = httpx.Request("GET", f"https://cl/{entry_id}/")
+                        raise httpx.HTTPStatusError(
+                            str(code),
+                            request=req,
+                            response=httpx.Response(code, request=req),
+                        )
+                return by_id[entry_id]
+
+        return _CL(dockets={100: _docket()})
+
+    def test_stubs_the_paged_walk_missed_are_fetched_individually(
+        self, store: Store, case
+    ):
+        # Copilot (PR #110): a docket larger than the page limit must not have
+        # its version recorded with stubs unchecked.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        plea = _entry(9, "Minute Entry: Defendant enters a guilty plea to Count 1.")
+        self._old_store(store, [verdict, plea])
+        cl = self._truncating_cl(listed=[verdict], by_id={9: plea})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 2
+        assert ("docket_entry", 9) in cl.calls
+        assert ("docket_entry", 7) not in cl.calls  # already seen in the walk
+        assert self._body(store, 9) == plea["description"]
+
+    def test_stub_removed_upstream_counts_as_checked(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        gone = _entry(9, "ORDER")
+        self._old_store(store, [verdict, gone])
+        cl = self._truncating_cl(listed=[verdict], by_id={}, missing={9})
+        CaseSyncer(cl, store).sync_case(case)
+        # A 404 can't be repaired, so it must not block the version forever.
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_other_fetch_failures_leave_the_version_unrecorded(
+        self, store: Store, case
+    ):
+        import httpx
+
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        flaky = _entry(9, "ORDER")
+        self._old_store(store, [verdict, flaky])
+        cl = self._truncating_cl(listed=[verdict], by_id={}, failing={9})
+        with pytest.raises(httpx.HTTPStatusError):
+            CaseSyncer(cl, store).sync_case(case)
+        assert store.docket_summary_rules_version(100) == 0
+
     def test_runs_once_per_rules_version(self, store: Store, case):
         verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
         self._old_store(store, [verdict])

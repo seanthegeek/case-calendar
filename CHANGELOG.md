@@ -69,7 +69,14 @@ adheres to [Semantic Versioning][semver].
   (rules version 2, so the next sync re-checks existing stubs once more);
   the citation check counts a filing stored under several sibling docket
   ids once; and a clock-named filing such as a "Speedy Trial Statement" due
-  on an excluded period's end date is kept.
+  on an excluded period's end date is kept. A second Copilot round: a
+  sanction actually imposed for a Brady violation ("The indictment is
+  dismissed with prejudice for Brady violations.") is kept as a ruling, while
+  the Rule 5(f) warning of possible sanctions is still ignored (which also
+  drops six procedural minute orders whose warning didn't name Brady); a
+  short description ("Verdict Form") can no longer override a procedural full
+  description; and the one-time stub repair fetches any stub the paged
+  docket walk didn't reach before recording the rules version.
 - **Jury verdicts reach case summaries, with their real date and outcome.**
   A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
   a disposition, so sync stored it without its text, it didn't trigger a
