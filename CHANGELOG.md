@@ -76,7 +76,14 @@ adheres to [Semantic Versioning][semver].
   drops six procedural minute orders whose warning didn't name Brady); a
   short description ("Verdict Form") can no longer override a procedural full
   description; and the one-time stub repair fetches any stub the paged
-  docket walk didn't reach before recording the rules version.
+  docket walk didn't reach before recording the rules version. A third
+  round: only conditional warning language ("may result in") marks a
+  sentence as boilerplate, so a sanction actually imposed ("dismissed for
+  failure to comply with the Court's order") stays a ruling; "sued" becomes
+  "filed a lawsuit against" only when a defendant follows (not "sued
+  yesterday"); and the stub repair commits each restored entry together with
+  its summary-refresh flag before its next CourtListener request, so it never
+  holds the database's write lock across network calls.
 - **Jury verdicts reach case summaries, with their real date and outcome.**
   A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
   a disposition, so sync stored it without its text, it didn't trigger a

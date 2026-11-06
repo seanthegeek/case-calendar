@@ -665,6 +665,11 @@ class TestDispositionDocumentDetection:
             "for Brady violations.",
             "ORDER as to John Doe: The Court declares a mistrial based on the "
             "government's Brady violation.",
+            # Copilot (PR #110, round 3): sanctions actually imposed, worded
+            # like the warnings but without conditional language.
+            "ORDER. This action is dismissed for failure to comply with the "
+            "Court's order.",
+            "ORDER imposing sanctions, including dismissal of the indictment.",
         ],
     )
     def test_accepts_rulings_in_their_ruling_sense(self, description):
@@ -2234,6 +2239,12 @@ class TestWidenSingleWordLinks:
                 "which the [indictment](U) alleged caused",
                 "which [the indictment](U) alleged caused",
             ),
+            # "sued" with a defendant named or counted (Copilot, PR #110).
+            ("Acme [sued](U) Beta Inc.", "Acme [filed a lawsuit](U) against Beta Inc."),
+            (
+                "Acme [sued](U) 14 companies.",
+                "Acme [filed a lawsuit](U) against 14 companies.",
+            ),
         ],
     )
     def test_widens(self, before, after):
@@ -2252,6 +2263,12 @@ class TestWidenSingleWordLinks:
             "Acme [settled](U) the claims.",
             # Already two words.
             "he [was sentenced](U) to 60 months",
+            # Copilot (PR #110): no defendant follows "sued", so no "against".
+            "Acme [sued](U) yesterday.",
+            "Acme [sued](U) Monday.",
+            "Acme, [sued](U) by Beta, appealed.",
+            # Extra whitespace can't backtrack past the check.
+            "Acme [sued](U)  in the Northern District.",
         ],
     )
     def test_leaves_alone(self, text):

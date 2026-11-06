@@ -2184,14 +2184,24 @@ class CaseSyncer:
                 nonlocal restored
                 if not summary_mod.is_summary_relevant(entry):
                     return
-                if self.store.restore_entry_body(
-                    docket_id,
-                    entry["id"],
-                    description=entry.get("description"),
-                    short_description=entry.get("short_description"),
-                    recap_documents=compact_recap_documents(entry),
-                ):
-                    restored += 1
+                # Commit each restoration together with its stale flag before
+                # the next CourtListener request (Copilot, PR #110): an open
+                # write transaction held across slow requests would block the
+                # `serve` process's webhook writes past the 5 s busy_timeout,
+                # and a later failure must not leave a restored entry — no
+                # longer a stub, so never retried — without its stale flag.
+                with self.store.tx():
+                    if self.store.restore_entry_body(
+                        docket_id,
+                        entry["id"],
+                        description=entry.get("description"),
+                        short_description=entry.get("short_description"),
+                        recap_documents=compact_recap_documents(entry),
+                    ):
+                        self.store._flag_summary_stale_for_docket(
+                            case.case_id, docket_id
+                        )
+                        restored += 1
 
             seen: set[int] = set()
             for entry in self.cl.iter_entries(docket_id, max_pages=200):
@@ -2211,11 +2221,6 @@ class CaseSyncer:
                     raise
                 check(entry)
             if restored:
-                meta = self.store.get_docket_meta(docket_id) or {}
-                docket_number = meta.get("docket_number")
-                court_id = meta.get("court_id")
-                if docket_number and court_id:
-                    self.store.mark_summary_stale(case.case_id, docket_number, court_id)
                 log.info(
                     "docket %s: restored %d entry bodies the current rules keep",
                     docket_id,

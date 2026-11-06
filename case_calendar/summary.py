@@ -242,12 +242,15 @@ def _matches_disposition_broad(text: str) -> bool:
 # mistrial, dismissal of charges ..."). Keyed on the conditional warning
 # itself, not on naming Brady: a sentence that IMPOSES a sanction ("The
 # indictment is dismissed with prejudice for Brady violations.") is a ruling
-# and stays (Copilot, PR #110).
+# and stays (Copilot, PR #110). Only CONDITIONAL language marks a warning —
+# "failure to comply" or "sanctions, including" alone also appear in rulings
+# ("This action is dismissed for failure to comply with the Court's order.",
+# "ORDER imposing sanctions, including dismissal of the indictment.").
 _RULING_BOILERPLATE_SENTENCE_RE = re.compile(
-    r"\bfailure\s+to\s+comply\b"
-    r"|\b(?:may|could|might|can|will)\s+(?:also\s+)?(?:result|lead)\s+in\b"
-    r"|\bsanctions?,?\s+(?:including|such\s+as)\b"
-    r"|\bpossible\s+(?:sanctions|consequences)\b",
+    r"\b(?:may|could|might|can|will)\s+(?:also\s+)?(?:result|lead)\s+in\b"
+    r"|\b(?:may|could|might|can)\s+(?:also\s+)?include\b"
+    r"|\bpossible\s+(?:sanctions|consequences)\b"
+    r"|\bif\s+the\s+(?:government|united\s+states|prosecution)\s+fails?\b",
     re.IGNORECASE,
 )
 
@@ -2853,13 +2856,21 @@ def _tidy_link_spans(text: str) -> str:
 # [sentenced]", "the jury [acquitted] him", "The [indictment] alleged", and
 # "Anthropic sought [rehearing]". This deterministic backstop widens them.
 _SINGLE_WORD_LINK = r"\[([A-Za-z][\w'’-]*)\]\((https?://[^\s)]+)\)"
-# "[sued] <object>" -> "[filed a lawsuit] against <object>" — only when an
-# object follows, not "sued in the Northern District of California".
+# "[sued] <defendant>" -> "[filed a lawsuit] against <defendant>" — only when
+# the next word positively starts a defendant: an article / possessive /
+# quantity ("the U.S. Department of War", "numerous agencies", "14
+# companies") or a capitalized name that isn't a month or weekday ("Acme
+# Corp."). Anything else — "sued yesterday", "sued in the Northern District",
+# "sued by Beta" — is left for the preceding-word widening (Copilot, PR
+# #110). A single space only, so extra whitespace can't backtrack past the
+# check.
 _SUED_LINK_RE = re.compile(
-    r"\[(sued)\]\((https?://[^\s)]+)\)(\s+)"
-    r"(?!(?:in|on|over|for|after|before|under|at|to|with|by|from|during|"
-    r"and|or|but)\b)",
-    re.IGNORECASE,
+    r"\[([Ss]ued)\]\((https?://[^\s)]+)\)( )"
+    r"(?=(?:the|a|an|its|his|her|their|several|multiple|numerous|various|"
+    r"two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
+    r"|(?!(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|"
+    r"Saturday|Sunday)\b)[A-Z])",
 )
 # "<word> [link]" -> "[<word> link]", pulling in the preceding word. Only a
 # lowercase word (so a party's name is never pulled in — "Anthropic PBC

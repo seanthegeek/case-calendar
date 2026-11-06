@@ -1013,6 +1013,38 @@ class TestStubRepair:
             CaseSyncer(cl, store).sync_case(case)
         assert store.docket_summary_rules_version(100) == 0
 
+    def test_each_restoration_commits_with_its_stale_flag_before_more_fetches(
+        self, store: Store, case
+    ):
+        # Copilot (PR #110, round 3): a restoration must be committed, with its
+        # stale flag, before the next CourtListener request — read here
+        # through a SEPARATE connection (as the `serve` process would), after
+        # a later fetch failed.
+        import sqlite3
+
+        import httpx
+
+        plea = _entry(8, "Minute Entry: Defendant enters a guilty plea to Count 1.")
+        flaky = _entry(9, "ORDER")
+        self._old_store(store, [plea, flaky])
+        cl = self._truncating_cl(listed=[], by_id={8: plea}, failing={9})
+        with pytest.raises(httpx.HTTPStatusError):
+            CaseSyncer(cl, store).sync_case(case)
+        other = sqlite3.connect(store.path)
+        try:
+            body = other.execute(
+                "SELECT description FROM entries WHERE entry_id=8"
+            ).fetchone()[0]
+            stale = other.execute(
+                "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+            ).fetchone()[0]
+        finally:
+            other.close()
+        assert body == plea["description"]
+        assert stale == 1
+        # And no write transaction is left open behind the failure.
+        assert not store.conn.in_transaction
+
     def test_runs_once_per_rules_version(self, store: Store, case):
         verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
         self._old_store(store, [verdict])
