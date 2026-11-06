@@ -958,6 +958,81 @@ class TestStubRepair:
         assert self._body(store, 7) == _JURY_VERDICT
 
 
+# us-v-schmitz #11, verbatim.
+_SPEEDY_TRIAL_ORDER = (
+    "ORDER granting 10 Motion for Continuance of Speedy Trial Deadlines - Time "
+    "excluded from 5/19/2026 until 10/31/2026 as to PATRICK SCHMITZ (1). Signed "
+    "by Chief Judge Renee Marie Bumb on 5/19/2026. (dmr) (Entered: 05/19/2026)"
+)
+
+
+class TestSpeedyTrialExclusionIsNotADeadline:
+    """The end of a Speedy Trial Act excluded period is not a deadline; a
+    June 2026 extraction turned us-v-schmitz's into a pending one."""
+
+    def _deadline(self, key, title, date="2026-10-31"):
+        return {
+            "type": "ADD_DEADLINE",
+            "deadline_key": key,
+            "title": title,
+            "local_date": date,
+            "significance": "major",
+        }
+
+    def test_helper_matches_only_the_clock_named_deadline_on_the_end_date(self):
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": _SPEEDY_TRIAL_ORDER}
+        speedy = self._deadline(
+            "speedy-trial-continuance-schmitz", "Speedy Trial Continuance Schmitz"
+        )
+        assert _is_speedy_trial_exclusion_end(entry, speedy)
+        # A real filing deadline on the same date is kept.
+        motions = self._deadline("pretrial-motions-schmitz", "Pretrial Motions")
+        assert not _is_speedy_trial_exclusion_end(entry, motions)
+        # A clock-named deadline on a different date is kept.
+        other = self._deadline(
+            "speedy-trial-statement", "Speedy Trial Statement", date="2026-06-01"
+        )
+        assert not _is_speedy_trial_exclusion_end(entry, other)
+        # No exclusion language in the entry -> nothing to match against.
+        assert not _is_speedy_trial_exclusion_end(
+            {"description": "ORDER setting status conference"}, speedy
+        )
+        # A date-less (conditional) action is never matched.
+        assert not _is_speedy_trial_exclusion_end(entry, {**speedy, "local_date": None})
+
+    def test_two_digit_year_and_through_wording(self):
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": "Excludable delay from 1/2/26 through 3/4/26."}
+        action = self._deadline("excluded-time-end", "Excluded Time", "2026-03-04")
+        assert _is_speedy_trial_exclusion_end(entry, action)
+
+    def test_sync_drops_the_exclusion_end_but_keeps_a_real_deadline(
+        self, store: Store, case, monkeypatch
+    ):
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                11: [
+                    self._deadline(
+                        "speedy-trial-continuance-schmitz",
+                        "Speedy Trial Continuance Schmitz",
+                    ),
+                    self._deadline("pretrial-motions-schmitz", "Pretrial Motions"),
+                ]
+            },
+        )
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entries={100: [_entry(11, _SPEEDY_TRIAL_ORDER, date_filed="2026-05-19")]},
+        )
+        CaseSyncer(cl, store).sync_case(case)
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert keys == {"pretrial-motions-schmitz"}
+
+
 class TestDocketMetaCaching:
     def test_court_fetched_once(self, store: Store, case, monkeypatch):
         make_llm_stub(monkeypatch, by_entry={})

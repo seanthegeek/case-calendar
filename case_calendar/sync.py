@@ -736,6 +736,55 @@ def _proceeding_record_rank(text: Optional[str]) -> int:
     return 1 if (text and _TRANSCRIPT_RECORD_RE.search(text)) else 0
 
 
+# The end date of a Speedy Trial Act excluded period, as clerks docket it:
+# "Time excluded from 5/19/2026 until 10/31/2026" (us-v-schmitz #11),
+# "excludable delay ... through 10/31/2026".
+_SPEEDY_TRIAL_EXCLUSION_END_RE = re.compile(
+    r"\bexclu(?:ded|dable)\b[^.;]{0,80}?\b(?:until|through|thru|to)\s+"
+    r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\b",
+    re.IGNORECASE,
+)
+# A deadline key / title that describes the trial clock itself rather than a
+# filing ("speedy-trial-continuance-schmitz").
+_SPEEDY_TRIAL_DEADLINE_NAME_RE = re.compile(
+    r"speedy|exclu(?:ded|dable|sion)|continuance", re.IGNORECASE
+)
+
+
+def _is_speedy_trial_exclusion_end(
+    entry: dict[str, Any], action: dict[str, Any]
+) -> bool:
+    """True when a deadline action is really the end of a Speedy Trial Act
+    excluded period — a stretch that doesn't count toward the trial clock,
+    not something any party must file or do.
+
+    A June 2026 extraction turned us-v-schmitz's "Time excluded from 5/19/2026
+    until 10/31/2026" into a pending "Speedy Trial Continuance" deadline, which
+    the case summary then reported as a deadline. A prompt rule against it
+    changed the extractor's output on that same order (it split the order's
+    real 30-day deadline into two half-formed actions), so this is a
+    deterministic check instead. Both conditions must hold, so a real filing
+    deadline the court sets on the exclusion's end date — courts often exclude
+    time up to the next scheduled event — is kept: the date matches an
+    excluded period's end stated in the entry, AND the deadline's key or title
+    names the trial clock ("speedy", "excluded", "continuance").
+    """
+    local_date = action.get("local_date")
+    if not local_date:
+        return False
+    name = f"{action.get('deadline_key') or ''} {action.get('title') or ''}"
+    if not _SPEEDY_TRIAL_DEADLINE_NAME_RE.search(name):
+        return False
+    text = f"{entry.get('description') or ''} {entry.get('short_description') or ''}"
+    for m in _SPEEDY_TRIAL_EXCLUSION_END_RE.finditer(text):
+        month, day, year = (int(g) for g in m.groups())
+        if year < 100:
+            year += 2000
+        if f"{year:04d}-{month:02d}-{day:02d}" == local_date:
+            return True
+    return False
+
+
 def _is_admin_notice(text: Optional[str]) -> bool:
     """True when ``text`` reads like a pre-hearing administrative notice.
 
@@ -3758,6 +3807,21 @@ class CaseSyncer:
                 entry["id"],
                 (action.get("notes") or "")[:120],
             )
+
+        if atype in (
+            "ADD_DEADLINE",
+            "RESCHEDULE_DEADLINE",
+        ) and _is_speedy_trial_exclusion_end(entry, action):
+            log.warning(
+                "skipping %s: case=%s key=%r entry=%s date=%s is the end of a "
+                "Speedy Trial Act excluded period, not a deadline",
+                atype,
+                case.case_id,
+                key,
+                entry["id"],
+                action.get("local_date"),
+            )
+            return
 
         log.info(
             "applying %s case=%s key=%r entry=%s date=%s",

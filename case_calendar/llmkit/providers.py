@@ -339,6 +339,55 @@ def _remember_temperature_unsupported(
     )
 
 
+# --- Claude models that reject a forced tool call -----------------------------
+# Structured output on Anthropic forces one tool call (tool_choice type "tool").
+# Some newer models reject that outright — live on 2026-11-05, Claude Sonnet
+# 5.5 returned 400 "tool_choice: type "tool" and "any" are not supported for
+# this model." while Claude Sonnet 5 and Haiku 4.5 still accepted it. As with
+# temperature, rather than keep a model list that goes stale every release,
+# the call detects the rejection, retries with tool_choice "auto" plus a
+# system instruction to answer only through the tool, and remembers the model
+# for the rest of the process. Measured the same day, Sonnet 5.5 under "auto"
+# with that instruction called the tool on 3 of 3 attempts.
+_FORCED_TOOL_UNSUPPORTED: set[str] = set()
+
+_AUTO_TOOL_INSTRUCTION = (
+    f"Return your answer ONLY by calling the `{_STRUCTURED_OUTPUT_NAME}` tool. "
+    "Do not reply in text."
+)
+
+
+def _is_forced_tool_unsupported_error(exc: Exception) -> bool:
+    """True when an SDK exception says the model rejects a forced tool call
+    (must name ``tool_choice`` AND read as a not-supported rejection)."""
+    msg = str(exc).lower()
+    return "tool_choice" in msg and any(
+        marker in msg for marker in _TEMPERATURE_UNSUPPORTED_MARKERS
+    )
+
+
+def _remember_forced_tool_unsupported(model: str, exc: Exception) -> None:
+    _FORCED_TOOL_UNSUPPORTED.add(model)
+    logger.warning(
+        "anthropic model %s rejected a forced tool call (%s); using "
+        "tool_choice=auto with an instruction to answer through the tool, for "
+        "the rest of this process.",
+        model,
+        str(exc)[:200],
+    )
+
+
+def _use_auto_tool_choice(create_kwargs: dict[str, Any]) -> None:
+    """Switch a structured-output request from a forced tool call to
+    ``auto`` plus a system instruction to answer only through the tool. The
+    instruction goes in its own system block AFTER the cached one, so the
+    cached prompt prefix is unchanged."""
+    create_kwargs["tool_choice"] = {"type": "auto"}
+    system_blocks = create_kwargs["system"]
+    if not any(b.get("text") == _AUTO_TOOL_INSTRUCTION for b in system_blocks):
+        system_blocks.append({"type": "text", "text": _AUTO_TOOL_INSTRUCTION})
+
+
 def _call_anthropic(
     system: str,
     user: str,
@@ -353,6 +402,12 @@ def _call_anthropic(
     import anthropic
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
+    # Claude 5 models think even though we never send `thinking`, and the
+    # thinking comes out of max_tokens — so every Anthropic call (extraction,
+    # verify, dedupe, summary) gets the thinking headroom here, against the
+    # model actually resolved (an LLM_MODEL override included). A no-op for
+    # earlier models and for callers that already raised the budget.
+    max_tokens = ensure_thinking_budget("anthropic", chosen, max_tokens)
     # Bump from the SDK default of 2 retries to 8. The default gives up
     # after ~1.5s of cumulative backoff (0.5s + 1s), which is not enough
     # for the 529 Overloaded condition the API returns when capacity is
@@ -410,24 +465,41 @@ def _call_anthropic(
                 "input_schema": schema,
             }
         ]
-        create_kwargs["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_NAME}
+        if chosen in _FORCED_TOOL_UNSUPPORTED:
+            _use_auto_tool_choice(create_kwargs)
+        else:
+            create_kwargs["tool_choice"] = {
+                "type": "tool",
+                "name": _STRUCTURED_OUTPUT_NAME,
+            }
     if temperature is not None and not _temperature_known_unsupported(
         "anthropic", chosen
     ):
         create_kwargs["temperature"] = temperature
-    try:
-        resp = client.messages.create(**create_kwargs)
-    except Exception as exc:
-        # The Claude 5 family (and Opus 4.7+) removed the temperature
-        # parameter — any value is a 400. Drop the knob and retry once
-        # rather than fail the call; see _TEMPERATURE_UNSUPPORTED.
-        if "temperature" not in create_kwargs or not _is_temperature_unsupported_error(
-            exc
-        ):
+    # Each rejection below is handled at most once, so this is at most three
+    # attempts: the original, then one retry per recognized rejection.
+    while True:
+        try:
+            resp = client.messages.create(**create_kwargs)
+            break
+        except Exception as exc:
+            # The Claude 5 family (and Opus 4.7+) removed the temperature
+            # parameter — any value is a 400. Drop the knob and retry rather
+            # than fail the call; see _TEMPERATURE_UNSUPPORTED.
+            if "temperature" in create_kwargs and _is_temperature_unsupported_error(
+                exc
+            ):
+                _remember_temperature_unsupported("anthropic", chosen, exc)
+                del create_kwargs["temperature"]
+                continue
+            # Some models reject a forced tool call (see
+            # _FORCED_TOOL_UNSUPPORTED); fall back to auto + an instruction.
+            forced = create_kwargs.get("tool_choice", {}).get("type") == "tool"
+            if forced and _is_forced_tool_unsupported_error(exc):
+                _remember_forced_tool_unsupported(chosen, exc)
+                _use_auto_tool_choice(create_kwargs)
+                continue
             raise
-        _remember_temperature_unsupported("anthropic", chosen, exc)
-        del create_kwargs["temperature"]
-        resp = client.messages.create(**create_kwargs)
     usage.record(
         purpose=purpose,
         provider="anthropic",

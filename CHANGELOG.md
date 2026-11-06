@@ -32,6 +32,22 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **Extraction works on Claude models that reject forced tool calls.**
+  Structured extraction on Anthropic forces one tool call, which Claude
+  Sonnet 5.5 rejects with a 400 error, so every extraction, verify, and
+  dedupe call on that model failed. The call now falls back to letting the
+  model choose the tool, with an instruction to answer only through it, and
+  remembers the model. Models that still accept forced tool calls (Claude
+  Sonnet 5, Haiku 4.5) are unchanged.
+- **Every Claude call gets room for thinking.** Claude 5 models think before
+  answering even when not asked, using up the output budget; the fix for
+  summaries now applies to extraction, verify, and dedupe calls too,
+  including when the model is chosen through `LLM_MODEL`.
+- **A Speedy Trial Act excluded period is no longer saved as a deadline.**
+  An order excluding time "from 5/19/2026 until 10/31/2026" had produced a
+  pending "Speedy Trial Continuance" deadline (us-v-schmitz). Deadline
+  actions that fall on an excluded period's end date and name the trial
+  clock are now dropped; a real filing deadline on the same date is kept.
 - **Procedural orders are no longer sent to the summary model as rulings.**
   An order or minute entry counted as a "disposition" if any ruling-type
   word appeared anywhere in it, so custody notes ("remanded to the custody
