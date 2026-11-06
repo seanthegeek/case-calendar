@@ -32,6 +32,17 @@ adheres to [Semantic Versioning][semver].
 
 ### Fixed
 
+- **Jury verdicts reach case summaries, with their real date and outcome.**
+  A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
+  a disposition, so sync stored it without its text, it didn't trigger a
+  summary refresh, and the summary model never saw it. At the same time the
+  court's blank verdict form ("Verdict Form. Signed by Judge …"), filed
+  before the jury deliberates, was sent to the model as if it were the
+  verdict. In us-v-ding that made every summary date the verdict to January
+  27 (the form) instead of January 29 and leave out the outcome; it now
+  reads "the jury returned its verdict on January 29, 2026, and Ding was
+  convicted at trial". Verdicts synced before this fix are still stored
+  without their text.
 - **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems
   stopped `case-calendar summarize` when the summary model was set to
   `claude-sonnet-5-5`:

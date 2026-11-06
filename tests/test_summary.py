@@ -497,6 +497,43 @@ class TestDispositionDocumentDetection:
     def test_rejects_papers_and_non_dispositions(self, description):
         assert not _is_disposition_document({"description": description})
 
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # us-v-ding #367, verbatim — the returned verdict, jury named first.
+            "JURY VERDICT as to Linwei Ding (1) Guilty on Count 1-4,1s-4s,"
+            "1ss-7ss,5s,6-7,8-14,8s-14s. (exl, COURT STAFF) (Filed on "
+            "1/29/2026) (Entered: 01/29/2026)",
+            "SPECIAL VERDICT as to Acme Corp.",
+            # A returned form docketed without a judge's signature still counts.
+            "VERDICT FORM as to John Doe (1) Guilty on Count 1.",
+        ],
+    )
+    def test_accepts_returned_verdicts(self, description):
+        entry = {"description": description}
+        assert _is_disposition_document(entry)
+        # ...and the broad predicate flips the summary stale on it, and makes
+        # sync keep the entry's body (it used to be stored as a bare stub).
+        assert is_disposition(entry)
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # us-v-ding #361, verbatim — the court's blank form, filed two days
+            # before the jury returned its verdict.
+            "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26. (vclc2, "
+            "COURT STAFF) (Filed on 1/27/2026) (Entered: 01/27/2026)",
+            "Verdict Form signed by District Judge Jane Roe.",
+            "VERDICT FORM. Signed by Senior District Judge John Smith on 3/1/26.",
+        ],
+    )
+    def test_rejects_judge_signed_blank_verdict_form(self, description):
+        entry = {"description": description}
+        assert not _is_disposition_document(entry)
+        # Still a stale signal — a verdict is imminent — just not a document
+        # to hand the summary model as the verdict.
+        assert is_disposition(entry)
+
 
 # ---------------------------------------------------------------------------
 # find_primary_documents

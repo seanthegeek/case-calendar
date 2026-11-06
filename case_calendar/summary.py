@@ -84,6 +84,12 @@ _DISPOSITION_RE = re.compile(
         | FINAL\sJUDGMENT
         | VERDICT\sFORM
         | VERDICT
+        # The returned verdict is often docketed with the jury named first —
+        # "JURY VERDICT as to Linwei Ding (1) Guilty on Count ..." (us-v-ding
+        # #367). Without this it matched neither this pattern nor the
+        # document-head pattern, so the verdict never reached the summary
+        # model and never flipped the summary stale.
+        | (?:JURY|SPECIAL)\s+VERDICT
         | ORDER\sOF\sDISMISSAL
         | ORDER\sGRANTING\sMOTION\sTO\sDISMISS
         | STIPULATION\sOF\sDISMISSAL
@@ -370,6 +376,16 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
         | continu(?:e|ing|ed|ance)\s+(?:sentencing|hearing|trial)
         # Notices of sentencing / hearing dates — also procedural.
         | notice\s+of\s+(?:sentencing|hearing)\s+date
+        # The court's verdict form, signed by the JUDGE — the blank form the
+        # jury takes into deliberations, not the verdict it returns (which
+        # the foreperson signs). "Verdict Form. Signed by Judge Vince Chhabria
+        # on 1/27/26." (us-v-ding #361) reached the summary model in place of
+        # the returned "JURY VERDICT" two days later (#367), so the summary
+        # dated the verdict to the form's filing and could not state the
+        # outcome. A returned form docketed as plain "VERDICT FORM" carries
+        # no judge's signature and is still accepted.
+        | verdict\s+form\b[^.]{0,80}\.?\s*signed\s+by\s+
+          (?:(?:the\s+)?(?:chief\s+|district\s+|magistrate\s+|senior\s+)*judge)
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
