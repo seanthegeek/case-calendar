@@ -1077,17 +1077,19 @@ class TestStubRepair:
         seen: list[tuple[str, int, bool]] = []
 
         class _Probe(FakeCourtListener):
-            def get_docket(self, i):
-                seen.append(("docket", i, store.conn.in_transaction))
-                return super().get_docket(i)
+            def get_docket(self, docket_id: int) -> dict:
+                seen.append(("docket", docket_id, store.conn.in_transaction))
+                return super().get_docket(docket_id)
 
-            def get_court(self, c):
+            def get_court(self, court_id: str) -> dict:
                 seen.append(("court", 0, store.conn.in_transaction))
-                return super().get_court(c)
+                return super().get_court(court_id)
 
-            def iter_entries(self, i, **kw):
-                seen.append(("entries", i, store.conn.in_transaction))
-                yield from super().iter_entries(i, **kw)
+            def iter_entries(self, docket_id: int, *, modified_after=None, **kw):
+                seen.append(("entries", docket_id, store.conn.in_transaction))
+                yield from super().iter_entries(
+                    docket_id, modified_after=modified_after, **kw
+                )
 
         cl = _Probe(
             dockets={100: docket(100), 200: docket(200), 300: docket(300)},
