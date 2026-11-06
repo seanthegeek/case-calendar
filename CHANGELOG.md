@@ -35,6 +35,19 @@ adheres to [Semantic Versioning][semver].
 
 ### Changed
 
+- **The default case-summary model is now Claude Sonnet 5.5**
+  (`claude-sonnet-5-5`), replacing Claude Sonnet 4.6. Re-graded on the
+  summary benchmark with the current prompt, Sonnet 5.5 scored A− and
+  Sonnet 4.6 scored D: Sonnet 4.6 reversed which side was appealing on the
+  Ninth Circuit docket in Anthropic v. DOW, stated a nationality the
+  documents don't support, and ran past the word limit. The cost is about
+  the same — $0.80 against $0.70 on the 10-docket benchmark, and $2.99 for
+  the 39-docket production caseload. Sonnet 5.5 is supported until at least
+  2027-09-28, against 2027-02-17 for Sonnet 4.6. Existing summaries are not
+  regenerated automatically; run `case-calendar summarize --force` to
+  rewrite them on the new model. To stay on Sonnet 4.6, set
+  `LLM_SUMMARY_MODEL=claude-sonnet-4-6` or `case_summaries.model`. Details
+  are in `model-comparison/SCORECARD.md` (Phase 4).
 - **Tighter case-summary length and detail rules.** The summary prompt now
   sets a word budget (about 120 words, never more than 150), requires a
   single paragraph, and ranks what to keep when space runs out: the group,

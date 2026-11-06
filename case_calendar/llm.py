@@ -1763,7 +1763,11 @@ def summary_provider_info(
 # extraction stays decoupled from the higher-tier model used here.
 
 _DEFAULT_SUMMARY_MODELS = {
-    "anthropic": "claude-sonnet-4-6",
+    # Sonnet 5.5 replaced Sonnet 4.6 on 2026-11-05 (SCORECARD Phase 4: A− vs D
+    # on the current prompt, at about the same cost). It thinks by default, so
+    # the summary call's output budget is raised by
+    # providers.ensure_thinking_budget.
+    "anthropic": "claude-sonnet-5-5",
     "openai": "gpt-5.4",
     "gemini": "gemini-2.5-pro",
     # Local inference via Ollama. gpt-oss:20b — the same model the extraction

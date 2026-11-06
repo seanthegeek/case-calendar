@@ -21,7 +21,7 @@ Every hosted default in `llmkit/providers.py` (`_DEFAULT_MODELS`) and `llm.py` (
 | Track | Provider default | Status / date | Provider's named replacement |
 | --- | --- | --- | --- |
 | Extraction (production) | `gemini-3.1-flash-lite` | Shutdown not before **2027-05-07** (Google's "earliest possible" date) | `gemini-3.5-flash-lite` |
-| Summaries (production) | `claude-sonnet-4-6` | Active; retirement not before **2027-02-17** | — |
+| Summaries (production) | `claude-sonnet-5-5` (replaced `claude-sonnet-4-6`, retirement not before 2027-02-17, on 2026-11-05 — see SCORECARD Phase 4) | Active; retirement not before **2027-09-28** | — |
 | Extraction, Anthropic-only setups | `claude-haiku-4-5` | Active, but its "not sooner than" date (2026-10-15) has passed — a deprecation can be announced at any time | — |
 | Extraction, OpenAI-only setups | `gpt-5.4-nano` | Deprecated; shutdown **2027-04-01** | `gpt-6-luna` |
 | Summaries, Gemini-only setups | `gemini-2.5-pro` | Shutdown **2026-12-01**; API access is already limited to existing users (and it is gone from Google AI Studio), so a NEW Gemini-only install cannot use this default at all; after 2026-12-01, requests auto-route to `gemini-3.8-flash` at its rates ([model page](https://aistudio.google.com/docs/models/gemini-2.5-pro)) | `gemini-3.8-flash` |

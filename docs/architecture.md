@@ -120,7 +120,7 @@ override is set:
 As of 0.13.0 the default is no longer a single provider for both tracks. With
 API keys set but no `LLM_*` env vars, Case Calendar auto-detects **Gemini
 (`gemini-3.1-flash-lite`) for extraction** and **Anthropic
-(`claude-sonnet-4-6`) for summaries**. The auto-detect key priority is
+(`claude-sonnet-5-5`) for summaries**. The auto-detect key priority is
 per-track: extraction prefers `gemini > anthropic > openai`, while the
 summary / base resolution prefers `anthropic > gemini > openai`. `LLM_PROVIDER`
 (global) still overrides both tracks, and `LLM_EXTRACTION_PROVIDER` /
@@ -152,8 +152,8 @@ important framing: the prompt carries knowledge for every provider; this is
 not a claim that Gemini's training improved.
 
 With the bucketing gap closed, the measured comparison favors Gemini for
-extraction. On the frozen benchmark (see [the
-scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
+extraction. On the frozen benchmark (see
+[the scorecard](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md)) Gemini posts the best
 `D met/pass` among the hosted extractors (129 vs Anthropic's 143) and far
 fewer spurious cancellations than Anthropic (`D canc` 4 vs 43), and both its
 per-entry deviation (636 vs 784) and its aggregate deviation (376 vs 476) are
@@ -175,10 +175,10 @@ dropping it.
 
 | | Extraction track | Summary track |
 | --- | --- | --- |
-| Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-4-6`) |
+| Default provider (0.13.0) | **Gemini** (`gemini-3.1-flash-lite`) | **Anthropic** (`claude-sonnet-5-5`; `claude-sonnet-4-6` until 2026-11-05) |
 | Dominant constraint | Substantive-class coverage; per-call latency × volume | Synthesis quality; capturing case-distinguishing detail |
 | Per-entry / aggregate deviation (lower is better) | Gemini **636 / 376** (best overall) vs Anthropic 784 / 476 | — |
-| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best hosted `D met/pass` (129 vs 143) and far fewer spurious cancellations than Anthropic (4 vs 43), \~3.7× cheaper, \~2× faster per call | graded **A** in the blind Phase 3 read (accurate, most detailed, clean — the reference) vs Gemini 2.5 Pro's A− (a touch less detail; omitted the China nexus on us-v-ding) |
+| Why this provider | Now classifies the enumerated substantive classes as `major` (the prompt carries the priors); best hosted `D met/pass` (129 vs 143) and far fewer spurious cancellations than Anthropic (4 vs 43), \~3.7× cheaper, \~2× faster per call | Anthropic graded **A** in the blind Phase 3 read (accurate, most detailed, clean — the reference) vs Gemini 2.5 Pro's A− (a touch less detail; omitted the China nexus on us-v-ding); on the current prompt Sonnet 5.5 graded A− against Sonnet 4.6's D, at about the same cost ([SCORECARD Phase 4](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-4--claude-sonnet-55-vs-sonnet-46-on-the-current-prompt-2026-11-05)) |
 
 The full deviation breakdown — measured against a human-scored ground-truth
 worksheet over the whole caseload, including the

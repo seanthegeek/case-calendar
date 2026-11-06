@@ -96,13 +96,13 @@ store_path: data/case-calendar.sqlite
 # Cost note: this runs on the higher-tier summary model for your
 # provider (Sonnet / Gemini Pro / GPT-5.4) — the synthesis task
 # warrants the upgrade over the small/fast extractor tier. Budget is
-# roughly $0.03-0.20 per docket for the first run (measured ~$0.07/docket
-# on the default Sonnet summary tier across the comparison caseload; heavy
-# multi-count dockets cost more), near-zero on
+# roughly $0.03-0.20 per docket for the first run (measured ~$0.08/docket
+# on the default Sonnet 5.5 summary model across a 39-docket caseload on
+# 2026-11-05; heavy multi-count dockets cost more), near-zero on
 # subsequent runs (existing summary rows are reused; pass `--force`
 # to overwrite after a prompt or model change).
 #
-# Provider defaults: anthropic/claude-sonnet-4-6,
+# Provider defaults: anthropic/claude-sonnet-5-5,
 # gemini/gemini-2.5-pro, openai/gpt-5.4. Override via `provider` /
 # `model` here, or set LLM_SUMMARY_PROVIDER / LLM_SUMMARY_MODEL in
 # .env (config wins if both). With no LLM_* env var set, the summary
@@ -117,7 +117,7 @@ store_path: data/case-calendar.sqlite
 # case_summaries:
 #   enabled: true
 #   # provider: anthropic
-#   # model: claude-sonnet-4-6
+#   # model: claude-sonnet-5-5
 #   # allow_ocr: true        # set false to skip slow tesseract fallback
 #   # debounce_seconds: 300  # webhook-only: wait this many seconds of
 #                            # quiet after the last stale-flagging entry

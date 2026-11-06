@@ -12,8 +12,9 @@ otherwise. The July 2026 local sweep was run twice per model: once **greedy**
 `-inspec` rows.
 
 The shipped default remains a **split**: **Gemini** (`gemini-3.1-flash-lite`)
-for extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. The benchmark
-ran in four phases:
+for extraction, **Anthropic** (`claude-sonnet-5-5`, which replaced
+`claude-sonnet-4-6` on 2026-11-05) for summaries. The benchmark ran in five
+phases:
 
 - **Phase 0 — extraction accuracy**: every model extracts hearings/deadlines from
   the same frozen dockets; a human-blind deviation score ranks them.
@@ -22,6 +23,8 @@ ran in four phases:
 - **Phase 3 — summary grading**: the summaries are read and graded for accuracy,
   detail, and grammar against a fresh hosted reference generated on the same
   scaffold (there is no automated summary scorer — see `summarize_phase.py`).
+- **Phase 4 — Sonnet 5.5 vs Sonnet 4.6**: both re-run and graded on the
+  current summary prompt, which decided the summary default (2026-11-05).
 
 The headline results of the July 2026 sweep (new 32 GB + 24 GB dual-GPU rig,
 every installed Ollama model):
@@ -671,6 +674,76 @@ blocked on the gfx1201 gap.
 (no progress in 240 s) detection, plus `--no-think` / `--think-level` /
 `--think-budget` controls, so these failure modes surface live rather than
 after a manual check.
+
+## Phase 4 — Claude Sonnet 5.5 vs Sonnet 4.6 on the current prompt (2026-11-05)
+
+Claude Sonnet 5.5 (`claude-sonnet-5-5`) was benchmarked as a replacement for
+the Sonnet 4.6 summary default. The summary prompt changed in the same branch
+(a word budget of about 120 words and never more than 150, a single-paragraph
+rule, and a detail-priority list — see [docs/llm-prompts.md](../docs/llm-prompts.md)),
+so the Phase 3 A− for Sonnet 4.6 no longer compares like with like. Both
+models were therefore re-run on the current prompt, on the same Gemini
+scaffold as Phase 3, with `summarize_phase.py`. The grades use the Phase 3
+scale, and every disputed fact was checked against the scaffold store.
+
+| model | grade | words (median / max) | cost, 10 dockets | notes |
+| --- | :---: | --- | --- | --- |
+| **anthropic/claude-sonnet-5-5** | **A−** | 118 / 128 | $0.80 (11 calls) | accurate on every fact checked, including both disputes below; keeps every foreign nexus (PRC for ding, the North Korean link for knoot, Deripaska for mcgonigal) and case-distinguishing figures (Versus's 380,000 users and nearly 600,000 orders, knoot's $544,700 in losses); one slip — dates the ding verdict to the Jan 27 form and omits the outcome, the same slip as the Phase 3 Sonnet 4.6 reference |
+| anthropic/claude-sonnet-4-6 | D | 110 / 181 | $0.70 (10 calls) | on the Ninth Circuit docket (26-2011) it reverses the parties — "Anthropic's opening brief" and a pending motion "by Anthropic" — and describes the appeal as Anthropic's § 4713 petition for review, which is the D.C. Circuit case; calls Gholinejad "an Iranian national" where the indictment says only "residing overseas, including in Iran"; the same ding verdict slip; one summary runs 181 words, over the 150 cap |
+
+The two disputes, settled against the store:
+
+- **Who appealed in 26-2011.** The docket's opening entries list the federal
+  agencies as "Appellant" and set "Preliminary Injunction Opening Brief Due
+  (Appellant) 4/30/2026". The government appealed Judge Lin's preliminary
+  injunction, so Sonnet 5.5's "the federal defendants' opening brief was due
+  April 30, 2026" is right and Sonnet 4.6's reading is reversed. This mix-up
+  is not new with the prompt change: the Sonnet 4.6 summary of 26-2011 in the
+  production store, written under the earlier prompt, also describes the
+  docket as the § 4713 matter. The Phase 3 A− most likely missed it.
+- **"41 U.S.C. § 3252".** Sonnet 5.5 cites the § 3252 designation under title
+  41 in two Anthropic v. DOW summaries (and title 10 in the third). That
+  comes from the source: Anthropic's D.C. Circuit petition (docket 72380208)
+  says "Secretary Hegseth … invoked the supply chain risk designation
+  authority under 41 U.S.C. § 3252", while the other 256 citations in the
+  store say title 10. It is counted as faithful to the document, not as a
+  model error.
+
+**Findings:**
+
+**1. Sonnet 5.5 follows the length and detail rules; Sonnet 4.6 does not.**
+Under the new prompt Sonnet 4.6 still runs past the 150-word cap: 1 of the 10
+benchmark summaries here (181 words), and 5 of 14 when the same prompt was
+run on 10 cases from a copy of the production store (median 130 words, up
+from 120 under the earlier prompt). Sonnet 5.5 stays inside it while keeping
+the distinguishing details. On the full 39-docket production caseload,
+Sonnet 5.5's longest summary was 138 words, against 221 for Sonnet 4.6's
+stored summaries.
+
+**2. The guards catch Sonnet 5.5's two habits, at the cost of a retry.** It
+copies prompt examples closely, which is how it reproduced an
+absence-of-record clause from an old prompt example (since fixed — see the
+past-dated-rows design note in
+[agent-docs/DESIGN-DECISIONS.md](../agent-docs/DESIGN-DECISIONS.md)). It also
+rounds figures: its first knoot draft said "$258,000" for the "approximately
+$258,553.74" in wages the documents state, which the grounding guard rejected
+because the rounded figure is not in the text. The retry kept the exact
+figures. Neither habit reached a stored summary.
+
+**3. Cost is about the same.** Sonnet 5.5's per-token price is a third lower,
+but Anthropic's migration guide says the same text produces "about 30 percent
+more tokens" against Sonnet 4.6, "depending on the content" — on this
+project's filings it measured 1.42× (101,530 vs 71,460 tokens for the same
+300,000 characters, via the token-counting endpoint). Sonnet 5.5 also thinks by
+default, averaging 1,150 output tokens per call against Sonnet 4.6's 194. On
+this benchmark it cost $0.80 against $0.70, the difference being the one
+grounding retry; the full production caseload cost $2.99 for 39 dockets.
+
+Sonnet 5.5 replaces Sonnet 4.6 as the summary default on the strength of
+finding 1 and the accuracy grades. It is active with retirement "not sooner
+than September 28, 2027" on Anthropic's
+[model deprecations page](https://platform.claude.com/docs/en/about-claude/model-deprecations),
+against February 17, 2027 for Sonnet 4.6.
 
 ## Hardware and software environment
 

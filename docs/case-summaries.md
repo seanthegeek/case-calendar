@@ -93,7 +93,7 @@ Add a top-level block to `config.yaml`:
 case_summaries:
   enabled: true
   # provider: anthropic
-  # model: claude-sonnet-4-6
+  # model: claude-sonnet-5-5
   # allow_ocr: true
   # debounce_seconds: 300
 ```

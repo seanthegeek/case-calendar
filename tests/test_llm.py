@@ -2411,9 +2411,7 @@ class TestGenerateDocketSummary:
         assert ident == "ollama/" + llm._DEFAULT_SUMMARY_MODELS["ollama"]
         assert called["json_mode"] is False
 
-    def test_anthropic_keeps_requested_max_tokens(self, monkeypatch):
-        # The Gemini headroom bump is provider-specific: anthropic / openai are
-        # not thinking-budget-constrained, so they keep the requested ceiling.
+    def _anthropic_summary_max_tokens(self, monkeypatch, model):
         called: dict[str, Any] = {}
 
         def fake(system, user, max_tokens, *, model=None, **kwargs):
@@ -2430,9 +2428,29 @@ class TestGenerateDocketSummary:
             hearings=[],
             deadlines=[],
             provider="anthropic",
+            model=model,
             max_tokens=800,
         )
-        assert called["max_tokens"] == 800
+        return called["max_tokens"]
+
+    def test_anthropic_pre_claude5_keeps_requested_max_tokens(self, monkeypatch):
+        # Sonnet 4.6 answers directly (we never turn thinking on), so the
+        # requested ceiling only has to cover the answer.
+        got = self._anthropic_summary_max_tokens(monkeypatch, "claude-sonnet-4-6")
+        assert got == 800
+
+    def test_anthropic_default_summary_model_gets_thinking_budget(self, monkeypatch):
+        # The default (Sonnet 5.5) thinks by default and the thinking comes
+        # out of max_tokens; at 800 it used the whole budget thinking and
+        # returned no text, so the budget must be raised.
+        got = self._anthropic_summary_max_tokens(monkeypatch, None)
+        assert got > 800
+        assert (
+            providers.ensure_thinking_budget(
+                "anthropic", llm._DEFAULT_SUMMARY_MODELS["anthropic"], 800
+            )
+            == got
+        )
 
     def test_correction_appended_to_user_message(self, monkeypatch):
         captured: dict[str, Any] = {}

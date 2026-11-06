@@ -17,7 +17,7 @@ Case Calendar is a Python CLI. You'll need:
     the cheap / small-model tier of each provider; expect cents per case
     per day on a busy docket. The recommended default is a **split**:
     Gemini (`gemini-3.1-flash-lite`) for extraction and Anthropic
-    (`claude-sonnet-4-6`) for case summaries — and zero-config picks this
+    (`claude-sonnet-5-5`) for case summaries — and zero-config picks this
     for you when you provide keys for both. For *why* the default splits
     the two tracks across providers, see
     [Architecture → Why the default is a split](architecture.md#why-the-default-is-a-split--gemini-for-extraction-anthropic-for-summaries).
