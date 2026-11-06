@@ -5324,6 +5324,250 @@ class TestStaleEventDateGuardEndToEnd:
         assert len(calls) == 1  # in agreement with the scaffold -> no retry
 
 
+# Corpus shaped like the Anthropic v. DOW D.C. Circuit docket: one filing's
+# typo ("41 U.S.C. § 3252") among many correct citations under title 10.
+_TYPO_CORPUS = (
+    "Hegseth invoked the authority under 41 U.S.C. § 3252. "
+    + "The designation under 10 U.S.C. § 3252 was unlawful. " * 12
+    + "Anthropic also challenges the notice under 41 U.S.C. § 4713."
+)
+
+
+class TestCitationAudit:
+    """Tier-6 detection — `_audit_summary_citations` flags a U.S. Code
+    citation whose title the documents almost never use for that section."""
+
+    def test_repeated_citation_in_summary_is_reported_once(self):
+        out = summary._audit_summary_citations(
+            "It cites 41 U.S.C. § 3252 and again 41 U.S.C. § 3252.",
+            source_text=_TYPO_CORPUS,
+        )
+        assert len(out) == 1
+
+    def test_flags_typo_title_against_dominant_title(self):
+        out = summary._audit_summary_citations(
+            "The Secretary acted under 41 U.S.C. § 3252.", source_text=_TYPO_CORPUS
+        )
+        assert len(out) == 1
+        assert "41 U.S.C. § 3252" in out[0]
+        assert "title 10 12 times" in out[0]
+
+    def test_majority_title_is_silent(self):
+        assert (
+            summary._audit_summary_citations(
+                "The Secretary acted under 10 U.S.C. § 3252.",
+                source_text=_TYPO_CORPUS,
+            )
+            == []
+        )
+
+    def test_title_never_cited_for_section_needs_only_the_minimum(self):
+        # The Ninth Circuit docket shape: title 10 cited a few times, the
+        # summary's title 41 never — the ratio is unbounded, so the minimum
+        # alone decides.
+        corpus = "Designated under 10 U.S.C. § 3252. " * 3
+        assert summary._audit_summary_citations(
+            "Challenges a designation under 41 U.S.C. § 3252.", source_text=corpus
+        )
+        assert (
+            summary._audit_summary_citations(
+                "Challenges a designation under 41 U.S.C. § 3252.",
+                source_text="Designated under 10 U.S.C. § 3252. " * 2,
+            )
+            == []
+        )
+
+    def test_two_genuine_titles_for_one_section_are_silent(self):
+        # Both titles cited often -> the summary's title isn't rare.
+        corpus = "Under 18 U.S.C. § 1001. " * 6 + "Under 26 U.S.C. § 1001. " * 6
+        assert (
+            summary._audit_summary_citations(
+                "Charged under 26 U.S.C. § 1001.", source_text=corpus
+            )
+            == []
+        )
+
+    def test_not_lopsided_enough_is_silent(self):
+        # Title 41 cited twice, title 10 only 15 times: 15 < 10 × 2.
+        corpus = "41 U.S.C. § 3252. " * 2 + "10 U.S.C. § 3252. " * 15
+        assert (
+            summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+            == []
+        )
+
+    def test_ocr_noise_is_not_read_as_a_title(self):
+        # "110 U.S.C." (OCR noise) must not count as title 10; with no real
+        # title-10 citations there is no dominant alternative to flag against.
+        corpus = "110 U.S.C. § 3252. " * 20 + "41 U.S.C. § 3252."
+        assert (
+            summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+            == []
+        )
+
+    def test_section_absent_from_documents_is_silent(self):
+        # A citation the documents don't mention at all is not this guard's
+        # concern (nothing to compare it against).
+        assert (
+            summary._audit_summary_citations(
+                "Charged under 18 U.S.C. § 1030.", source_text=_TYPO_CORPUS
+            )
+            == []
+        )
+
+    def test_whitespace_and_double_section_sign_variants_match(self):
+        corpus = "10 U. S. C. §§ 3252 and more. " * 5
+        assert summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+
+    def test_empty_inputs_are_silent(self):
+        assert summary._audit_summary_citations("", source_text=_TYPO_CORPUS) == []
+        assert summary._audit_summary_citations("41 U.S.C. § 3252") == []
+
+
+class TestCitationGuardEndToEnd:
+    """Tier-6 retry-then-keep through summarize_docket: a typo'd title is
+    retried once with the counts; if it persists the summary is KEPT (never
+    stripped — the citation is usually in the lead sentence) with a WARNING."""
+
+    def test_retry_clears_typo(self, store, patch_pdf, monkeypatch, caplog):
+        import logging
+
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "title 10 12 times" in calls[1].get("correction", "")
+        assert row["summary"] == (
+            "Anthropic challenges a designation under 10 U.S.C. § 3252."
+        )
+        assert any("almost never use" in r.message for r in caplog.records)
+
+    def test_persistent_typo_is_kept_not_stripped(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        import logging
+
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        text = "Anthropic challenges a designation under 41 U.S.C. § 3252."
+        calls = _queue_llm(monkeypatch, text)
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert row["summary"] == text
+        assert any(
+            "STILL cited a statute under a minority title" in r.message
+            for r in caplog.records
+        )
+
+    def test_correct_citation_no_retry(self, store, patch_pdf, monkeypatch):
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1
+
+    @staticmethod
+    def _typo_only_in_model_input(store, patch_pdf, *, sibling_brief: bool):
+        """The real shape: the filing the model reads carries the one typo,
+        and the filings that cite the section correctly sit elsewhere in the
+        case (here a stored brief on a sibling docket)."""
+        cl, case = _indictment_case(
+            store,
+            patch_pdf,
+            primary_text="PETITION. Hegseth invoked authority under 41 U.S.C. § 3252.",
+        )
+        if sibling_brief:
+            store.mark_entry(
+                2,
+                20,
+                "2024-02-01T00:00:00Z",
+                "fp-brief",
+                description="BRIEF",
+                recap_documents=[
+                    {"id": 600, "plain_text": "Under 10 U.S.C. § 3252. " * 5}
+                ],
+            )
+            case = _Case(
+                case_id=case.case_id, name=case.name, dockets=[1, 2], calendar="cyber"
+            )
+        return cl, case
+
+    def test_counts_the_whole_case_not_just_the_model_input(
+        self, store, patch_pdf, monkeypatch
+    ):
+        cl, case = self._typo_only_in_model_input(store, patch_pdf, sibling_brief=True)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "title 10 5 times" in calls[1].get("correction", "")
+        assert "10 U.S.C. § 3252" in row["summary"]
+
+    def test_no_evidence_elsewhere_no_retry(self, store, patch_pdf, monkeypatch):
+        # Without the case's other filings, a lone citation in the model's
+        # input has nothing to be outvoted by — the guard stays silent.
+        cl, case = self._typo_only_in_model_input(store, patch_pdf, sibling_brief=False)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1
+
+
+class TestCaseCitationCorpus:
+    """`_case_citation_corpus` — every stored filing on the case's dockets,
+    each counted once, plus operator-supplied documents and notes."""
+
+    def _entry(self, store, docket_id, entry_id, text, *, description="BRIEF"):
+        store.mark_entry(
+            docket_id,
+            entry_id,
+            "2024-01-01T00:00:00Z",
+            f"fp-{entry_id}",
+            description=description,
+            recap_documents=[{"id": entry_id * 10, "plain_text": text}],
+        )
+
+    def test_collects_descriptions_and_document_text_across_dockets(self, store):
+        self._entry(store, 1, 10, "first brief text")
+        self._entry(store, 2, 20, "second brief text", description="ORDER")
+        out = summary._case_citation_corpus(store, [1, 2])
+        for part in ("first brief text", "second brief text", "BRIEF", "ORDER"):
+            assert part in out
+
+    def test_repeated_docket_ids_are_counted_once(self, store):
+        self._entry(store, 1, 10, "Under 10 U.S.C. § 3252.")
+        out = summary._case_citation_corpus(store, [1, 1, 1])
+        assert out.count("10 U.S.C. § 3252") == 1
+
+    def test_includes_operator_documents_and_notes(self, store):
+        out = summary._case_citation_corpus(
+            store,
+            [],
+            [{"text": "operator doc text", "operator_note": "operator note text"}],
+        )
+        assert "operator doc text" in out
+        assert "operator note text" in out
+
+    def test_empty_case_is_empty(self, store):
+        assert summary._case_citation_corpus(store, [9]) == ""
+
+
 class TestRestitutionUnreadableDetector:
     """`_restitution_amount_unreadable`: a granted restitution order present
     but with no legibly-extractable dollar figure (us-v-chapman: handwritten

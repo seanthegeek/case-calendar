@@ -16,6 +16,20 @@ adheres to [Semantic Versioning][semver].
   `requests-oauthlib`):
   [GHSA-3jp2-3mrg-2vxc](https://github.com/advisories/GHSA-3jp2-3mrg-2vxc).
 
+### Added
+
+- **Case summaries are checked for statute citations copied from a single
+  filing's typo.** Anthropic's D.C. Circuit petition cites "41 U.S.C. §
+  3252" once, while the case's other filings cite "10 U.S.C. § 3252" 256
+  times, and Claude Sonnet 5.5 repeated the typo in two Anthropic v. DOW
+  summaries. A new check counts how the case's filings cite each U.S. Code
+  section a summary mentions. When the summary uses a title the filings
+  almost never use and another title dominates, the summary is regenerated
+  once with the counts; if the wrong title persists it is kept and a warning
+  is logged rather than deleting the sentence. It applies only to statute
+  citations, because unlike dates or counts they never change over time.
+  Tested against 196 existing summaries, it flagged exactly the two typos.
+
 ### Fixed
 
 - **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems

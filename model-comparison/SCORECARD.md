@@ -707,7 +707,10 @@ The two disputes, settled against the store:
   says "Secretary Hegseth … invoked the supply chain risk designation
   authority under 41 U.S.C. § 3252", while the other 256 citations in the
   store say title 10. It is counted as faithful to the document, not as a
-  model error.
+  model error. A minority-citation guard added afterwards
+  (`summary._audit_summary_citations`) now catches this case: rerunning the
+  case flagged both summaries against the 256-to-1 split, and each retry
+  cited title 10.
 
 **Findings:**
 

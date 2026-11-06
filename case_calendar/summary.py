@@ -2080,10 +2080,118 @@ def _restitution_amount_unreadable(
     )
 
 
+# Tier 6 — a U.S. Code citation the documents almost never use. A citation
+# names the same law in every filing, so unlike dates, counts, or sentences
+# (where the LATEST document is right even when older ones outnumber it), a
+# title the model took from one filing's typo can be checked against how the
+# rest of the documents cite the same section. Canonical case: Anthropic's
+# D.C. Circuit petition says "41 U.S.C. § 3252" once, while that docket's
+# other filings say "10 U.S.C. § 3252" 122 times; Claude Sonnet 5.5 repeated
+# the typo (SCORECARD Phase 4). Only U.S. Code citations are checked —
+# structured, unchanging identifiers — and only lopsided splits fire.
+#
+# The title is one or two digits (the U.S. Code has 54 titles); the leading
+# \b keeps OCR noise like "110 U.S.C." from being read as title 10, and that
+# noise only ever adds rare variants, which matter only if the summary cites
+# one. The section keeps an optional letter suffix ("1030A") and drops any
+# subsection.
+_GUARD_USC_RE = re.compile(
+    r"\b(\d{1,2})\s*U\.\s*S\.\s*C\.\s*(?:A\.\s*)?§+\s*(\d+[A-Za-z]?)\b"
+)
+# Fire only when the summary's title is rare for that section (at most
+# _CITATION_MINORITY_MAX citations) AND another title is cited for it at least
+# _CITATION_MAJORITY_MIN times and _CITATION_MAJORITY_RATIO times as often. A
+# section genuinely cited under two titles in one case has both counts high
+# and stays silent. When the documents never cite the summary's title for the
+# section (zero), the ratio is unbounded, so only the minimum applies — that
+# is the Ninth Circuit docket's case (title 10 cited 4 times, title 41 never;
+# the summary took the typo from the related D.C. Circuit petition). Tuned on
+# 2026-11-05 against 196 summaries from the production store and the
+# benchmark: these values flag exactly the two § 3252 typos and nothing else.
+_CITATION_MINORITY_MAX = 2
+_CITATION_MAJORITY_MIN = 3
+_CITATION_MAJORITY_RATIO = 10
+
+
+def _case_citation_corpus(
+    store: Store,
+    docket_ids: Iterable[int],
+    extra_documents: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    """Text of every stored filing on the case's dockets, plus operator-
+    supplied documents and notes (which never reach the store) — the evidence
+    :func:`_audit_summary_citations` counts citations over.
+
+    Deliberately wider than the summary's own inputs: the summarizer sends a
+    few primary / disposition documents, and a typo can sit in exactly those
+    (Anthropic's D.C. Circuit petition was the only document on its summary
+    call, and it carried the one "41 U.S.C. § 3252"), while the briefs and
+    orders that cite the section correctly are elsewhere on the docket. Each
+    filing is counted once, so a typo isn't inflated past the minority
+    threshold by also appearing in the model's input.
+    """
+    parts: list[str] = []
+    for docket_id in dict.fromkeys(docket_ids):
+        for entry in store.get_entries_with_body(docket_id):
+            parts.append(entry.get("description") or "")
+            parts += [
+                rd.get("plain_text") or "" for rd in entry.get("recap_documents") or []
+            ]
+    for doc in extra_documents or []:
+        parts += [doc.get("text") or "", doc.get("operator_note") or ""]
+    return "\n".join(p for p in parts if p)
+
+
+def _audit_summary_citations(text: str, *, source_text: str = "") -> list[str]:
+    """Return findings for U.S. Code citations whose title the case's filings
+    almost never use for that section, while consistently citing another.
+
+    ``source_text`` is the corpus to count over — in the pipeline, the whole
+    case's filings (:func:`_case_citation_corpus`), not just the summary's own
+    inputs. Detection only; :func:`_generate_guarded_summary` retries once and,
+    if the citation persists, keeps the summary with a WARNING. It never
+    strips: the citation usually sits in the summary's lead sentence, and
+    losing that sentence is worse than a wrong title.
+    """
+    if not text or not source_text:
+        return []
+    corpus = re.sub(r"\s+", " ", source_text)
+    by_section: dict[str, dict[int, int]] = {}
+    for m in _GUARD_USC_RE.finditer(corpus):
+        titles = by_section.setdefault(m.group(2).upper(), {})
+        title = int(m.group(1))
+        titles[title] = titles.get(title, 0) + 1
+    out: list[str] = []
+    seen: set[tuple[int, str]] = set()
+    for m in _GUARD_USC_RE.finditer(text):
+        title, section = int(m.group(1)), m.group(2).upper()
+        if (title, section) in seen:
+            continue
+        seen.add((title, section))
+        titles = by_section.get(section, {})
+        mine = titles.get(title, 0)
+        others = [(n, t) for t, n in titles.items() if t != title]
+        if not others:
+            continue
+        top_count, top_title = max(others)
+        if (
+            mine <= _CITATION_MINORITY_MAX
+            and top_count >= _CITATION_MAJORITY_MIN
+            and top_count >= _CITATION_MAJORITY_RATIO * mine
+        ):
+            out.append(
+                f"minority citation: {title} U.S.C. § {section} — the case's "
+                f"filings cite § {section} under title {top_title} {top_count} times "
+                f"and under title {title} {mine} time(s)"
+            )
+    return out
+
+
 def _generate_guarded_summary(
     *,
     source_text: str,
     docket_id: Optional[int],
+    citation_text: Optional[str] = None,
     **gen_kwargs: Any,
 ) -> tuple[str, str]:
     """Call ``llm.generate_docket_summary`` behind the truthfulness guard.
@@ -2107,7 +2215,11 @@ def _generate_guarded_summary(
     forfeiture guard (:func:`_audit_summary_forfeiture`) and the stale
     scheduled-event-date guard (:func:`_audit_summary_stale_event_dates` —
     a "scheduled for <date>" claim contradicting the scaffold's current row
-    for that event). Finally the operator-note attribution cleanup runs
+    for that event). Then the citation guard
+    (:func:`_audit_summary_citations` — a U.S. Code title the documents almost
+    never use for that section) retries once but never strips: a wrong title
+    is kept with a WARNING rather than deleting the lead sentence it usually
+    sits in. Finally the operator-note attribution cleanup runs
     unconditionally (always-safe, no retry).
     """
     known_dates = _grounding_dates(gen_kwargs)
@@ -2298,6 +2410,51 @@ def _generate_guarded_summary(
                 "summary: docket %s STILL carried a stale scheduled-event date "
                 "after retry; removed the offending sentence(s) — the calendar "
                 "feed carries the event's current date",
+                docket_id,
+            )
+
+    # Tier 6 — a U.S. Code citation under a title the case's filings almost
+    # never use for that section (a single filing's typo, carried through).
+    # Counted over the whole case's filings (citation_text) when the caller
+    # supplies them, else the summary's own inputs. Retry once with the
+    # counts; if it persists, keep the summary and WARN — never strip, because
+    # the citation usually sits in the lead sentence.
+    citation_corpus = citation_text or source_text
+    minority = _audit_summary_citations(summary_text, source_text=citation_corpus)
+    if minority:
+        log.warning(
+            "summary: docket %s draft cited a statute under a title the case's "
+            "filings almost never use %s; retrying generation once",
+            docket_id,
+            minority,
+        )
+        correction = (
+            "Your draft cites a U.S. Code section under a title that this "
+            "case's filings almost never use for that section: "
+            + "; ".join(minority)
+            + ". A single filing can contain a typo. Cite the section under "
+            "the title the case's filings consistently use."
+        )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction=correction, **gen_kwargs
+        )
+        retry_clean = (
+            not _audit_summary_citations(retry_text, source_text=citation_corpus)
+            and not _audit_summary_text(retry_text, source_text=source_text)
+            and not _audit_summary_grounding(
+                retry_text, known_dates=known_dates, source_text=source_text
+            )
+            and not _audit_summary_forfeiture(retry_text)
+            and not _audit_summary_stale_event_dates(retry_text, hearings=hearings_rows)
+        )
+        if retry_clean:
+            log.info("summary: docket %s retry cleared the citation guard", docket_id)
+            summary_text, model_id = retry_text, retry_model
+        else:
+            log.warning(
+                "summary: docket %s STILL cited a statute under a minority "
+                "title after retry; kept the draft — verify the citation "
+                "against the docket",
                 docket_id,
             )
 
@@ -2836,10 +2993,17 @@ def summarize_docket(
         primary_documents, disposition_documents, extra_documents
     )
 
+    # Every stored filing on the case — the evidence the citation guard counts
+    # over (see _case_citation_corpus for why it's wider than source_text).
+    citation_text = _case_citation_corpus(
+        store, [*case.dockets, *group_docket_ids], extra_documents
+    )
+
     try:
         summary_text, model_id = _generate_guarded_summary(
             source_text=source_text,
             docket_id=docket_id,
+            citation_text=citation_text,
             case_name=case.name,
             aggregation_note=aggregation_note,
             docket=docket_for_prompt,
