@@ -2882,17 +2882,53 @@ _PRECEDING_WORD_LINK_RE = re.compile(
 _ABSORBABLE_CAPITALIZED = {"the", "a", "an", "its", "his", "her", "their", "this"}
 # A conjunction makes a worse link than a one-word one ("[and sentenced]").
 _NOT_ABSORBED = {"and", "or", "but", "nor", "then", "than"}
+# After a conjunction, the link takes the FOLLOWING word instead: a plain
+# lowercase word ("and [filed motions]"), or a preposition with a quantity
+# ("and [sentenced to 200 months]" — the 26-399 summary on 2026-11-06). Never
+# an article, possessive, or bare preposition, which make a worse link than
+# one word; the next word must end there (not "months' imprisonment").
+_QUANTITY = r"(?:\d[\d,.]*|one|two|three|four|five|six|seven|eight|nine|ten|twelve)"
+# Determiners, conjunctions, and prepositions: a link ending in one of these
+# lacks the word it introduces ("[released without] bail", Copilot, PR #111).
+_NOT_FOLLOWING = (
+    r"(?:the|a|an|its|his|her|their|this|that|these|those|and|or|but|nor|"
+    r"then|than|to|of|for|with|without|on|in|at|by|from|against|upon|into|"
+    r"onto|as|after|before|under|over|above|below|through|throughout|during|"
+    r"since|until|till|within|about|between|among|across|along|around|"
+    r"toward|towards|via|per|pursuant|despite|regarding|concerning|beyond|"
+    r"behind|beside|besides|except|like|near|off|out|past|unlike|up|down)\b"
+)
+# The absorbed word has no apostrophe, and the closing boundary rejects one,
+# so a possessive is never taken without its noun ("[denied defendant's]
+# motion", Copilot, PR #111). The quantity's unit passes the same exclusion
+# ("[sentenced to two and] a half years").
+_FOLLOWING_WORD = r"(?!" + _NOT_FOLLOWING + r")[a-z][a-z-]*(?![\w'’-])"
+_CONJUNCTION_LINK_RE = re.compile(
+    r"(?<![\w\]\)])\b((?:and|or|but|nor|then|than)\s+)"
+    + _SINGLE_WORD_LINK
+    + r"( )((?:to|for|of)\s+"
+    + _QUANTITY
+    + r"\s+"
+    + _FOLLOWING_WORD
+    + r"|"
+    + _FOLLOWING_WORD
+    + r")"
+)
 
 
 def _widen_single_word_links(text: str) -> str:
     """Give every one-word link a second word (see the regexes above). A link
-    with no safe neighbor to absorb (after "and", say) is left as is."""
+    with no safe neighbor to absorb ("and [sentenced] the", say) is left as
+    is."""
 
     def sued(m: re.Match[str]) -> str:
         lead = "Filed" if m.group(1)[0].isupper() else "filed"
         return f"[{lead} a lawsuit]({m.group(2)}){m.group(3)}against "
 
     text = _SUED_LINK_RE.sub(sued, text)
+    text = _CONJUNCTION_LINK_RE.sub(
+        lambda m: f"{m.group(1)}[{m.group(2)} {m.group(5)}]({m.group(3)})", text
+    )
 
     def preceding(m: re.Match[str]) -> str:
         word, link_word, url = m.group(1), m.group(2), m.group(3)

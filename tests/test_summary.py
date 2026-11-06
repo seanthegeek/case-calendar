@@ -2239,6 +2239,20 @@ class TestWidenSingleWordLinks:
                 "which the [indictment](U) alleged caused",
                 "which [the indictment](U) alleged caused",
             ),
+            # After a conjunction the link takes the following words: the
+            # 26-399 summary on prod, 2026-11-06 (verbatim, trimmed).
+            (
+                "after being convicted at trial and [sentenced](U) to 200 months",
+                "after being convicted at trial and [sentenced to 200 months](U)",
+            ),
+            (
+                "and [sentenced](U) to two years of supervised release",
+                "and [sentenced to two years](U) of supervised release",
+            ),
+            ("and [filed](U) motions to dismiss", "and [filed motions](U) to dismiss"),
+            ("but [acquitted](U) him on Count 7", "but [acquitted him](U) on Count 7"),
+            # "band" isn't the conjunction "and": the preceding word is taken.
+            ("the band [played](U) the song", "the [band played](U) the song"),
             # "sued" with a defendant named or counted (Copilot, PR #110).
             ("Acme [sued](U) Beta Inc.", "Acme [filed a lawsuit](U) against Beta Inc."),
             (
@@ -2257,8 +2271,22 @@ class TestWidenSingleWordLinks:
         [
             # No object after "sued" — rewriting would leave "against in".
             "Anthropic [sued](U) in the Northern District of California.",
-            # A conjunction makes a worse link than one word.
-            "convicted and [sentenced](U) to 200 months",
+            # A conjunction makes a worse link than one word, and so does a
+            # following article, bare preposition, or capitalized name.
+            "convicted and [sentenced](U) the defendant",
+            "convicted and [sentenced](U) to prison",
+            "convicted and [sentenced](U) in May",
+            "Acme and [joined](U) Beta Inc.",
+            # The quantity's unit must end the phrase, not run into a possessive.
+            "and [sentenced](U) to 200 months' imprisonment",
+            # Copilot (PR #111): never end on a bare preposition, a
+            # conjunction or preposition as the "unit", or a possessive.
+            "and [released](U) without bail",
+            "and [dismissed](U) under Rule 12",
+            "and [sentenced](U) to two and a half years",
+            "and [convicted](U) of two of the six counts",
+            "and [denied](U) defendant's motion",
+            "and [denied](U) defendants’ motions",
             # A party's name is never pulled in.
             "Acme [settled](U) the claims.",
             # Already two words.

@@ -8,6 +8,21 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **A one-word link after "and" now takes the words that follow it.** The
+  link-widening backstop never pulls a conjunction into a link, so a
+  summary that read "convicted at trial and [sentenced] to 200 months" (the
+  26-399 summary in production) kept its one-word link. After "and", "or",
+  "but", "nor", "then" or "than", the link now takes the next word ("and
+  [filed motions]") or a preposition with a quantity ("and [sentenced to 200
+  months]"). It never ends the link on an article, a conjunction, a
+  preposition ("without", "under"), a possessive ("defendant's") or a
+  capitalized name. Of the 44 summaries in production it changes only that
+  one.
+
 ## [0.20.0] - 2026-11-05
 
 ### Security
