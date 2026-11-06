@@ -2831,6 +2831,55 @@ def _tidy_link_spans(text: str) -> str:
         text = new
 
 
+# --- One-word links ---------------------------------------------------------
+# A one-word link is a small tap target (an accessibility problem on phones),
+# and the prompt's "at least two words" rule is soft: on 2026-11-05 the
+# stored summaries carried "Anthropic PBC [sued] the …", "after being
+# [sentenced]", "the jury [acquitted] him", "The [indictment] alleged", and
+# "Anthropic sought [rehearing]". This deterministic backstop widens them.
+_SINGLE_WORD_LINK = r"\[([A-Za-z][\w'’-]*)\]\((https?://[^\s)]+)\)"
+# "[sued] <object>" -> "[filed a lawsuit] against <object>" — only when an
+# object follows, not "sued in the Northern District of California".
+_SUED_LINK_RE = re.compile(
+    r"\[(sued)\]\((https?://[^\s)]+)\)(\s+)"
+    r"(?!(?:in|on|over|for|after|before|under|at|to|with|by|from|during|"
+    r"and|or|but)\b)",
+    re.IGNORECASE,
+)
+# "<word> [link]" -> "[<word> link]", pulling in the preceding word. Only a
+# lowercase word (so a party's name is never pulled in — "Anthropic PBC
+# [sued]" must not become "[PBC sued]") or an article / possessive at a
+# sentence start ("The [indictment]").
+_PRECEDING_WORD_LINK_RE = re.compile(
+    r"(?<![\w\]\)])(\b[A-Za-z][a-z'’-]*)\s+" + _SINGLE_WORD_LINK
+)
+_ABSORBABLE_CAPITALIZED = {"the", "a", "an", "its", "his", "her", "their", "this"}
+# A conjunction makes a worse link than a one-word one ("[and sentenced]").
+_NOT_ABSORBED = {"and", "or", "but", "nor", "then", "than"}
+
+
+def _widen_single_word_links(text: str) -> str:
+    """Give every one-word link a second word (see the regexes above). A link
+    with no safe neighbor to absorb (after "and", say) is left as is."""
+
+    def sued(m: re.Match[str]) -> str:
+        lead = "Filed" if m.group(1)[0].isupper() else "filed"
+        return f"[{lead} a lawsuit]({m.group(2)}){m.group(3)}against "
+
+    text = _SUED_LINK_RE.sub(sued, text)
+
+    def preceding(m: re.Match[str]) -> str:
+        word, link_word, url = m.group(1), m.group(2), m.group(3)
+        lowered = word.lower()
+        if lowered in _NOT_ABSORBED or (
+            word[0].isupper() and lowered not in _ABSORBABLE_CAPITALIZED
+        ):
+            return m.group(0)
+        return f"[{word} {link_word}]({url})"
+
+    return _PRECEDING_WORD_LINK_RE.sub(preceding, text)
+
+
 def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> str:
     """Replace ``[words](doc:Dn)`` markers with resolved markdown links.
 
@@ -2870,7 +2919,7 @@ def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> st
             return anchor
         return f"[{anchor}]({url})"
 
-    return _tidy_link_spans(_DOC_LINK_RE.sub(repl, text))
+    return _widen_single_word_links(_tidy_link_spans(_DOC_LINK_RE.sub(repl, text)))
 
 
 # ---------------------------------------------------------------------------

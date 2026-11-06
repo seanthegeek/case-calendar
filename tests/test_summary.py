@@ -2146,6 +2146,77 @@ class TestAssignDocumentRefs:
         assert link_map["D1"] == "https://ia/judgment.pdf"
 
 
+class TestWidenSingleWordLinks:
+    """One-word links are small tap targets. Cases verbatim (trimmed) from the
+    stored summaries on 2026-11-05."""
+
+    U = "https://ia/doc.pdf"
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            (
+                "Anthropic PBC [sued](U) the U.S. Department of War",
+                "Anthropic PBC [filed a lawsuit](U) against the U.S. Department of War",
+            ),
+            (
+                "after being [sentenced](U) to 72 months",
+                "after [being sentenced](U) to 72 months",
+            ),
+            (
+                "the jury [acquitted](U) him on Count 7",
+                "the [jury acquitted](U) him on Count 7",
+            ),
+            (
+                "and Anthropic sought [rehearing](U) on October 13",
+                "and Anthropic [sought rehearing](U) on October 13",
+            ),
+            (
+                "assessment. The [indictment](U) alleged that",
+                "assessment. [The indictment](U) alleged that",
+            ),
+            (
+                "which the [indictment](U) alleged caused",
+                "which [the indictment](U) alleged caused",
+            ),
+        ],
+    )
+    def test_widens(self, before, after):
+        assert summary._widen_single_word_links(
+            before.replace("(U)", f"({self.U})")
+        ) == after.replace("(U)", f"({self.U})")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # No object after "sued" — rewriting would leave "against in".
+            "Anthropic [sued](U) in the Northern District of California.",
+            # A conjunction makes a worse link than one word.
+            "convicted and [sentenced](U) to 200 months",
+            # A party's name is never pulled in.
+            "Acme [settled](U) the claims.",
+            # Already two words.
+            "he [was sentenced](U) to 60 months",
+        ],
+    )
+    def test_leaves_alone(self, text):
+        text = text.replace("(U)", f"({self.U})")
+        assert summary._widen_single_word_links(text) == text
+
+    def test_capitalized_sued_keeps_capital(self):
+        assert summary._widen_single_word_links(f"[Sued]({self.U}) the city.") == (
+            f"[Filed a lawsuit]({self.U}) against the city."
+        )
+
+    def test_applied_when_resolving_document_links(self):
+        out = _resolve_document_links(
+            "Anthropic PBC [sued](doc:D1) the Department.", {"D1": self.U}
+        )
+        assert (
+            out == f"Anthropic PBC [filed a lawsuit]({self.U}) against the Department."
+        )
+
+
 class TestResolveDocumentLinks:
     def test_known_token_with_url_becomes_link(self):
         # Clean span (verb already inside, no trailing preposition) so this

@@ -103,6 +103,12 @@ adheres to [Semantic Versioning][semver].
 
 ### Changed
 
+- **Summary links are at least two words.** A one-word link is a small,
+  hard-to-tap target. The 3:26-cv-01996 summary linked just "sued"; it now
+  reads "[filed a lawsuit] against". The prompt asks for two-word links, and
+  a backstop widens any one-word link the model still writes ("after [being
+  sentenced]", "[The indictment] alleged"). Existing summaries change when
+  regenerated.
 - **The default case-summary model is now Claude Sonnet 5.5**
   (`claude-sonnet-5-5`), replacing Claude Sonnet 4.6. Re-graded on the
   summary benchmark with the current prompt, Sonnet 5.5 scored A− and

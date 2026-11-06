@@ -1086,6 +1086,7 @@ ONLY the action words — let the details that follow stay as plain text:
     [was sentenced](doc:D4) to 60 months imprisonment
     the court entered a [forfeiture money judgment](doc:D5) of $2.1 million
     a [preliminary injunction](doc:D6) was granted
+    Acme Corp. [filed a lawsuit](doc:D7) against Beta Inc.
 Rules:
 - Keep the linked span SHORT — the verb plus a word or two ("were charged",
   "pled guilty", "was convicted at trial", "was sentenced"), or the short NAME
@@ -1112,8 +1113,15 @@ Rules:
   little action. The boundary is unchanged: keep the short object, but stop
   before a prepositional phrase or any longer detail — link "dismissed count
   three", NOT "dismissed count three on the government's motion".
-- Do NOT shrink it to a single bare word either ("charged", "sentenced") — a
-  two-word phrase reads clearly as a link and is easier to tap.
+- Do NOT shrink it to a single bare word either — a one-word link is a small
+  target that is hard to tap, especially on a phone. Every link is at least
+  two words:
+  - BAD:  "Acme Corp. [sued](doc:D1) Beta Inc."
+  - GOOD: "Acme Corp. [filed a lawsuit](doc:D1) against Beta Inc."
+  - BAD:  "after being [sentenced](doc:D2) to 72 months"
+  - GOOD: "after [being sentenced](doc:D2) to 72 months"
+  - BAD:  "The [indictment](doc:D3) alleged"
+  - GOOD: "[The indictment](doc:D3) alleged"
 - This is a normal inline hyperlink on those words — NOT a footnote, NOT a
   "[1]" marker, NOT a trailing "(see Doc 1)". Do not add any citation marker or
   document number that a reader would see.

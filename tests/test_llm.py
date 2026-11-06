@@ -3052,6 +3052,41 @@ class TestMarkHeldDateMatchingRules:
         assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
+class TestSummaryPromptLinksAreTwoWords:
+    """A one-word link is a small tap target; the 3:26-cv-01996 production
+    summary linked just "sued". summary._widen_single_word_links is the
+    deterministic backstop; these pin the prompt-side rule."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_two_word_minimum_with_examples(self):
+        p = self._normalized()
+        assert "Every link is at least two words" in p
+        assert '- BAD: "Acme Corp. [sued](doc:D1) Beta Inc."' in p
+        assert '- GOOD: "Acme Corp. [filed a lawsuit](doc:D1) against Beta Inc."' in p
+
+    def test_civil_filing_is_among_the_link_examples(self):
+        assert "Acme Corp. [filed a lawsuit](doc:D7) against Beta Inc." in (
+            self._normalized()
+        )
+
+    def test_good_examples_survive_the_widener_unchanged(self):
+        # The prompt's GOOD forms must already satisfy the backstop.
+        import re
+
+        from case_calendar import summary
+
+        goods = re.findall(r'- GOOD: "([^"]*\]\(doc:D\d\)[^"]*)"', self._normalized())
+        assert len(goods) >= 3
+        for good in goods:
+            url_form = re.sub(r"\(doc:D\d\)", "(https://ia/x.pdf)", good)
+            assert summary._widen_single_word_links(url_form) == url_form
+
+
 class TestSummaryPromptDeadlineTense:
     """Two phrasings Claude Sonnet 5.5 produced on the 2026-11-05 benchmark:
     "both sides filed supplemental briefs due June 4, 2026" (done and owed
@@ -3757,7 +3792,7 @@ class TestSummaryPromptInlineLinks:
         p = llm.SUMMARY_SYSTEM_PROMPT
         # Short action phrase (two or three words), not a single bare word.
         assert "Keep the linked span SHORT" in p
-        assert 'a single bare word either ("charged", "sentenced")' in p
+        assert "Do NOT shrink it to a single bare word either" in p
         # And NOT the trailing detail — link the action, not the specifics.
         assert "Do NOT extend the link across the trailing detail" in p
         assert 'Link "were charged", NOT "charged with wire fraud' in p
