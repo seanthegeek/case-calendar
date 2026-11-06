@@ -15,6 +15,7 @@ import pytest
 
 from case_calendar import llm as llm_mod
 from case_calendar import store as store_mod
+from case_calendar import summary as summary_mod
 from case_calendar.store import Store
 from case_calendar.sync import (
     CaseConfig,
@@ -815,6 +816,146 @@ class TestInterruptDoesNotAdvanceCutoff:
         # empty `docket_mod`), so the stored value is still the prior
         # clean cutoff — not blank.
         assert store.docket_last_modified(100) == prior_cutoff
+
+
+# us-v-ding #367, verbatim — rejected by the summary-relevance rules before
+# SUMMARY_RELEVANCE_RULES_VERSION 1, so older stores hold it as a stub.
+_JURY_VERDICT = (
+    "JURY VERDICT as to Linwei Ding (1) Guilty on Count 1-4,1s-4s,1ss-7ss,5s,"
+    "6-7,8-14,8s-14s. (exl, COURT STAFF) (Filed on 1/29/2026)"
+)
+
+
+class TestStubRepair:
+    """CaseSyncer._repair_stub_bodies — after the summary-relevance rules start
+    accepting entries they used to reject, each docket re-fetches its entries
+    once and restores the body of stubs that now qualify."""
+
+    def _old_store(self, store: Store, entries: list[dict]) -> None:
+        """A store as an older release left it: docket synced up to its
+        current date_modified, every given entry stored as a bare stub, and no
+        summary-rules version recorded."""
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-00001-X",
+                "case_name": "United States v. X",
+                "absolute_url": "/docket/100/x/",
+                "date_last_filing": "2026-05-01",
+            },
+        )
+        store.set_docket_last_modified(100, _docket()["date_modified"])
+        for e in entries:
+            store.mark_entry(100, e["id"], e["date_modified"], fingerprint_entry(e))
+        store.upsert_case_summary(
+            "us-v-x", "1:25-cr-00001-X", "mad", summary="old", model="m"
+        )
+
+    def _body(self, store: Store, entry_id: int):
+        return store.conn.execute(
+            "SELECT description FROM entries WHERE docket_id=100 AND entry_id=?",
+            (entry_id,),
+        ).fetchone()["description"]
+
+    def test_restores_now_relevant_stub_on_a_quiet_docket(
+        self, store: Store, case, monkeypatch
+    ):
+        called = []
+        monkeypatch.setattr(
+            llm_mod, "extract_actions", lambda **_: called.append(1) or []
+        )
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        noise = _entry(8, "CERTIFICATE OF SERVICE by USA")
+        self._old_store(store, [verdict, noise])
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, noise]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+        assert self._body(store, 8) is None  # still not relevant -> still a stub
+        # The docket was otherwise unchanged, so the normal walk was skipped —
+        # the repair is what reached the stub.
+        assert stats["dockets_skipped"] == 1
+        assert called == []  # no LLM extraction
+        # The restored verdict feeds the summary pipeline...
+        assert [e["id"] for e in store.get_entries_with_body(100)] == [7]
+        # ...and the summary is flagged for regeneration.
+        row = store.conn.execute(
+            "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+        ).fetchone()
+        assert row["stale"] == 1
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_entries_with_a_body_are_left_alone(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        order = _entry(9, "ORDER granting motion", date_filed="2026-02-01")
+        self._old_store(store, [verdict])
+        store.mark_entry(
+            100, 9, order["date_modified"], "fp-order", description="STORED TEXT"
+        )
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, order]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 9) == "STORED TEXT"
+
+    def test_runs_once_per_rules_version(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [verdict]})
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+        cl.calls.clear()
+
+        stats = syncer.sync_case(case)
+        assert stats["stubs_restored"] == 0
+        assert [c[0] for c in cl.calls] == ["docket"]  # no re-fetch
+
+    def test_docket_without_stubs_records_version_without_fetching(
+        self, store: Store, case
+    ):
+        self._old_store(store, [])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        assert [c[0] for c in cl.calls] == ["docket"]
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_interrupted_fetch_retries_next_sync(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+
+        class _Boom(FakeCourtListener):
+            def iter_entries(self, docket_id, **_):
+                raise RuntimeError("CourtListener 502")
+                yield  # pragma: no cover
+
+        with pytest.raises(RuntimeError):
+            CaseSyncer(_Boom(dockets={100: _docket()}), store).sync_case(case)
+        assert store.docket_summary_rules_version(100) == 0
+        assert self._body(store, 7) is None
+
+    def test_new_docket_first_sync_is_unaffected(self, store: Store, case):
+        # A docket the store has never seen: no stubs, so the repair only
+        # records the version and the normal first sync proceeds.
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entries={100: [_entry(7, _JURY_VERDICT, date_filed="2026-01-29")]},
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 0
+        assert stats["entries_seen"] == 1
+        # The current rules keep the verdict's body on the normal path too.
+        assert self._body(store, 7) == _JURY_VERDICT
 
 
 class TestDocketMetaCaching:

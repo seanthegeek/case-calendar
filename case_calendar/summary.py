@@ -302,6 +302,26 @@ def is_disposition(entry: dict[str, Any]) -> bool:
     return _entry_matches(entry, _matches_disposition_broad)
 
 
+# Version of the rules sync uses to decide whether an entry the hearing filter
+# skipped keeps its body anyway (`is_summary_relevant`). Sync stores every
+# other entry as a fingerprint-only stub and never revisits it, so when these
+# rules start accepting entries they used to reject, existing stores keep the
+# old stubs. Bump this whenever is_primary_document / is_disposition change in
+# a way that accepts more entries: on its next sync each docket re-fetches its
+# entries once and restores the body of any stub that now qualifies
+# (CaseSyncer._repair_stub_bodies).
+#   1 — "JURY VERDICT as to …" accepted (us-v-ding #367 had been stored as a
+#       stub, so the summary model never saw the returned verdict).
+SUMMARY_RELEVANCE_RULES_VERSION = 1
+
+
+def is_summary_relevant(entry: dict[str, Any]) -> bool:
+    """True when the summary pipeline needs this entry's body: a primary
+    document or a disposition. Sync keeps these entries' bodies even when the
+    hearing filter skips them."""
+    return is_primary_document(entry) or is_disposition(entry)
+
+
 # Stricter sibling used by ``find_primary_documents`` to pick the documents
 # that the case-summary LLM actually reads. ``is_disposition`` (above) is
 # intentionally broad — a "Motion for Preliminary Injunction" matches because

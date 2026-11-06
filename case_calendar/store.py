@@ -341,6 +341,12 @@ class Store:
             ("deadlines", "audit_notes", "TEXT"),
             ("case_summaries", "stale", "INTEGER NOT NULL DEFAULT 0"),
             ("case_summaries", "stale_since", "TEXT"),
+            # Which version of the summary-relevance rules this docket's
+            # stub entries were last checked against — see
+            # summary.SUMMARY_RELEVANCE_RULES_VERSION and
+            # CaseSyncer._repair_stub_bodies. NULL (every docket synced before
+            # the column existed) reads as 0, so each docket is repaired once.
+            ("dockets", "summary_rules_version", "INTEGER"),
         ]:
             try:
                 self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {type_}")
@@ -540,6 +546,65 @@ class Store:
             (docket_id,),
         ).fetchone()
         return row["date_modified"] if row else None
+
+    def docket_summary_rules_version(self, docket_id: int) -> int:
+        """The summary-relevance rules version this docket's stub entries were
+        last checked against (0 when never checked)."""
+        row = self.conn.execute(
+            "SELECT summary_rules_version FROM dockets WHERE docket_id=?",
+            (docket_id,),
+        ).fetchone()
+        return int(row["summary_rules_version"] or 0) if row else 0
+
+    def set_docket_summary_rules_version(self, docket_id: int, version: int) -> None:
+        # Preserves any metadata columns set by upsert_docket_meta.
+        self.conn.execute(
+            """
+            INSERT INTO dockets (docket_id, summary_rules_version, last_synced_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(docket_id) DO UPDATE SET
+              summary_rules_version=excluded.summary_rules_version
+            """,
+            (docket_id, version, _now()),
+        )
+
+    def stub_entry_ids(self, docket_id: int) -> set[int]:
+        """Entry ids stored as fingerprint-only stubs (no description body)."""
+        return {
+            r["entry_id"]
+            for r in self.conn.execute(
+                "SELECT entry_id FROM entries WHERE docket_id=? AND description IS NULL",
+                (docket_id,),
+            )
+        }
+
+    def restore_entry_body(
+        self,
+        docket_id: int,
+        entry_id: int,
+        *,
+        description: Optional[str],
+        short_description: Optional[str],
+        recap_documents: list[dict[str, Any]],
+    ) -> bool:
+        """Fill in the body of an entry stored as a stub, leaving its
+        fingerprint and processing timestamps alone (so sync's dedup still
+        treats it as seen). Only a stub is touched; returns True if one was."""
+        cur = self.conn.execute(
+            """
+            UPDATE entries
+               SET description=?, short_description=?, recap_documents=?
+             WHERE docket_id=? AND entry_id=? AND description IS NULL
+            """,
+            (
+                description,
+                short_description,
+                json.dumps(recap_documents),
+                docket_id,
+                entry_id,
+            ),
+        )
+        return cur.rowcount > 0
 
     def set_docket_last_modified(self, docket_id: int, date_modified: str) -> None:
         # Preserves any metadata columns set by upsert_docket_meta.

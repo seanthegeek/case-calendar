@@ -3054,3 +3054,45 @@ class TestMarkEntryChecked:
         assert row["processed_at"] > "2026-09-25T00:00:00+00:00"
         assert row["fingerprint"] == "fp"
         assert row["date_modified"] == "2026-09-25T10:00:00Z"
+
+
+class TestStubBodyRepairHelpers:
+    """Store helpers behind CaseSyncer._repair_stub_bodies."""
+
+    def test_rules_version_defaults_to_zero_and_round_trips(self, store):
+        assert store.docket_summary_rules_version(100) == 0  # no row at all
+        store.set_docket_last_modified(100, "2026-01-01T00:00:00Z")
+        assert store.docket_summary_rules_version(100) == 0  # NULL column
+        store.set_docket_summary_rules_version(100, 1)
+        assert store.docket_summary_rules_version(100) == 1
+        # Setting the version doesn't clobber the docket's cutoff.
+        assert store.docket_last_modified(100) == "2026-01-01T00:00:00Z"
+
+    def test_stub_entry_ids_lists_only_bodyless_entries(self, store):
+        store.mark_entry(100, 1, "2026-01-01", "fp1")
+        store.mark_entry(100, 2, "2026-01-01", "fp2", description="ORDER")
+        assert store.stub_entry_ids(100) == {1}
+
+    def test_restore_fills_a_stub_and_keeps_its_fingerprint(self, store):
+        store.mark_entry(100, 1, "2026-01-01", "fp1")
+        assert store.restore_entry_body(
+            100,
+            1,
+            description="JURY VERDICT as to X",
+            short_description="",
+            recap_documents=[{"id": 9, "plain_text": "verdict"}],
+        )
+        row = store.conn.execute(
+            "SELECT description, fingerprint, recap_documents FROM entries"
+        ).fetchone()
+        assert row["description"] == "JURY VERDICT as to X"
+        assert row["fingerprint"] == "fp1"  # sync dedup still sees it as seen
+        assert "verdict" in row["recap_documents"]
+
+    def test_restore_never_overwrites_an_entry_with_a_body(self, store):
+        store.mark_entry(100, 1, "2026-01-01", "fp1", description="ORIGINAL")
+        assert not store.restore_entry_body(
+            100, 1, description="NEW", short_description="", recap_documents=[]
+        )
+        row = store.conn.execute("SELECT description FROM entries").fetchone()
+        assert row["description"] == "ORIGINAL"

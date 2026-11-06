@@ -1926,9 +1926,7 @@ class CaseSyncer:
         # Everything else (notices, briefs, attorney appearances, etc.) gets
         # a fingerprint-only stub: dedup keeps working, but no dead-weight
         # body text.
-        summary_relevant = summary_mod.is_primary_document(
-            entry
-        ) or summary_mod.is_disposition(entry)
+        summary_relevant = summary_mod.is_summary_relevant(entry)
         store_full = processed or summary_relevant
         self.store.mark_entry(
             docket_id,
@@ -2085,10 +2083,76 @@ class CaseSyncer:
                 self.store.mark_entry_checked(row["docket_id"], row["entry_id"])
         return stats
 
+    # --- stub repair after a summary-relevance rule change ---
+
+    def _repair_stub_bodies(self, case: CaseConfig, docket_id: int) -> int:
+        """Restore the body of stub entries that the CURRENT summary-relevance
+        rules would have kept, once per rules version per docket.
+
+        ``process_entry`` stores an entry the hearing filter skips as a
+        fingerprint-only stub unless :func:`summary.is_summary_relevant`
+        accepts it, and never revisits it (the fingerprint dedup and the
+        docket-level last-modified cutoff both skip it). So when those rules
+        start accepting entries they used to reject, existing stores keep the
+        stubs — us-v-ding's returned "JURY VERDICT" (#367) was one, so the
+        summary model never saw the verdict. This re-fetches the docket's
+        entries from CourtListener, fills in the body of each stub that now
+        qualifies (no LLM calls: the hearing filter didn't change, so there is
+        nothing new to extract), flags the summary stale if any were restored,
+        and records the version so it runs once. A docket with no stubs (a new
+        one, say) only records the version.
+
+        Returns the number of entries restored.
+        """
+        version = summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        if self.store.docket_summary_rules_version(docket_id) >= version:
+            return 0
+        stubs = self.store.stub_entry_ids(docket_id)
+        restored = 0
+        if stubs:
+            log.info(
+                "docket %s: re-checking %d stub entries against summary-relevance "
+                "rules v%d",
+                docket_id,
+                len(stubs),
+                version,
+            )
+            for entry in self.cl.iter_entries(docket_id, max_pages=200):
+                if entry.get("id") not in stubs:
+                    continue
+                if not summary_mod.is_summary_relevant(entry):
+                    continue
+                if self.store.restore_entry_body(
+                    docket_id,
+                    entry["id"],
+                    description=entry.get("description"),
+                    short_description=entry.get("short_description"),
+                    recap_documents=compact_recap_documents(entry),
+                ):
+                    restored += 1
+            if restored:
+                meta = self.store.get_docket_meta(docket_id) or {}
+                docket_number = meta.get("docket_number")
+                court_id = meta.get("court_id")
+                if docket_number and court_id:
+                    self.store.mark_summary_stale(case.case_id, docket_number, court_id)
+                log.info(
+                    "docket %s: restored %d entry bodies the current rules keep",
+                    docket_id,
+                    restored,
+                )
+        # Recorded only after a clean pass, so an interrupted re-fetch retries
+        # on the next sync.
+        self.store.set_docket_summary_rules_version(docket_id, version)
+        with self.store.tx() as _:
+            pass
+        return restored
+
     # --- polling entry point ---
 
     def sync_case(self, case: CaseConfig, *, reverify: bool = False) -> dict[str, int]:
         stats = {
+            "stubs_restored": 0,
             "dockets_skipped": 0,
             "entries_seen": 0,
             "entries_processed": 0,
@@ -2110,6 +2174,10 @@ class CaseSyncer:
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
             docket = self.cl.get_docket(docket_id)
+            # Before the unchanged-docket short-circuit: a quiet docket is
+            # exactly the one whose old stubs would otherwise never be
+            # revisited.
+            stats["stubs_restored"] += self._repair_stub_bodies(case, docket_id)
             docket_mod = docket.get("date_modified") or ""
             last_mod = self.store.docket_last_modified(docket_id)
             if last_mod and docket_mod and docket_mod <= last_mod:

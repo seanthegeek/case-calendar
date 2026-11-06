@@ -41,8 +41,13 @@ adheres to [Semantic Versioning][semver].
   verdict. In us-v-ding that made every summary date the verdict to January
   27 (the form) instead of January 29 and leave out the outcome; it now
   reads "the jury returned its verdict on January 29, 2026, and Ding was
-  convicted at trial". Verdicts synced before this fix are still stored
-  without their text.
+  convicted at trial". Verdicts synced before this fix were stored without
+  their text, so the first `case-calendar sync` after upgrading re-fetches
+  each docket's entries from CourtListener once and restores the text of any
+  entry the new rules keep (no LLM calls), then flags the affected summaries
+  for regeneration. This adds a `summary_rules_version` column to the
+  `dockets` table, created automatically on startup; back up the store before
+  upgrading, as for any schema change.
 - **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems
   stopped `case-calendar summarize` when the summary model was set to
   `claude-sonnet-5-5`:
