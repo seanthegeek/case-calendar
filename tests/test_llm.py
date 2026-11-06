@@ -3052,6 +3052,40 @@ class TestMarkHeldDateMatchingRules:
         assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
+class TestSummaryPromptDeadlineTense:
+    """Two phrasings Claude Sonnet 5.5 produced on the 2026-11-05 benchmark:
+    "both sides filed supplemental briefs due June 4, 2026" (done and owed
+    in one clause) and "..., with a reply brief due June 12, 2026" (no tense,
+    so a past date reads as upcoming). The elapsed-deadline rule now names
+    both as BAD."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_filed_and_due_in_one_clause_is_bad(self):
+        p = self._normalized()
+        assert 'Never put "filed" and "due" in the same clause' in p
+        assert '- BAD: "both sides filed supplemental briefs due June 4, 2026"' in p
+        assert '- GOOD: "both sides filed supplemental briefs by June 4, 2026"' in p
+
+    def test_tenseless_due_phrase_is_bad(self):
+        p = self._normalized()
+        assert '- BAD: "..., with a reply brief due June 12, 2026"' in p
+        assert '- GOOD: "a reply brief was due June 12, 2026"' in p
+
+    def test_good_examples_pass_the_truthfulness_guard(self):
+        from case_calendar import summary
+
+        for good in (
+            "both sides filed supplemental briefs by June 4, 2026",
+            "a reply brief was due June 12, 2026",
+        ):
+            assert summary._audit_summary_text(good) == []
+
+
 class TestSummaryPromptExactFigures:
     """Claude Sonnet 5.5 rounded "approximately $258,553.74" to "$258,000"
     on us-v-knoot (2026-11-05), which the grounding guard rejected because a

@@ -1272,7 +1272,10 @@ status only tells you whether the system has SEEN the filing that
 satisfies it, not whether the party filed:
 - ``status=met`` — the filing landed. Either say so ("the proposed
   order on relief was filed") or omit the deadline entirely; do NOT
-  restate the directive as though it were still due.
+  restate the directive as though it were still due. Never put "filed"
+  and "due" in the same clause — it reads as both done and still owed:
+  - BAD:  "both sides filed supplemental briefs due June 4, 2026"
+  - GOOD: "both sides filed supplemental briefs by June 4, 2026"
 - ``status=passed`` or ``status=pending`` with an elapsed
   ``due_at_utc`` — the date came and went and no filing that satisfies
   it is visible in what you were given. Same honest framing as the
@@ -1285,6 +1288,10 @@ satisfies it, not whether the party filed:
         obligation three days after the date passed)
 - GOOD: "the court directed Anthropic to file a proposed order on
         relief by July 24, 2026"
+- BAD:  "..., with a reply brief due June 12, 2026" (written in
+        November — a bare "due <date>" phrase has no tense, so it reads
+        as upcoming)
+- GOOD: "a reply brief was due June 12, 2026"
 A deadline whose ``due_at_utc`` is still in the future is the only kind
 you may describe as upcoming.
 
