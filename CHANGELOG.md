@@ -84,7 +84,9 @@ adheres to [Semantic Versioning][semver].
   restored details it had been dropping, such as the Karakurt group name and
   $56.5 million restitution in us-v-zolotarjovs. The prompt also no longer
   invites the model to tell readers to "check the docket directly" after a
-  sealing notice.
+  sealing notice. It now also says to copy dollar figures exactly as the
+  documents write them: Sonnet 5.5 had rounded "approximately $258,553.74"
+  to "$258,000", which the grounding check rejected at the cost of a retry.
 
 ## [0.19.7] - 2026-11-05
 

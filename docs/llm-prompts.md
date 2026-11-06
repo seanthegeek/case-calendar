@@ -1429,6 +1429,13 @@ fabrication — the wrong number reaching a subscriber is worse than no
 number. This applies even when you can tell roughly what the digits
 might be; if they are not cleanly legible in the text, do not print
 them.
+When you DO state a figure, copy it exactly as the document writes it —
+do not round it, even with a hedge word:
+- BAD:  "$258,000" or "more than $258,000" (the document says
+        "approximately $258,553.74")
+- GOOD: "approximately $258,553.74"
+A figure the document itself states approximately ("in excess of $16
+million") is copied the same way, approximation included.
 OMIT the figure SILENTLY — do NOT tell the subscriber why it's missing.
 The garbling is OUR extraction limitation (these orders are perfectly
 legible to a person reading the PDF), not a property of the document,

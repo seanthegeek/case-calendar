@@ -3052,6 +3052,47 @@ class TestMarkHeldDateMatchingRules:
         assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
+class TestSummaryPromptExactFigures:
+    """Claude Sonnet 5.5 rounded "approximately $258,553.74" to "$258,000"
+    on us-v-knoot (2026-11-05), which the grounding guard rejected because a
+    rounded figure isn't in the text, costing a retry. The prompt now says to
+    copy figures exactly; its own examples must agree with the guard."""
+
+    _SOURCE = "paid the persona at least approximately $258,553.74 in wages"
+
+    @staticmethod
+    def _section() -> str:
+        import re
+
+        p = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        start = p.index("When you DO state a figure, copy it exactly")
+        return p[start : p.index("OMIT the figure SILENTLY", start)]
+
+    def test_no_rounding_rule_present(self):
+        assert "do not round it, even with a hedge word" in self._section()
+
+    def test_good_example_passes_and_bad_examples_fail_the_guard(self):
+        import re
+
+        from case_calendar import summary
+
+        section = self._section()
+        good = re.findall(r'- GOOD: "([^"]+)"', section)
+        assert good == ["approximately $258,553.74"]
+        assert (
+            summary._audit_summary_grounding(
+                good[0], known_dates=set(), source_text=self._SOURCE
+            )
+            == []
+        )
+        bad = re.findall(r'"(\$258,000|more than \$258,000)"', section)
+        assert len(bad) == 2
+        for example in bad:
+            assert summary._audit_summary_grounding(
+                example, known_dates=set(), source_text=self._SOURCE
+            )
+
+
 class TestSummaryPromptLengthAndDetailPriority:
     """Rules added when Claude Sonnet 5.5 was trialled as the summary model
     (2026-11-05): against the same dockets it ran past the 2-4 sentence
