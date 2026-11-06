@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from . import usage
@@ -298,6 +299,9 @@ _TEMPERATURE_UNSUPPORTED_MARKERS = (
     "does not support",
     "not permitted",
     "not accepted",
+    # Claude Sonnet 5.5 words its rejection as "`temperature` is deprecated
+    # for this model." (observed live 2026-11-05).
+    "deprecated",
 )
 
 
@@ -783,6 +787,28 @@ def _openai_is_reasoning_model(model: Optional[str]) -> bool:
     return name.startswith(_OPENAI_REASONING_PREFIXES)
 
 
+# Claude model ids whose family/generation can be read off the name:
+# "claude-sonnet-5-5", "claude-opus-4-7", "claude-fable-5-1", "claude-haiku-4-5".
+_ANTHROPIC_MODEL_RE = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)")
+
+
+def _anthropic_thinks_by_default(model: Optional[str]) -> bool:
+    """True when a Claude model thinks even though we never send ``thinking``.
+
+    From the Claude 5 generation on (Fable / Mythos, Opus 5+, Sonnet 5+,
+    Haiku 5.5), omitting the ``thinking`` parameter runs adaptive thinking, and
+    the thinking tokens come out of ``max_tokens``. Earlier models (Opus 4.x,
+    Sonnet 4.6, Haiku 4.5) answer directly unless thinking is switched on, which
+    this project never does. A name that doesn't parse (including ``None``, i.e.
+    the Haiku 4.5 default) counts as not thinking.
+    """
+    match = _ANTHROPIC_MODEL_RE.search((model or "").lower())
+    if not match:
+        return False
+    family, major = match.group(1), int(match.group(2))
+    return family in ("fable", "mythos") or major >= 5
+
+
 def ensure_thinking_budget(
     provider: str,
     model: Optional[str],
@@ -816,8 +842,12 @@ def ensure_thinking_budget(
       unknown model) is treated AS thinking — the safe default, since an
       under-budgeted thinking model fails hard (empty answer) while an
       over-budgeted plain model is at worst a soft quality issue.
-    - **Anthropic** never — extended thinking is opt-in and we don't enable it,
-      so Claude answers directly and the ceiling bounds only the answer.
+    - **Anthropic** iff the model thinks by default, per
+      :func:`_anthropic_thinks_by_default` — the Claude 5 generation runs
+      adaptive thinking when ``thinking`` is omitted (observed 2026-11-05:
+      Claude Sonnet 5.5 spent all 800 tokens of a summary call thinking and
+      returned no text). Older Claude models answer directly, since we never
+      turn thinking on, so the ceiling bounds only the answer.
 
     This lives in llmkit, not the domain layer, because it is purely about how a
     provider/model spends its output budget — independent of what the call is for.
@@ -829,6 +859,8 @@ def ensure_thinking_budget(
     elif provider == "ollama":
         caps = ollama_capabilities(model) if model else frozenset()
         thinking = (not caps) or ("thinking" in caps)
+    elif provider == "anthropic":
+        thinking = _anthropic_thinks_by_default(model)
     else:
         thinking = False
     return max(requested, floor) if thinking else requested

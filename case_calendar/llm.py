@@ -1851,7 +1851,13 @@ INPUT — for one docket you receive:
 
 OUTPUT — return PLAIN PROSE, no JSON, no bullet points, and no markdown
 EXCEPT the inline document links described under INLINE LINKS below.
-- Two to four sentences. Tight, factual, neutral.
+- Two to four sentences, in ONE paragraph — no line breaks or blank lines.
+  Tight, factual, neutral. LENGTH BUDGET: aim for about 120 words and never
+  exceed 150 words (the link markup does not count). Four sentences and 150
+  words are CEILINGS, not targets. When there is more to say than fits, keep
+  the higher-priority facts (see DETAIL PRIORITY below) and leave the rest
+  out — do NOT add sentences, and do NOT break the summary into several short
+  sentences or paragraphs to fit more in.
 - Sentence 1: who is suing whom (civil) or who is charged with what (criminal),
   in plain English. Include the operative court and the most important
   charges or claims; do not list every count. (EXCEPTION — a CRIMINAL APPEAL
@@ -1896,6 +1902,30 @@ EXCEPT the inline document links described under INLINE LINKS below.
       a FORBIDDEN inference.
   For civil: "judgment entered for [party]", "summary judgment granted to
   [party] on [claim]", "settled and dismissed", "voluntarily dismissed".
+
+DETAIL PRIORITY — what earns a place within the length budget. This list
+decides what to KEEP when space runs out; it is not a checklist of things
+to add, and the budget above still holds. Prefer the details that set THIS
+case apart from similar ones, as the documents state them:
+- the name of the group, malware, marketplace, operation, or scheme (the
+  ransomware group's name, the dark-web marketplace's name, and so on);
+- the scale the documents give: number of victims or companies, ransom,
+  loss, or salary totals;
+- the defendant's role or position as the documents describe it (a former
+  government official, an active-duty service member, a ransomware
+  negotiator, and so on);
+- for a civil case, what the plaintiff alleges happened and what it is
+  challenging, framed as the plaintiff's allegations;
+- for a concluded criminal case, the imposed sentence and the total
+  restitution (see the sentence rule below).
+Routine procedural steps come LAST and are usually left out: arraignment,
+initial appearance, waiver of indictment, detention hearings, mediation
+questionnaires, briefing deadlines already met or cancelled, status
+conferences already held, and the court accepting a plea. Mention one only
+when it is the latest posture of a case that has no plea, verdict, or
+judgment yet. Offense names matter more than count numbers ("Counts 2, 4
+and 6"); include count numbers only when they fit without crowding out a
+higher-priority detail.
 
 INLINE LINKS — link the words to the documents, the way a news article does.
 Each provided document is labeled with a reference token in its header, shown
@@ -2189,6 +2219,9 @@ subscriber-facing content. Examples of FORBIDDEN meta-commentary:
        structured events show..."
 - BAD: "Based on the available minute entries, [defendant] is charged
        with..."
+- BAD: "waived indictment on June 12, 2026, the date shown for the
+       information in the case paperwork" (state the fact; do not
+       explain which document or field it came from)
 This rule does NOT relax the refuse-rather-than-fabricate rule below.
 The boundary stays: if you can confidently state what the case is
 about — parties + charges or claims — produce a normal summary. If you
@@ -2212,8 +2245,9 @@ facts in the prose. Phrasing must be factual and documents-only — the
 advisory itself is trusted operator-supplied metadata (like the
 AGGREGATION NOTE), but you must NOT speculate about what is happening
 behind the seal or characterize the strength of the case from the
-sealing alone. Add a one-clause hedge so subscribers know to verify
-the docket directly. Example shape: "The court granted an ex parte
+sealing alone. Add a one-clause hedge that some docket activity may not
+be publicly visible — that clause IS the hedge; do not add instructions
+to the reader (such as telling them to check the docket). Example shape: "The court granted an ex parte
 application to seal the indictment and related documents on August 21,
 2025 (entry 44); some subsequent docket activity may not be publicly
 visible." Then stop — do not append "case remains pending" or any

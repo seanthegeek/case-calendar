@@ -3034,6 +3034,54 @@ class TestMarkHeldDateMatchingRules:
         assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
+class TestSummaryPromptLengthAndDetailPriority:
+    """Rules added when Claude Sonnet 5.5 was trialled as the summary model
+    (2026-11-05): against the same dockets it ran past the 2-4 sentence
+    limit (15 of 39 summaries, vs 3 of 44 for Sonnet 4.6), split summaries
+    into paragraphs, spent sentences on routine procedure, and dropped
+    case-distinguishing names and figures (e.g. the Karakurt group name in
+    us-v-zolotarjovs). These pin the rules that steer it back."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_length_is_a_single_paragraph_ceiling(self):
+        p = self._normalized()
+        assert "Two to four sentences, in ONE paragraph" in p
+        assert "Four sentences and 150 words are CEILINGS, not targets" in p
+        assert "do NOT add sentences" in p
+
+    def test_word_budget_present(self):
+        # Sentence counts alone didn't hold Sonnet 5.5 (it wrote up to 8);
+        # the concrete word budget is set near Sonnet 4.6's measured median
+        # of 118 words across the 44 stored summaries.
+        p = self._normalized()
+        assert "aim for about 120 words and never exceed 150 words" in p
+
+    def test_detail_priority_block_present(self):
+        p = self._normalized()
+        assert "DETAIL PRIORITY" in p
+        assert "it is not a checklist of things to add" in p
+        assert "the name of the group, malware, marketplace, operation, or scheme" in p
+        assert "Routine procedural steps come LAST" in p
+
+    def test_civil_allegations_framed_as_allegations(self):
+        assert "framed as the plaintiff's allegations" in self._normalized()
+
+    def test_document_provenance_aside_is_forbidden_meta_commentary(self):
+        assert "the date shown for the information in the case paperwork" in (
+            self._normalized()
+        )
+
+    def test_sealing_hedge_does_not_instruct_reader(self):
+        p = self._normalized()
+        assert "that clause IS the hedge" in p
+        assert "do not add instructions to the reader" in p
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the

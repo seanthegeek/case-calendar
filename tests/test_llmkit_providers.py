@@ -1085,6 +1085,14 @@ class TestTemperatureUnsupportedFallback:
         assert providers._is_temperature_unsupported_error(
             Exception("Unsupported value: 'temperature' does not support 0")
         )
+        # Claude Sonnet 5.5's wording (live 400, 2026-11-05).
+        assert providers._is_temperature_unsupported_error(
+            Exception(
+                "Error code: 400 - {'type': 'error', 'error': {'type': "
+                "'invalid_request_error', 'message': '`temperature` is "
+                "deprecated for this model.'}}"
+            )
+        )
         # Names the parameter but reads as a bad-VALUE error.
         assert not providers._is_temperature_unsupported_error(
             Exception("temperature: must be between 0 and 2")
@@ -1611,9 +1619,33 @@ class TestEnsureThinkingBudget:
     def test_gemini_keeps_larger_request(self):
         assert providers.ensure_thinking_budget("gemini", "any", 30000) == 30000
 
-    def test_anthropic_unchanged(self):
-        # Extended thinking is opt-in and we don't enable it -> answer-only budget.
-        assert providers.ensure_thinking_budget("anthropic", "claude", 800) == 800
+    def test_anthropic_pre_claude5_unchanged(self):
+        # These answer directly because we never turn thinking on, so the
+        # budget only has to cover the answer.
+        for model in (
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-haiku-4-5",
+            "claude",
+            None,
+        ):
+            assert providers.ensure_thinking_budget("anthropic", model, 800) == 800
+
+    def test_anthropic_claude5_bumps(self):
+        # The Claude 5 generation thinks adaptively when `thinking` is omitted,
+        # drawing on max_tokens — Sonnet 5.5 used all 800 tokens of a summary
+        # call thinking and returned no text.
+        for model in (
+            "claude-sonnet-5-5",
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+        ):
+            assert (
+                providers.ensure_thinking_budget("anthropic", model, 800) == self.FLOOR
+            )
 
     def test_openai_reasoning_model_bumps(self):
         # gpt-5 reasons by DEFAULT and the reasoning counts toward

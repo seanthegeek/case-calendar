@@ -8,6 +8,40 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [Unreleased]
+
+### Fixed
+
+- **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems
+  stopped `case-calendar summarize` when the summary model was set to
+  `claude-sonnet-5-5`:
+  - The model rejects the `temperature` setting with the message
+    "`temperature` is deprecated for this model", which the
+    retry-without-temperature check didn't recognize, so the call failed
+    instead of retrying.
+  - Claude 5 models think before answering even when thinking isn't
+    requested, and that thinking comes out of the output budget. With
+    the summary's 800-token budget, Sonnet 5.5 used it all thinking and
+    returned no text, which aborted the run. Claude 5 models now get the
+    same larger budget already used for Gemini and OpenAI's reasoning
+    models. It is a limit, not a target, so it costs nothing on calls
+    that need less.
+
+### Changed
+
+- **Tighter case-summary length and detail rules.** The summary prompt now
+  sets a word budget (about 120 words, never more than 150), requires a
+  single paragraph, and ranks what to keep when space runs out: the group,
+  malware, or scheme name, the scale, the defendant's role, a civil
+  plaintiff's allegations, and the sentence come first; routine procedural
+  steps come last. Trialling Sonnet 5.5 on the full caseload, these rules
+  brought its longest summary from 173 words down to 138 (Sonnet 4.6's
+  median is 120), stopped it from splitting summaries into paragraphs, and
+  restored details it had been dropping, such as the Karakurt group name and
+  $56.5 million restitution in us-v-zolotarjovs. The prompt also no longer
+  invites the model to tell readers to "check the docket directly" after a
+  sealing notice.
+
 ## [0.19.7] - 2026-11-05
 
 ### Security
