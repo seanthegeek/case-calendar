@@ -681,7 +681,8 @@ Claude Sonnet 5.5 (`claude-sonnet-5-5`) was benchmarked as a replacement for
 the Sonnet 4.6 summary default. The summary pipeline changed in the same branch
 — the prompt gained a word budget (about 120 words, never more than 150), a
 single-paragraph rule, a detail-priority list, an exact-figures rule, a
-past-deadline tense rule, and a two-word link minimum (see
+past-deadline tense rule, a two-word link minimum, and a rule to keep a foreign
+link the documents draw, attributed to them (see
 [docs/llm-prompts.md](../docs/llm-prompts.md)), and the summarizer now sends
 the returned jury verdict rather than the court's blank verdict form and no
 longer sends procedural orders as rulings — so the Phase 3 A− for Sonnet 4.6
@@ -692,8 +693,8 @@ the scaffold store.
 
 | model | grade | words (median / max) | cost, 10 dockets | notes |
 | --- | :---: | --- | --- | --- |
-| **anthropic/claude-sonnet-5-5** | **A−** | 118 / 124 | $0.73 (12 calls) | accurate on every fact checked, including the disputes below; the ding verdict is dated January 29 with its outcome ("convicted at trial of all fourteen counts"); every link is two words or more, figures are exact ("$258,553.74"), and passed deadlines are in the past tense; keeps the PRC nexus on ding and Deripaska on mcgonigal, but both knoot summaries say "an overseas IT worker" without the North Korean link |
-| anthropic/claude-sonnet-4-6 | D | 116 / 137 | $0.74 (11 calls) | on the Ninth Circuit docket (26-2011) it again describes the appeal as Anthropic's § 4713 petition for review — the D.C. Circuit case — and calls the pending motion "the appellant's" (the appellants are the federal agencies); calls Gholinejad "an Iranian national" where the indictment says only "residing overseas, including in Iran"; opens the knoot appeal (26-5455) with "pled guilty" and ends with "has appealed", the pattern the prompt names as wrong for an appeal docket; describes ding's July 14, 2026 sentencing as still scheduled; its first gholinejad-appeal draft cited "$11,610,326", which is in no document (the grounding guard caught it) |
+| **anthropic/claude-sonnet-5-5** | **A** | 121 / 134 | $0.71 (12 calls) | accurate on every fact checked, including the disputes below; the ding verdict is dated January 29 with its outcome ("convicted on all fourteen counts"); every link is two words or more, figures are exact ("$258,553.74"), and passed deadlines are in the past tense; keeps the foreign link on all three cases that have one: the PRC on ding, Deripaska on mcgonigal, and on both knoot dockets "a scheme it ties to North Korean IT workers" |
+| anthropic/claude-sonnet-4-6 | D | 117 / 181 | $0.74 (11 calls) | opens the Ninth Circuit docket (26-2011) with "filed a petition for review in the Ninth Circuit" of the § 4713 determination, which is the D.C. Circuit case (the Ninth Circuit docket is the government's appeal of the preliminary injunction); opens the knoot appeal (26-5455) with "pled guilty", the pattern the prompt names as wrong for an appeal docket; describes ding's June 16 motion hearing and July 14 sentencing as still scheduled; its 3:26-cv-01996 summary runs 181 words against the 150-word cap; its first gholinejad-appeal draft cited "$11,610,326", which is in no document (the grounding guard caught it) |
 
 The disputes, settled against the store:
 
@@ -715,6 +716,18 @@ The disputes, settled against the store:
   Knoot's "approximately $15,100" are both in the plea agreement (#119), and
   "in China" is in the government's filings ("enabled Yang Di to work from
   locations outside the United States, in particular, China", #80 / #101).
+  The indictment (#3) and the plea agreement add "at least $544,700 in
+  damages".
+- **Knoot and North Korea.** The plea agreement's factual basis opens with
+  North Korea's IT-worker scheme and says Knoot "acted as a facilitator for
+  one or more overseas IT workers using the persona 'Yang Di'", but also that
+  he "believed Yang Di was a Chinese national". So "a scheme the indictment
+  ties to North Korean IT workers" is right, and a summary saying Knoot knew
+  he worked for North Korea would not be. An earlier run of this benchmark had
+  Sonnet 5.5 drop the link from both knoot summaries (an earlier run still had
+  kept it). The detail-priority list now names a foreign link the documents
+  draw, attributed to them. With that rule, three knoot-only reruns and this
+  full run kept it in 8 of 8 summaries, each attributed to the indictment.
 - **Gholinejad's appeal briefs.** The opening-brief deadline was extended
   twice (#13, #15) to April 14, 2026, when the brief was filed (#16); the
   response followed May 5 (#22). Both models have this right.
@@ -749,8 +762,8 @@ Anthropic's migration guide says the same text produces "about 30 percent more
 tokens" against Sonnet 4.6, "depending on the content" — on this project's
 filings it measured 1.42× (101,530 vs 71,460 tokens for the same 300,000
 characters, via the token-counting endpoint). Sonnet 5.5 also thinks by
-default, averaging 961 output tokens per call here against Sonnet 4.6's 189.
-On this benchmark the two cost $0.73 and $0.74; the full production caseload
+default, averaging 1,072 output tokens per call here against Sonnet 4.6's 194.
+On this benchmark the two cost $0.71 and $0.74; the full production caseload
 cost $2.99 for 39 dockets on Sonnet 5.5.
 
 Sonnet 5.5 replaces Sonnet 4.6 as the summary default on the strength of the

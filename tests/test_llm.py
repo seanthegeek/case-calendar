@@ -3196,6 +3196,17 @@ class TestSummaryPromptLengthAndDetailPriority:
         assert "the name of the group, malware, marketplace, operation, or scheme" in p
         assert "Routine procedural steps come LAST" in p
 
+    def test_foreign_nexus_is_kept_and_attributed(self):
+        # Sonnet 5.5 dropped the North Korea link from both knoot summaries
+        # in one benchmark run and kept it in another: the plea agreement
+        # ties Knoot to the North Korean IT-worker scheme but says he
+        # believed the worker was Chinese, so the rule asks for the link
+        # as the documents frame it, not as the defendant's knowledge.
+        p = self._normalized()
+        assert "a foreign government, group, or country the documents tie" in p
+        assert '"a scheme the indictment ties to North Korean IT workers"' in p
+        assert "never say the defendant knew of that link" in p
+
     def test_civil_allegations_framed_as_allegations(self):
         assert "framed as the plaintiff's allegations" in self._normalized()
 

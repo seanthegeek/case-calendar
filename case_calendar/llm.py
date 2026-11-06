@@ -1918,6 +1918,11 @@ case apart from similar ones, as the documents state them:
 - the defendant's role or position as the documents describe it (a former
   government official, an active-duty service member, a ransomware
   negotiator, and so on);
+- a foreign government, group, or country the documents tie the scheme to
+  (for example, the scheme they describe as earning money for North Korea),
+  attributed to the documents as they frame it ("a scheme the indictment
+  ties to North Korean IT workers"); never say the defendant knew of that
+  link unless the documents say so;
 - for a civil case, what the plaintiff alleges happened and what it is
   challenging, framed as the plaintiff's allegations;
 - for a concluded criminal case, the imposed sentence and the total

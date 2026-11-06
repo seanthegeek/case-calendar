@@ -122,6 +122,15 @@ adheres to [Semantic Versioning][semver].
 
 ### Changed
 
+- **Summaries keep a foreign link the documents draw.** One benchmark run
+  of Sonnet 5.5 dropped North Korea from both Knoot summaries, though the
+  plea agreement ties Knoot's conduct to North Korea's IT-worker scheme. The
+  prompt's detail-priority list now names a foreign government, group, or
+  country the documents tie the scheme to, attributed to the documents ("a
+  scheme the indictment ties to North Korean IT workers"), and says not to
+  claim the defendant knew of the link unless the documents say so. Knoot's
+  plea agreement says he believed the worker was Chinese. Across the next
+  four runs Sonnet 5.5 kept the link in 8 of 8 Knoot summaries.
 - **Summary links are at least two words.** A one-word link is a small,
   hard-to-tap target. The 3:26-cv-01996 summary linked just "sued"; it now
   reads "[filed a lawsuit] against". The prompt asks for two-word links, and
@@ -130,12 +139,12 @@ adheres to [Semantic Versioning][semver].
   regenerated.
 - **The default case-summary model is now Claude Sonnet 5.5**
   (`claude-sonnet-5-5`), replacing Claude Sonnet 4.6. Re-graded on the
-  summary benchmark with the current prompt, Sonnet 5.5 scored A− and
+  summary benchmark with the current prompt, Sonnet 5.5 scored A and
   Sonnet 4.6 scored D: Sonnet 4.6 misdescribed the Ninth Circuit docket in
-  Anthropic v. DOW as the D.C. Circuit petition, stated a nationality the
-  documents don't support, ignored the rule for leading an appeal summary,
-  and described a past hearing as still scheduled. The cost is the same —
-  $0.73 against $0.74 on the 10-docket benchmark, and $2.99 for
+  Anthropic v. DOW as the D.C. Circuit petition, ignored the rule for
+  leading an appeal summary, described past hearings as still scheduled,
+  and wrote one summary of 181 words against the 150-word cap. The cost is
+  the same — $0.71 against $0.74 on the 10-docket benchmark, and $2.99 for
   the 39-docket production caseload. Sonnet 5.5 is supported until at least
   2027-09-28, against 2027-02-17 for Sonnet 4.6. Existing summaries are not
   regenerated automatically; run `case-calendar summarize --force` to
