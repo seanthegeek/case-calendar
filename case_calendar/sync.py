@@ -2258,6 +2258,14 @@ class CaseSyncer:
         any_docket_advanced = False
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
+            # Never make a CourtListener request with a write transaction open:
+            # the `serve` process shares this SQLite file and gives up after
+            # its 5 s busy_timeout. A quiet docket's bump_docket_last_filing
+            # (below) used to stay uncommitted into the NEXT docket's requests
+            # — including the stub repair's full re-fetch (found from
+            # Copilot's review of PR #110).
+            with self.store.tx() as _:
+                pass
             docket = self.cl.get_docket(docket_id)
             # Before the unchanged-docket short-circuit: a quiet docket is
             # exactly the one whose old stubs would otherwise never be
@@ -2298,7 +2306,14 @@ class CaseSyncer:
                     "date_last_filing": docket.get("date_last_filing"),
                 },
             )
+            # Commit before each request (see the top of the loop): the docket
+            # meta before _ensure_court's court fetch, and the court row it
+            # writes before the entry walk.
+            with self.store.tx() as _:
+                pass
             self._ensure_court(docket.get("court_id") or "")
+            with self.store.tx() as _:
+                pass
             cutoff = self.store.latest_entry_modified(docket_id)
 
             for entry in self.cl.iter_entries(docket_id, modified_after=cutoff):

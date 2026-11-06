@@ -83,7 +83,12 @@ adheres to [Semantic Versioning][semver].
   "filed a lawsuit against" only when a defendant follows (not "sued
   yesterday"); and the stub repair commits each restored entry together with
   its summary-refresh flag before its next CourtListener request, so it never
-  holds the database's write lock across network calls.
+  holds the database's write lock across network calls. Following the fourth
+  review's summary, `sync` now commits before every CourtListener request in
+  its docket loop: a quiet docket's last-filing update, the docket metadata,
+  and the court row had stayed uncommitted into later requests, including the
+  next docket's one-time re-fetch, which could make `serve`'s webhook writes
+  time out.
 - **Jury verdicts reach case summaries, with their real date and outcome.**
   A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
   a disposition, so sync stored it without its text, it didn't trigger a

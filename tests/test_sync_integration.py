@@ -1045,6 +1045,63 @@ class TestStubRepair:
         # And no write transaction is left open behind the failure.
         assert not store.conn.in_transaction
 
+    def test_no_courtlistener_request_runs_with_a_write_transaction_open(
+        self, store: Store, monkeypatch
+    ):
+        # Found from Copilot's review of PR #110: a quiet docket's
+        # bump_docket_last_filing stayed uncommitted into the NEXT docket's
+        # requests — including the stub repair's full re-fetch — so the
+        # `serve` process could time out on the write lock.
+        make_llm_stub(monkeypatch, by_entry={})
+
+        def docket(i):
+            return {**_docket(), "id": i, "docket_number": f"1:25-cr-{i}"}
+
+        verdict = {**_entry(7, _JURY_VERDICT, date_filed="2026-01-29"), "docket": 200}
+        fresh = {**_entry(9, "Status conference set for 7/1/2026"), "docket": 300}
+        for i in (100, 200):
+            store.upsert_docket_meta(
+                i,
+                {
+                    k: v
+                    for k, v in docket(i).items()
+                    if k in ("court_id", "docket_number", "case_name", "absolute_url")
+                },
+            )
+            store.set_docket_last_modified(i, _docket()["date_modified"])
+        store.set_docket_summary_rules_version(
+            100, summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+        store.mark_entry(200, 7, verdict["date_modified"], fingerprint_entry(verdict))
+        store.conn.commit()
+        seen: list[tuple[str, int, bool]] = []
+
+        class _Probe(FakeCourtListener):
+            def get_docket(self, i):
+                seen.append(("docket", i, store.conn.in_transaction))
+                return super().get_docket(i)
+
+            def get_court(self, c):
+                seen.append(("court", 0, store.conn.in_transaction))
+                return super().get_court(c)
+
+            def iter_entries(self, i, **kw):
+                seen.append(("entries", i, store.conn.in_transaction))
+                yield from super().iter_entries(i, **kw)
+
+        cl = _Probe(
+            dockets={100: docket(100), 200: docket(200), 300: docket(300)},
+            entries={200: [verdict], 300: [fresh]},
+        )
+        case3 = CaseConfig(
+            case_id="us-v-x", name="X", dockets=[100, 200, 300], calendar="cyber"
+        )
+        CaseSyncer(cl, store).sync_case(case3)
+        # 100 quiet; 200 quiet but repaired; 300 new (normal walk + court).
+        assert ("entries", 200, False) in seen
+        assert ("entries", 300, False) in seen
+        assert [s for s in seen if s[2]] == []
+
     def test_runs_once_per_rules_version(self, store: Store, case):
         verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
         self._old_store(store, [verdict])
