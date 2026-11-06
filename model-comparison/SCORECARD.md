@@ -12,8 +12,9 @@ otherwise. The July 2026 local sweep was run twice per model: once **greedy**
 `-inspec` rows.
 
 The shipped default remains a **split**: **Gemini** (`gemini-3.1-flash-lite`)
-for extraction, **Anthropic** (`claude-sonnet-4-6`) for summaries. The benchmark
-ran in four phases:
+for extraction, **Anthropic** (`claude-sonnet-5-5`, which replaced
+`claude-sonnet-4-6` on 2026-11-05) for summaries. The benchmark ran in five
+phases:
 
 - **Phase 0 — extraction accuracy**: every model extracts hearings/deadlines from
   the same frozen dockets; a human-blind deviation score ranks them.
@@ -22,6 +23,8 @@ ran in four phases:
 - **Phase 3 — summary grading**: the summaries are read and graded for accuracy,
   detail, and grammar against a fresh hosted reference generated on the same
   scaffold (there is no automated summary scorer — see `summarize_phase.py`).
+- **Phase 4 — Sonnet 5.5 vs Sonnet 4.6**: both re-run and graded on the
+  current summary prompt, which decided the summary default (2026-11-05).
 
 The headline results of the July 2026 sweep (new 32 GB + 24 GB dual-GPU rig,
 every installed Ollama model):
@@ -671,6 +674,103 @@ blocked on the gfx1201 gap.
 (no progress in 240 s) detection, plus `--no-think` / `--think-level` /
 `--think-budget` controls, so these failure modes surface live rather than
 after a manual check.
+
+## Phase 4 — Claude Sonnet 5.5 vs Sonnet 4.6 on the current prompt (2026-11-05)
+
+Claude Sonnet 5.5 (`claude-sonnet-5-5`) was benchmarked as a replacement for
+the Sonnet 4.6 summary default. The summary pipeline changed in the same branch
+— the prompt gained a word budget (about 120 words, never more than 150), a
+single-paragraph rule, a detail-priority list, an exact-figures rule, a
+past-deadline tense rule, a two-word link minimum, and a rule to keep a foreign
+link the documents draw, attributed to them (see
+[docs/llm-prompts.md](../docs/llm-prompts.md)), and the summarizer now sends
+the returned jury verdict rather than the court's blank verdict form and no
+longer sends procedural orders as rulings — so the Phase 3 A− for Sonnet 4.6
+no longer compares like with like. Both models were therefore re-run on the
+final code, on the same Gemini scaffold as Phase 3, with `summarize_phase.py`.
+The grades use the Phase 3 scale, and every disputed fact was checked against
+the scaffold store.
+
+| model | grade | words (median / max) | cost, 10 dockets | notes |
+| --- | :---: | --- | --- | --- |
+| **anthropic/claude-sonnet-5-5** | **A** | 121 / 134 | $0.71 (12 calls) | accurate on every fact checked, including the disputes below; the ding verdict is dated January 29 with its outcome ("convicted on all fourteen counts"); every link is two words or more, figures are exact ("$258,553.74"), and passed deadlines are in the past tense; keeps the foreign link on all three cases that have one: the PRC on ding, Deripaska on mcgonigal, and on both knoot dockets "a scheme it ties to North Korean IT workers" |
+| anthropic/claude-sonnet-4-6 | D | 117 / 181 | $0.74 (11 calls) | opens the Ninth Circuit docket (26-2011) with "filed a petition for review in the Ninth Circuit" of the § 4713 determination, which is the D.C. Circuit case (the Ninth Circuit docket is the government's appeal of the preliminary injunction); opens the knoot appeal (26-5455) with "pled guilty", the pattern the prompt names as wrong for an appeal docket; describes ding's June 16 motion hearing and July 14 sentencing as still scheduled; its 3:26-cv-01996 summary runs 181 words against the 150-word cap; its first gholinejad-appeal draft cited "$11,610,326", which is in no document (the grounding guard caught it) |
+
+The disputes, settled against the store:
+
+- **Who appealed in 26-2011.** The docket's opening entries list the federal
+  agencies as "Appellant" and set "Preliminary Injunction Opening Brief Due
+  (Appellant) 4/30/2026". The government appealed Judge Lin's preliminary
+  injunction, so Sonnet 5.5's "the federal appellants' opening brief" is
+  right. Sonnet 4.6 made the same mix-up in the production store under the
+  earlier prompt, so the Phase 3 A− most likely missed it.
+- **"41 U.S.C. § 3252".** Anthropic's own D.C. Circuit petition (docket
+  72380208) says "Secretary Hegseth … invoked the supply chain risk
+  designation authority under 41 U.S.C. § 3252", while the other 256
+  citations of § 3252 in the case's filings say title 10. Sonnet 5.5's first
+  drafts of the D.C. Circuit and Ninth Circuit summaries repeated the
+  petition's typo; the minority-citation guard (`summary._audit_summary_citations`)
+  flagged both and each retry cited title 10. Those two retries are the extra
+  calls in the table.
+- **Knoot's figures and the worker's location.** "$258,553.74" in wages and
+  Knoot's "approximately $15,100" are both in the plea agreement (#119), and
+  "in China" is in the government's filings ("enabled Yang Di to work from
+  locations outside the United States, in particular, China", #80 / #101).
+  The indictment (#3) and the plea agreement add "at least $544,700 in
+  damages".
+- **Knoot and North Korea.** The plea agreement's factual basis opens with
+  North Korea's IT-worker scheme and says Knoot "acted as a facilitator for
+  one or more overseas IT workers using the persona 'Yang Di'", but also that
+  he "believed Yang Di was a Chinese national". So "a scheme the indictment
+  ties to North Korean IT workers" is right, and a summary saying Knoot knew
+  he worked for North Korea would not be. An earlier run of this benchmark had
+  Sonnet 5.5 drop the link from both knoot summaries (an earlier run still had
+  kept it). The detail-priority list now names a foreign link the documents
+  draw, attributed to them. With that rule, three knoot-only reruns and this
+  full run kept it in 8 of 8 summaries, each attributed to the indictment.
+- **Gholinejad's appeal briefs.** The opening-brief deadline was extended
+  twice (#13, #15) to April 14, 2026, when the brief was filed (#16); the
+  response followed May 5 (#22). Both models have this right.
+
+**An input defect, not counted against either model.** Both models report a
+"speedy trial continuance deadline" of October 31, 2026 on us-v-schmitz. That
+row comes from the frozen June 2026 Gemini extraction, which turned an order
+excluding time under the Speedy Trial Act ("Time excluded from 5/19/2026 until
+10/31/2026", entry 464559214) into a pending deadline. October 31 is the end
+of an excluded period, not something anyone must do. Today's extractor no
+longer produces that row, and `sync._is_speedy_trial_exclusion_end` now drops
+it if it recurs; the frozen benchmark store keeps it.
+
+**Findings:**
+
+**1. Sonnet 5.5 follows the summary rules; Sonnet 4.6 still breaks the factual
+ones.** Both stay under the 150-word cap on this benchmark, but Sonnet 4.6
+repeats its Ninth Circuit misdescription and its unsupported nationality
+claim under the new prompt, ignores the appeal-docket lead rule, and treats a
+past-dated hearing as upcoming. On the 39-docket production caseload (a copy
+of the live store), Sonnet 5.5's longest summary was 138 words, against 221
+for Sonnet 4.6's stored summaries.
+
+**2. The guards catch the habits that remain.** Sonnet 5.5 copies a typo it is
+shown (the § 3252 title) and, before the exact-figures rule, rounded figures;
+the citation and grounding guards catch both at the cost of a retry, and
+neither reached a stored summary. Sonnet 4.6's one unsupported figure was
+caught the same way.
+
+**3. Cost is the same.** Sonnet 5.5's per-token price is a third lower, but
+Anthropic's migration guide says the same text produces "about 30 percent more
+tokens" against Sonnet 4.6, "depending on the content" — on this project's
+filings it measured 1.42× (101,530 vs 71,460 tokens for the same 300,000
+characters, via the token-counting endpoint). Sonnet 5.5 also thinks by
+default, averaging 1,072 output tokens per call here against Sonnet 4.6's 194.
+On this benchmark the two cost $0.71 and $0.74; the full production caseload
+cost $2.99 for 39 dockets on Sonnet 5.5.
+
+Sonnet 5.5 replaces Sonnet 4.6 as the summary default on the strength of the
+accuracy grades and finding 1. It is active with retirement "not sooner than
+September 28, 2027" on Anthropic's
+[model deprecations page](https://platform.claude.com/docs/en/about-claude/model-deprecations),
+against February 17, 2027 for Sonnet 4.6.
 
 ## Hardware and software environment
 

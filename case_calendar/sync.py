@@ -21,6 +21,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
+
 from . import llm, pdf, summary as summary_mod, url_validator
 from .courtlistener import CourtListener
 from .courts import tz_for
@@ -734,6 +736,66 @@ def _proceeding_record_rank(text: Optional[str]) -> int:
     callers sort by ``(rank, -length)``.
     """
     return 1 if (text and _TRANSCRIPT_RECORD_RE.search(text)) else 0
+
+
+# The end date of a Speedy Trial Act excluded period, as clerks docket it:
+# "Time excluded from 5/19/2026 until 10/31/2026" (us-v-schmitz #11),
+# "excludable delay ... through 10/31/2026".
+_SPEEDY_TRIAL_EXCLUSION_END_RE = re.compile(
+    r"\bexclu(?:ded|dable)\b[^.;]{0,80}?\b(?:until|through|thru|to)\s+"
+    r"(\d{1,2})/(\d{1,2})/(\d{2}|\d{4})\b",
+    re.IGNORECASE,
+)
+# A deadline key / title that describes the trial clock itself rather than a
+# filing ("speedy-trial-continuance-schmitz").
+_SPEEDY_TRIAL_DEADLINE_NAME_RE = re.compile(
+    r"speedy|exclu(?:ded|dable|sion)|continuance", re.IGNORECASE
+)
+# ...unless it also names something a party files — a "Speedy Trial
+# Statement" (us-v-ding has one) or a "Motion for Continuance" is a real
+# obligation even when it falls on the excluded period's end date.
+_FILING_DEADLINE_NAME_RE = re.compile(
+    r"statement|motion|brief|response|reply|opposition|memorand|filing|"
+    r"notice|report|declaration|letter|submission|objection|proposed",
+    re.IGNORECASE,
+)
+
+
+def _is_speedy_trial_exclusion_end(
+    entry: dict[str, Any], action: dict[str, Any]
+) -> bool:
+    """True when a deadline action is really the end of a Speedy Trial Act
+    excluded period — a stretch that doesn't count toward the trial clock,
+    not something any party must file or do.
+
+    A June 2026 extraction turned us-v-schmitz's "Time excluded from 5/19/2026
+    until 10/31/2026" into a pending "Speedy Trial Continuance" deadline, which
+    the case summary then reported as a deadline. A prompt rule against it
+    changed the extractor's output on that same order (it split the order's
+    real 30-day deadline into two half-formed actions), so this is a
+    deterministic check instead. Both conditions must hold, so a real filing
+    deadline the court sets on the exclusion's end date — courts often exclude
+    time up to the next scheduled event — is kept: the date matches an
+    excluded period's end stated in the entry, AND the deadline's key or title
+    names the trial clock ("speedy", "excluded", "continuance") without
+    naming a filing ("statement", "motion", "brief", ...).
+    """
+    local_date = action.get("local_date")
+    if not local_date:
+        return False
+    name = f"{action.get('deadline_key') or ''} {action.get('title') or ''}"
+    if not _SPEEDY_TRIAL_DEADLINE_NAME_RE.search(name):
+        return False
+    if _FILING_DEADLINE_NAME_RE.search(name):
+        return False
+    text = f"{entry.get('description') or ''} {entry.get('short_description') or ''}"
+    for m in _SPEEDY_TRIAL_EXCLUSION_END_RE.finditer(text):
+        month, day, year = (int(g) for g in m.groups())
+        if year < 100:
+            year += 2000
+        if f"{year:04d}-{month:02d}-{day:02d}" == local_date:
+            return True
+    return False
 
 
 def _is_admin_notice(text: Optional[str]) -> bool:
@@ -1926,9 +1988,7 @@ class CaseSyncer:
         # Everything else (notices, briefs, attorney appearances, etc.) gets
         # a fingerprint-only stub: dedup keeps working, but no dead-weight
         # body text.
-        summary_relevant = summary_mod.is_primary_document(
-            entry
-        ) or summary_mod.is_disposition(entry)
+        summary_relevant = summary_mod.is_summary_relevant(entry)
         store_full = processed or summary_relevant
         self.store.mark_entry(
             docket_id,
@@ -2085,10 +2145,99 @@ class CaseSyncer:
                 self.store.mark_entry_checked(row["docket_id"], row["entry_id"])
         return stats
 
+    # --- stub repair after a summary-relevance rule change ---
+
+    def _repair_stub_bodies(self, case: CaseConfig, docket_id: int) -> int:
+        """Restore the body of stub entries that the CURRENT summary-relevance
+        rules would have kept, once per rules version per docket.
+
+        ``process_entry`` stores an entry the hearing filter skips as a
+        fingerprint-only stub unless :func:`summary.is_summary_relevant`
+        accepts it, and never revisits it (the fingerprint dedup and the
+        docket-level last-modified cutoff both skip it). So when those rules
+        start accepting entries they used to reject, existing stores keep the
+        stubs — us-v-ding's returned "JURY VERDICT" (#367) was one, so the
+        summary model never saw the verdict. This re-fetches the docket's
+        entries from CourtListener, fills in the body of each stub that now
+        qualifies (no LLM calls: the hearing filter didn't change, so there is
+        nothing new to extract), flags the summary stale if any were restored,
+        and records the version so it runs once. A docket with no stubs (a new
+        one, say) only records the version.
+
+        Returns the number of entries restored.
+        """
+        version = summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        if self.store.docket_summary_rules_version(docket_id) >= version:
+            return 0
+        stubs = self.store.stub_entry_ids(docket_id)
+        restored = 0
+        if stubs:
+            log.info(
+                "docket %s: re-checking %d stub entries against summary-relevance "
+                "rules v%d",
+                docket_id,
+                len(stubs),
+                version,
+            )
+
+            def check(entry: dict[str, Any]) -> None:
+                nonlocal restored
+                if not summary_mod.is_summary_relevant(entry):
+                    return
+                # Commit each restoration together with its stale flag before
+                # the next CourtListener request (Copilot, PR #110): an open
+                # write transaction held across slow requests would block the
+                # `serve` process's webhook writes past the 5 s busy_timeout,
+                # and a later failure must not leave a restored entry — no
+                # longer a stub, so never retried — without its stale flag.
+                with self.store.tx():
+                    if self.store.restore_entry_body(
+                        docket_id,
+                        entry["id"],
+                        description=entry.get("description"),
+                        short_description=entry.get("short_description"),
+                        recap_documents=compact_recap_documents(entry),
+                    ):
+                        self.store._flag_summary_stale_for_docket(
+                            case.case_id, docket_id
+                        )
+                        restored += 1
+
+            seen: set[int] = set()
+            for entry in self.cl.iter_entries(docket_id, max_pages=200):
+                if entry.get("id") in stubs:
+                    seen.add(entry["id"])
+                    check(entry)
+            # iter_entries stops quietly at max_pages (200 pages of 50), so on
+            # a very large docket some stubs may not have come back. Fetch
+            # each one directly rather than record the version with stubs
+            # unchecked — once recorded, later syncs never revisit them.
+            for entry_id in sorted(stubs - seen):
+                try:
+                    entry = self.cl.get_docket_entry(entry_id)
+                except httpx.HTTPStatusError as exc:
+                    if exc.response.status_code == 404:
+                        continue  # removed upstream; nothing left to restore
+                    raise
+                check(entry)
+            if restored:
+                log.info(
+                    "docket %s: restored %d entry bodies the current rules keep",
+                    docket_id,
+                    restored,
+                )
+        # Recorded only after a clean pass, so an interrupted re-fetch retries
+        # on the next sync.
+        self.store.set_docket_summary_rules_version(docket_id, version)
+        with self.store.tx() as _:
+            pass
+        return restored
+
     # --- polling entry point ---
 
     def sync_case(self, case: CaseConfig, *, reverify: bool = False) -> dict[str, int]:
         stats = {
+            "stubs_restored": 0,
             "dockets_skipped": 0,
             "entries_seen": 0,
             "entries_processed": 0,
@@ -2109,7 +2258,19 @@ class CaseSyncer:
         any_docket_advanced = False
         for docket_id in case.dockets:
             log.info("Syncing docket %s for case %s", docket_id, case.case_id)
+            # Never make a CourtListener request with a write transaction open:
+            # the `serve` process shares this SQLite file and gives up after
+            # its 5 s busy_timeout. A quiet docket's bump_docket_last_filing
+            # (below) used to stay uncommitted into the NEXT docket's requests
+            # — including the stub repair's full re-fetch (found from
+            # Copilot's review of PR #110).
+            with self.store.tx() as _:
+                pass
             docket = self.cl.get_docket(docket_id)
+            # Before the unchanged-docket short-circuit: a quiet docket is
+            # exactly the one whose old stubs would otherwise never be
+            # revisited.
+            stats["stubs_restored"] += self._repair_stub_bodies(case, docket_id)
             docket_mod = docket.get("date_modified") or ""
             last_mod = self.store.docket_last_modified(docket_id)
             if last_mod and docket_mod and docket_mod <= last_mod:
@@ -2145,7 +2306,14 @@ class CaseSyncer:
                     "date_last_filing": docket.get("date_last_filing"),
                 },
             )
+            # Commit before each request (see the top of the loop): the docket
+            # meta before _ensure_court's court fetch, and the court row it
+            # writes before the entry walk.
+            with self.store.tx() as _:
+                pass
             self._ensure_court(docket.get("court_id") or "")
+            with self.store.tx() as _:
+                pass
             cutoff = self.store.latest_entry_modified(docket_id)
 
             for entry in self.cl.iter_entries(docket_id, modified_after=cutoff):
@@ -3690,6 +3858,21 @@ class CaseSyncer:
                 entry["id"],
                 (action.get("notes") or "")[:120],
             )
+
+        if atype in (
+            "ADD_DEADLINE",
+            "RESCHEDULE_DEADLINE",
+        ) and _is_speedy_trial_exclusion_end(entry, action):
+            log.warning(
+                "skipping %s: case=%s key=%r entry=%s date=%s is the end of a "
+                "Speedy Trial Act excluded period, not a deadline",
+                atype,
+                case.case_id,
+                key,
+                entry["id"],
+                action.get("local_date"),
+            )
+            return
 
         log.info(
             "applying %s case=%s key=%r entry=%s date=%s",

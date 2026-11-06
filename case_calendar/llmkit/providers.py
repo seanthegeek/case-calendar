@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from . import usage
@@ -298,6 +299,9 @@ _TEMPERATURE_UNSUPPORTED_MARKERS = (
     "does not support",
     "not permitted",
     "not accepted",
+    # Claude Sonnet 5.5 words its rejection as "`temperature` is deprecated
+    # for this model." (observed live 2026-11-05).
+    "deprecated",
 )
 
 
@@ -335,6 +339,55 @@ def _remember_temperature_unsupported(
     )
 
 
+# --- Claude models that reject a forced tool call -----------------------------
+# Structured output on Anthropic forces one tool call (tool_choice type "tool").
+# Some newer models reject that outright — live on 2026-11-05, Claude Sonnet
+# 5.5 returned 400 "tool_choice: type "tool" and "any" are not supported for
+# this model." while Claude Sonnet 5 and Haiku 4.5 still accepted it. As with
+# temperature, rather than keep a model list that goes stale every release,
+# the call detects the rejection, retries with tool_choice "auto" plus a
+# system instruction to answer only through the tool, and remembers the model
+# for the rest of the process. Measured the same day, Sonnet 5.5 under "auto"
+# with that instruction called the tool on 3 of 3 attempts.
+_FORCED_TOOL_UNSUPPORTED: set[str] = set()
+
+_AUTO_TOOL_INSTRUCTION = (
+    f"Return your answer ONLY by calling the `{_STRUCTURED_OUTPUT_NAME}` tool. "
+    "Do not reply in text."
+)
+
+
+def _is_forced_tool_unsupported_error(exc: Exception) -> bool:
+    """True when an SDK exception says the model rejects a forced tool call
+    (must name ``tool_choice`` AND read as a not-supported rejection)."""
+    msg = str(exc).lower()
+    return "tool_choice" in msg and any(
+        marker in msg for marker in _TEMPERATURE_UNSUPPORTED_MARKERS
+    )
+
+
+def _remember_forced_tool_unsupported(model: str, exc: Exception) -> None:
+    _FORCED_TOOL_UNSUPPORTED.add(model)
+    logger.warning(
+        "anthropic model %s rejected a forced tool call (%s); using "
+        "tool_choice=auto with an instruction to answer through the tool, for "
+        "the rest of this process.",
+        model,
+        str(exc)[:200],
+    )
+
+
+def _use_auto_tool_choice(create_kwargs: dict[str, Any]) -> None:
+    """Switch a structured-output request from a forced tool call to
+    ``auto`` plus a system instruction to answer only through the tool. The
+    instruction goes in its own system block AFTER the cached one, so the
+    cached prompt prefix is unchanged. Called at most once per request: a
+    remembered model starts on ``auto``, so it never sends the forced call
+    whose rejection triggers the in-loop switch."""
+    create_kwargs["tool_choice"] = {"type": "auto"}
+    create_kwargs["system"].append({"type": "text", "text": _AUTO_TOOL_INSTRUCTION})
+
+
 def _call_anthropic(
     system: str,
     user: str,
@@ -349,6 +402,12 @@ def _call_anthropic(
     import anthropic
 
     chosen = model or os.environ.get("LLM_MODEL", _DEFAULT_MODELS["anthropic"])
+    # Claude 5 models think even though we never send `thinking`, and the
+    # thinking comes out of max_tokens — so every Anthropic call (extraction,
+    # verify, dedupe, summary) gets the thinking headroom here, against the
+    # model actually resolved (an LLM_MODEL override included). A no-op for
+    # earlier models and for callers that already raised the budget.
+    max_tokens = ensure_thinking_budget("anthropic", chosen, max_tokens)
     # Bump from the SDK default of 2 retries to 8. The default gives up
     # after ~1.5s of cumulative backoff (0.5s + 1s), which is not enough
     # for the 529 Overloaded condition the API returns when capacity is
@@ -406,24 +465,41 @@ def _call_anthropic(
                 "input_schema": schema,
             }
         ]
-        create_kwargs["tool_choice"] = {"type": "tool", "name": _STRUCTURED_OUTPUT_NAME}
+        if chosen in _FORCED_TOOL_UNSUPPORTED:
+            _use_auto_tool_choice(create_kwargs)
+        else:
+            create_kwargs["tool_choice"] = {
+                "type": "tool",
+                "name": _STRUCTURED_OUTPUT_NAME,
+            }
     if temperature is not None and not _temperature_known_unsupported(
         "anthropic", chosen
     ):
         create_kwargs["temperature"] = temperature
-    try:
-        resp = client.messages.create(**create_kwargs)
-    except Exception as exc:
-        # The Claude 5 family (and Opus 4.7+) removed the temperature
-        # parameter — any value is a 400. Drop the knob and retry once
-        # rather than fail the call; see _TEMPERATURE_UNSUPPORTED.
-        if "temperature" not in create_kwargs or not _is_temperature_unsupported_error(
-            exc
-        ):
+    # Each rejection below is handled at most once, so this is at most three
+    # attempts: the original, then one retry per recognized rejection.
+    while True:
+        try:
+            resp = client.messages.create(**create_kwargs)
+            break
+        except Exception as exc:
+            # The Claude 5 family (and Opus 4.7+) removed the temperature
+            # parameter — any value is a 400. Drop the knob and retry rather
+            # than fail the call; see _TEMPERATURE_UNSUPPORTED.
+            if "temperature" in create_kwargs and _is_temperature_unsupported_error(
+                exc
+            ):
+                _remember_temperature_unsupported("anthropic", chosen, exc)
+                del create_kwargs["temperature"]
+                continue
+            # Some models reject a forced tool call (see
+            # _FORCED_TOOL_UNSUPPORTED); fall back to auto + an instruction.
+            forced = create_kwargs.get("tool_choice", {}).get("type") == "tool"
+            if forced and _is_forced_tool_unsupported_error(exc):
+                _remember_forced_tool_unsupported(chosen, exc)
+                _use_auto_tool_choice(create_kwargs)
+                continue
             raise
-        _remember_temperature_unsupported("anthropic", chosen, exc)
-        del create_kwargs["temperature"]
-        resp = client.messages.create(**create_kwargs)
     usage.record(
         purpose=purpose,
         provider="anthropic",
@@ -783,6 +859,28 @@ def _openai_is_reasoning_model(model: Optional[str]) -> bool:
     return name.startswith(_OPENAI_REASONING_PREFIXES)
 
 
+# Claude model ids whose family/generation can be read off the name:
+# "claude-sonnet-5-5", "claude-opus-4-7", "claude-fable-5-1", "claude-haiku-4-5".
+_ANTHROPIC_MODEL_RE = re.compile(r"claude-(opus|sonnet|haiku|fable|mythos)-(\d+)")
+
+
+def _anthropic_thinks_by_default(model: Optional[str]) -> bool:
+    """True when a Claude model thinks even though we never send ``thinking``.
+
+    From the Claude 5 generation on (Fable / Mythos, Opus 5+, Sonnet 5+,
+    Haiku 5.5), omitting the ``thinking`` parameter runs adaptive thinking, and
+    the thinking tokens come out of ``max_tokens``. Earlier models (Opus 4.x,
+    Sonnet 4.6, Haiku 4.5) answer directly unless thinking is switched on, which
+    this project never does. A name that doesn't parse (including ``None``, i.e.
+    the Haiku 4.5 default) counts as not thinking.
+    """
+    match = _ANTHROPIC_MODEL_RE.search((model or "").lower())
+    if not match:
+        return False
+    family, major = match.group(1), int(match.group(2))
+    return family in ("fable", "mythos") or major >= 5
+
+
 def ensure_thinking_budget(
     provider: str,
     model: Optional[str],
@@ -816,8 +914,12 @@ def ensure_thinking_budget(
       unknown model) is treated AS thinking — the safe default, since an
       under-budgeted thinking model fails hard (empty answer) while an
       over-budgeted plain model is at worst a soft quality issue.
-    - **Anthropic** never — extended thinking is opt-in and we don't enable it,
-      so Claude answers directly and the ceiling bounds only the answer.
+    - **Anthropic** iff the model thinks by default, per
+      :func:`_anthropic_thinks_by_default` — the Claude 5 generation runs
+      adaptive thinking when ``thinking`` is omitted (observed 2026-11-05:
+      Claude Sonnet 5.5 spent all 800 tokens of a summary call thinking and
+      returned no text). Older Claude models answer directly, since we never
+      turn thinking on, so the ceiling bounds only the answer.
 
     This lives in llmkit, not the domain layer, because it is purely about how a
     provider/model spends its output budget — independent of what the call is for.
@@ -829,6 +931,8 @@ def ensure_thinking_budget(
     elif provider == "ollama":
         caps = ollama_capabilities(model) if model else frozenset()
         thinking = (not caps) or ("thinking" in caps)
+    elif provider == "anthropic":
+        thinking = _anthropic_thinks_by_default(model)
     else:
         thinking = False
     return max(requested, floor) if thinking else requested

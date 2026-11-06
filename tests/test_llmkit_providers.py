@@ -8,6 +8,7 @@ llmkit subpackage.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -1085,6 +1086,14 @@ class TestTemperatureUnsupportedFallback:
         assert providers._is_temperature_unsupported_error(
             Exception("Unsupported value: 'temperature' does not support 0")
         )
+        # Claude Sonnet 5.5's wording (live 400, 2026-11-05).
+        assert providers._is_temperature_unsupported_error(
+            Exception(
+                "Error code: 400 - {'type': 'error', 'error': {'type': "
+                "'invalid_request_error', 'message': '`temperature` is "
+                "deprecated for this model.'}}"
+            )
+        )
         # Names the parameter but reads as a bad-VALUE error.
         assert not providers._is_temperature_unsupported_error(
             Exception("temperature: must be between 0 and 2")
@@ -1093,6 +1102,171 @@ class TestTemperatureUnsupportedFallback:
         assert not providers._is_temperature_unsupported_error(
             Exception("Unsupported parameter: 'top_p'")
         )
+
+
+# The live 400 Claude Sonnet 5.5 returned for a forced tool call (2026-11-05).
+_FORCED_TOOL_REJECTION = (
+    "Error code: 400 - {'type': 'error', 'error': {'type': "
+    "'invalid_request_error', 'message': 'tool_choice: type \"tool\" and "
+    '"any" are not supported for this model.\'}}'
+)
+
+
+class TestAnthropicClaude5Compat:
+    """Structured-output calls on Claude models that reject a forced tool
+    call fall back to tool_choice=auto + an instruction, and every Anthropic
+    call gets the thinking headroom Claude 5 models need."""
+
+    _SCHEMA = {"type": "object", "properties": {"actions": {"type": "array"}}}
+
+    @pytest.fixture(autouse=True)
+    def _fresh_memory(self):
+        providers._FORCED_TOOL_UNSUPPORTED.clear()
+        providers._TEMPERATURE_UNSUPPORTED.clear()
+        yield
+        providers._FORCED_TOOL_UNSUPPORTED.clear()
+        providers._TEMPERATURE_UNSUPPORTED.clear()
+
+    @staticmethod
+    def _fake(monkeypatch):
+        from unittest.mock import MagicMock
+        import sys
+
+        fake_mod = MagicMock(name="anthropic")
+        client = MagicMock()
+        fake_mod.Anthropic.return_value = client
+        block = MagicMock()
+        block.type = "tool_use"
+        block.input = {"actions": []}
+        resp = MagicMock()
+        resp.content = [block]
+        resp.stop_reason = "tool_use"
+        monkeypatch.setitem(sys.modules, "anthropic", fake_mod)
+        return client, resp
+
+    def test_forced_tool_rejection_retries_with_auto_and_instruction(self, monkeypatch):
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.side_effect = [
+            Exception(_FORCED_TOOL_REJECTION),
+            resp,
+        ]
+        out = providers._call_anthropic(
+            "SYS", "u", 800, model="claude-sonnet-5-5", schema=self._SCHEMA
+        )
+        assert json.loads(out) == {"actions": []}
+        first, retry = (c.kwargs for c in client.messages.create.call_args_list)
+        assert first["tool_choice"]["type"] == "tool"
+        assert retry["tool_choice"] == {"type": "auto"}
+        # The cached system block is untouched; the instruction is appended
+        # after it so the cached prefix doesn't change.
+        assert retry["system"][0]["text"] == "SYS"
+        assert retry["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert retry["system"][-1]["text"] == providers._AUTO_TOOL_INSTRUCTION
+        assert "claude-sonnet-5-5" in providers._FORCED_TOOL_UNSUPPORTED
+
+    def test_remembered_model_skips_the_doomed_forced_attempt(self, monkeypatch):
+        client, resp = self._fake(monkeypatch)
+        providers._FORCED_TOOL_UNSUPPORTED.add("claude-sonnet-5-5")
+        client.messages.create.return_value = resp
+        providers._call_anthropic(
+            "SYS", "u", 800, model="claude-sonnet-5-5", schema=self._SCHEMA
+        )
+        assert client.messages.create.call_count == 1
+        sent = client.messages.create.call_args.kwargs
+        assert sent["tool_choice"] == {"type": "auto"}
+        # Exactly one instruction block.
+        texts = [b["text"] for b in sent["system"]]
+        assert texts.count(providers._AUTO_TOOL_INSTRUCTION) == 1
+
+    def test_temperature_and_forced_tool_rejections_both_handled(self, monkeypatch):
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.side_effect = [
+            Exception("Error code: 400 - `temperature` is deprecated for this model."),
+            Exception(_FORCED_TOOL_REJECTION),
+            resp,
+        ]
+        providers._call_anthropic(
+            "SYS",
+            "u",
+            800,
+            model="claude-sonnet-5-5",
+            schema=self._SCHEMA,
+            temperature=0.0,
+        )
+        assert client.messages.create.call_count == 3
+        final = client.messages.create.call_args.kwargs
+        assert "temperature" not in final
+        assert final["tool_choice"] == {"type": "auto"}
+
+    def test_models_that_accept_forced_tools_keep_it(self, monkeypatch):
+        # Sonnet 5 and Haiku 4.5 accepted a forced tool call live.
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.return_value = resp
+        providers._call_anthropic(
+            "SYS", "u", 800, model="claude-haiku-4-5", schema=self._SCHEMA
+        )
+        sent = client.messages.create.call_args.kwargs
+        assert sent["tool_choice"] == {
+            "type": "tool",
+            "name": providers._STRUCTURED_OUTPUT_NAME,
+        }
+        assert len(sent["system"]) == 1
+
+    def test_unrelated_error_propagates(self, monkeypatch):
+        client, _ = self._fake(monkeypatch)
+        client.messages.create.side_effect = RuntimeError("server error")
+        with pytest.raises(RuntimeError, match="server error"):
+            providers._call_anthropic(
+                "SYS", "u", 800, model="claude-sonnet-5-5", schema=self._SCHEMA
+            )
+        assert client.messages.create.call_count == 1
+
+    def test_tool_choice_rejection_without_a_forced_call_propagates(self, monkeypatch):
+        # Plain-text call (no schema, so no tool_choice): nothing to fall back
+        # from, so the error surfaces rather than looping.
+        client, _ = self._fake(monkeypatch)
+        client.messages.create.side_effect = Exception(_FORCED_TOOL_REJECTION)
+        with pytest.raises(Exception, match="tool_choice"):
+            providers._call_anthropic("SYS", "u", 800, model="claude-sonnet-5-5")
+        assert client.messages.create.call_count == 1
+
+    def test_matcher(self):
+        assert providers._is_forced_tool_unsupported_error(
+            Exception(_FORCED_TOOL_REJECTION)
+        )
+        assert not providers._is_forced_tool_unsupported_error(
+            Exception("tool_choice: invalid tool name 'x'")
+        )
+        assert not providers._is_forced_tool_unsupported_error(
+            Exception("`temperature` is not supported")
+        )
+
+    def test_claude5_calls_get_thinking_headroom(self, monkeypatch):
+        # Extraction / verify / dedupe pass small budgets straight through;
+        # Claude 5 models spend thinking from the same budget.
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.return_value = resp
+        providers._call_anthropic(
+            "SYS", "u", 8192, model="claude-sonnet-5-5", schema=self._SCHEMA
+        )
+        assert client.messages.create.call_args.kwargs["max_tokens"] >= 25000
+
+    def test_claude5_resolved_from_llm_model_env_gets_headroom(self, monkeypatch):
+        # The override path: extraction passes no model, LLM_MODEL names a
+        # Claude 5 model.
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.return_value = resp
+        monkeypatch.setenv("LLM_MODEL", "claude-opus-5-5")
+        providers._call_anthropic("SYS", "u", 1024, schema=self._SCHEMA)
+        assert client.messages.create.call_args.kwargs["max_tokens"] >= 25000
+
+    def test_pre_claude5_budget_unchanged(self, monkeypatch):
+        client, resp = self._fake(monkeypatch)
+        client.messages.create.return_value = resp
+        providers._call_anthropic(
+            "SYS", "u", 8192, model="claude-haiku-4-5", schema=self._SCHEMA
+        )
+        assert client.messages.create.call_args.kwargs["max_tokens"] == 8192
 
 
 class TestCallOllama:
@@ -1611,9 +1785,36 @@ class TestEnsureThinkingBudget:
     def test_gemini_keeps_larger_request(self):
         assert providers.ensure_thinking_budget("gemini", "any", 30000) == 30000
 
-    def test_anthropic_unchanged(self):
-        # Extended thinking is opt-in and we don't enable it -> answer-only budget.
-        assert providers.ensure_thinking_budget("anthropic", "claude", 800) == 800
+    def test_unknown_provider_unchanged(self):
+        assert providers.ensure_thinking_budget("someprovider", "m", 800) == 800
+
+    def test_anthropic_pre_claude5_unchanged(self):
+        # These answer directly because we never turn thinking on, so the
+        # budget only has to cover the answer.
+        for model in (
+            "claude-sonnet-4-6",
+            "claude-opus-4-8",
+            "claude-haiku-4-5",
+            "claude",
+            None,
+        ):
+            assert providers.ensure_thinking_budget("anthropic", model, 800) == 800
+
+    def test_anthropic_claude5_bumps(self):
+        # The Claude 5 generation thinks adaptively when `thinking` is omitted,
+        # drawing on max_tokens — Sonnet 5.5 used all 800 tokens of a summary
+        # call thinking and returned no text.
+        for model in (
+            "claude-sonnet-5-5",
+            "claude-sonnet-5",
+            "claude-opus-5-5",
+            "claude-haiku-5-5",
+            "claude-fable-5-1",
+            "claude-mythos-5-1",
+        ):
+            assert (
+                providers.ensure_thinking_budget("anthropic", model, 800) == self.FLOOR
+            )
 
     def test_openai_reasoning_model_bumps(self):
         # gpt-5 reasons by DEFAULT and the reasoning counts toward

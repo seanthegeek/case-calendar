@@ -28,11 +28,11 @@ higher tier.
 | Track | Runs when | Per-provider model (Anthropic / Gemini / OpenAI) |
 | --- | --- | --- |
 | Extraction + verify | Always | Claude Haiku 4.5 / **Gemini 3.1 Flash Lite** / GPT-5.4-nano |
-| Summaries | Opt-in (`case_summaries.enabled`) | **Claude Sonnet 4.6** / Gemini 2.5 Pro / GPT-5.4 |
+| Summaries | Opt-in (`case_summaries.enabled`) | **Claude Sonnet 5.5** / Gemini 2.5 Pro / GPT-5.4 |
 
 The **bold** model in each row is the zero-config default for that track. As of
 0.13.0 the default is a **split**: **Gemini 3.1 Flash Lite for extraction** and
-**Claude Sonnet 4.6 for summaries** (the rest are what you get if you pin that
+**Claude Sonnet 5.5 for summaries** (the rest are what you get if you pin that
 provider). Zero-config auto-detection (you set the API keys, no `LLM_*` env
 vars) wires up exactly this assignment — the numbers below let you decide
 whether a different provider fits your caseload. See
@@ -51,20 +51,30 @@ the one-time cost of onboarding a caseload:
 | --- | --: | --: | --: | --: |
 | OpenAI (GPT-5.4-nano / GPT-5.4) | $1.17 | $0.12 | $1.58 | **$2.87** |
 | Gemini (3.1 Flash Lite / 2.5 Pro) | $1.87 | $0.16 | $1.16 | **$3.19** |
-| **Default** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.87 | $0.16 | $2.51 | **$4.54** |
+| **Default at the time** (Gemini 3.1 Flash Lite / Claude Sonnet 4.6) | $1.87 | $0.16 | $2.51 | **$4.54** |
 | OpenAI (GPT-5.4-mini / GPT-5.4) | $3.94 | $0.44 | $1.78 | **$6.15** |
 | Anthropic (Haiku 4.5 / Sonnet 4.6) | $6.99 | $0.74 | $2.51 | **$10.24** |
 
-The **Default** row is what zero-config gives you — it pairs the two tracks'
-own defaults, Gemini extraction with Anthropic summaries; the single-provider
-rows run one provider on both tracks for comparison. Rows are ordered cheapest
-to priciest backfill.
+The **Default at the time** row is what zero-config gave you when this was
+measured — it pairs the two tracks' own defaults, Gemini extraction with
+Anthropic summaries; the single-provider rows run one provider on both tracks
+for comparison. Rows are ordered cheapest to priciest backfill.
+
+The summary default has since moved from Claude Sonnet 4.6 to **Claude Sonnet
+5.5** (2026-11-05), at about the same cost. Sonnet 5.5's per-token price is a
+third lower, but it counts the same text as more tokens (1.42× on this
+project's filings) and thinks before answering. Regenerating all 39 dockets of
+the November 2026 caseload with Sonnet 5.5 cost **$2.99** (about $0.08 per
+docket); on the 10-docket benchmark it cost $0.71 against Sonnet 4.6's $0.74.
+See
+[SCORECARD Phase 4](https://github.com/seanthegeek/case-calendar/blob/main/model-comparison/SCORECARD.md#phase-4--claude-sonnet-55-vs-sonnet-46-on-the-current-prompt-2026-11-05)
+for the comparison.
 
 The **Extraction** and **Verify** columns are what you pay with summaries off;
 the **Summary** column is the opt-in add-on. Extraction runs roughly
 **$0.04–0.25 per case** (it scales with entry count, so a busy docket costs
 more — the high end is Anthropic's $6.99 over 28 cases), and summaries roughly
-**$0.03–0.07 per docket**. After the backfill,
+**$0.03–0.08 per docket**. After the backfill,
 existing summaries are reused unless a docket gets a new primary document or
 disposition, so ongoing spend is **pennies a week**; the `verify` track (one
 focused call per non-terminal hearing/deadline + the new source-entry-aware

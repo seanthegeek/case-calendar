@@ -8,6 +8,164 @@ adheres to [Semantic Versioning][semver].
 [kac]: https://keepachangelog.com/en/1.1.0/
 [semver]: https://semver.org/spec/v2.0.0.html
 
+## [0.20.0] - 2026-11-05
+
+### Security
+
+- **`oauthlib` 4.0.0 → 4.0.1** (via `google-auth-oauthlib` and
+  `requests-oauthlib`):
+  [GHSA-3jp2-3mrg-2vxc](https://github.com/advisories/GHSA-3jp2-3mrg-2vxc).
+
+### Added
+
+- **Case summaries are checked for statute citations copied from a single
+  filing's typo.** Anthropic's D.C. Circuit petition cites "41 U.S.C. §
+  3252" once, while the case's other filings cite "10 U.S.C. § 3252" 256
+  times, and Claude Sonnet 5.5 repeated the typo in two Anthropic v. DOW
+  summaries. A new check counts how the case's filings cite each U.S. Code
+  section a summary mentions. When the summary uses a title the filings
+  almost never use and another title dominates, the summary is regenerated
+  once with the counts; if the wrong title persists it is kept and a warning
+  is logged rather than deleting the sentence. It applies only to statute
+  citations, because unlike dates or counts they never change over time.
+  Tested against 196 existing summaries, it flagged exactly the two typos.
+
+### Fixed
+
+- **Extraction works on Claude models that reject forced tool calls.**
+  Structured extraction on Anthropic forces one tool call, which Claude
+  Sonnet 5.5 rejects with a 400 error, so every extraction, verify, and
+  dedupe call on that model failed. The call now falls back to letting the
+  model choose the tool, with an instruction to answer only through it, and
+  remembers the model. Models that still accept forced tool calls (Claude
+  Sonnet 5, Haiku 4.5) are unchanged.
+- **Every Claude call gets room for thinking.** Claude 5 models think before
+  answering even when not asked, using up the output budget; the fix for
+  summaries now applies to extraction, verify, and dedupe calls too,
+  including when the model is chosen through `LLM_MODEL`.
+- **A Speedy Trial Act excluded period is no longer saved as a deadline.**
+  An order excluding time "from 5/19/2026 until 10/31/2026" had produced a
+  pending "Speedy Trial Continuance" deadline (us-v-schmitz). Deadline
+  actions that fall on an excluded period's end date and name the trial
+  clock are now dropped; a real filing deadline on the same date is kept.
+- **Procedural orders are no longer sent to the summary model as rulings.**
+  An order or minute entry counted as a "disposition" if any ruling-type
+  word appeared anywhere in it, so custody notes ("remanded to the custody
+  of the U.S. Marshal"), cancelled hearings ("VACATED and RESCHEDULED"),
+  scheduling orders ("Sentencing Hearing is reset"), the standard Rule 5(f)
+  warning, and orders that merely mention a motion ("Amicus briefs in
+  support of the motion for preliminary injunction must be filed by …")
+  were all sent as rulings. Those words now count only in their ruling
+  sense. Across the live store this drops 36 procedural entries and picks up
+  one guilty plea the old rules missed; Anthropic v. DOW's district-court
+  summary now gets just its four rulings instead of seven documents.
+  Existing summaries keep what they were generated from until regenerated.
+  Following Copilot's review: remand rulings that end a sentence ("ORDER
+  granting motion to remand.") and judgment or injunction decisions after a
+  generic title ("ORDER. The motion for preliminary injunction is
+  GRANTED.") are recognized; a judge-signed blank verdict form can't slip
+  back in through its main document's description; ruling forms only the
+  stricter check reads now keep their text and trigger a summary refresh
+  (rules version 2, so the next sync re-checks existing stubs once more);
+  the citation check counts a filing stored under several sibling docket
+  ids once; and a clock-named filing such as a "Speedy Trial Statement" due
+  on an excluded period's end date is kept. A second Copilot round: a
+  sanction actually imposed for a Brady violation ("The indictment is
+  dismissed with prejudice for Brady violations.") is kept as a ruling, while
+  the Rule 5(f) warning of possible sanctions is still ignored (which also
+  drops six procedural minute orders whose warning didn't name Brady); a
+  short description ("Verdict Form") can no longer override a procedural full
+  description; and the one-time stub repair fetches any stub the paged
+  docket walk didn't reach before recording the rules version. A third
+  round: only conditional warning language ("may result in") marks a
+  sentence as boilerplate, so a sanction actually imposed ("dismissed for
+  failure to comply with the Court's order") stays a ruling; "sued" becomes
+  "filed a lawsuit against" only when a defendant follows (not "sued
+  yesterday"); and the stub repair commits each restored entry together with
+  its summary-refresh flag before its next CourtListener request, so it never
+  holds the database's write lock across network calls. Following the fourth
+  review's summary, `sync` now commits before every CourtListener request in
+  its docket loop: a quiet docket's last-filing update, the docket metadata,
+  and the court row had stayed uncommitted into later requests, including the
+  next docket's one-time re-fetch, which could make `serve`'s webhook writes
+  time out.
+- **Jury verdicts reach case summaries, with their real date and outcome.**
+  A returned verdict docketed as "JURY VERDICT as to …" wasn't recognized as
+  a disposition, so sync stored it without its text, it didn't trigger a
+  summary refresh, and the summary model never saw it. At the same time the
+  court's blank verdict form ("Verdict Form. Signed by Judge …"), filed
+  before the jury deliberates, was sent to the model as if it were the
+  verdict. In us-v-ding that made every summary date the verdict to January
+  27 (the form) instead of January 29 and leave out the outcome; it now
+  reads "the jury returned its verdict on January 29, 2026, and Ding was
+  convicted at trial". Verdicts synced before this fix were stored without
+  their text, so the first `case-calendar sync` after upgrading re-fetches
+  each docket's entries from CourtListener once and restores the text of any
+  entry the new rules keep (no LLM calls), then flags the affected summaries
+  for regeneration. This adds a `summary_rules_version` column to the
+  `dockets` table, created automatically on startup; back up the store before
+  upgrading, as for any schema change.
+- **Case summaries no longer fail on Claude Sonnet 5.5.** Two problems
+  stopped `case-calendar summarize` when the summary model was set to
+  `claude-sonnet-5-5`:
+  - The model rejects the `temperature` setting with the message
+    "`temperature` is deprecated for this model", which the
+    retry-without-temperature check didn't recognize, so the call failed
+    instead of retrying.
+  - Claude 5 models think before answering even when thinking isn't
+    requested, and that thinking comes out of the output budget. With
+    the summary's 800-token budget, Sonnet 5.5 used it all thinking and
+    returned no text, which aborted the run. Claude 5 models now get the
+    same larger budget already used for Gemini and OpenAI's reasoning
+    models. It is a limit, not a target, so it costs nothing on calls
+    that need less.
+
+### Changed
+
+- **Summaries keep a foreign link the documents draw.** One benchmark run
+  of Sonnet 5.5 dropped North Korea from both Knoot summaries, though the
+  plea agreement ties Knoot's conduct to North Korea's IT-worker scheme. The
+  prompt's detail-priority list now names a foreign government, group, or
+  country the documents tie the scheme to, attributed to the documents ("a
+  scheme the indictment ties to North Korean IT workers"), and says not to
+  claim the defendant knew of the link unless the documents say so. Knoot's
+  plea agreement says he believed the worker was Chinese. Across the next
+  four runs Sonnet 5.5 kept the link in 8 of 8 Knoot summaries.
+- **Summary links are at least two words.** A one-word link is a small,
+  hard-to-tap target. The 3:26-cv-01996 summary linked just "sued"; it now
+  reads "[filed a lawsuit] against". The prompt asks for two-word links, and
+  a backstop widens any one-word link the model still writes ("after [being
+  sentenced]", "[The indictment] alleged"). Existing summaries change when
+  regenerated.
+- **The default case-summary model is now Claude Sonnet 5.5**
+  (`claude-sonnet-5-5`), replacing Claude Sonnet 4.6. Re-graded on the
+  summary benchmark with the current prompt, Sonnet 5.5 scored A and
+  Sonnet 4.6 scored D: Sonnet 4.6 misdescribed the Ninth Circuit docket in
+  Anthropic v. DOW as the D.C. Circuit petition, ignored the rule for
+  leading an appeal summary, described past hearings as still scheduled,
+  and wrote one summary of 181 words against the 150-word cap. The cost is
+  the same — $0.71 against $0.74 on the 10-docket benchmark, and $2.99 for
+  the 39-docket production caseload. Sonnet 5.5 is supported until at least
+  2027-09-28, against 2027-02-17 for Sonnet 4.6. Existing summaries are not
+  regenerated automatically; run `case-calendar summarize --force` to
+  rewrite them on the new model. To stay on Sonnet 4.6, set
+  `LLM_SUMMARY_MODEL=claude-sonnet-4-6` or `case_summaries.model`. Details
+  are in `model-comparison/SCORECARD.md` (Phase 4).
+- **Tighter case-summary length and detail rules.** The summary prompt now
+  sets a word budget (about 120 words, never more than 150), requires a
+  single paragraph, and ranks what to keep when space runs out: the group,
+  malware, or scheme name, the scale, the defendant's role, a civil
+  plaintiff's allegations, and the sentence come first; routine procedural
+  steps come last. Trialling Sonnet 5.5 on the full caseload, these rules
+  brought its longest summary from 173 words down to 138 (Sonnet 4.6's
+  median is 120), stopped it from splitting summaries into paragraphs, and
+  restored details it had been dropping, such as the Karakurt group name and
+  $56.5 million restitution in us-v-zolotarjovs. The prompt also no longer
+  invites the model to tell readers to "check the docket directly" after a
+  sealing notice. It now also says to copy dollar figures exactly as the
+  documents write them: Sonnet 5.5 had rounded "approximately $258,553.74"
+  to "$258,000", which the grounding check rejected at the cost of a retry.
+
 ## [0.19.7] - 2026-11-05
 
 ### Security

@@ -497,6 +497,268 @@ class TestDispositionDocumentDetection:
     def test_rejects_papers_and_non_dispositions(self, description):
         assert not _is_disposition_document({"description": description})
 
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # us-v-ding #367, verbatim — the returned verdict, jury named first.
+            "JURY VERDICT as to Linwei Ding (1) Guilty on Count 1-4,1s-4s,"
+            "1ss-7ss,5s,6-7,8-14,8s-14s. (exl, COURT STAFF) (Filed on "
+            "1/29/2026) (Entered: 01/29/2026)",
+            "SPECIAL VERDICT as to Acme Corp.",
+            # A returned form docketed without a judge's signature still counts.
+            "VERDICT FORM as to John Doe (1) Guilty on Count 1.",
+        ],
+    )
+    def test_accepts_returned_verdicts(self, description):
+        entry = {"description": description}
+        assert _is_disposition_document(entry)
+        # ...and the broad predicate flips the summary stale on it, and makes
+        # sync keep the entry's body (it used to be stored as a bare stub).
+        assert is_disposition(entry)
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # us-v-ding #361, verbatim — the court's blank form, filed two days
+            # before the jury returned its verdict.
+            "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26. (vclc2, "
+            "COURT STAFF) (Filed on 1/27/2026) (Entered: 01/27/2026)",
+            "Verdict Form signed by District Judge Jane Roe.",
+            "VERDICT FORM. Signed by Senior District Judge John Smith on 3/1/26.",
+        ],
+    )
+    def test_rejects_judge_signed_blank_verdict_form(self, description):
+        entry = {"description": description}
+        assert not _is_disposition_document(entry)
+        # Still a stale signal — a verdict is imminent — just not a document
+        # to hand the summary model as the verdict.
+        assert is_disposition(entry)
+
+    # Procedural orders / minute entries the strict predicate used to accept
+    # because a disposition word appears in a NON-ruling sense. All verbatim
+    # (trimmed) from the live store, 2026-11-05.
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # anthropic-v-dow 3:26-cv-01996 — a ruling word mentioned in passing.
+            "ORDER by Judge Rita F. Lin granting 168 171 173 Motions to File "
+            "Amicus Curiae Briefs. Any further amicus briefs related to the "
+            "summary judgment motions must be filed by June 26, 2026 at 5:00 p.m.",
+            "ORDER. By July 24, 2026, Anthropic shall file a proposed order on its "
+            "166 Motion for Summary Judgment. The proposed order shall be limited "
+            "to the issue of relief.",
+            "ORDER RE AMICUS CURIAE BRIEFS. Amicus briefs in support of the motion "
+            "for preliminary injunction must be filed by 3/13/2026 at 5:00 p.m.",
+            # "remanded" = custody, not an appellate remand.
+            "MINUTE ORDER as to ALEKSEY OLEGOVICH VOLKOV (1) for proceedings held "
+            "before Magistrate Judge Kellie M. Barr on 11/12/2025: The Parties "
+            "appeared for an Initial Appearance. Defendant remanded to the custody "
+            "of the U.S. Marshals pending further proceedings.",
+            "Minute Entry for proceedings held before District Judge Rossie D. "
+            "Alston, Jr: Jury Trial as to Sohaib Akhter held on 5/4/2026. Jury "
+            "Trial cont'd to 5/5/2026. Deft remanded. (Court Reporter: T. Harris)",
+            # "vacated" = a hearing, not a ruling.
+            "MINUTE ORDER as to CHRISTINA CHAPMAN: In light of a conflict in the "
+            "Court's schedule, it is hereby ORDERED that the status hearing set "
+            "for December 6 is VACATED and RESCHEDULED to January 6, 2025.",
+            # "sentencing" = scheduling.
+            "ORDER as to Matthew Isaac Knoot: Sentencing Hearing is reset for "
+            "5/1/2026 at 9:00 AM. Signed by District Judge Eli J. Richardson.",
+            "ORDER as to Artem Aleksandrovych Stryzhak. The 47 Motion for "
+            "Extension of Time to File Sentencing Memorandum and Adjournment "
+            "Request is granted. Sentencing is adjourned to 10/27/2026.",
+            # Rule 5(f) / Brady boilerplate names sanctions it doesn't impose.
+            "ORDER as to Peter Stokes: Initial appearance held on 6/30/2026. "
+            "Failure to comply may result in sanctions, including but not limited "
+            "to exclusion of evidence, adverse jury instructions, a mistrial, "
+            "dismissal of charges, vacatur of a conviction or guilty plea, as "
+            "required by Rule 5(f). Defendant is remanded to the custody of the "
+            "U.S. Marshal.",
+            # An order that is nothing but the Rule 5(f) warning (us-v-didenko).
+            "MINUTE ORDER as to OLEKSANDR DIDENKO: As required by Rule 5(f), the "
+            "United States is ordered to produce all exculpatory evidence, and "
+            "failure to comply may result in sanctions, including exclusion of "
+            "evidence, adverse jury instructions, dismissal of charges and "
+            "contempt proceedings",
+            # A judgment named only as what an appeal is from.
+            "ORDER of US Court of Appeals appointing the Public Defender as to "
+            "Sina Gholinejad regarding 44 Notice of Appeal - Final Judgment.",
+            # Motion-hearing minute entry with "as to <defendant>" before "held".
+            "Minute Entry for proceedings held before Judge Vince Chhabria: Motion "
+            "Hearing as to Linwei Ding held on 6/16/2026 re 394 MOTION for "
+            "Acquittal or, In the Alternative, New Trial. Oral arguments made and "
+            "heard. Court to issue written order.",
+            # The defendant's oath, not an appellate affirmance.
+            "Minute Entry for proceedings held before Chief Judge Richard E. Myers "
+            "II: Arraignment as to Sina Gholinejad held on 5/27/2025. Defendant "
+            "Affirmed - Competent. Plea entered: Not Guilty.",
+            # Copilot (PR #110): with the clerk's stamps intact, "(Entered: ...)"
+            # must not read as a decision on the judgment / injunction a later
+            # sentence mentions. Verbatim from the live store.
+            "ORDER RE AMICUS CURIAE BRIEFS. Amicus briefs in support of the "
+            "motion for preliminary injunction must be filed by 3/13/2026 at 5:00 "
+            "p.m. Amicus briefs oppositions due 3/17/2026 at 5:00 p.m. Signed by "
+            "Judge Rita F. Lin on 3/12/2026. (afm, COURT STAFF) (Filed on "
+            "3/12/2026) (Entered: 03/12/2026)",
+            "ORDER by Judge Rita F. Lin granting 168 171 173 Motions to File "
+            "Amicus Curiae Briefs. Any further amicus briefs related to the "
+            "summary judgment motions must be filed by June 26, 2026 at 5:00 p.m. "
+            "(rfllc3, COURT STAFF) (Filed on 6/11/2026) (Entered: 06/11/2026)",
+        ],
+    )
+    def test_rejects_procedural_entries_with_non_ruling_keywords(self, description):
+        assert not _is_disposition_document({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # Rulings that must still pass, verbatim (trimmed) from the live store.
+            "ORDER GRANTING MOTION FOR PRELIMINARY INJUNCTION 6 . Signed by Judge "
+            "Rita F. Lin on 3/26/2026.",
+            "ORDER ON 166 215 CROSS MOTIONS FOR SUMMARY JUDGMENT; GRANTING 169 "
+            "MOTION TO SUPPLEMENT THE ADMINISTRATIVE RECORD.",
+            "ORDER Granting Ding's Motion for Judgment of Acquittal for Economic "
+            "Espionage Counts. Signed by Judge Vince Chhabria on 8/20/2026.",
+            # Plea forms that used to pass only on their "Sentencing set for" line.
+            "Minute Entry for proceedings held before Judge Pamela K. Chen: "
+            "Arraignment, Initial Appearance and Change of Plea Hearing as to "
+            "Artem Aleksandrovych Stryzhak held on 12/19/2025. Court accepted the "
+            "guilty plea. Sentencing set for 5/6/2026 at 10:30 a.m.",
+            "PAPERLESS Minute Entry for proceedings held before Judge Darrin P. "
+            "Gayles: Change of Plea Hearing as to Erick Ntekereze Prince held on "
+            "11/6/2025. Erick Ntekereze Prince (3) Guilty Count 2. Sentencing "
+            "Hearing set for January 7, 2025 at 2:30 PM.",
+            "Minute Entry for proceedings held before Chief Judge Richard E. Myers "
+            "II: Arraignment as to Sina Gholinejad held on 5/27/2025. Defendant "
+            "Affirmed - Competent - Rule 11 conducted. Plea entered: Guilty.",
+            # The old rules missed this one entirely.
+            "Minute Entry for proceedings held before Judge Michael R. Barrett: "
+            "Change of Plea Hearing as to Deniss Zolotarjovs held on 7/29/2025; "
+            "Counsel present; Defendant enters a guilty plea to Counts 1 and 2.",
+            # A verdict recorded in a minute entry.
+            "Minute Entry for proceedings held before District Judge Rossie D. "
+            "Alston, Jr: Jury Trial as to Sohaib Akhter cont'd on 5/7/2026. The "
+            "jury returned to the courtroom with a verdict of Guilty on Counts 1, "
+            "7, 8; Not Guilty on Count 13. Deft remanded.",
+            # A restitution order.
+            "ORDER as to Christina Chapman (1): Upon consideration of the "
+            "Governments Unopposed Motion for Order of Restitution, Dkt. 48, it is "
+            "hereby ORDERED that the motion is GRANTED and Defendant shall pay "
+            "restitution as specified in the attached Order of Restitution.",
+            # Sentencing that happened.
+            "Minute Entry for proceedings held before District Judge J. Randal "
+            "Hall: Sentencing held on 3/19/2026 for Jason Salazar (1). As to "
+            "Count 1, Def sentenced to 3 years probation.",
+            # A real appellate-style remand still counts.
+            "ORDER granting motion to remand; case remanded to the Superior Court "
+            "of California.",
+            # Copilot (PR #110): remand rulings that end their sentence.
+            "ORDER granting motion to remand.",
+            "ORDER case remanded.",
+            # Copilot (PR #110): a judgment / injunction decided after a
+            # generic title.
+            "ORDER. The motion for preliminary injunction is GRANTED.",
+            "ORDER. Defendant's motion for summary judgment is DENIED.",
+            # Copilot (PR #110, round 2): a sanction actually IMPOSED for a
+            # Brady violation is a ruling, unlike the Rule 5(f) warning.
+            "ORDER as to John Doe: The indictment is dismissed with prejudice "
+            "for Brady violations.",
+            "ORDER as to John Doe: The Court declares a mistrial based on the "
+            "government's Brady violation.",
+            # Copilot (PR #110, round 3): sanctions actually imposed, worded
+            # like the warnings but without conditional language.
+            "ORDER. This action is dismissed for failure to comply with the "
+            "Court's order.",
+            "ORDER imposing sanctions, including dismissal of the indictment.",
+        ],
+    )
+    def test_accepts_rulings_in_their_ruling_sense(self, description):
+        assert _is_disposition_document({"description": description})
+
+    @pytest.mark.parametrize(
+        "description",
+        [
+            # Rule 5(f) warnings whose "dismissal" sentence doesn't itself name
+            # Brady — they slipped past a Brady-keyed boilerplate rule.
+            # Verbatim (trimmed) from the live store.
+            "Minute Entry for proceedings held before Judge Randolph D. Moss: "
+            "Arraignment as to CHRISTINA CHAPMAN (1) held on 5/22/2024. The "
+            "government is reminded of its Brady disclosure obligations. Failure "
+            "to comply could result in dismissal of the indictment or individual "
+            "charges, exclusion of evidence, adverse jury instructions.",
+            "Minute Order for proceedings held before Magistrate Judge Eduardo I. "
+            "Sanchez: granting 13 Defendant's Ore Tenus Motion to Appoint "
+            "Counsel. Sanctions may include, but not limited to, exclusion of "
+            "evidence, adverse jury instructions, dismissal of charges, contempt "
+            "proceedings, if the government fails to comply; possible sanctions "
+            "apply.",
+        ],
+    )
+    def test_rejects_conditional_sanction_warnings(self, description):
+        assert not _is_disposition_document({"description": description})
+
+    def test_short_description_cannot_override_a_procedural_full_description(self):
+        # Copilot (PR #110, round 2): the head prefers short_description.
+        blank = {
+            "description": "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26.",
+            "short_description": "Verdict Form",
+        }
+        assert not _is_disposition_document(blank)
+        real = {
+            "description": "VERDICT FORM as to John Doe (1) Guilty on Count 1.",
+            "short_description": "Verdict Form",
+        }
+        assert _is_disposition_document(real)
+
+    def test_procedural_attachment_descriptions_do_not_qualify(self):
+        # Attachments are judged on their own descriptions, exclusions included.
+        entry = {
+            "description": "NOTICE of filing",
+            "recap_documents": [
+                {"description": "Order re status conference", "attachment_number": 1},
+                {
+                    "description": "Minute Entry: Motion Hearing held re 12 Motion",
+                    "attachment_number": 2,
+                },
+            ],
+        }
+        assert not _is_disposition_document(entry)
+
+    def test_blank_verdict_form_main_document_does_not_override(self):
+        # Copilot (PR #110): a judge-signed blank form whose MAIN document is
+        # described as "Verdict Form" must stay rejected...
+        entry = {
+            "description": "Verdict Form. Signed by Judge Vince Chhabria on 1/27/26.",
+            "recap_documents": [
+                {"description": "Verdict Form", "attachment_number": None}
+            ],
+        }
+        assert not _is_disposition_document(entry)
+        # ...while a separately described attachment still qualifies.
+        entry["recap_documents"].append(
+            {"description": "JUDGMENT as to X", "attachment_number": 1}
+        )
+        assert _is_disposition_document(entry)
+
+    def test_summary_relevance_includes_strict_only_ruling_forms(self):
+        # Copilot (PR #110): forms only the strict check reads must also keep
+        # their body and flag the summary stale. The rules version is bumped
+        # so existing stubs get re-checked.
+        from case_calendar.summary import (
+            SUMMARY_RELEVANCE_RULES_VERSION,
+            is_summary_relevant,
+        )
+
+        entry = {
+            "description": "Minute Entry for proceedings held before Judge "
+            "Michael R. Barrett: Change of Plea Hearing as to Deniss Zolotarjovs "
+            "held on 7/29/2025; Counsel present; Defendant enters a guilty plea "
+            "to Counts 1 and 2."
+        }
+        assert not is_disposition(entry)
+        assert is_summary_relevant(entry)
+        assert SUMMARY_RELEVANCE_RULES_VERSION == 2
+
 
 # ---------------------------------------------------------------------------
 # find_primary_documents
@@ -1942,6 +2204,89 @@ class TestAssignDocumentRefs:
             [{"url": "https://ia/judgment.pdf", "description": "JUDGMENT as to X"}]
         )
         assert link_map["D1"] == "https://ia/judgment.pdf"
+
+
+class TestWidenSingleWordLinks:
+    """One-word links are small tap targets. Cases verbatim (trimmed) from the
+    stored summaries on 2026-11-05."""
+
+    U = "https://ia/doc.pdf"
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            (
+                "Anthropic PBC [sued](U) the U.S. Department of War",
+                "Anthropic PBC [filed a lawsuit](U) against the U.S. Department of War",
+            ),
+            (
+                "after being [sentenced](U) to 72 months",
+                "after [being sentenced](U) to 72 months",
+            ),
+            (
+                "the jury [acquitted](U) him on Count 7",
+                "the [jury acquitted](U) him on Count 7",
+            ),
+            (
+                "and Anthropic sought [rehearing](U) on October 13",
+                "and Anthropic [sought rehearing](U) on October 13",
+            ),
+            (
+                "assessment. The [indictment](U) alleged that",
+                "assessment. [The indictment](U) alleged that",
+            ),
+            (
+                "which the [indictment](U) alleged caused",
+                "which [the indictment](U) alleged caused",
+            ),
+            # "sued" with a defendant named or counted (Copilot, PR #110).
+            ("Acme [sued](U) Beta Inc.", "Acme [filed a lawsuit](U) against Beta Inc."),
+            (
+                "Acme [sued](U) 14 companies.",
+                "Acme [filed a lawsuit](U) against 14 companies.",
+            ),
+        ],
+    )
+    def test_widens(self, before, after):
+        assert summary._widen_single_word_links(
+            before.replace("(U)", f"({self.U})")
+        ) == after.replace("(U)", f"({self.U})")
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            # No object after "sued" — rewriting would leave "against in".
+            "Anthropic [sued](U) in the Northern District of California.",
+            # A conjunction makes a worse link than one word.
+            "convicted and [sentenced](U) to 200 months",
+            # A party's name is never pulled in.
+            "Acme [settled](U) the claims.",
+            # Already two words.
+            "he [was sentenced](U) to 60 months",
+            # Copilot (PR #110): no defendant follows "sued", so no "against".
+            "Acme [sued](U) yesterday.",
+            "Acme [sued](U) Monday.",
+            "Acme, [sued](U) by Beta, appealed.",
+            # Extra whitespace can't backtrack past the check.
+            "Acme [sued](U)  in the Northern District.",
+        ],
+    )
+    def test_leaves_alone(self, text):
+        text = text.replace("(U)", f"({self.U})")
+        assert summary._widen_single_word_links(text) == text
+
+    def test_capitalized_sued_keeps_capital(self):
+        assert summary._widen_single_word_links(f"[Sued]({self.U}) the city.") == (
+            f"[Filed a lawsuit]({self.U}) against the city."
+        )
+
+    def test_applied_when_resolving_document_links(self):
+        out = _resolve_document_links(
+            "Anthropic PBC [sued](doc:D1) the Department.", {"D1": self.U}
+        )
+        assert (
+            out == f"Anthropic PBC [filed a lawsuit]({self.U}) against the Department."
+        )
 
 
 class TestResolveDocumentLinks:
@@ -5322,6 +5667,306 @@ class TestStaleEventDateGuardEndToEnd:
         row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
         assert row is not None
         assert len(calls) == 1  # in agreement with the scaffold -> no retry
+
+
+# Corpus shaped like the Anthropic v. DOW D.C. Circuit docket: one filing's
+# typo ("41 U.S.C. § 3252") among many correct citations under title 10.
+_TYPO_CORPUS = (
+    "Hegseth invoked the authority under 41 U.S.C. § 3252. "
+    + "The designation under 10 U.S.C. § 3252 was unlawful. " * 12
+    + "Anthropic also challenges the notice under 41 U.S.C. § 4713."
+)
+
+
+class TestCitationAudit:
+    """Tier-6 detection — `_audit_summary_citations` flags a U.S. Code
+    citation whose title the documents almost never use for that section."""
+
+    def test_repeated_citation_in_summary_is_reported_once(self):
+        out = summary._audit_summary_citations(
+            "It cites 41 U.S.C. § 3252 and again 41 U.S.C. § 3252.",
+            source_text=_TYPO_CORPUS,
+        )
+        assert len(out) == 1
+
+    def test_flags_typo_title_against_dominant_title(self):
+        out = summary._audit_summary_citations(
+            "The Secretary acted under 41 U.S.C. § 3252.", source_text=_TYPO_CORPUS
+        )
+        assert len(out) == 1
+        assert "41 U.S.C. § 3252" in out[0]
+        assert "title 10 12 times" in out[0]
+
+    def test_majority_title_is_silent(self):
+        assert (
+            summary._audit_summary_citations(
+                "The Secretary acted under 10 U.S.C. § 3252.",
+                source_text=_TYPO_CORPUS,
+            )
+            == []
+        )
+
+    def test_title_never_cited_for_section_needs_only_the_minimum(self):
+        # The Ninth Circuit docket shape: title 10 cited a few times, the
+        # summary's title 41 never — the ratio is unbounded, so the minimum
+        # alone decides.
+        corpus = "Designated under 10 U.S.C. § 3252. " * 3
+        assert summary._audit_summary_citations(
+            "Challenges a designation under 41 U.S.C. § 3252.", source_text=corpus
+        )
+        assert (
+            summary._audit_summary_citations(
+                "Challenges a designation under 41 U.S.C. § 3252.",
+                source_text="Designated under 10 U.S.C. § 3252. " * 2,
+            )
+            == []
+        )
+
+    def test_two_genuine_titles_for_one_section_are_silent(self):
+        # Both titles cited often -> the summary's title isn't rare.
+        corpus = "Under 18 U.S.C. § 1001. " * 6 + "Under 26 U.S.C. § 1001. " * 6
+        assert (
+            summary._audit_summary_citations(
+                "Charged under 26 U.S.C. § 1001.", source_text=corpus
+            )
+            == []
+        )
+
+    def test_not_lopsided_enough_is_silent(self):
+        # Title 41 cited twice, title 10 only 15 times: 15 < 10 × 2.
+        corpus = "41 U.S.C. § 3252. " * 2 + "10 U.S.C. § 3252. " * 15
+        assert (
+            summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+            == []
+        )
+
+    def test_ocr_noise_is_not_read_as_a_title(self):
+        # "110 U.S.C." (OCR noise) must not count as title 10; with no real
+        # title-10 citations there is no dominant alternative to flag against.
+        corpus = "110 U.S.C. § 3252. " * 20 + "41 U.S.C. § 3252."
+        assert (
+            summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+            == []
+        )
+
+    def test_section_absent_from_documents_is_silent(self):
+        # A citation the documents don't mention at all is not this guard's
+        # concern (nothing to compare it against).
+        assert (
+            summary._audit_summary_citations(
+                "Charged under 18 U.S.C. § 1030.", source_text=_TYPO_CORPUS
+            )
+            == []
+        )
+
+    def test_whitespace_and_double_section_sign_variants_match(self):
+        corpus = "10 U. S. C. §§ 3252 and more. " * 5
+        assert summary._audit_summary_citations("41 U.S.C. § 3252", source_text=corpus)
+
+    def test_empty_inputs_are_silent(self):
+        assert summary._audit_summary_citations("", source_text=_TYPO_CORPUS) == []
+        assert summary._audit_summary_citations("41 U.S.C. § 3252") == []
+
+
+class TestCitationGuardEndToEnd:
+    """Tier-6 retry-then-keep through summarize_docket: a typo'd title is
+    retried once with the counts; if it persists the summary is KEPT (never
+    stripped — the citation is usually in the lead sentence) with a WARNING."""
+
+    def test_retry_clears_typo(self, store, patch_pdf, monkeypatch, caplog):
+        import logging
+
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "title 10 12 times" in calls[1].get("correction", "")
+        assert row["summary"] == (
+            "Anthropic challenges a designation under 10 U.S.C. § 3252."
+        )
+        assert any("almost never use" in r.message for r in caplog.records)
+
+    def test_persistent_typo_is_kept_not_stripped(
+        self, store, patch_pdf, monkeypatch, caplog
+    ):
+        import logging
+
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        text = "Anthropic challenges a designation under 41 U.S.C. § 3252."
+        calls = _queue_llm(monkeypatch, text)
+        with caplog.at_level(logging.WARNING):
+            row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert row["summary"] == text
+        assert any(
+            "STILL cited a statute under a minority title" in r.message
+            for r in caplog.records
+        )
+
+    def test_correct_citation_no_retry(self, store, patch_pdf, monkeypatch):
+        cl, case = _indictment_case(store, patch_pdf, primary_text=_TYPO_CORPUS)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1
+
+    @staticmethod
+    def _typo_only_in_model_input(store, patch_pdf, *, sibling_brief: bool):
+        """The real shape: the filing the model reads carries the one typo,
+        and the filings that cite the section correctly sit elsewhere in the
+        case (here a stored brief on a sibling docket)."""
+        cl, case = _indictment_case(
+            store,
+            patch_pdf,
+            primary_text="PETITION. Hegseth invoked authority under 41 U.S.C. § 3252.",
+        )
+        if sibling_brief:
+            store.mark_entry(
+                2,
+                20,
+                "2024-02-01T00:00:00Z",
+                "fp-brief",
+                description="BRIEF",
+                recap_documents=[
+                    {"id": 600, "plain_text": "Under 10 U.S.C. § 3252. " * 5}
+                ],
+            )
+            case = _Case(
+                case_id=case.case_id, name=case.name, dockets=[1, 2], calendar="cyber"
+            )
+        return cl, case
+
+    def test_counts_the_whole_case_not_just_the_model_input(
+        self, store, patch_pdf, monkeypatch
+    ):
+        cl, case = self._typo_only_in_model_input(store, patch_pdf, sibling_brief=True)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+            "Anthropic challenges a designation under 10 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 2
+        assert "title 10 5 times" in calls[1].get("correction", "")
+        assert "10 U.S.C. § 3252" in row["summary"]
+
+    def test_no_evidence_elsewhere_no_retry(self, store, patch_pdf, monkeypatch):
+        # Without the case's other filings, a lone citation in the model's
+        # input has nothing to be outvoted by — the guard stays silent.
+        cl, case = self._typo_only_in_model_input(store, patch_pdf, sibling_brief=False)
+        calls = _queue_llm(
+            monkeypatch,
+            "Anthropic challenges a designation under 41 U.S.C. § 3252.",
+        )
+        row = summarize_docket(cl=cl, store=store, case=case, docket_id=1)
+        assert row is not None
+        assert len(calls) == 1
+
+
+class TestCaseCitationCorpus:
+    """`_case_citation_corpus` — every stored filing on the case's dockets,
+    each counted once, plus operator-supplied documents and notes."""
+
+    def _entry(self, store, docket_id, entry_id, text, *, description="BRIEF"):
+        store.mark_entry(
+            docket_id,
+            entry_id,
+            "2024-01-01T00:00:00Z",
+            f"fp-{entry_id}",
+            description=description,
+            recap_documents=[{"id": entry_id * 10, "plain_text": text}],
+        )
+
+    def test_collects_descriptions_and_document_text_across_dockets(self, store):
+        self._entry(store, 1, 10, "first brief text")
+        self._entry(store, 2, 20, "second brief text", description="ORDER")
+        out = summary._case_citation_corpus(store, [1, 2])
+        for part in ("first brief text", "second brief text", "BRIEF", "ORDER"):
+            assert part in out
+
+    def test_repeated_docket_ids_are_counted_once(self, store):
+        self._entry(store, 1, 10, "Under 10 U.S.C. § 3252.")
+        out = summary._case_citation_corpus(store, [1, 1, 1])
+        assert out.count("10 U.S.C. § 3252") == 1
+
+    def test_includes_operator_documents_and_notes(self, store):
+        out = summary._case_citation_corpus(
+            store,
+            [],
+            [{"text": "operator doc text", "operator_note": "operator note text"}],
+        )
+        assert "operator doc text" in out
+        assert "operator note text" in out
+
+    def test_empty_case_is_empty(self, store):
+        assert summary._case_citation_corpus(store, [9]) == ""
+
+    def test_one_filing_on_sibling_docket_ids_counts_once(self, store):
+        # Copilot (PR #110): CourtListener can split one PACER docket into
+        # several ids, storing the same filing (same entry number) under each.
+        # The typo must count once, or three copies pass the minority cap and
+        # disable the retry. The fullest copy is kept.
+        meta = {"docket_number": "1:25-cr-00307", "court_id": "vaed"}
+        for docket_id in (1, 2, 3):
+            store.upsert_docket_meta(docket_id, meta)
+        for docket_id, eid in ((1, 10), (2, 20), (3, 30)):
+            store.mark_entry(
+                docket_id,
+                eid,
+                "2026-01-01",
+                f"fp{eid}",
+                entry_number=5,
+                description="PETITION",
+                recap_documents=[{"id": eid, "plain_text": "under 41 U.S.C. § 3252"}],
+            )
+        # A fuller copy of a DIFFERENT entry number is its own filing.
+        store.mark_entry(
+            2,
+            21,
+            "2026-01-01",
+            "fp21",
+            entry_number=6,
+            description="BRIEF",
+            recap_documents=[{"id": 21, "plain_text": "under 10 U.S.C. § 3252"}],
+        )
+        out = summary._case_citation_corpus(store, [1, 2, 3])
+        assert out.count("41 U.S.C. § 3252") == 1
+        assert out.count("10 U.S.C. § 3252") == 1
+
+    def test_fullest_sibling_copy_is_kept(self, store):
+        meta = {"docket_number": "1:25-cr-00307", "court_id": "vaed"}
+        store.upsert_docket_meta(1, meta)
+        store.upsert_docket_meta(2, meta)
+        store.mark_entry(
+            1,
+            10,
+            "2026-01-01",
+            "a",
+            entry_number=5,
+            description="X",
+            recap_documents=[],
+        )
+        store.mark_entry(
+            2,
+            20,
+            "2026-01-01",
+            "b",
+            entry_number=5,
+            description="X",
+            recap_documents=[{"id": 20, "plain_text": "full text here"}],
+        )
+        assert "full text here" in summary._case_citation_corpus(store, [1, 2])
 
 
 class TestRestitutionUnreadableDetector:

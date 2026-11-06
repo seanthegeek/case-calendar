@@ -84,6 +84,12 @@ _DISPOSITION_RE = re.compile(
         | FINAL\sJUDGMENT
         | VERDICT\sFORM
         | VERDICT
+        # The returned verdict is often docketed with the jury named first —
+        # "JURY VERDICT as to Linwei Ding (1) Guilty on Count ..." (us-v-ding
+        # #367). Without this it matched neither this pattern nor the
+        # document-head pattern, so the verdict never reached the summary
+        # model and never flipped the summary stale.
+        | (?:JURY|SPECIAL)\s+VERDICT
         | ORDER\sOF\sDISMISSAL
         | ORDER\sGRANTING\sMOTION\sTO\sDISMISS
         | STIPULATION\sOF\sDISMISSAL
@@ -219,12 +225,159 @@ def _matches_disposition_broad(text: str) -> bool:
     return bool(_DISPOSITION_KEYWORD_RE.search(text))
 
 
+# --- Ruling vocabulary for the STRICT predicate ------------------------------
+# An entry headed ORDER / MINUTE ENTRY / CLERK'S NOTES is a disposition
+# document only if it records a RULING. The broad keyword list above can't
+# tell, because its words also have non-ruling senses that clerks use all the
+# time; measured on 2026-11-05, about 40 of the 100 entries the strict
+# predicate accepted through the keyword route were procedural. These were
+# sent to the summary model as "dispositions" — the us-v-ding verdict and the
+# anthropic-v-dow "file a proposed order by July 24" sentence both came from
+# documents picked this way. The broad predicate keeps its list unchanged:
+# an extra stale flag only costs a refresh.
+
+# Boilerplate sentences that warn of POSSIBLE sanctions without imposing
+# any — the Rule 5(f) / Brady / Due Process Protections Act warning in many
+# minute orders ("Failure to comply may result in sanctions, including ... a
+# mistrial, dismissal of charges ..."). Keyed on the conditional warning
+# itself, not on naming Brady: a sentence that IMPOSES a sanction ("The
+# indictment is dismissed with prejudice for Brady violations.") is a ruling
+# and stays (Copilot, PR #110). Only CONDITIONAL language marks a warning —
+# "failure to comply" or "sanctions, including" alone also appear in rulings
+# ("This action is dismissed for failure to comply with the Court's order.",
+# "ORDER imposing sanctions, including dismissal of the indictment.").
+_RULING_BOILERPLATE_SENTENCE_RE = re.compile(
+    r"\b(?:may|could|might|can|will)\s+(?:also\s+)?(?:result|lead)\s+in\b"
+    r"|\b(?:may|could|might|can)\s+(?:also\s+)?include\b"
+    r"|\bpossible\s+(?:sanctions|consequences)\b"
+    r"|\bif\s+the\s+(?:government|united\s+states|prosecution)\s+fails?\b",
+    re.IGNORECASE,
+)
+
+# Words that count anywhere in the entry, each in its RULING sense only.
+_RULING_KEYWORD_RE = re.compile(
+    r"""\b(?:
+        # Sentencing that HAPPENED — not "Sentencing set for", "sentencing
+        # is adjourned / reset / continued", or a sentencing memorandum.
+        sentencing\s+(?:hearing\s+)?held
+        | sentenced\s+to
+        | sentence\s+(?:imposed|with\s+psr\s+hearing\s+held)
+        | mistrials?
+        | acquit(?:tals?|ted)
+        | forfeitures?
+        | nolle\s+pros(?:equi|sed)
+        # Pleas — including the forms change-of-plea minute entries use,
+        # which used to pass only on their "Sentencing set for" line.
+        | pled\s+guilty
+        | pleads?\s+guilty
+        | plea\s+of\s+guilty
+        | (?<!not\s)guilty\s+plea
+        | plea\s+entered\b(?![^.;]{0,60}\bnot\s+guilty)[^.;]{0,60}\bguilty
+        # The clerk's plea notation: "Erick Ntekereze Prince (3) Guilty Count
+        # 2" (an arraignment's "(1) Not Guilty Count ..." doesn't match).
+        | (?<=\)\s)guilty\s+(?:on\s+)?counts?
+        # A verdict recorded in a minute entry: "returned to the courtroom
+        # with a verdict of Guilty on Counts 1, 7, 8" (us-v-akhter #133).
+        | verdicts?\s+of\s+(?:not\s+)?guilty
+        # A restitution order: "Defendant shall pay restitution as specified
+        # in the attached Order of Restitution" (us-v-chapman #49).
+        | order\s+of\s+restitution
+        | pay\s+restitution
+        | (?:report\s+and\s+recommendations?|r&r)\s+on\s+
+          (?:plea\s+of\s+guilty|change\s+of\s+plea)
+        | class\s+certification
+        # An appellate / jurisdictional remand — not "remanded to the custody
+        # of the U.S. Marshal" or a bare "Deft remanded."
+        | remand(?:ed)?\b(?!\s*[.,;]|\s*$|\s+(?:in)?to\s+(?:the\s+)?(?:custody|
+          u\.?\s*s\.?\s*marshal|marshal|attorney\s+general|bop))
+        # ...and remand rulings that end their sentence, which the lookahead
+        # above would otherwise reject ("ORDER granting motion to remand.",
+        # "ORDER case remanded."). A custody note never names a motion to
+        # remand or a case / action / matter being remanded.
+        | motions?\s+to\s+remand
+        | (?:case|action|matter|proceeding)s?\s+(?:is\s+|are\s+|was\s+|be\s+)?
+          (?:hereby\s+)?remanded
+        | entry\s+of\s+default
+        | decrees?
+        | dismiss(?:al|als|ed)
+        | mandates?
+        # Not the defendant's oath ("Defendant Affirmed - Competent").
+        | (?<!defendant\s)(?<!deft\s)affirm(?:s|ed|ance|ances)?
+        | reversed
+        # Vacating a ruling — not a vacated hearing, trial date, or order.
+        | (?:judgment|conviction|sentence|verdict|plea)s?\b[^.;]{0,60}\bvacated
+        | vacat(?:ed|es|ing)\s+(?:the\s+)?
+          (?:judgment|conviction|sentence|verdict|plea)
+    )\b""",
+    re.IGNORECASE | re.VERBOSE,
+)
+
+# Words that count only in the entry's TITLE (its first sentence): an order
+# granting / denying / on a motion for judgment or an injunction names it
+# there ("ORDER GRANTING MOTION FOR PRELIMINARY INJUNCTION"), while a
+# procedural order mentions it later in passing ("ORDER RE AMICUS CURIAE
+# BRIEFS. Amicus briefs in support of the motion for preliminary injunction
+# must be filed by ..."; "ORDER. By July 24, 2026, Anthropic shall file a
+# proposed order on its Motion for Summary Judgment ...").
+_RULING_TITLE_KEYWORD_RE = re.compile(
+    r"\b(?:judg(?:e)?ments?|injunctions?|tros?|temporary\s+restraining\s+orders?)\b",
+    re.IGNORECASE,
+)
+
+# A title that names a judgment only as what an appeal is FROM.
+_RULING_TITLE_NON_RULING_RE = re.compile(
+    r"notice\s+of\s+appeal\s*[-–—:]?\s*(?:final\s+)?judg(?:e)?ment",
+    re.IGNORECASE,
+)
+
+# Decision language that lets a judgment / injunction word count outside the
+# title: the sentence must decide it, not just mention it.
+_RULING_DECISION_RE = re.compile(
+    r"\b(?:grant(?:s|ed|ing)?|den(?:y|ies|ied|ying)|enter(?:s|ed|ing)?|"
+    r"issue(?:s|d)?|issuing)\b",
+    re.IGNORECASE,
+)
+# The clerk's docketing stamps — "(Entered: 06/11/2026)", "(Filed on
+# 6/11/2026)" — are stripped before looking for decision language: "Entered"
+# there is when the entry was docketed, not a ruling (it re-admitted the
+# anthropic-v-dow amicus orders #55 / #177 in an early draft of this check).
+_CLERK_STAMP_RE = re.compile(r"\((?:entered|filed(?:\s+on)?)\b[^)]*\)", re.IGNORECASE)
+
+
+def _records_ruling(text: str) -> bool:
+    """True when an order / minute-entry description records a ruling, using
+    the ruling senses of the disposition vocabulary (see the regexes above)."""
+    sentences = [
+        s
+        for s in _split_sentences(text)
+        if not _RULING_BOILERPLATE_SENTENCE_RE.search(s)
+    ]
+    if not sentences:
+        return False
+    if _RULING_KEYWORD_RE.search(" ".join(sentences)):
+        return True
+    title = _RULING_TITLE_NON_RULING_RE.sub(" ", sentences[0])
+    if _RULING_TITLE_KEYWORD_RE.search(title):
+        return True
+    # Past the title, a judgment / injunction word counts only in a sentence
+    # that also decides it ("ORDER. The motion for preliminary injunction is
+    # GRANTED.") — not one that merely refers to it ("... shall file a
+    # proposed order on its Motion for Summary Judgment", "Amicus briefs in
+    # support of the motion for preliminary injunction must be filed by").
+    later = (_CLERK_STAMP_RE.sub(" ", s) for s in sentences[1:])
+    return any(
+        _RULING_TITLE_KEYWORD_RE.search(s) and _RULING_DECISION_RE.search(s)
+        for s in later
+    )
+
+
 def _matches_disposition_document(text: str) -> bool:
     """Strict disposition-document classifier — picks the documents the
     LLM document set should include. Rejects motions / briefs / status
     reports / notices-of-filing that mention disposition vocabulary in
     passing; accepts actual orders / judgments / minute-entries-of-
-    decision whose head IS a disposition phrase.
+    decision whose head IS a disposition phrase, or that record a ruling
+    (:func:`_records_ruling`).
     """
     text = (text or "").strip()
     if not text:
@@ -237,7 +390,7 @@ def _matches_disposition_document(text: str) -> bool:
         return True
     if not _DISPOSITION_DOCUMENT_HEAD_RE.match(text):
         return False
-    return bool(_DISPOSITION_KEYWORD_RE.search(text))
+    return _records_ruling(text)
 
 
 # ---------------------------------------------------------------------------
@@ -296,6 +449,39 @@ def is_disposition(entry: dict[str, Any]) -> bool:
     return _entry_matches(entry, _matches_disposition_broad)
 
 
+# Version of the rules sync uses to decide whether an entry the hearing filter
+# skipped keeps its body anyway (`is_summary_relevant`). Sync stores every
+# other entry as a fingerprint-only stub and never revisits it, so when these
+# rules start accepting entries they used to reject, existing stores keep the
+# old stubs. Bump this whenever is_primary_document / is_disposition change in
+# a way that accepts more entries: on its next sync each docket re-fetches its
+# entries once and restores the body of any stub that now qualifies
+# (CaseSyncer._repair_stub_bodies).
+#   1 — "JURY VERDICT as to …" accepted (us-v-ding #367 had been stored as a
+#       stub, so the summary model never saw the returned verdict).
+#   2 — anything the strict disposition-document check accepts, which now
+#       includes plea / verdict / restitution forms the broad check misses
+#       ("Defendant enters a guilty plea", "(3) Guilty Count 2").
+SUMMARY_RELEVANCE_RULES_VERSION = 2
+
+
+def is_summary_relevant(entry: dict[str, Any]) -> bool:
+    """True when the summary pipeline needs this entry's body: a primary
+    document or a disposition. Sync keeps these entries' bodies even when the
+    hearing filter skips them, and flags the summary stale on them.
+
+    Includes the strict :func:`_is_disposition_document` as well as the broad
+    :func:`is_disposition`: the strict check reads some ruling forms the broad
+    keyword list doesn't ("Defendant enters a guilty plea to Counts 1 and 2"),
+    and an entry the summary model would be handed must also keep its body
+    and trigger a refresh."""
+    return (
+        is_primary_document(entry)
+        or is_disposition(entry)
+        or _is_disposition_document(entry)
+    )
+
+
 # Stricter sibling used by ``find_primary_documents`` to pick the documents
 # that the case-summary LLM actually reads. ``is_disposition`` (above) is
 # intentionally broad — a "Motion for Preliminary Injunction" matches because
@@ -352,7 +538,9 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
         # sentencings / verdicts, which ARE dispositions). Keys off the
         # "Motion Hearing re: …" / "Motion Hearing held on …" phrasing
         # that CourtListener clerks use for the procedural recording.
-        motion\s+hearing\s+(?:re:?|held|on)
+        # ...including "Motion Hearing as to <defendant> held on ..." (us-v-ding
+        # #429 / #436), which the bare form missed.
+        motion\s+hearing\s+(?:as\s+to\s+[^.;]{1,80}?\s+)?(?:re:?|held|on)
         # Case-schedule orders that reference upcoming dispositive motions
         # ("Motion for Summary Judgment due 6/10/2026") — these have
         # disposition vocabulary in passing but the order itself is
@@ -370,13 +558,53 @@ _DISPOSITION_DOCUMENT_NEGATIVE_RE = re.compile(
         | continu(?:e|ing|ed|ance)\s+(?:sentencing|hearing|trial)
         # Notices of sentencing / hearing dates — also procedural.
         | notice\s+of\s+(?:sentencing|hearing)\s+date
+        # The court's verdict form, signed by the JUDGE — the blank form the
+        # jury takes into deliberations, not the verdict it returns (which
+        # the foreperson signs). "Verdict Form. Signed by Judge Vince Chhabria
+        # on 1/27/26." (us-v-ding #361) reached the summary model in place of
+        # the returned "JURY VERDICT" two days later (#367), so the summary
+        # dated the verdict to the form's filing and could not state the
+        # outcome. A returned form docketed as plain "VERDICT FORM" carries
+        # no judge's signature and is still accepted.
+        | verdict\s+form\b[^.]{0,80}\.?\s*signed\s+by\s+
+          (?:(?:the\s+)?(?:chief\s+|district\s+|magistrate\s+|senior\s+)*judge)
     )""",
     re.IGNORECASE | re.VERBOSE,
 )
 
 
 def _is_disposition_document(entry: dict[str, Any]) -> bool:
-    return _entry_matches(entry, _matches_disposition_document)
+    """Strict entry-level check: the entry's head, or one of its
+    recap_documents' descriptions, reads as a ruling.
+
+    When the head is rejected as PROCEDURAL (one of the strict negative
+    patterns — a judge-signed blank verdict form, a motion-hearing minute
+    entry, a scheduling order), the MAIN document (no attachment number) is
+    that same filing, so its own terser description ("Verdict Form") must not
+    override the rejection. Attachments carry their own descriptions and can
+    still qualify independently (a substance document filed under a
+    procedural parent).
+
+    The procedural check reads the FULL description as well as the head:
+    ``_entry_description_head`` prefers the short description, so a terse
+    short heading ("Verdict Form") must not override a full description that
+    is procedural ("Verdict Form. Signed by Judge ..." — Copilot, PR #110)."""
+    head = _entry_description_head(entry)
+    full = (entry.get("description") or "").strip()
+    procedural = any(
+        _DISPOSITION_NEGATIVE_RE.search(t)
+        or _DISPOSITION_DOCUMENT_NEGATIVE_RE.search(t)
+        for t in (head, full)
+        if t
+    )
+    if not procedural and _matches_disposition_document(head):
+        return True
+    for rd in entry.get("recap_documents") or []:
+        if procedural and not rd.get("attachment_number"):
+            continue
+        if _matches_disposition_document(rd.get("description") or ""):
+            return True
+    return False
 
 
 def is_summary_document(entry: dict[str, Any]) -> bool:
@@ -2080,10 +2308,138 @@ def _restitution_amount_unreadable(
     )
 
 
+# Tier 6 — a U.S. Code citation the documents almost never use. A citation
+# names the same law in every filing, so unlike dates, counts, or sentences
+# (where the LATEST document is right even when older ones outnumber it), a
+# title the model took from one filing's typo can be checked against how the
+# rest of the documents cite the same section. Canonical case: Anthropic's
+# D.C. Circuit petition says "41 U.S.C. § 3252" once, while that docket's
+# other filings say "10 U.S.C. § 3252" 122 times; Claude Sonnet 5.5 repeated
+# the typo (SCORECARD Phase 4). Only U.S. Code citations are checked —
+# structured, unchanging identifiers — and only lopsided splits fire.
+#
+# The title is one or two digits (the U.S. Code has 54 titles); the leading
+# \b keeps OCR noise like "110 U.S.C." from being read as title 10, and that
+# noise only ever adds rare variants, which matter only if the summary cites
+# one. The section keeps an optional letter suffix ("1030A") and drops any
+# subsection.
+_GUARD_USC_RE = re.compile(
+    r"\b(\d{1,2})\s*U\.\s*S\.\s*C\.\s*(?:A\.\s*)?§+\s*(\d+[A-Za-z]?)\b"
+)
+# Fire only when the summary's title is rare for that section (at most
+# _CITATION_MINORITY_MAX citations) AND another title is cited for it at least
+# _CITATION_MAJORITY_MIN times and _CITATION_MAJORITY_RATIO times as often. A
+# section genuinely cited under two titles in one case has both counts high
+# and stays silent. When the documents never cite the summary's title for the
+# section (zero), the ratio is unbounded, so only the minimum applies — that
+# is the Ninth Circuit docket's case (title 10 cited 4 times, title 41 never;
+# the summary took the typo from the related D.C. Circuit petition). Tuned on
+# 2026-11-05 against 196 summaries from the production store and the
+# benchmark: these values flag exactly the two § 3252 typos and nothing else.
+_CITATION_MINORITY_MAX = 2
+_CITATION_MAJORITY_MIN = 3
+_CITATION_MAJORITY_RATIO = 10
+
+
+def _case_citation_corpus(
+    store: Store,
+    docket_ids: Iterable[int],
+    extra_documents: Optional[list[dict[str, Any]]] = None,
+) -> str:
+    """Text of every stored filing on the case's dockets, plus operator-
+    supplied documents and notes (which never reach the store) — the evidence
+    :func:`_audit_summary_citations` counts citations over.
+
+    Deliberately wider than the summary's own inputs: the summarizer sends a
+    few primary / disposition documents, and a typo can sit in exactly those
+    (Anthropic's D.C. Circuit petition was the only document on its summary
+    call, and it carried the one "41 U.S.C. § 3252"), while the briefs and
+    orders that cite the section correctly are elsewhere on the docket.
+
+    Each filing is counted ONCE, so a typo isn't inflated past the minority
+    threshold. That includes copies across sibling CourtListener docket ids:
+    CourtListener can split one PACER docket into several ids (12 logical
+    dockets in the live store on 2026-11-05, with 230 entries stored more
+    than once), so entries are keyed by logical docket (docket_number,
+    court_id) plus entry number, keeping the copy with the most text.
+    Entries without a number fall back to their own id.
+    """
+    copies: dict[tuple[Any, ...], tuple[int, str]] = {}
+    for docket_id in dict.fromkeys(docket_ids):
+        meta = store.get_docket_meta(docket_id) or {}
+        logical = (meta.get("docket_number"), meta.get("court_id"))
+        for entry in store.get_entries_with_body(docket_id):
+            text = "\n".join(
+                [entry.get("description") or ""]
+                + [
+                    rd.get("plain_text") or ""
+                    for rd in entry.get("recap_documents") or []
+                ]
+            )
+            number = entry.get("entry_number")
+            key: tuple[Any, ...] = (
+                (*logical, number)
+                if number is not None and all(logical)
+                else ("entry", docket_id, entry.get("id"))
+            )
+            if key not in copies or len(text) > copies[key][0]:
+                copies[key] = (len(text), text)
+    parts = [text for _, text in copies.values()]
+    for doc in extra_documents or []:
+        parts += [doc.get("text") or "", doc.get("operator_note") or ""]
+    return "\n".join(p for p in parts if p)
+
+
+def _audit_summary_citations(text: str, *, source_text: str = "") -> list[str]:
+    """Return findings for U.S. Code citations whose title the case's filings
+    almost never use for that section, while consistently citing another.
+
+    ``source_text`` is the corpus to count over — in the pipeline, the whole
+    case's filings (:func:`_case_citation_corpus`), not just the summary's own
+    inputs. Detection only; :func:`_generate_guarded_summary` retries once and,
+    if the citation persists, keeps the summary with a WARNING. It never
+    strips: the citation usually sits in the summary's lead sentence, and
+    losing that sentence is worse than a wrong title.
+    """
+    if not text or not source_text:
+        return []
+    corpus = re.sub(r"\s+", " ", source_text)
+    by_section: dict[str, dict[int, int]] = {}
+    for m in _GUARD_USC_RE.finditer(corpus):
+        titles = by_section.setdefault(m.group(2).upper(), {})
+        title = int(m.group(1))
+        titles[title] = titles.get(title, 0) + 1
+    out: list[str] = []
+    seen: set[tuple[int, str]] = set()
+    for m in _GUARD_USC_RE.finditer(text):
+        title, section = int(m.group(1)), m.group(2).upper()
+        if (title, section) in seen:
+            continue
+        seen.add((title, section))
+        titles = by_section.get(section, {})
+        mine = titles.get(title, 0)
+        others = [(n, t) for t, n in titles.items() if t != title]
+        if not others:
+            continue
+        top_count, top_title = max(others)
+        if (
+            mine <= _CITATION_MINORITY_MAX
+            and top_count >= _CITATION_MAJORITY_MIN
+            and top_count >= _CITATION_MAJORITY_RATIO * mine
+        ):
+            out.append(
+                f"minority citation: {title} U.S.C. § {section} — the case's "
+                f"filings cite § {section} under title {top_title} {top_count} times "
+                f"and under title {title} {mine} time(s)"
+            )
+    return out
+
+
 def _generate_guarded_summary(
     *,
     source_text: str,
     docket_id: Optional[int],
+    citation_text: Optional[str] = None,
     **gen_kwargs: Any,
 ) -> tuple[str, str]:
     """Call ``llm.generate_docket_summary`` behind the truthfulness guard.
@@ -2107,7 +2463,11 @@ def _generate_guarded_summary(
     forfeiture guard (:func:`_audit_summary_forfeiture`) and the stale
     scheduled-event-date guard (:func:`_audit_summary_stale_event_dates` —
     a "scheduled for <date>" claim contradicting the scaffold's current row
-    for that event). Finally the operator-note attribution cleanup runs
+    for that event). Then the citation guard
+    (:func:`_audit_summary_citations` — a U.S. Code title the documents almost
+    never use for that section) retries once but never strips: a wrong title
+    is kept with a WARNING rather than deleting the lead sentence it usually
+    sits in. Finally the operator-note attribution cleanup runs
     unconditionally (always-safe, no retry).
     """
     known_dates = _grounding_dates(gen_kwargs)
@@ -2301,6 +2661,51 @@ def _generate_guarded_summary(
                 docket_id,
             )
 
+    # Tier 6 — a U.S. Code citation under a title the case's filings almost
+    # never use for that section (a single filing's typo, carried through).
+    # Counted over the whole case's filings (citation_text) when the caller
+    # supplies them, else the summary's own inputs. Retry once with the
+    # counts; if it persists, keep the summary and WARN — never strip, because
+    # the citation usually sits in the lead sentence.
+    citation_corpus = citation_text or source_text
+    minority = _audit_summary_citations(summary_text, source_text=citation_corpus)
+    if minority:
+        log.warning(
+            "summary: docket %s draft cited a statute under a title the case's "
+            "filings almost never use %s; retrying generation once",
+            docket_id,
+            minority,
+        )
+        correction = (
+            "Your draft cites a U.S. Code section under a title that this "
+            "case's filings almost never use for that section: "
+            + "; ".join(minority)
+            + ". A single filing can contain a typo. Cite the section under "
+            "the title the case's filings consistently use."
+        )
+        retry_text, retry_model = llm.generate_docket_summary(
+            correction=correction, **gen_kwargs
+        )
+        retry_clean = (
+            not _audit_summary_citations(retry_text, source_text=citation_corpus)
+            and not _audit_summary_text(retry_text, source_text=source_text)
+            and not _audit_summary_grounding(
+                retry_text, known_dates=known_dates, source_text=source_text
+            )
+            and not _audit_summary_forfeiture(retry_text)
+            and not _audit_summary_stale_event_dates(retry_text, hearings=hearings_rows)
+        )
+        if retry_clean:
+            log.info("summary: docket %s retry cleared the citation guard", docket_id)
+            summary_text, model_id = retry_text, retry_model
+        else:
+            log.warning(
+                "summary: docket %s STILL cited a statute under a minority "
+                "title after retry; kept the draft — verify the citation "
+                "against the docket",
+                docket_id,
+            )
+
     # Operator-note provenance leak — the aggregation_note / NOTE FROM OPERATOR
     # are context FOR the model, not material to attribute to subscribers. The
     # model sometimes writes "the operator notes that ..." (us-v-knoot). The
@@ -2444,6 +2849,63 @@ def _tidy_link_spans(text: str) -> str:
         text = new
 
 
+# --- One-word links ---------------------------------------------------------
+# A one-word link is a small tap target (an accessibility problem on phones),
+# and the prompt's "at least two words" rule is soft: on 2026-11-05 the
+# stored summaries carried "Anthropic PBC [sued] the …", "after being
+# [sentenced]", "the jury [acquitted] him", "The [indictment] alleged", and
+# "Anthropic sought [rehearing]". This deterministic backstop widens them.
+_SINGLE_WORD_LINK = r"\[([A-Za-z][\w'’-]*)\]\((https?://[^\s)]+)\)"
+# "[sued] <defendant>" -> "[filed a lawsuit] against <defendant>" — only when
+# the next word positively starts a defendant: an article / possessive /
+# quantity ("the U.S. Department of War", "numerous agencies", "14
+# companies") or a capitalized name that isn't a month or weekday ("Acme
+# Corp."). Anything else — "sued yesterday", "sued in the Northern District",
+# "sued by Beta" — is left for the preceding-word widening (Copilot, PR
+# #110). A single space only, so extra whitespace can't backtrack past the
+# check.
+_SUED_LINK_RE = re.compile(
+    r"\[([Ss]ued)\]\((https?://[^\s)]+)\)( )"
+    r"(?=(?:the|a|an|its|his|her|their|several|multiple|numerous|various|"
+    r"two|three|four|five|six|seven|eight|nine|ten|\d+)\b"
+    r"|(?!(?:January|February|March|April|May|June|July|August|September|"
+    r"October|November|December|Monday|Tuesday|Wednesday|Thursday|Friday|"
+    r"Saturday|Sunday)\b)[A-Z])",
+)
+# "<word> [link]" -> "[<word> link]", pulling in the preceding word. Only a
+# lowercase word (so a party's name is never pulled in — "Anthropic PBC
+# [sued]" must not become "[PBC sued]") or an article / possessive at a
+# sentence start ("The [indictment]").
+_PRECEDING_WORD_LINK_RE = re.compile(
+    r"(?<![\w\]\)])(\b[A-Za-z][a-z'’-]*)\s+" + _SINGLE_WORD_LINK
+)
+_ABSORBABLE_CAPITALIZED = {"the", "a", "an", "its", "his", "her", "their", "this"}
+# A conjunction makes a worse link than a one-word one ("[and sentenced]").
+_NOT_ABSORBED = {"and", "or", "but", "nor", "then", "than"}
+
+
+def _widen_single_word_links(text: str) -> str:
+    """Give every one-word link a second word (see the regexes above). A link
+    with no safe neighbor to absorb (after "and", say) is left as is."""
+
+    def sued(m: re.Match[str]) -> str:
+        lead = "Filed" if m.group(1)[0].isupper() else "filed"
+        return f"[{lead} a lawsuit]({m.group(2)}){m.group(3)}against "
+
+    text = _SUED_LINK_RE.sub(sued, text)
+
+    def preceding(m: re.Match[str]) -> str:
+        word, link_word, url = m.group(1), m.group(2), m.group(3)
+        lowered = word.lower()
+        if lowered in _NOT_ABSORBED or (
+            word[0].isupper() and lowered not in _ABSORBABLE_CAPITALIZED
+        ):
+            return m.group(0)
+        return f"[{word} {link_word}]({url})"
+
+    return _PRECEDING_WORD_LINK_RE.sub(preceding, text)
+
+
 def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> str:
     """Replace ``[words](doc:Dn)`` markers with resolved markdown links.
 
@@ -2483,7 +2945,7 @@ def _resolve_document_links(text: str, link_map: dict[str, Optional[str]]) -> st
             return anchor
         return f"[{anchor}]({url})"
 
-    return _tidy_link_spans(_DOC_LINK_RE.sub(repl, text))
+    return _widen_single_word_links(_tidy_link_spans(_DOC_LINK_RE.sub(repl, text)))
 
 
 # ---------------------------------------------------------------------------
@@ -2836,10 +3298,17 @@ def summarize_docket(
         primary_documents, disposition_documents, extra_documents
     )
 
+    # Every stored filing on the case — the evidence the citation guard counts
+    # over (see _case_citation_corpus for why it's wider than source_text).
+    citation_text = _case_citation_corpus(
+        store, [*case.dockets, *group_docket_ids], extra_documents
+    )
+
     try:
         summary_text, model_id = _generate_guarded_summary(
             source_text=source_text,
             docket_id=docket_id,
+            citation_text=citation_text,
             case_name=case.name,
             aggregation_note=aggregation_note,
             docket=docket_for_prompt,

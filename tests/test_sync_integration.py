@@ -15,6 +15,7 @@ import pytest
 
 from case_calendar import llm as llm_mod
 from case_calendar import store as store_mod
+from case_calendar import summary as summary_mod
 from case_calendar.store import Store
 from case_calendar.sync import (
     CaseConfig,
@@ -815,6 +816,435 @@ class TestInterruptDoesNotAdvanceCutoff:
         # empty `docket_mod`), so the stored value is still the prior
         # clean cutoff — not blank.
         assert store.docket_last_modified(100) == prior_cutoff
+
+
+# us-v-ding #367, verbatim — rejected by the summary-relevance rules before
+# SUMMARY_RELEVANCE_RULES_VERSION 1, so older stores hold it as a stub.
+_JURY_VERDICT = (
+    "JURY VERDICT as to Linwei Ding (1) Guilty on Count 1-4,1s-4s,1ss-7ss,5s,"
+    "6-7,8-14,8s-14s. (exl, COURT STAFF) (Filed on 1/29/2026)"
+)
+
+
+class TestStubRepair:
+    """CaseSyncer._repair_stub_bodies — after the summary-relevance rules start
+    accepting entries they used to reject, each docket re-fetches its entries
+    once and restores the body of stubs that now qualify."""
+
+    def _old_store(self, store: Store, entries: list[dict]) -> None:
+        """A store as an older release left it: docket synced up to its
+        current date_modified, every given entry stored as a bare stub, and no
+        summary-rules version recorded."""
+        store.upsert_docket_meta(
+            100,
+            {
+                "court_id": "mad",
+                "docket_number": "1:25-cr-00001-X",
+                "case_name": "United States v. X",
+                "absolute_url": "/docket/100/x/",
+                "date_last_filing": "2026-05-01",
+            },
+        )
+        store.set_docket_last_modified(100, _docket()["date_modified"])
+        for e in entries:
+            store.mark_entry(100, e["id"], e["date_modified"], fingerprint_entry(e))
+        store.upsert_case_summary(
+            "us-v-x", "1:25-cr-00001-X", "mad", summary="old", model="m"
+        )
+
+    def _body(self, store: Store, entry_id: int):
+        return store.conn.execute(
+            "SELECT description FROM entries WHERE docket_id=100 AND entry_id=?",
+            (entry_id,),
+        ).fetchone()["description"]
+
+    def test_restores_now_relevant_stub_on_a_quiet_docket(
+        self, store: Store, case, monkeypatch
+    ):
+        called = []
+        monkeypatch.setattr(
+            llm_mod, "extract_actions", lambda **_: called.append(1) or []
+        )
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        noise = _entry(8, "CERTIFICATE OF SERVICE by USA")
+        self._old_store(store, [verdict, noise])
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, noise]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+        assert self._body(store, 8) is None  # still not relevant -> still a stub
+        # The docket was otherwise unchanged, so the normal walk was skipped —
+        # the repair is what reached the stub.
+        assert stats["dockets_skipped"] == 1
+        assert called == []  # no LLM extraction
+        # The restored verdict feeds the summary pipeline...
+        assert [e["id"] for e in store.get_entries_with_body(100)] == [7]
+        # ...and the summary is flagged for regeneration.
+        row = store.conn.execute(
+            "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+        ).fetchone()
+        assert row["stale"] == 1
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_entries_with_a_body_are_left_alone(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        order = _entry(9, "ORDER granting motion", date_filed="2026-02-01")
+        self._old_store(store, [verdict])
+        store.mark_entry(
+            100, 9, order["date_modified"], "fp-order", description="STORED TEXT"
+        )
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, order]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 9) == "STORED TEXT"
+
+    def test_entry_returned_twice_is_restored_once(self, store: Store, case):
+        # CourtListener pages can overlap, returning an entry twice; the second
+        # restore finds it no longer a stub and is a no-op.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, verdict]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+
+    def test_stubs_that_still_dont_qualify_leave_the_summary_alone(
+        self, store: Store, case
+    ):
+        noise = _entry(8, "CERTIFICATE OF SERVICE by USA")
+        self._old_store(store, [noise])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [noise]})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 0
+        row = store.conn.execute(
+            "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+        ).fetchone()
+        assert row["stale"] == 0
+        # Still recorded, so the next sync doesn't re-fetch.
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_restores_even_without_docket_metadata(self, store: Store, case):
+        # A store whose docket row predates the metadata columns: the body is
+        # still restored; there's just no logical docket to flag stale.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        store.set_docket_last_modified(100, _docket()["date_modified"])
+        store.mark_entry(100, 7, verdict["date_modified"], fingerprint_entry(verdict))
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [verdict]})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+
+    @staticmethod
+    def _truncating_cl(listed, by_id, missing=(), failing=()):
+        """A CourtListener fake whose paged walk stops early (as iter_entries
+        does at max_pages), returning only ``listed``; single-entry fetches
+        come from ``by_id``, 404 for ``missing``, 500 for ``failing``."""
+        import httpx
+
+        class _CL(FakeCourtListener):
+            def iter_entries(self, docket_id, **_):
+                self.calls.append(("entries", docket_id))
+                yield from listed
+
+            def get_docket_entry(self, entry_id):
+                self.calls.append(("docket_entry", entry_id))
+                for code, ids in ((404, missing), (500, failing)):
+                    if entry_id in ids:
+                        req = httpx.Request("GET", f"https://cl/{entry_id}/")
+                        raise httpx.HTTPStatusError(
+                            str(code),
+                            request=req,
+                            response=httpx.Response(code, request=req),
+                        )
+                return by_id[entry_id]
+
+        return _CL(dockets={100: _docket()})
+
+    def test_stubs_the_paged_walk_missed_are_fetched_individually(
+        self, store: Store, case
+    ):
+        # Copilot (PR #110): a docket larger than the page limit must not have
+        # its version recorded with stubs unchecked.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        plea = _entry(9, "Minute Entry: Defendant enters a guilty plea to Count 1.")
+        self._old_store(store, [verdict, plea])
+        cl = self._truncating_cl(listed=[verdict], by_id={9: plea})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 2
+        assert ("docket_entry", 9) in cl.calls
+        assert ("docket_entry", 7) not in cl.calls  # already seen in the walk
+        assert self._body(store, 9) == plea["description"]
+
+    def test_stub_removed_upstream_counts_as_checked(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        gone = _entry(9, "ORDER")
+        self._old_store(store, [verdict, gone])
+        cl = self._truncating_cl(listed=[verdict], by_id={}, missing={9})
+        CaseSyncer(cl, store).sync_case(case)
+        # A 404 can't be repaired, so it must not block the version forever.
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_other_fetch_failures_leave_the_version_unrecorded(
+        self, store: Store, case
+    ):
+        import httpx
+
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        flaky = _entry(9, "ORDER")
+        self._old_store(store, [verdict, flaky])
+        cl = self._truncating_cl(listed=[verdict], by_id={}, failing={9})
+        with pytest.raises(httpx.HTTPStatusError):
+            CaseSyncer(cl, store).sync_case(case)
+        assert store.docket_summary_rules_version(100) == 0
+
+    def test_each_restoration_commits_with_its_stale_flag_before_more_fetches(
+        self, store: Store, case
+    ):
+        # Copilot (PR #110, round 3): a restoration must be committed, with its
+        # stale flag, before the next CourtListener request — read here
+        # through a SEPARATE connection (as the `serve` process would), after
+        # a later fetch failed.
+        import sqlite3
+
+        import httpx
+
+        plea = _entry(8, "Minute Entry: Defendant enters a guilty plea to Count 1.")
+        flaky = _entry(9, "ORDER")
+        self._old_store(store, [plea, flaky])
+        cl = self._truncating_cl(listed=[], by_id={8: plea}, failing={9})
+        with pytest.raises(httpx.HTTPStatusError):
+            CaseSyncer(cl, store).sync_case(case)
+        other = sqlite3.connect(store.path)
+        try:
+            body = other.execute(
+                "SELECT description FROM entries WHERE entry_id=8"
+            ).fetchone()[0]
+            stale = other.execute(
+                "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+            ).fetchone()[0]
+        finally:
+            other.close()
+        assert body == plea["description"]
+        assert stale == 1
+        # And no write transaction is left open behind the failure.
+        assert not store.conn.in_transaction
+
+    def test_no_courtlistener_request_runs_with_a_write_transaction_open(
+        self, store: Store, monkeypatch
+    ):
+        # Found from Copilot's review of PR #110: a quiet docket's
+        # bump_docket_last_filing stayed uncommitted into the NEXT docket's
+        # requests — including the stub repair's full re-fetch — so the
+        # `serve` process could time out on the write lock.
+        make_llm_stub(monkeypatch, by_entry={})
+
+        def docket(i):
+            return {**_docket(), "id": i, "docket_number": f"1:25-cr-{i}"}
+
+        verdict = {**_entry(7, _JURY_VERDICT, date_filed="2026-01-29"), "docket": 200}
+        fresh = {**_entry(9, "Status conference set for 7/1/2026"), "docket": 300}
+        for i in (100, 200):
+            store.upsert_docket_meta(
+                i,
+                {
+                    k: v
+                    for k, v in docket(i).items()
+                    if k in ("court_id", "docket_number", "case_name", "absolute_url")
+                },
+            )
+            store.set_docket_last_modified(i, _docket()["date_modified"])
+        store.set_docket_summary_rules_version(
+            100, summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+        store.mark_entry(200, 7, verdict["date_modified"], fingerprint_entry(verdict))
+        store.conn.commit()
+        seen: list[tuple[str, int, bool]] = []
+
+        class _Probe(FakeCourtListener):
+            def get_docket(self, docket_id: int) -> dict:
+                seen.append(("docket", docket_id, store.conn.in_transaction))
+                return super().get_docket(docket_id)
+
+            def get_court(self, court_id: str) -> dict:
+                seen.append(("court", 0, store.conn.in_transaction))
+                return super().get_court(court_id)
+
+            def iter_entries(self, docket_id: int, *, modified_after=None, **kw):
+                seen.append(("entries", docket_id, store.conn.in_transaction))
+                yield from super().iter_entries(
+                    docket_id, modified_after=modified_after, **kw
+                )
+
+        cl = _Probe(
+            dockets={100: docket(100), 200: docket(200), 300: docket(300)},
+            entries={200: [verdict], 300: [fresh]},
+        )
+        case3 = CaseConfig(
+            case_id="us-v-x", name="X", dockets=[100, 200, 300], calendar="cyber"
+        )
+        CaseSyncer(cl, store).sync_case(case3)
+        # 100 quiet; 200 quiet but repaired; 300 new (normal walk + court).
+        assert ("entries", 200, False) in seen
+        assert ("entries", 300, False) in seen
+        assert [s for s in seen if s[2]] == []
+
+    def test_runs_once_per_rules_version(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [verdict]})
+        syncer = CaseSyncer(cl, store)
+        syncer.sync_case(case)
+        cl.calls.clear()
+
+        stats = syncer.sync_case(case)
+        assert stats["stubs_restored"] == 0
+        assert [c[0] for c in cl.calls] == ["docket"]  # no re-fetch
+
+    def test_docket_without_stubs_records_version_without_fetching(
+        self, store: Store, case
+    ):
+        self._old_store(store, [])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: []})
+        CaseSyncer(cl, store).sync_case(case)
+        assert [c[0] for c in cl.calls] == ["docket"]
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_interrupted_fetch_retries_next_sync(self, store: Store, case):
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+
+        class _Boom(FakeCourtListener):
+            def iter_entries(self, docket_id, **_):
+                raise RuntimeError("CourtListener 502")
+                yield  # pragma: no cover
+
+        with pytest.raises(RuntimeError):
+            CaseSyncer(_Boom(dockets={100: _docket()}), store).sync_case(case)
+        assert store.docket_summary_rules_version(100) == 0
+        assert self._body(store, 7) is None
+
+    def test_new_docket_first_sync_is_unaffected(self, store: Store, case):
+        # A docket the store has never seen: no stubs, so the repair only
+        # records the version and the normal first sync proceeds.
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entries={100: [_entry(7, _JURY_VERDICT, date_filed="2026-01-29")]},
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 0
+        assert stats["entries_seen"] == 1
+        # The current rules keep the verdict's body on the normal path too.
+        assert self._body(store, 7) == _JURY_VERDICT
+
+
+# us-v-schmitz #11, verbatim.
+_SPEEDY_TRIAL_ORDER = (
+    "ORDER granting 10 Motion for Continuance of Speedy Trial Deadlines - Time "
+    "excluded from 5/19/2026 until 10/31/2026 as to PATRICK SCHMITZ (1). Signed "
+    "by Chief Judge Renee Marie Bumb on 5/19/2026. (dmr) (Entered: 05/19/2026)"
+)
+
+
+class TestSpeedyTrialExclusionIsNotADeadline:
+    """The end of a Speedy Trial Act excluded period is not a deadline; a
+    June 2026 extraction turned us-v-schmitz's into a pending one."""
+
+    def _deadline(self, key, title, date="2026-10-31"):
+        return {
+            "type": "ADD_DEADLINE",
+            "deadline_key": key,
+            "title": title,
+            "local_date": date,
+            "significance": "major",
+        }
+
+    def test_helper_matches_only_the_clock_named_deadline_on_the_end_date(self):
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": _SPEEDY_TRIAL_ORDER}
+        speedy = self._deadline(
+            "speedy-trial-continuance-schmitz", "Speedy Trial Continuance Schmitz"
+        )
+        assert _is_speedy_trial_exclusion_end(entry, speedy)
+        # A real filing deadline on the same date is kept.
+        motions = self._deadline("pretrial-motions-schmitz", "Pretrial Motions")
+        assert not _is_speedy_trial_exclusion_end(entry, motions)
+        # A clock-named deadline on a different date is kept.
+        other = self._deadline(
+            "speedy-trial-continuance-schmitz",
+            "Speedy Trial Continuance Schmitz",
+            date="2026-06-01",
+        )
+        assert not _is_speedy_trial_exclusion_end(entry, other)
+        # No exclusion language in the entry -> nothing to match against.
+        assert not _is_speedy_trial_exclusion_end(
+            {"description": "ORDER setting status conference"}, speedy
+        )
+        # A date-less (conditional) action is never matched.
+        assert not _is_speedy_trial_exclusion_end(entry, {**speedy, "local_date": None})
+
+    def test_clock_named_filing_on_the_end_date_is_kept(self):
+        # Copilot (PR #110): a filing obligation whose name mentions the trial
+        # clock (us-v-ding has a real "speedy trial statement" deadline) is
+        # kept even when it falls on the excluded period's end date.
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": _SPEEDY_TRIAL_ORDER}
+        for key, title in (
+            ("defense-speedy-trial-statement", "Defense Speedy Trial Statement"),
+            ("motion-for-continuance", "Motion for Continuance"),
+            ("govt-response-speedy-trial", "Government Response re Speedy Trial"),
+        ):
+            assert not _is_speedy_trial_exclusion_end(entry, self._deadline(key, title))
+
+    def test_two_digit_year_and_through_wording(self):
+        from case_calendar.sync import _is_speedy_trial_exclusion_end
+
+        entry = {"description": "Excludable delay from 1/2/26 through 3/4/26."}
+        action = self._deadline("excluded-time-end", "Excluded Time", "2026-03-04")
+        assert _is_speedy_trial_exclusion_end(entry, action)
+
+    def test_sync_drops_the_exclusion_end_but_keeps_a_real_deadline(
+        self, store: Store, case, monkeypatch
+    ):
+        make_llm_stub(
+            monkeypatch,
+            by_entry={
+                11: [
+                    self._deadline(
+                        "speedy-trial-continuance-schmitz",
+                        "Speedy Trial Continuance Schmitz",
+                    ),
+                    self._deadline("pretrial-motions-schmitz", "Pretrial Motions"),
+                ]
+            },
+        )
+        cl = FakeCourtListener(
+            dockets={100: _docket()},
+            entries={100: [_entry(11, _SPEEDY_TRIAL_ORDER, date_filed="2026-05-19")]},
+        )
+        CaseSyncer(cl, store).sync_case(case)
+        keys = {d["deadline_key"] for d in store.get_deadlines("us-v-x")}
+        assert keys == {"pretrial-motions-schmitz"}
 
 
 class TestDocketMetaCaching:

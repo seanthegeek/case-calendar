@@ -38,6 +38,7 @@ The rationale behind the project's non-obvious choices — LLM-driven extraction
 - Supports all currently supported Python versions
 - Modern type annotations across the entire project
   - Always use the latest version of pyright for static type checking. Run with `PYRIGHT_PYTHON_FORCE_VERSION=latest` to override the pyright-python wrapper's pinned release; CI sets this env var on the pyright step
+  - **Type-check the tests too, exactly as CI does:** `PYRIGHT_PYTHON_FORCE_VERSION=latest uv run --with pyright pyright case_calendar tests`. Checking only `case_calendar` passes locally while CI fails — a test fake whose override renamed a parameter (`get_docket(self, i)` against `FakeCourtListener.get_docket(self, docket_id)`) failed CI's lint job on PR #110
 - Testing framework: **pytest**
 - Every bit of code should have a test
 - Build backend: **hatchling**

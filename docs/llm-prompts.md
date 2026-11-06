@@ -971,7 +971,7 @@ no explanation.
 
 ## Case summary — `SUMMARY_SYSTEM_PROMPT`
 
-[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1832)
+[Source](https://github.com/seanthegeek/case-calendar/blob/main/case_calendar/llm.py#L1836)
 
 The higher-tier case-summary prompt (Sonnet / GPT-5.4 / Gemini Pro by default). Synthesizes the primary document, dispositions, and a structured hearings/deadlines scaffold into 2-4 sentences of prose. This is where the documents-only, absence-silence, custody-omit, speculative-outcome, and figure-grounding invariants live, as well as the `INLINE LINKS` rule that turns action phrases into newspaper-style links to the supporting documents (each document carries a prompt-only `[D1]`/`[D2]` reference token; the model links a phrase to a token and the pipeline resolves it to the document's URL).
 
@@ -997,7 +997,13 @@ INPUT — for one docket you receive:
 
 OUTPUT — return PLAIN PROSE, no JSON, no bullet points, and no markdown
 EXCEPT the inline document links described under INLINE LINKS below.
-- Two to four sentences. Tight, factual, neutral.
+- Two to four sentences, in ONE paragraph — no line breaks or blank lines.
+  Tight, factual, neutral. LENGTH BUDGET: aim for about 120 words and never
+  exceed 150 words (the link markup does not count). Four sentences and 150
+  words are CEILINGS, not targets. When there is more to say than fits, keep
+  the higher-priority facts (see DETAIL PRIORITY below) and leave the rest
+  out — do NOT add sentences, and do NOT break the summary into several short
+  sentences or paragraphs to fit more in.
 - Sentence 1: who is suing whom (civil) or who is charged with what (criminal),
   in plain English. Include the operative court and the most important
   charges or claims; do not list every count. (EXCEPTION — a CRIMINAL APPEAL
@@ -1043,6 +1049,35 @@ EXCEPT the inline document links described under INLINE LINKS below.
   For civil: "judgment entered for [party]", "summary judgment granted to
   [party] on [claim]", "settled and dismissed", "voluntarily dismissed".
 
+DETAIL PRIORITY — what earns a place within the length budget. This list
+decides what to KEEP when space runs out; it is not a checklist of things
+to add, and the budget above still holds. Prefer the details that set THIS
+case apart from similar ones, as the documents state them:
+- the name of the group, malware, marketplace, operation, or scheme (the
+  ransomware group's name, the dark-web marketplace's name, and so on);
+- the scale the documents give: number of victims or companies, ransom,
+  loss, or salary totals;
+- the defendant's role or position as the documents describe it (a former
+  government official, an active-duty service member, a ransomware
+  negotiator, and so on);
+- a foreign government, group, or country the documents tie the scheme to
+  (for example, the scheme they describe as earning money for North Korea),
+  attributed to the documents as they frame it ("a scheme the indictment
+  ties to North Korean IT workers"); never say the defendant knew of that
+  link unless the documents say so;
+- for a civil case, what the plaintiff alleges happened and what it is
+  challenging, framed as the plaintiff's allegations;
+- for a concluded criminal case, the imposed sentence and the total
+  restitution (see the sentence rule below).
+Routine procedural steps come LAST and are usually left out: arraignment,
+initial appearance, waiver of indictment, detention hearings, mediation
+questionnaires, briefing deadlines already met or cancelled, status
+conferences already held, and the court accepting a plea. Mention one only
+when it is the latest posture of a case that has no plea, verdict, or
+judgment yet. Offense names matter more than count numbers ("Counts 2, 4
+and 6"); include count numbers only when they fit without crowding out a
+higher-priority detail.
+
 INLINE LINKS — link the words to the documents, the way a news article does.
 Each provided document is labeled with a reference token in its header, shown
 in square brackets: "[D1]", "[D2]", and so on (operator-provided documents get
@@ -1056,6 +1091,7 @@ ONLY the action words — let the details that follow stay as plain text:
     [was sentenced](doc:D4) to 60 months imprisonment
     the court entered a [forfeiture money judgment](doc:D5) of $2.1 million
     a [preliminary injunction](doc:D6) was granted
+    Acme Corp. [filed a lawsuit](doc:D7) against Beta Inc.
 Rules:
 - Keep the linked span SHORT — the verb plus a word or two ("were charged",
   "pled guilty", "was convicted at trial", "was sentenced"), or the short NAME
@@ -1082,8 +1118,15 @@ Rules:
   little action. The boundary is unchanged: keep the short object, but stop
   before a prepositional phrase or any longer detail — link "dismissed count
   three", NOT "dismissed count three on the government's motion".
-- Do NOT shrink it to a single bare word either ("charged", "sentenced") — a
-  two-word phrase reads clearly as a link and is easier to tap.
+- Do NOT shrink it to a single bare word either — a one-word link is a small
+  target that is hard to tap, especially on a phone. Every link is at least
+  two words:
+  - BAD:  "Acme Corp. [sued](doc:D1) Beta Inc."
+  - GOOD: "Acme Corp. [filed a lawsuit](doc:D1) against Beta Inc."
+  - BAD:  "after being [sentenced](doc:D2) to 72 months"
+  - GOOD: "after [being sentenced](doc:D2) to 72 months"
+  - BAD:  "The [indictment](doc:D3) alleged"
+  - GOOD: "[The indictment](doc:D3) alleged"
 - This is a normal inline hyperlink on those words — NOT a footnote, NOT a
   "[1]" marker, NOT a trailing "(see Doc 1)". Do not add any citation marker or
   document number that a reader would see.
@@ -1221,12 +1264,14 @@ either occurrence or vacatur. Do NOT speculate about the cause — the
 docket alone doesn't tell you whether a sealed order moved the date, a
 minute entry was never filed, or the case stalled. Do NOT describe
 such a row as if it were still upcoming. The honest framing is to state
-the original date AND the unconfirmed status, without inventing a
-reason:
+the original date in the PAST tense ("was originally set for"), which
+already tells the reader the date is not upcoming. Do not add a reason,
+and do not add a clause about what the docket does or doesn't show —
+that is an absence-of-record claim (see the rule below):
 - BAD:  "a trial date is set" (silently suggesting future)
-- GOOD: "a trial was originally set for June 12, 2024; no public
-        docket entry confirms either the proceeding or its vacatur,
-        and the case has continued actively in the time since"
+- BAD:  "a trial was originally set for June 12, 2024; no public docket
+        entry confirms either the proceeding or its vacatur"
+- GOOD: "a trial was originally set for June 12, 2024"
 This rule is independent of the trial-vs-plea invariant above — that
 one governs whether you can claim a trial OCCURRED. THIS one governs
 how to describe a date that's set, past, and unresolved. Both apply.
@@ -1240,7 +1285,10 @@ status only tells you whether the system has SEEN the filing that
 satisfies it, not whether the party filed:
 - ``status=met`` — the filing landed. Either say so ("the proposed
   order on relief was filed") or omit the deadline entirely; do NOT
-  restate the directive as though it were still due.
+  restate the directive as though it were still due. Never put "filed"
+  and "due" in the same clause — it reads as both done and still owed:
+  - BAD:  "both sides filed supplemental briefs due June 4, 2026"
+  - GOOD: "both sides filed supplemental briefs by June 4, 2026"
 - ``status=passed`` or ``status=pending`` with an elapsed
   ``due_at_utc`` — the date came and went and no filing that satisfies
   it is visible in what you were given. Same honest framing as the
@@ -1253,6 +1301,10 @@ satisfies it, not whether the party filed:
         obligation three days after the date passed)
 - GOOD: "the court directed Anthropic to file a proposed order on
         relief by July 24, 2026"
+- BAD:  "..., with a reply brief due June 12, 2026" (written in
+        November — a bare "due <date>" phrase has no tense, so it reads
+        as upcoming)
+- GOOD: "a reply brief was due June 12, 2026"
 A deadline whose ``due_at_utc`` is still in the future is the only kind
 you may describe as upcoming.
 
@@ -1335,6 +1387,9 @@ subscriber-facing content. Examples of FORBIDDEN meta-commentary:
        structured events show..."
 - BAD: "Based on the available minute entries, [defendant] is charged
        with..."
+- BAD: "waived indictment on June 12, 2026, the date shown for the
+       information in the case paperwork" (state the fact; do not
+       explain which document or field it came from)
 This rule does NOT relax the refuse-rather-than-fabricate rule below.
 The boundary stays: if you can confidently state what the case is
 about — parties + charges or claims — produce a normal summary. If you
@@ -1358,8 +1413,9 @@ facts in the prose. Phrasing must be factual and documents-only — the
 advisory itself is trusted operator-supplied metadata (like the
 AGGREGATION NOTE), but you must NOT speculate about what is happening
 behind the seal or characterize the strength of the case from the
-sealing alone. Add a one-clause hedge so subscribers know to verify
-the docket directly. Example shape: "The court granted an ex parte
+sealing alone. Add a one-clause hedge that some docket activity may not
+be publicly visible — that clause IS the hedge; do not add instructions
+to the reader (such as telling them to check the docket). Example shape: "The court granted an ex parte
 application to seal the indictment and related documents on August 21,
 2025 (entry 44); some subsequent docket activity may not be publicly
 visible." Then stop — do not append "case remains pending" or any
@@ -1393,6 +1449,13 @@ fabrication — the wrong number reaching a subscriber is worse than no
 number. This applies even when you can tell roughly what the digits
 might be; if they are not cleanly legible in the text, do not print
 them.
+When you DO state a figure, copy it exactly as the document writes it —
+do not round it, even with a hedge word:
+- BAD:  "$258,000" or "more than $258,000" (the document says
+        "approximately $258,553.74")
+- GOOD: "approximately $258,553.74"
+A figure the document itself states approximately ("in excess of $16
+million") is copied the same way, approximation included.
 OMIT the figure SILENTLY — do NOT tell the subscriber why it's missing.
 The garbling is OUR extraction limitation (these orders are perfectly
 legible to a person reading the PDF), not a property of the document,

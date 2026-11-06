@@ -1,7 +1,7 @@
 # Model comparison
 
 The default is a **split**: Gemini (`gemini-3.1-flash-lite`) for extraction,
-Anthropic (`claude-sonnet-4-6`) for summaries — and here are the data and tools
+Anthropic (`claude-sonnet-5-5`) for summaries — and here are the data and tools
 to check that yourself, including scoring it against your own reading of the
 dockets, or re-running the whole thing on other cases and models.
 

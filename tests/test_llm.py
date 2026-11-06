@@ -2411,9 +2411,7 @@ class TestGenerateDocketSummary:
         assert ident == "ollama/" + llm._DEFAULT_SUMMARY_MODELS["ollama"]
         assert called["json_mode"] is False
 
-    def test_anthropic_keeps_requested_max_tokens(self, monkeypatch):
-        # The Gemini headroom bump is provider-specific: anthropic / openai are
-        # not thinking-budget-constrained, so they keep the requested ceiling.
+    def _anthropic_summary_max_tokens(self, monkeypatch, model):
         called: dict[str, Any] = {}
 
         def fake(system, user, max_tokens, *, model=None, **kwargs):
@@ -2430,9 +2428,29 @@ class TestGenerateDocketSummary:
             hearings=[],
             deadlines=[],
             provider="anthropic",
+            model=model,
             max_tokens=800,
         )
-        assert called["max_tokens"] == 800
+        return called["max_tokens"]
+
+    def test_anthropic_pre_claude5_keeps_requested_max_tokens(self, monkeypatch):
+        # Sonnet 4.6 answers directly (we never turn thinking on), so the
+        # requested ceiling only has to cover the answer.
+        got = self._anthropic_summary_max_tokens(monkeypatch, "claude-sonnet-4-6")
+        assert got == 800
+
+    def test_anthropic_default_summary_model_gets_thinking_budget(self, monkeypatch):
+        # The default (Sonnet 5.5) thinks by default and the thinking comes
+        # out of max_tokens; at 800 it used the whole budget thinking and
+        # returned no text, so the budget must be raised.
+        got = self._anthropic_summary_max_tokens(monkeypatch, None)
+        assert got > 800
+        assert (
+            providers.ensure_thinking_budget(
+                "anthropic", llm._DEFAULT_SUMMARY_MODELS["anthropic"], 800
+            )
+            == got
+        )
 
     def test_correction_appended_to_user_message(self, monkeypatch):
         captured: dict[str, Any] = {}
@@ -3034,6 +3052,175 @@ class TestMarkHeldDateMatchingRules:
         assert "do NOT force MARK_HELD onto a mismatched sibling — emit IGNORE" in p
 
 
+class TestSummaryPromptLinksAreTwoWords:
+    """A one-word link is a small tap target; the 3:26-cv-01996 production
+    summary linked just "sued". summary._widen_single_word_links is the
+    deterministic backstop; these pin the prompt-side rule."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_two_word_minimum_with_examples(self):
+        p = self._normalized()
+        assert "Every link is at least two words" in p
+        assert '- BAD: "Acme Corp. [sued](doc:D1) Beta Inc."' in p
+        assert '- GOOD: "Acme Corp. [filed a lawsuit](doc:D1) against Beta Inc."' in p
+
+    def test_civil_filing_is_among_the_link_examples(self):
+        assert "Acme Corp. [filed a lawsuit](doc:D7) against Beta Inc." in (
+            self._normalized()
+        )
+
+    def test_good_examples_survive_the_widener_unchanged(self):
+        # The prompt's GOOD forms must already satisfy the backstop.
+        import re
+
+        from case_calendar import summary
+
+        goods = re.findall(r'- GOOD: "([^"]*\]\(doc:D\d\)[^"]*)"', self._normalized())
+        assert len(goods) >= 3
+        for good in goods:
+            url_form = re.sub(r"\(doc:D\d\)", "(https://ia/x.pdf)", good)
+            assert summary._widen_single_word_links(url_form) == url_form
+
+
+class TestSummaryPromptDeadlineTense:
+    """Two phrasings Claude Sonnet 5.5 produced on the 2026-11-05 benchmark:
+    "both sides filed supplemental briefs due June 4, 2026" (done and owed
+    in one clause) and "..., with a reply brief due June 12, 2026" (no tense,
+    so a past date reads as upcoming). The elapsed-deadline rule now names
+    both as BAD."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_filed_and_due_in_one_clause_is_bad(self):
+        p = self._normalized()
+        assert 'Never put "filed" and "due" in the same clause' in p
+        assert '- BAD: "both sides filed supplemental briefs due June 4, 2026"' in p
+        assert '- GOOD: "both sides filed supplemental briefs by June 4, 2026"' in p
+
+    def test_tenseless_due_phrase_is_bad(self):
+        p = self._normalized()
+        assert '- BAD: "..., with a reply brief due June 12, 2026"' in p
+        assert '- GOOD: "a reply brief was due June 12, 2026"' in p
+
+    def test_good_examples_pass_the_truthfulness_guard(self):
+        from case_calendar import summary
+
+        for good in (
+            "both sides filed supplemental briefs by June 4, 2026",
+            "a reply brief was due June 12, 2026",
+        ):
+            assert summary._audit_summary_text(good) == []
+
+
+class TestSummaryPromptExactFigures:
+    """Claude Sonnet 5.5 rounded "approximately $258,553.74" to "$258,000"
+    on us-v-knoot (2026-11-05), which the grounding guard rejected because a
+    rounded figure isn't in the text, costing a retry. The prompt now says to
+    copy figures exactly; its own examples must agree with the guard."""
+
+    _SOURCE = "paid the persona at least approximately $258,553.74 in wages"
+
+    @staticmethod
+    def _section() -> str:
+        import re
+
+        p = re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+        start = p.index("When you DO state a figure, copy it exactly")
+        return p[start : p.index("OMIT the figure SILENTLY", start)]
+
+    def test_no_rounding_rule_present(self):
+        assert "do not round it, even with a hedge word" in self._section()
+
+    def test_good_example_passes_and_bad_examples_fail_the_guard(self):
+        import re
+
+        from case_calendar import summary
+
+        section = self._section()
+        good = re.findall(r'- GOOD: "([^"]+)"', section)
+        assert good == ["approximately $258,553.74"]
+        assert (
+            summary._audit_summary_grounding(
+                good[0], known_dates=set(), source_text=self._SOURCE
+            )
+            == []
+        )
+        bad = re.findall(r'"(\$258,000|more than \$258,000)"', section)
+        assert len(bad) == 2
+        for example in bad:
+            assert summary._audit_summary_grounding(
+                example, known_dates=set(), source_text=self._SOURCE
+            )
+
+
+class TestSummaryPromptLengthAndDetailPriority:
+    """Rules added when Claude Sonnet 5.5 was trialled as the summary model
+    (2026-11-05): against the same dockets it ran past the 2-4 sentence
+    limit (15 of 39 summaries, vs 3 of 44 for Sonnet 4.6), split summaries
+    into paragraphs, spent sentences on routine procedure, and dropped
+    case-distinguishing names and figures (e.g. the Karakurt group name in
+    us-v-zolotarjovs). These pin the rules that steer it back."""
+
+    @staticmethod
+    def _normalized() -> str:
+        import re
+
+        return re.sub(r"\s+", " ", llm.SUMMARY_SYSTEM_PROMPT)
+
+    def test_length_is_a_single_paragraph_ceiling(self):
+        p = self._normalized()
+        assert "Two to four sentences, in ONE paragraph" in p
+        assert "Four sentences and 150 words are CEILINGS, not targets" in p
+        assert "do NOT add sentences" in p
+
+    def test_word_budget_present(self):
+        # Sentence counts alone didn't hold Sonnet 5.5 (it wrote up to 8);
+        # the concrete word budget is set near Sonnet 4.6's measured median
+        # of 118 words across the 44 stored summaries.
+        p = self._normalized()
+        assert "aim for about 120 words and never exceed 150 words" in p
+
+    def test_detail_priority_block_present(self):
+        p = self._normalized()
+        assert "DETAIL PRIORITY" in p
+        assert "it is not a checklist of things to add" in p
+        assert "the name of the group, malware, marketplace, operation, or scheme" in p
+        assert "Routine procedural steps come LAST" in p
+
+    def test_foreign_nexus_is_kept_and_attributed(self):
+        # Sonnet 5.5 dropped the North Korea link from both knoot summaries
+        # in one benchmark run and kept it in another: the plea agreement
+        # ties Knoot to the North Korean IT-worker scheme but says he
+        # believed the worker was Chinese, so the rule asks for the link
+        # as the documents frame it, not as the defendant's knowledge.
+        p = self._normalized()
+        assert "a foreign government, group, or country the documents tie" in p
+        assert '"a scheme the indictment ties to North Korean IT workers"' in p
+        assert "never say the defendant knew of that link" in p
+
+    def test_civil_allegations_framed_as_allegations(self):
+        assert "framed as the plaintiff's allegations" in self._normalized()
+
+    def test_document_provenance_aside_is_forbidden_meta_commentary(self):
+        assert "the date shown for the information in the case paperwork" in (
+            self._normalized()
+        )
+
+    def test_sealing_hedge_does_not_instruct_reader(self):
+        p = self._normalized()
+        assert "that clause IS the hedge" in p
+        assert "do not add instructions to the reader" in p
+
+
 class TestSummaryPromptDatedReferenceGuards:
     """Regression guards for the SUMMARY_SYSTEM_PROMPT sections added
     after the McGonigal/Shestakov "trial date set" hedge — where the
@@ -3068,6 +3255,40 @@ class TestSummaryPromptDatedReferenceGuards:
         # The rule must be marked independent of trial-vs-plea — the
         # two govern different concerns and both apply.
         assert "independent of the trial-vs-plea invariant" in llm.SUMMARY_SYSTEM_PROMPT
+
+    @staticmethod
+    def _past_dated_examples(kind: str) -> list[str]:
+        """The quoted BAD / GOOD examples of the past-dated-rows rule."""
+        import re
+
+        p = llm.SUMMARY_SYSTEM_PROMPT
+        section = p[p.index("past-dated 'scheduled' rows") :]
+        section = section[: section.index("This rule is independent")]
+        section = re.sub(r"\s+", " ", section)
+        return re.findall(rf'- {kind}: "([^"]+)"', section)
+
+    def test_past_dated_good_example_passes_truthfulness_guard(self):
+        # The old GOOD example ("...; no public docket entry confirms either
+        # the proceeding or its vacatur") was itself an absence-of-record
+        # claim the guard rejects, so a model that copied it closely —
+        # Claude Sonnet 5.5, on three us-v-zheng-et-al dockets — tripped
+        # the guard on every regeneration. The prompt's own GOOD example
+        # must never fail the guard that checks the output.
+        from case_calendar import summary
+
+        good = self._past_dated_examples("GOOD")
+        assert good == ["a trial was originally set for June 12, 2024"]
+        for example in good:
+            assert summary._audit_summary_text(example) == []
+
+    def test_past_dated_absence_clause_is_listed_as_bad(self):
+        from case_calendar import summary
+
+        bad = [
+            b for b in self._past_dated_examples("BAD") if "no public docket entry" in b
+        ]
+        assert bad, "the old absence-claim wording must be shown as BAD"
+        assert summary._audit_summary_text(bad[0]) != []
 
     def test_scaffold_date_outranks_superseded_document_date(self):
         # The us-v-kejia-wang self-surrender regression: a judgment recited
@@ -3582,7 +3803,7 @@ class TestSummaryPromptInlineLinks:
         p = llm.SUMMARY_SYSTEM_PROMPT
         # Short action phrase (two or three words), not a single bare word.
         assert "Keep the linked span SHORT" in p
-        assert 'a single bare word either ("charged", "sentenced")' in p
+        assert "Do NOT shrink it to a single bare word either" in p
         # And NOT the trailing detail — link the action, not the specifics.
         assert "Do NOT extend the link across the trailing detail" in p
         assert 'Link "were charged", NOT "charged with wire fraud' in p
