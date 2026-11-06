@@ -381,11 +381,11 @@ def _use_auto_tool_choice(create_kwargs: dict[str, Any]) -> None:
     """Switch a structured-output request from a forced tool call to
     ``auto`` plus a system instruction to answer only through the tool. The
     instruction goes in its own system block AFTER the cached one, so the
-    cached prompt prefix is unchanged."""
+    cached prompt prefix is unchanged. Called at most once per request: a
+    remembered model starts on ``auto``, so it never sends the forced call
+    whose rejection triggers the in-loop switch."""
     create_kwargs["tool_choice"] = {"type": "auto"}
-    system_blocks = create_kwargs["system"]
-    if not any(b.get("text") == _AUTO_TOOL_INSTRUCTION for b in system_blocks):
-        system_blocks.append({"type": "text", "text": _AUTO_TOOL_INSTRUCTION})
+    create_kwargs["system"].append({"type": "text", "text": _AUTO_TOOL_INSTRUCTION})
 
 
 def _call_anthropic(

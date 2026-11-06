@@ -906,6 +906,47 @@ class TestStubRepair:
         assert stats["stubs_restored"] == 1
         assert self._body(store, 9) == "STORED TEXT"
 
+    def test_entry_returned_twice_is_restored_once(self, store: Store, case):
+        # CourtListener pages can overlap, returning an entry twice; the second
+        # restore finds it no longer a stub and is a no-op.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        self._old_store(store, [verdict])
+        cl = FakeCourtListener(
+            dockets={100: _docket()}, entries={100: [verdict, verdict]}
+        )
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+
+    def test_stubs_that_still_dont_qualify_leave_the_summary_alone(
+        self, store: Store, case
+    ):
+        noise = _entry(8, "CERTIFICATE OF SERVICE by USA")
+        self._old_store(store, [noise])
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [noise]})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 0
+        row = store.conn.execute(
+            "SELECT stale FROM case_summaries WHERE case_id='us-v-x'"
+        ).fetchone()
+        assert row["stale"] == 0
+        # Still recorded, so the next sync doesn't re-fetch.
+        assert (
+            store.docket_summary_rules_version(100)
+            == summary_mod.SUMMARY_RELEVANCE_RULES_VERSION
+        )
+
+    def test_restores_even_without_docket_metadata(self, store: Store, case):
+        # A store whose docket row predates the metadata columns: the body is
+        # still restored; there's just no logical docket to flag stale.
+        verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
+        store.set_docket_last_modified(100, _docket()["date_modified"])
+        store.mark_entry(100, 7, verdict["date_modified"], fingerprint_entry(verdict))
+        cl = FakeCourtListener(dockets={100: _docket()}, entries={100: [verdict]})
+        stats = CaseSyncer(cl, store).sync_case(case)
+        assert stats["stubs_restored"] == 1
+        assert self._body(store, 7) == _JURY_VERDICT
+
     def test_runs_once_per_rules_version(self, store: Store, case):
         verdict = _entry(7, _JURY_VERDICT, date_filed="2026-01-29")
         self._old_store(store, [verdict])

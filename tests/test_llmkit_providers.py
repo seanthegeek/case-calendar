@@ -1174,7 +1174,7 @@ class TestAnthropicClaude5Compat:
         assert client.messages.create.call_count == 1
         sent = client.messages.create.call_args.kwargs
         assert sent["tool_choice"] == {"type": "auto"}
-        # Exactly one instruction block, even on a reused kwargs path.
+        # Exactly one instruction block.
         texts = [b["text"] for b in sent["system"]]
         assert texts.count(providers._AUTO_TOOL_INSTRUCTION) == 1
 
