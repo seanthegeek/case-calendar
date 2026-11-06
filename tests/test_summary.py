@@ -2279,6 +2279,14 @@ class TestWidenSingleWordLinks:
             "Acme and [joined](U) Beta Inc.",
             # The quantity's unit must end the phrase, not run into a possessive.
             "and [sentenced](U) to 200 months' imprisonment",
+            # Copilot (PR #111): never end on a bare preposition, a
+            # conjunction or preposition as the "unit", or a possessive.
+            "and [released](U) without bail",
+            "and [dismissed](U) under Rule 12",
+            "and [sentenced](U) to two and a half years",
+            "and [convicted](U) of two of the six counts",
+            "and [denied](U) defendant's motion",
+            "and [denied](U) defendants’ motions",
             # A party's name is never pulled in.
             "Acme [settled](U) the claims.",
             # Already two words.

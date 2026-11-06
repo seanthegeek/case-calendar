@@ -18,8 +18,9 @@ adheres to [Semantic Versioning][semver].
   26-399 summary in production) kept its one-word link. After "and", "or",
   "but", "nor", "then" or "than", the link now takes the next word ("and
   [filed motions]") or a preposition with a quantity ("and [sentenced to 200
-  months]"). It never takes an article, a possessive, a capitalized name or
-  a bare preposition. Of the 44 summaries in production it changes only that
+  months]"). It never ends the link on an article, a conjunction, a
+  preposition ("without", "under"), a possessive ("defendant's") or a
+  capitalized name. Of the 44 summaries in production it changes only that
   one.
 
 ## [0.20.0] - 2026-11-05
